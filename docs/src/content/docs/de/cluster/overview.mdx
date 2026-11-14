@@ -189,9 +189,9 @@ stateDiagram-v2
 - **`unreachable`** — der Failure Detector hat den Peer als nicht
   heartbeatend markiert. Offiziell weiterhin Mitglied, aber das
   Routing umgeht ihn. Springt zurück auf `up`, wenn er diesem Node
-  wieder Heartbeats schickt — nach einer Pause, nicht aber nach einer
-  symmetrischen Partition, nach der keine Seite der anderen mehr
-  Heartbeats schickt
+  wieder Heartbeats schickt — nach einer Pause, und nach dem Heilen
+  einer symmetrischen Partition, weil beide Seiten Mitgliedern, die sie
+  für unerreichbar halten, weiter Heartbeats schicken
   ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
   Bleibt er still, entfernt ihn der Failure Detector bei
   `down-after` — der Default ohne konfigurierte Strategie —, oder er
@@ -374,9 +374,14 @@ Das Protokoll trägt:
   gehört."
 
 Zwei Peers, die Gossip austauschen, mergen ihre Tabellen, indem sie
-die **höhere Version** für jedes Mitglied wählen. Genau das lässt
-Konvergenz ohne leader-gewählten Koordinator funktionieren: jedes
-parallele Update wird schließlich von jedem Peer gesehen.
+die **höhere Version** für jedes Mitglied wählen. Tragen zwei Einträge
+dieselbe Version, gewinnt der Status, der im Lebenszyklus weiter ist —
+`joining` < `weakly-up` < `up` < `unreachable` < `leaving` < `down` <
+`removed` —, sodass die Reihenfolge des Eintreffens das Ergebnis nie
+entscheidet. Genau das lässt Konvergenz ohne leader-gewählten
+Koordinator funktionieren: jedes parallele Update wird schließlich von
+jedem Peer gesehen, und zwei Peers, die dieselben Updates gesehen
+haben, halten dieselbe Tabelle.
 
 Für den tiefen Einstieg siehe
 [Joining und Seeds](/de/cluster/joining-and-seeds/).
@@ -385,7 +390,7 @@ Für den tiefen Einstieg siehe
 
 Der Default-Failure-Detector ist ein einfacher, deterministischer
 Detector auf Basis von **abgelaufenen Zeitschwellen**. Jeder Node
-schickt jedem erreichbaren Mitglied in festem Takt einen Heartbeat
+schickt jedem Mitglied — auch unerreichbaren — in festem Takt einen Heartbeat
 und verfolgt pro Peer, wann er zuletzt von ihm gehört hat: Jeder
 Frame zählt als Lebenszeichen, und ein Peer, der länger als eine
 Schwelle still bleibt, wird markiert. (Der optionale

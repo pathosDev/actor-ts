@@ -82,7 +82,12 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/ActorSystem.ts': 3,
   'src/Logger.ts': 2,
   'src/cache/InMemoryCache.ts': 8,
-  'src/cluster/Cluster.ts': 12,
+  // +2 after the ledger (#1262): a gossip sequence is a wall-clock stamp that
+  // a receiver compares against its own wall clock and against the sender's
+  // earlier stamps, across processes — `nextGossipSequence` stamps it and
+  // `nextGossipSenderClock` reads the receiver's side.  Virtual time would put
+  // the two ends on different clocks.
+  'src/cluster/Cluster.ts': 14,
   'src/cluster/EnvelopeTrust.ts': 1,
   'src/cluster/bootstrap/StableObservation.ts': 5,
   'src/cluster/downing/LeaseMajority.ts': 2,

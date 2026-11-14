@@ -9,10 +9,10 @@
  * every peer counted it `up`.  Nothing ever moved either side again, because
  * neither had a newer record to send.
  *
- * The merge now resolves exactly that tie toward `up`, on every node: `up` is
+ * The merge now resolves that tie toward `up`, on every node: `up` is
  * where the leader's decision leaves the member, and `weakly-up` is only the
- * member's own timer standing in for that decision until it arrives.  Every
- * other equal-version pair is still ignored, which is the rest of #935.
+ * member's own timer standing in for that decision until it arrives.  The
+ * general tie-break it became part of is pinned by `MembershipTieBreak.test.ts`.
  *
  * Driven frame by frame on a {@link ManualScheduler}, so the race is a fixed
  * order rather than one that has to be won.

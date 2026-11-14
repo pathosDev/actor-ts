@@ -79,6 +79,7 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { stageMember } from '../../../util/StagedMember.js';
 import { NoopLogger } from '../../../../src/Logger.js';
 import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
@@ -370,7 +371,7 @@ async function startRegion(systemName: string, port: number, settings: RegionSet
       kind: 'sharding.ShardHome',
       shardId,
       region: `/system/cluster-sharding/${TYPE_NAME}-region`,
-      node: new NodeAddress(`${systemName}-elsewhere`, 'h', port + 1).toJSON(),
+      node: stageMember(cluster, new NodeAddress(`${systemName}-elsewhere`, 'h', port + 1)).toJSON(),
     });
   };
 

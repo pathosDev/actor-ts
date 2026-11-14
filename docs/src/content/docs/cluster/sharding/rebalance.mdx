@@ -214,10 +214,11 @@ What follows from it:
   `MemberUp`, every region registers again and re-asks for the shards it
   buffered, and the request is answered then; a member that is removed
   takes its regions with it, and the request waits for a region that can
-  host the type.  While #930 is open, a member cut off by a symmetric
-  partition is not heard from again after the network heals, so it does
-  not come back on its own: the request stays pending until auto-down, a
-  split-brain strategy or an operator removes the member.
+  host the type.  A member cut off by a symmetric partition comes back
+  on its own once the network heals, because heartbeats keep reaching
+  it (#930) — unless auto-down, a split-brain strategy or an operator
+  removed it first, in which case the request waits for a region that
+  can host the type.
 - **A flapping member stalls rebalancing.**  Every time a member leaves
   or rejoins the set of members that are up, the window starts again, so
   one that flips faster than the window keeps the coordinator from

@@ -11,7 +11,7 @@ cluster-internal actors via known **receptionist contacts**.
 ```ts
 import { ClusterClient, ClusterClientOptions } from 'actor-ts/cluster';
 
-const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/cluster/receptionist']);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['my-app@10.0.0.5:2552']);
 const client = new ClusterClient(
   clusterClientOptions,
 );
@@ -81,6 +81,27 @@ type ClusterClientOptionsType = {
 them in order; on failure, it falls back to the next.
 `connectTimeoutMs` bounds how long **one** of them gets to answer
 the `hello` handshake before the client moves on.
+
+A contact point the client moves on from is given up for good: a
+dial still connecting is cancelled, a connection that already
+opened is closed, and a `hello-ack` that arrives late changes
+nothing.  A contact point that resets or closes the connection
+before its `hello-ack` fails the attempt at once rather than at
+the deadline, and the next `send` or `ask` dials again.  `close()`
+also ends an attempt still in flight, rejecting every call waiting
+on it.
+
+A per-call `ask` deadline (`client.ask(path, message, timeoutMs)`)
+must be a positive finite number; `0`, a negative value, `NaN`
+and `Infinity` are refused with an `OptionsError` before anything
+is sent.  Leave it out to use `askTimeoutMs`.
+
+`tls` follows the cluster's settings.  `ca` alone is one-way TLS:
+the client checks the server's certificate and presents none.
+For mutual TLS set both `cert` and `key`; a client given only one
+of them is refused at construction, because the half would
+otherwise be dropped on the dial and the connection would quietly
+fall back to one-way TLS.
 
 For **stable contact addresses**, the cluster side typically
 runs a `ClusterClientReceptionist` on a fixed set of nodes,

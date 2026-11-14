@@ -90,7 +90,8 @@ aufnehmen**, und du sagen kannst, welche Nachrichten verzichtbar sind:
   Messwert zählt.  `drop-head` hält die Queue frisch.
 - Ein **Admission-Punkt** vor einer teuren Pipeline, wo du Arbeit
   lieber ablehnst als einreihst.  `drop-new` behält, was du schon
-  angenommen hast, `reject` sagt dem Sender, er soll zurückstecken.
+  angenommen hast, `reject` lehnt die Ankunft ab und hält sie als
+  Dead Letter fest.
 - Jeder Actor, der einem Producer ausgesetzt ist, den du nicht
   kontrollierst — dort ist eine unbegrenzte Queue eine
   Denial-of-Service-Fläche.  Lies den dritten Punkt mit den ersten
@@ -131,7 +132,7 @@ gesagt hat.
 
 Die drei Policies und wie du zwischen ihnen wählst, stehen unten unter
 [`BoundedMailbox`](#boundedmailbox) — inklusive der Frage, warum
-`reject` den *Sender* scheitern lässt und nicht den langsamen Actor.
+`reject` nie in den Sender wirft.
 
 Drops aus einer Kapazität, die du gesetzt hast, zählt
 `actor_mailbox_dropped_total`, gelabelt mit Klasse und der Policy, die
@@ -380,16 +381,18 @@ Drei Policies:
 | --- | --- |
 | `'drop-head'` | Dequeue die *älteste* Nachricht in der Queue, verwirf sie, reihe die neue ein.  Neueste Nachrichten kommen immer rein. |
 | `'drop-new'` | Verwirf die *eingehende* Nachricht.  Die alte Queue bleibt unverändert. |
-| `'reject'` | Wirf `MailboxFullError` an der `tell`-Stelle.  Der Aufrufer trägt den Backpressure. |
+| `'reject'` | Lehne die *eingehende* Nachricht ab und leite sie samt Sender an `system.deadLetters`.  An der `tell`-Stelle wird nichts geworfen. |
 
-Welche du bekommst, wenn du keine nennst, hängt davon ab, durch welche
-Tür du gekommen bist — und der Unterschied ist Absicht: eine
-`BoundedMailbox` selbst zu konstruieren steht per Default auf
-**`reject`**, weil du einen Bound gebaut hast und sonst nichts darüber
-angenommen werden kann, was verzichtbar ist.  `withMailboxOverflow`
-steht per Default auf **`drop-head`**, der Policy, die zu den Workloads
-passt, für die man tatsächlich zu einem Bound greift.  Nennst du die
-Policy, stellt sich die Frage gar nicht.
+Egal durch welche Tür du kommst, eine Policy, die du nicht nennst, ist
+**`drop-head`**: eine selbst konstruierte `BoundedMailbox` und
+`withMailboxCapacity` ohne `withMailboxOverflow` verhalten sich gleich.
+
+Was `reject` von `drop-new` unterscheidet, ist der Nachweis.  Beide
+lassen die Queue, wie sie ist, und verlieren die Ankunft, aber `reject`
+schaltet `deadLetterDrops` per Default ein, sodass jede Ablehnung
+`system.deadLetters` — und den Event-Stream — mit Sender und Nachricht
+erreicht.  Ein explizites `deadLetterDrops: false` macht daraus dieselbe
+Policy wie `drop-new`.
 
 Die Optionen werden bei der Konstruktion validiert: eine fehlende oder
 nicht-positive `capacity` und eine unbekannte Overflow-Policy werfen
@@ -412,9 +415,10 @@ Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
 - **`drop-new`** = "Erst gewinnt."  Richtig für Command-Streams, bei
   denen Umordnung inakzeptabel ist und das Verwerfen einer späten
   Ankunft okay ist.
-- **`reject`** = "Lass den Sender damit umgehen."  Richtig, wenn der
-  Sender eine sinnvolle Backoff-Antwort hat (Retry, an einen anderen
-  Actor routen, 503 aus einem HTTP-Handler zurückgeben).
+- **`reject`** = "Ablehnen, aber nie still."  Richtig, wenn jede
+  abgelehnte Nachricht hinterher erklärbar sein muss — ein
+  Command-Stream, eine Zustellbestätigung — und du dafür die Dead
+  Letters beobachtest.
 
 `droppedCount` auf der Mailbox-Instanz verfolgt, wie viele
 Nachrichten verworfen wurden — nützlich, um es in eine Metrik-Gauge
@@ -422,16 +426,14 @@ zu verdrahten, damit du es bemerkst, wenn das Limit getroffen wird.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`reject` und der aufrufende Actor">
-  `reject` throwt an der **`tell`-Aufrufstelle**.  Wenn Actor A
-  B `tell`t und Bs Mailbox mit der `reject`-Policy voll ist, landet
-  der Throw innerhalb As `onReceive` — gefangen von As Supervisor,
-  nicht Bs.  Das ist meist okay (der Supervisor für A entscheidet,
-  wie A mit der Unerreichbarkeit umgeht), aber es bedeutet, dass
-  "Bs Mailbox läuft über" als "A restartet immer wieder"
-  auftaucht, was die Triage verwirren kann.  Verdrahte eine Metrik
-  auf `droppedCount`, statt dich auf Supervisor-Logs zu verlassen,
-  um es zu fangen.
+<Aside type="note" title="`reject` und der aufrufende Actor">
+  `tell` wirft nie, egal unter welcher Policy.  Bis v0.19 warf
+  `reject` `MailboxFullError` an der `tell`-Aufrufstelle: Wenn Actor A
+  B `tell`te und Bs Queue voll war, landete der Throw in As
+  `onReceive`, und A wurde neu gestartet, weil B langsam war.  Eine
+  Ablehnung ist jetzt ein Dead Letter; ein Sender, der davon wissen
+  muss, abonniert `DeadLetter` auf dem Event-Stream, und `droppedCount`
+  sowie `actor_mailbox_dropped_total` zählen sie so oder so.
 </Aside>
 
 ## `PriorityMailbox`
@@ -516,8 +518,8 @@ Beide Hälften sind wichtig:
   `priorityFor` nichts tun und kann es nicht von einem eigenen Fehler
   unterscheiden.  Ein entkommender Throw landete im `onReceive` des
   Senders und ließ den **Sender** neu starten — dieselbe Verwirrung, die
-  die `reject`-Warnung oben beschreibt, für einen Bug, der mit dem
-  Sender überhaupt nichts zu tun hat.
+  `reject` stiftete, bevor es aufhörte zu werfen, für einen Bug, der mit
+  dem Sender überhaupt nichts zu tun hat.
 
 `±Infinity` ist eine *Rangfolge*, kein Fehlschlag: `-Infinity` bedeutet
 "vor allem anderen", `+Infinity` bedeutet "hinter allem anderen", und
@@ -589,15 +591,15 @@ const workerOptions = ActorOptions.create<Message>()
 ```
 
 Die Policies sind `'drop-lowest-priority'`, `'drop-new'` und `'reject'`,
-und `reject` bekommst du, wenn du eine Capacity ohne Policy nennst — eine
-Capacity zu nennen sagt, wie viel du hältst, nicht was du bereit bist zu
-verlieren.
+und `drop-lowest-priority` bekommst du, wenn du eine Capacity ohne Policy
+nennst — das Gegenstück dieser Queue zum `drop-head`, auf dem jede
+FIFO-Schranke per Default steht.
 
 | Policy | Was bei Overflow passiert |
 | --- | --- |
 | `'drop-lowest-priority'` | Verwirft die Nachricht, die am weitesten von der Auslieferung entfernt ist — die mit der niedrigsten Priorität, unter Gleichen die zuletzt angekommene.  Die eingehende Nachricht tritt zu denselben Bedingungen an: eine, die unter dem gesamten Backlog rangiert, ist selbst die, die geht. |
 | `'drop-new'` | Verwirft die *eingehende* Nachricht, egal welche Priorität sie bekommen hat. |
-| `'reject'` | Wirft `MailboxFullError` an der `tell`-Stelle. |
+| `'reject'` | Lehnt die *eingehende* Nachricht ab und leitet sie an die Dead Letters.  An der `tell`-Stelle wird nichts geworfen. |
 
 `drop-head` gibt es hier bewusst **nicht**.  Auf einer FIFO-Queue heißt
 es "verwirf die abgestandenste", und das trägt, weil Ankunftsreihenfolge
@@ -708,13 +710,13 @@ und die Control-Spur gleich mit.
 Eine `capacity` begrenzt nur die **gewöhnliche** Klasse, und die drei
 `BoundedMailbox`-Policies — `'drop-head'`, `'drop-new'`, `'reject'` —
 wirken allein auf sie.  Eine Control-Nachricht wird nie abgeworfen, nie
-abgelehnt, nie als Drop gezählt und lässt `reject` nie werfen: die Flut,
-die eine Schranke abwirft, ist genau der Traffic, den die
-Control-Nachricht überholen soll.  Die Capacity ist also eine Obergrenze
-für die gewöhnliche Klasse, und die Control-Klasse begrenzt, was sie
-schickt — ein Grund mehr, das Prädikat auf die wenigen Sorten zu
-beschränken, die überholen müssen.  Ohne Policy angegeben bedeutet eine
-Capacity `reject`, wie bei jeder Mailbox, die du selbst konstruierst.
+abgelehnt und nie als Drop gezählt: die Flut, die eine Schranke abwirft,
+ist genau der Traffic, den die Control-Nachricht überholen soll.  Die
+Capacity ist also eine Obergrenze für die gewöhnliche Klasse, und die
+Control-Klasse begrenzt, was sie schickt — ein Grund mehr, das Prädikat
+auf die wenigen Sorten zu beschränken, die überholen müssen.  Ohne Policy
+angegeben bedeutet eine Capacity `drop-head`, wie bei jeder begrenzten
+FIFO-Queue.
 
 `unstashAll()` setzt jede Nachricht an den Kopf ihrer eigenen Klasse
 zurück, und die gewöhnliche Hälfte trifft auf die Schranke wie das
@@ -949,8 +951,8 @@ Greife in vier Situationen zu einer Alternative:
 1. **Producer/Consumer-Mismatch.**  Der Producer kann schneller
    emittieren, als der Consumer drainen kann.  Begrenze die Mailbox
    des Consumers; wähle eine Overflow-Policy, die zur Workload passt
-   (drop-head für Telemetrie, reject für HTTP-getriebenen
-   Backpressure).
+   (drop-head für Telemetrie, reject, wo jede abgelehnte Nachricht
+   nachweisbar bleiben muss).
 2. **Latenz-Budget pro Kind.**  Manche Nachrichten müssen in zehn
    Millisekunden behandelt werden (user-facing Requests), andere
    können Minuten warten (Hintergrund-Reconciliation).

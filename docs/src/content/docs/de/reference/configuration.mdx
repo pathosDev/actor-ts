@@ -54,6 +54,7 @@ actor-ts {
   cluster {
     gossip-interval     = 1s
     seed-retry-interval = 3s
+    unreachable-gossip-rounds = 3 # 0 = no gossip to unreachable members
     weakly-up-after     = 0s      # 0 = opt-in only
     max-members         = 1000
     max-tombstones      = 10000
@@ -148,7 +149,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation.  Greift, wenn `ActorSystem.create()` ohne Namen aufgerufen wird; ein explizites `create('billing')` gewinnt. |
-| `system.shutdown-drain-timeout` | `2s` | Wie lange `terminate()` den Actors unter `/user` gibt, die eingereihte Arbeit zu beenden, bevor die Stop-Kaskade startet.  Kehrt zurück, sobald der Baum ruhig ist — ein untätiges System zahlt einen Tick.  Halte den Wert unter `coordinated-shutdown.default-phase-timeout`; `0` schaltet den Drain ab. |
+| `system.shutdown-drain-timeout` | `2s` | Wie lange `terminate()` den Actors unter `/user` gibt, die eingereihte Arbeit zu beenden, bevor die Stop-Kaskade startet.  Kehrt zurück, sobald der Baum ruhig ist — ein untätiges System zahlt einen Tick.  Halte den Wert unter dem Budget der Phase `actor-system-terminate` (`10s`, wenn nicht gesetzt); `0` schaltet den Drain ab. |
 
 ### `actor-ts.logger`
 
@@ -424,6 +425,7 @@ man daraus erneut zustellt.
 | `cluster.roles` | `[]` | Rollen-Tags dieses Nodes.  Shard-Regionen, Singletons, die Schwellen pro Rolle und die rollengefilterten Downing-Strategien platzieren alle **nach** Rolle. |
 | `cluster.app-version` | *(nicht gesetzt)* | Die Anwendungsversion, die dieser Node seinen Peers nennt — ein Label für Betreiber, angezeigt von `/cluster/members` und überall, wo ein Mitglied ausgegeben wird; nichts platziert, routet oder downt danach.  In `reference.conf` nur als Kommentar: nicht gesetzt nennt der Node keine und schickt nichts über die Leitung — siehe unten. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
+| `cluster.unreachable-gossip-rounds` | `3` | In jeder wievielten Gossip-Runde ein `unreachable`-Mitglied den Frame der Runde ebenfalls erhält, damit eine geheilte Partition zusammenwächst.  Heartbeats erreichen unerreichbare Mitglieder unabhängig davon bei jedem Schlag.  `0` schickt ihnen keinen Gossip — siehe [Failure Detector](/de/cluster/failure-detector/). |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | Wie oft dieser Node eine `ClusterStatsPublished`-Momentaufnahme seines Mitgliederbilds auf `system.eventStream` veröffentlicht.  `0` startet keinen Timer — siehe unten. |
 | `cluster.shutdown-after-unsuccessful-join` | `0s` | Wie lange ein Node `joining` oder `weakly-up` bleiben darf, bevor er den Join aufgibt.  Kann ihn zur Frist nichts mehr befördern, protokolliert er eine Warnung, verlässt den Cluster und führt die Coordinated-Shutdown-Pipeline mit `ClusterJoinUnsuccessfulReason` aus; andernfalls fragt er alle `seed-retry-interval` erneut.  `0` setzt keine Frist — siehe [Joining und Seeds](/de/cluster/joining-and-seeds/). |
@@ -1466,12 +1468,14 @@ Angreifer etablierte Peers vom Knoten schieben.
 hält, statt was ein Peer gegen ihn hält: Frames, die für einen Peer geschrieben
 wurden, der sie gerade nicht annehmen kann; die ältesten fallen zuerst weg, denn
 der neueste Membership- und Heartbeat-Stand ist der, den zu behalten sich lohnt.
-Heute ist das der Puffer vor dem Handshake, damit ein `tell`, das mit dem
-Handshake um die Wette läuft, gehalten statt verloren wird. Der Key ist nach der
-Kategorie benannt, nicht nach diesem einen Puffer: die Backpressure-Queue nach
-dem Handshake ([Issue #931](https://github.com/pathosDev/actor-ts/issues/931))
-ist dieselbe Größe mit derselben Policy und derselben Warnung und landet unter
-diesem Key statt unter einem zweiten.
+Das sind zwei Puffer mit je dieser Grenze: der vor dem Handshake, damit ein
+`tell`, das mit dem Handshake um die Wette läuft, gehalten statt verloren wird,
+und der hinter einem Socket, der Backpressure meldet
+([Issue #931](https://github.com/pathosDev/actor-ts/issues/931)) — ein Peer,
+der nicht mehr liest, kostet diesen Knoten höchstens so viele Frames statt
+seines Heaps. Frames werden ganz gehalten, nie abgeschnitten: Der Peer bekommt
+einen Frame-Strom mit Lücken, und jede Lücke meldet eine Warnung, wenn sie
+beginnt, und eine zweite mit ihrer Größe, wenn der Socket wieder abläuft.
 
 Keiner der fünf hat eine „Aus"-Schreibweise. `0` wird für jeden abgelehnt, weil
 es keine Art ist, eine Schranke zu entfernen, sondern jeweils eine eigene Art,
@@ -3311,7 +3315,8 @@ Kinder für die anderen Phasen schon.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
+| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Ein Task, der es überschreitet, wird aufgegeben — auf Error-Level geloggt, läuft weiter —, damit die nächste Phase noch läuft.  `actor-system-terminate` startet stattdessen mit `10s`, nie weniger als dieser Wert. |
+| `coordinated-shutdown.overall-timeout` | `30s` | Schranke für einen ganzen Lauf — die Zahl, gegen die eine Grace Period bemessen wird.  Danach hält der Lauf in seiner Phase an, loggt die offenen Tasks auf Error-Level, und `exit-process` beendet mit `1`, wo `exit-code` `0` ist; ein Exit wartet auch nicht länger als das auf aufgegebene Tasks.  `0` setzt keine Frist. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task das Actor-System in der finalen Phase herunterfährt. |
 | `coordinated-shutdown.exit-process` | `false` | Ob `process.exit(exit-code)` aufgerufen wird, sobald ein Lauf endet.  Ein Lauf, den eine Phase mit `recover = false` anhält, beendet den Prozess am Halt, anstelle des Teardowns, den er sonst bekäme, und mit `1`, wo `exit-code` `0` ist. |
 | `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start.  Ein Lauf für einen fehlgeschlagenen Start, ein Lauf für einen Node, der nicht beitreten konnte (`ClusterJoinUnsuccessfulReason`: das Aufgeben des Joins, ein gescheitertes Readiness-Warten oder eine Ablehnung von `Cluster.bootstrap`), und ein Lauf, den eine Phase mit `recover = false` anhält, enden mit `1`, wo hier `0` steht, und lesen sich so nie wie ein sauberer Stopp. |
@@ -3548,7 +3553,7 @@ Hostnamen, Ports, Rollen und Restart-Pacing der Threads sind die
 | `worker-cluster.restart-min-backoff` | `200ms` | Wartezeit vor dem ersten Respawn eines abgestürzten Slots. |
 | `worker-cluster.restart-max-backoff` | `10s` | Obergrenze für die Respawn-Wartezeit, die pro Versuch verdoppelt wird. |
 | `worker-cluster.restart-random-factor` | `0.2` | ±-Jitter-Anteil auf jede Respawn-Wartezeit, in `[0, 1]`. |
-| `worker-cluster.max-restarts` | `10` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` startet unbegrenzt neu. |
+| `worker-cluster.max-restarts` | `10` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` startet unbegrenzt neu, der Backoff wächst dabei weiter bis `restart-max-backoff`. |
 | `worker-cluster.restart-window` | `60s` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück. |
 
 Die vier Duration-Keys lassen das `Ms`-Suffix ihrer Felder im Options-Objekt weg

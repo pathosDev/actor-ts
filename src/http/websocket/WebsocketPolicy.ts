@@ -73,8 +73,9 @@ export type ResolvedWebsocketPolicy = {
    *
    * A bound sheds frames and never the close: `close()` and `closeAll()` take
    * a lane no overflow policy may shed (#985).  A shed frame is counted in
-   * `actor_mailbox_dropped_total`, not dead-lettered — a capacity-built
-   * mailbox has no door to `deadLetterDrops`.
+   * `actor_mailbox_dropped_total`, and dead-lettered only under `reject` —
+   * a capacity-built mailbox has no door to `deadLetterDrops`, so it takes
+   * the policy's default, which is on for `reject` alone (#919).
    */
   readonly connectionMailboxCapacity?: number;
   /**
@@ -83,9 +84,9 @@ export type ResolvedWebsocketPolicy = {
    * `actor-ts.mailbox.default.overflow`, then to `drop-head`.  Only meaningful
    * beside {@link connectionMailboxCapacity}, and refused without one.
    *
-   * `reject` throws `MailboxFullError` out of `connection.tell` on the
-   * *sender's* stack — for a `broadcast` that is the hub, which then fails
-   * instead of the slow connection (#919).
+   * `reject` refuses the frame and dead-letters it; it does not throw out of
+   * `connection.tell`, so neither the hub nor any other sender is failed for
+   * a slow connection (#919).
    */
   readonly connectionMailboxOverflow?: BoundedMailboxOverflow;
 };

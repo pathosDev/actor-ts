@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
 import { ClusterClient } from '../../../src/cluster/ClusterClient.js';
 import { ClusterClientOptions } from '../../../src/cluster/ClusterClientOptions.js';
+import type { TlsTransportOptionsType } from '../../../src/runtime/tcp/TcpBackend.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 // The ClusterClient constructor validates options before any network setup,
@@ -49,5 +50,50 @@ describe('ClusterClientOptions validation', () => {
       .withAskTimeoutMs(3_000)
       .withConnectTimeoutMs(1_500);
     expect(() => new ClusterClient(options, noConfig())).not.toThrow();
+  });
+});
+
+describe('half a TLS client credential is refused (#1085)', () => {
+  // Stand-ins: the rule looks at whether a field carries material, never at it.
+  const CERTIFICATE = '-----BEGIN CERTIFICATE-----\nstand-in\n-----END CERTIFICATE-----\n';
+  const PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nstand-in-secret\n-----END PRIVATE KEY-----\n';
+  const AUTHORITY = '-----BEGIN CERTIFICATE-----\nstand-in-ca\n-----END CERTIFICATE-----\n';
+
+  function refusalOf(tls: TlsTransportOptionsType): unknown {
+    const options = ClusterClientOptions.create()
+      .withContactPoints(['sys@127.0.0.1:2551'])
+      .withTls(tls);
+    try {
+      new ClusterClient(options, noConfig());
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  test('a cert without a key is refused, naming both fields', () => {
+    const refusal = refusalOf({ cert: CERTIFICATE, ca: AUTHORITY });
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('tls');
+    expect((refusal as Error).message).toContain('sets `cert` without `key`');
+  });
+
+  test('a key without a cert is refused, and the message carries no key material', () => {
+    const refusal = refusalOf({ key: PRIVATE_KEY, ca: AUTHORITY });
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as Error).message).toContain('sets `key` without `cert`');
+    expect((refusal as Error).message).not.toContain('stand-in-secret');
+    expect((refusal as OptionsError).value).toBeUndefined();
+  });
+
+  test('an empty half counts as absent', () => {
+    expect(refusalOf({ cert: CERTIFICATE, key: '' })).toBeInstanceOf(OptionsError);
+    expect(refusalOf({ cert: new Uint8Array(0), key: PRIVATE_KEY })).toBeInstanceOf(OptionsError);
+  });
+
+  test('one-way TLS (ca alone) and a whole credential are accepted', () => {
+    expect(refusalOf({ ca: AUTHORITY })).toBeUndefined();
+    expect(refusalOf({ cert: CERTIFICATE, key: PRIVATE_KEY, ca: AUTHORITY })).toBeUndefined();
+    expect(refusalOf({ cert: '', key: '', ca: AUTHORITY })).toBeUndefined();
   });
 });

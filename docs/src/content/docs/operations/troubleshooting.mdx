@@ -108,11 +108,24 @@ cluster.subscribe((evt) => {
 });
 ```
 
-With `logger.level = debug` the detector logs the first half itself:
+At the default `logger.level = info` the node logs both edges itself,
+once per change rather than once per detection tick:
 
 ```text title="log"
-FD: <address> → unreachable (heartbeat timeout)
+<address> marked unreachable (failure detector: <reason>)
+<address> marked reachable (failure detector: heard from it again)
 ```
+
+The reason reads `heartbeat timeout`, or `silent past down-after`
+when the node first judges the peer only once it is already past the
+removal threshold.  The other membership transitions an incident
+timeline needs are at
+`info` as well: `<address> parked at unreachable (…) — the downing
+provider decides whether it is removed`, `<address> left the cluster
+(graceful leave; …)`, `leader changed: <old> → <new>`, and the
+auto-down removal `FD: <address> → down (…); auto-down removes it from
+membership`.  Per-round gossip and per-tick detector records stay at
+`debug`.
 
 The same address going unreachable and coming back again and again
 signals threshold tuning.
@@ -506,8 +519,8 @@ backlog is handled.  Four things it will not wait for:
   that keeps producing new work while draining — a self-tell loop, a
   rally between two actors — never goes quiet, so only the budget ends
   it.  Raise the budget, and raise
-  `actor-ts.coordinated-shutdown.default-phase-timeout` with it if you
-  shut down through the pipeline.
+  `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`
+  (10 s by default) with it if you shut down through the pipeline.
 - **The mailbox was parked.**  [`context.throttle(...)`](/fundamentals/throttling/)
   and a supervisor-suspended mailbox both count as quiet, because neither
   drains at a rate a shutdown can wait for.  Cancel the throttle before

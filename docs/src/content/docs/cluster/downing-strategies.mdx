@@ -483,6 +483,21 @@ block instead of from `withLease(…)` — see
 the strategy's first decision, from the address the decision carries,
 because the strategy is constructed before the node's address exists.
 
+### One arbiter per side
+
+Every node owns its own lease instance, so on an even split only one
+node per side asks the lease: the side's lowest-addressed reachable
+`up` member, the same order `KeepOldest` uses.  Its side-mates never
+touch the lease and decide nothing; they follow the arbiter through
+the membership.  An arbiter that wins downs the other side, and the
+side-mates see those members removed.  An arbiter that loses downs its
+own side and leaves; once it is `leaving`, the next member in line is
+the arbiter, and its acquire loses to the lease the other side holds.
+So an even split ends with the lease holder's whole side up.  Before
+v0.19.0 every node acquired for itself, at most one node won, and its
+side-mates downed their side, the winner included
+([issue #1824](https://github.com/pathosDev/actor-ts/issues/1824)).
+
 ### When an acquire is abandoned
 
 The interesting case is not "the lease said no" but "the lease
@@ -585,6 +600,17 @@ unwanted — a third case beside the two above, and their first two
 rules cover it: a win the attempt reports afterwards is dropped and
 released where it lands.  A release that fails is logged and the
 leave goes on; the record then runs out at its TTL.
+
+A node that terminates without leaving gives the lease back too.
+`system.terminate()` on its own runs no coordinated shutdown under the
+shipped `coordinated-shutdown.run-by-actor-system-terminate = false`,
+so it does not leave — but `Cluster.join` registers a termination
+step that stops the failure-detector tick and calls the strategy's
+`shutdown()`, so the record is released and its renewal no longer
+keeps the process alive.  The hook runs once per join, whichever of a
+leave and a terminate reaches it first.  The peers still learn that
+such a node is gone only from their failure detectors, so leave
+first where you can.
 
 The strategy decides nothing after it, so a node that joins again
 needs a fresh one.  A strategy selected in configuration is built anew
@@ -723,10 +749,11 @@ removed.
 | Nobody: no strategy and `auto-down = off`, the opt-out | Nothing is removed — the peer is parked at `unreachable`. | Back to `up` on its next heartbeat to this node. |
 
 The last row's way back needs the peer to send this node a heartbeat,
-which ends a pause, not a partition: after a symmetric partition
-heals, neither side heartbeats or gossips a peer it holds
-unreachable, so the parked members stay parked and the cluster stays
-split until an operator acts
+and that works after a partition as well as after a pause: every node
+keeps heartbeating the members it holds unreachable, and gossips one of
+them every `unreachable-gossip-rounds`-th round, so once a symmetric
+partition heals the heartbeats get through, the parked members return
+to `up` and the two halves merge
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 A tombstone refuses for the larger of `tombstone.time-to-live` and
@@ -765,9 +792,10 @@ announced for it and its remote watchers were sent a node-loss
 refuse a survivor's stale record of it either, which is why a crashed
 member keeps coming back under `auto-down`
 ([what the detector decides](/cluster/failure-detector/#what-the-detector-decides--and-doesnt)
-has the measurement). Nor does deleting help a healed partition:
-neither side heartbeats or gossips a peer it holds unreachable, and
-after the delete there is no entry to address at all
+has the measurement). Nor does deleting help a healed partition: after
+the delete there is no entry left to heartbeat, so the two sides never
+address each other again — where a peer parked at `unreachable` keeps
+being heartbeated through the partition and returns once it heals
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 **A restart is readmitted by version.** A process seeds its version

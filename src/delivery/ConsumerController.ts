@@ -575,11 +575,11 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * `tests/unit/delivery` pins it across two nodes: a delivery a peer wrote
    * with `replyTo` naming a `/user` actor on the consumer's node is handled,
    * and the `Acknowledgment` reaches that actor.  So a peer able to send to a
-   * consumer under `/user` chooses where the acknowledgment goes,
-   * and resolving a same-node marker consults none of the trust checks an
-   * envelope's own target goes through.  Whether a wire-supplied ref should
-   * resolve like that is the decoder's question — #1572 — and nothing here
-   * decides it.
+   * consumer under `/user` chooses where the acknowledgment goes — within the
+   * trust checks the decoder applies to a same-node marker, which are the ones
+   * an envelope's own target goes through (#1572): a `/system` actor, or a
+   * `/user` actor off the `untrusted-mode` allow-list, decodes to `Nobody`.
+   * That is the decoder's decision, and nothing here repeats it.
    *
    * What reaches that target is one `Acknowledgment` per delivery, carrying
    * four fields the sender wrote itself; and a real producer on the receiving

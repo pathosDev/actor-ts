@@ -837,12 +837,16 @@ describe('Mailbox.enqueueSignal — the exempt lane itself', () => {
     expect(mailbox.droppedCount).toBe(0);
   });
 
-  test('reject does not throw for it', () => {
-    const mailbox = new BoundedMailbox<string>({ capacity: 1 });
+  test('reject admits it even though the queue is full', () => {
+    const mailbox = new BoundedMailbox<string>({ capacity: 1, overflow: 'reject' });
     mailbox.enqueue({ message: 'a', sender: null });
-    expect(() => mailbox.enqueue({ message: 'b', sender: null })).toThrow();
+    // The arrival is refused — counted, never thrown since #919 …
+    mailbox.enqueue({ message: 'b', sender: null });
+    expect(mailbox.droppedCount).toBe(1);
+    // … and the notification is not refused at all.
     expect(() => mailbox.enqueueSignal(signal('death'))).not.toThrow();
     expect(mailbox.drainUser().map((env) => env.message)).toEqual(['a', 'death']);
+    expect(mailbox.droppedCount).toBe(1);
   });
 
   test('a queue of nothing but signals overshoots its bound rather than losing one', () => {

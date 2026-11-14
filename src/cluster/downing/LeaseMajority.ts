@@ -4,6 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
+import type { Member } from '../Member.js';
 import { LeaseMajorityOptionsValidator } from './LeaseMajorityOptions.js';
 import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajorityOptions.js';
 
@@ -19,12 +20,25 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  *      - Reachable side has strict majority → down the unreachable side.
  *      - Reachable side is the strict minority → down ourselves
  *        (and every reachable peer on this side).
- *   2. Equal-size partition (or insufficient info) → start
+ *   2. Equal-size partition (or insufficient info) → this side's
+ *      arbiter (its lowest-addressed reachable `up` member) starts
  *      `lease.acquire()`.  Return no decision while the acquire is
- *      pending so the cluster waits.
+ *      pending so the cluster waits.  Every other member of the side
+ *      returns no decision and never touches the lease (#1824).
  *   3. When acquire resolves:
  *      - `true` → we are the surviving side.  Down the unreachable side.
  *      - `false` → some other side won.  Down our own side.
+ *
+ * **One arbiter per side (#1824)**
+ *
+ * Each node owns its own lease instance — config builds it owned by the node's
+ * address and incarnation — so a side whose members all acquired had at most
+ * one winner, and every side-mate of the winner lost and downed its own side,
+ * the winner included: an even split left one node standing, not one side.
+ * The side-mates now learn the arbiter's verdict from the membership instead —
+ * see {@link isArbiterOfThisSide}.  The #1660 tie below covers the arbiter's
+ * own survival; a side-mate's rests on reaching the arbiter, and when the
+ * arbiter takes itself out the side-mate arbitrates afresh.
  *
  * The `decide()` interface stays sync (the rest of the resolver
  * pipeline is sync).  Async work happens off-band — this strategy
@@ -301,6 +315,12 @@ export class LeaseMajority implements DowningProvider {
       return new Set();
     }
 
+    // Only this side's arbiter consults the lease; the rest of the side waits
+    // for its verdict to reach them through the membership (#1824).
+    if (!this.isArbiterOfThisSide(reachable, view)) {
+      return new Set();
+    }
+
     const surviveSet = new Set(unreachable.map(addrKey));
     const downSelfSet = new Set(reachable.map(addrKey));
 
@@ -452,6 +472,38 @@ export class LeaseMajority implements DowningProvider {
       // acquire.
       this.abandonedAcquireEpoch = null;
     }
+  }
+
+  /**
+   * Whether this node arbitrates an even split for its side (#1824).
+   *
+   * Every node owns its own lease instance, so if each acquired for itself, at
+   * most one node in the cluster would win, and each of its side-mates would
+   * lose and down its side — itself and the winner.  So one node per side asks:
+   * the lowest-addressed reachable `up` member, the order `KeepOldest` uses,
+   * which every node on the side computes alike from the same view.
+   *
+   * The others never touch the lease and decide nothing, and that is enough:
+   * an arbiter that wins tombstones the other side, which reaches them by
+   * gossip as a view with nobody unreachable; one that loses leaves, and the
+   * `leaving` member is no longer `up`, so the next member in line becomes the
+   * arbiter and its acquire loses to the lease the other side holds.  A side
+   * where nobody is `up` falls back to its lowest member, so it is never left
+   * without an arbiter.
+   *
+   * Only `up` counts, not a member's address alone, because this strategy's
+   * fingerprint is addresses only: the arbiter going to `leaving` does not
+   * reset the view, and without the status the next in line would wait on a
+   * node that has gone.
+   */
+  private isArbiterOfThisSide(reachable: readonly Member[], view: ClusterPartitionView): boolean {
+    const up = reachable.filter((m) => m.status === 'up');
+    const eligible = up.length > 0 ? up : reachable;
+    const arbiter = eligible.reduce<Member | null>(
+      (lowest, m) => (lowest === null || m.address.compareTo(lowest.address) < 0 ? m : lowest),
+      null,
+    );
+    return arbiter !== null && arbiter.address.equals(view.self);
   }
 
   private reset(): void {

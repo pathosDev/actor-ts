@@ -26,11 +26,11 @@ import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
  *     once `tombstoneTtlMs` (default 24 h) elapses.  The
  *     **FD-driven** path — no downing provider configured and
  *     `failure-detector.auto-down = on`, the default (#1426) — deletes
- *     the entry outright instead.  That buys no recovery: gossip and heartbeats
- *     target only reachable members, so after a symmetric partition
- *     neither side hears the other again (#930), and with no
- *     tombstone left to refuse it, a peer still carrying the address
- *     re-introduces it.  Public APIs (`getMembers`, `upMembers`,
+ *     the entry outright instead.  That buys no recovery: heartbeats and
+ *     gossip still reach a member parked at `unreachable` (#930), but a
+ *     deleted one is not addressed at all, so after a symmetric partition
+ *     neither side hears the other again — and with no tombstone left to
+ *     refuse it, a peer still carrying the address re-introduces it.  Public APIs (`getMembers`, `upMembers`,
  *     `reachableMembers`) and `Member.isReachable()` all filter
  *     `removed` out — only direct iteration of the raw map needs
  *     to check the status explicitly.  See #75 + the
@@ -315,8 +315,8 @@ export type GossipMessage = {
   kind: 'gossip';
   from: NodeAddressData;
   /**
-   * Strictly-increasing counter stamped by the node that composed the frame,
-   * seeded from its wall-clock at startup and bumped by one per frame (#112).
+   * Strictly-increasing stamp from the wall clock of the node that composed
+   * the frame — `max(previous + 1, Date.now())` — (#112, #1262).
    *
    * It exists so a receiver can tell a *new* frame from a **recording of an
    * old one**.  Nothing else on a gossip frame can: `members` is a snapshot
@@ -331,11 +331,13 @@ export type GossipMessage = {
    *
    * A receiver holds it to two bounds, both in `Cluster.admitsGossipSequence`:
    * it must out-number the highest one that receiver has accepted from the same
-   * connection peer, **and** it must be a finite number no further ahead of the
-   * receiver's clock than `maxVersionSkewMs`.  The second is what stops a
-   * captured frame being restamped past every mark and replayed without limit —
-   * only this field is fabricated in that attack, the `members` array is still
-   * the recording (#940).
+   * connection peer, **and** it must be a finite number no further ahead than
+   * that peer has shown it runs — its learned clock offset plus a short lead —
+   * or, for a first frame, than `maxVersionSkewMs` past the receiver's clock.
+   * The second is what stops a captured frame being restamped past every mark
+   * and replayed without limit — only this field is fabricated in that attack,
+   * the `members` array is still the recording (#940) — and what keeps such a
+   * frame from pinning the mark against the real sender for long (#1262).
    */
   sequence: number;
   members: MemberData[];

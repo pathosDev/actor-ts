@@ -10,6 +10,10 @@ import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import {
   COLD_START_STALL_AFTER_SEED_ROUNDS,
+  GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS,
+  GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES,
+  GOSSIP_SEQUENCE_LEAD_MS,
+  GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS,
   MAX_REPORTED_CONFIGURATION_MISMATCHES,
   MAX_REPORTED_UNCLAIMED_WIRE_KINDS,
   MAX_WALL_CLOCK_SKEW_MS,
@@ -47,6 +51,7 @@ import {
   DEFAULT_DOWN_SMALLER_ISLAND,
   DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
+  DEFAULT_UNREACHABLE_GOSSIP_ROUNDS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
   DEFAULT_UNTRUSTED_MODE,
@@ -97,6 +102,7 @@ import {
   MAX_CONFIGURATION_FACT_NAME_LENGTH,
   MAX_CONFIGURATION_FACT_VALUE_LENGTH,
   MAX_CONFIGURATION_FACTS,
+  MEMBER_STATUSES,
 } from './Protocol.js';
 import type {
   ConfigurationFactsData,
@@ -186,6 +192,29 @@ type GossipRefusalReason = typeof GOSSIP_REFUSAL_REASONS[number];
 
 /** Refusals since startup, one running total per reason. */
 type GossipRefusalCounts = Record<GossipRefusalReason, number>;
+
+/**
+ * What a receiver has learned about one gossip sender's clock, beside its
+ * high-water mark — the state the #1262 bound is derived from.
+ *
+ * All offsets are `sequence − Date.now()` at the receiver, in milliseconds: a
+ * sender stamps its frames from its own wall clock, so a genuine frame sits at
+ * that sender's clock offset, less delivery delay.
+ */
+type GossipSenderClock = {
+  /** The run these readings belong to; a frame from another run starts afresh. */
+  readonly incarnation: string | undefined;
+  /** The highest offset accepted so far, never above {@link GossipSenderClock.allowanceBase}'s growth. */
+  readonly offset: number;
+  /** Where the rate-limited rise of {@link GossipSenderClock.offset} is measured from. */
+  readonly allowanceBase: number;
+  /** When {@link GossipSenderClock.allowanceBase} was set, at the receiver. */
+  readonly allowanceBaseAt: number;
+  /** When the current run of too-far-ahead refusals began; undefined while there is none. */
+  readonly aheadSince: number | undefined;
+  /** How many frames that run of refusals counts. */
+  readonly aheadFrames: number;
+};
 
 /**
  * How {@link Cluster.subscribe} states the membership that already exists when
@@ -324,6 +353,10 @@ export class Cluster {
   private readonly failureDetector: FailureDetectorLike;
   private readonly gossipIntervalMs: number;
   private readonly seedRetryIntervalMs: number;
+  /** {@link ClusterOptionsType.unreachableGossipRounds}; `0` sends unreachable members no gossip. */
+  private readonly unreachableGossipRounds: number;
+  /** Gossip rounds run so far — what {@link unreachableGossipRounds} counts. */
+  private gossipRounds = 0;
   private readonly seedAddrs: NodeAddress[] = [];
   /** Refused sends since the last report — see {@link reportOutboundRefusal}. */
   private outboundRefusalsSuppressed = 0;
@@ -350,6 +383,13 @@ export class Cluster {
    * it is meant to prevent.  Live entries are `members.size - tombstoneCount`.
    */
   private tombstoneCount = 0;
+  /**
+   * How many entries of {@link members} are `up` — kept beside the map by
+   * {@link setMember} and {@link deleteMember}, the way {@link tombstoneCount}
+   * is, so the `cluster_members_up` gauge can follow every write without a
+   * scan of the map per merged record.
+   */
+  private upCount = 0;
 
   /**
    * What this node's failure detector last said about each peer, keyed exactly
@@ -410,6 +450,16 @@ export class Cluster {
    * with the member, so the map #138 caps caps this one too.
    */
   private readonly acceptedGossipSequences = new Map<string, number>();
+
+  /**
+   * The clock each connection peer's accepted frames have shown, keyed like
+   * {@link acceptedGossipSequences} and written and dropped with it — the state
+   * the upper bound in {@link admitsGossipSequence} is derived from (#1262).
+   * It records the incarnation the readings belong to, which is what makes the
+   * mark *per (member, incarnation)*: a mark taken against one run of an
+   * address says nothing about where the next run's counter is.
+   */
+  private readonly gossipSenderClocks = new Map<string, GossipSenderClock>();
 
   /**
    * This node's own gossip frame counter — see {@link GossipMessage.sequence}.
@@ -486,6 +536,8 @@ export class Cluster {
   private started = false;
 
   private readonly downing: DowningProvider | null;
+  /** The one {@link shutdownDowning} run, once a leave or a terminate has started it. */
+  private downingShutdown: Promise<void> | null = null;
   /**
    * Whether a `down` verdict removes the peer when no {@link downing}
    * provider is configured (#1426) — on by default.  Its price: under a real
@@ -513,6 +565,13 @@ export class Cluster {
    * falls silent a second time is reported a second time.
    */
   private readonly parkedWithoutResolver = new Set<string>();
+  /**
+   * The same bookkeeping for peers parked *for* a configured provider, so the
+   * info line saying so is written once per parking too (#994).  Separate from
+   * {@link parkedWithoutResolver} because readiness reads that set as "nothing
+   * will remove these", which is not true of a peer a provider holds.
+   */
+  private readonly parkedForProvider = new Set<string>();
   /**
    * Peers that answered this node's heartbeat with a `membership-refused` —
    * they hold this run as `removed` — keyed like {@link members} (#940).
@@ -660,6 +719,7 @@ export class Cluster {
     );
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
+    this.unreachableGossipRounds = options.unreachableGossipRounds ?? DEFAULT_UNREACHABLE_GOSSIP_ROUNDS;
     this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
     // Same `0` sentinel one line up: no timer, which is what an unset field
     // means too (#842).
@@ -821,6 +881,14 @@ export class Cluster {
       CLUSTER_LEAVE_TASK_NAME,
       () => cluster.leave(),
     );
+    // A bare `terminate()` does not leave — with the shipped
+    // `run-by-actor-system-terminate = false` it runs no pipeline — so the
+    // downing provider was never shut down: a lease-majority winner went on
+    // renewing its lease on a scheduler of its own, the members left behind
+    // found the record taken, and the renewal timer kept the process alive
+    // (#1753).  A prelude runs after a bare `terminate()` and at the end of
+    // the pipeline alike; after a leave it finds the hook already called.
+    system._beforeTerminate(() => cluster.onSystemTerminating());
     return cluster;
   }
 
@@ -1924,12 +1992,39 @@ export class Cluster {
    * hook that throws or rejects is logged and goes no further: a leave must not
    * fail because a release did, and a lease left behind runs out at its TTL.
    */
-  private async shutdownDowning(): Promise<void> {
+  private shutdownDowning(): Promise<void> {
+    // At most once per cluster, whichever of a leave and a terminate gets here
+    // first (#1753): the bundled providers return early on a second call, but
+    // the hook is a contract for any provider, and "released once" is the
+    // cluster's promise rather than each implementation's.
+    this.downingShutdown ??= this.releaseDowning();
+    return this.downingShutdown;
+  }
+
+  /** The one call {@link shutdownDowning} makes — see there. */
+  private async releaseDowning(): Promise<void> {
     try {
       await this.downing?.shutdown?.();
     } catch (error) {
-      this.log.warn('leaving: the downing provider could not release what it holds', error);
+      this.log.warn('the downing provider could not release what it holds', error);
     }
+  }
+
+  /**
+   * The termination prelude {@link join} registers (#1753): stop asking the
+   * downing provider for decisions, then let it give back what it holds.
+   *
+   * The failure-detector tick goes first for the reason {@link depart} cancels
+   * it before the same hook: it is the only caller of `decide()`, and a decision
+   * taken after the release could acquire the lease again.  Nothing else is
+   * torn down here — the system's own termination stops the scheduler the
+   * remaining timers run on — and nothing is announced: a node that terminates
+   * without leaving is, to its peers, a node that went silent, which is exactly
+   * what the failure detector and the downing strategies exist to handle.
+   */
+  private async onSystemTerminating(): Promise<void> {
+    this.fdTimer?.cancel();
+    await this.shutdownDowning();
   }
 
   /**
@@ -2107,9 +2202,20 @@ export class Cluster {
     }
   }
 
-  /** The next value for {@link GossipMessage.sequence}. */
+  /**
+   * The next value for {@link GossipMessage.sequence}: this node's wall clock,
+   * or one past the previous value when the clock has not moved on (#1262).
+   *
+   * Following the clock rather than counting frames is what lets a receiver
+   * bound a sender's next number by the clock offset it has already shown
+   * ({@link admitsGossipSequence}).  A counter advances by one per frame, so a
+   * long-lived node's numbers lag its clock by its whole uptime, and a receiver
+   * could only bound them by `now + maxVersionSkewMs` — the gap one restamped
+   * capture used to pin the mark for minutes.  Strictly increasing still, so a
+   * clock stepped backwards never repeats a number.
+   */
   private nextGossipSequence(): number {
-    this.gossipSequence += 1;
+    this.gossipSequence = Math.max(this.gossipSequence + 1, Date.now());
     return this.gossipSequence;
   }
 
@@ -3251,10 +3357,30 @@ export class Cluster {
    *
    * Refusing it instead keeps the property the old split was reaching for and
    * loses nothing: the mark stays where the last plausible frame left it, so the
-   * real node's next frame still out-numbers it and still merges.  What a peer
-   * can no longer do is pin the mark *or* replay through it — the pinning
-   * exploit #114 closed on `version` is not reintroduced one field to the left,
-   * it is closed on both sides.
+   * real node's next frame still out-numbers it and still merges.
+   *
+   * **Pinning is bounded, not closed.**  This comment used to say the pinning
+   * exploit #114 closed on `version` was "closed on both sides" here.  It held
+   * only *above* the budget: a captured frame restamped anywhere inside it —
+   * `now + 4 min` against the five-minute default — was admitted, merged once,
+   * and became the mark, and every genuine frame after it lost
+   * `sequence > mark` until the wall clock caught up (#1262).  So once a sender
+   * has a mark, the bound is derived from that sender rather than from `now`:
+   * a node stamps its frames from its own clock ({@link nextGossipSequence}),
+   * the receiver learns its offset from the frames it accepts
+   * ({@link nextGossipSenderClock}), and a frame may run at most
+   * {@link GOSSIP_SEQUENCE_LEAD_MS} past that offset.  A frame admitted at the
+   * edge pins for at most that lead, and lifts the learned offset only at
+   * {@link GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS}, so repeated injections do not
+   * walk the mark ahead.  The reading is per (member, incarnation)
+   * ({@link gossipSenderClockOf}), so a mark pinned against one run does not
+   * refuse the next.  What stays: an injector who keeps injecting at the edge
+   * keeps the sender's own frames out for as long as it does so — no bound on a
+   * wire without a MAC can stop that, and mTLS is the answer to it (#912) — and
+   * a sender's *first* frame still meets only the skew budget, the case of
+   * residual 2.  A sender that steps its clock forward by more than the lead is
+   * refused until {@link GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS} of such frames
+   * makes the receiver forget its reading.
    *
    * `Number.isFinite` is checked here as well as by the frame guard
    * ({@link wireFrameProblem}) — `NaN` loses every `>` comparison, so an
@@ -3296,9 +3422,74 @@ export class Cluster {
    * `tests/unit/cluster/GossipReplayGuard.test.ts`.
    */
   private admitsGossipSequence(from: NodeAddress, sequence: number): boolean {
-    if (!Number.isFinite(sequence) || sequence > Date.now() + this.maxVersionSkewMs) return false;
-    const lastAccepted = this.acceptedGossipSequences.get(from.toString());
-    return lastAccepted === undefined || sequence > lastAccepted;
+    const now = Date.now();
+    if (!Number.isFinite(sequence) || sequence > now + this.maxVersionSkewMs) return false;
+    const key = from.toString();
+    const clock = this.gossipSenderClockOf(from);
+    // No reading for this (member, incarnation): a first frame, which nothing
+    // but the skew budget can bound.  Residual 2 below.
+    if (clock === undefined) return true;
+    const lastAccepted = this.acceptedGossipSequences.get(key);
+    if (sequence <= now + this.allowedGossipOffset(clock, now) + GOSSIP_SEQUENCE_LEAD_MS) {
+      return lastAccepted === undefined || sequence > lastAccepted;
+    }
+    if (!this.forgetsGossipSenderClock(key, clock, now)) return false;
+    // The sender has run past its learned clock for long enough that the clock,
+    // not the sender, is what is wrong — a forward step.  Judged as a first
+    // frame from here: the skew budget it has already passed.
+    this.acceptedGossipSequences.delete(key);
+    this.gossipSenderClocks.delete(key);
+    return true;
+  }
+
+  /**
+   * The reading {@link admitsGossipSequence} holds a frame from `from` to — or
+   * none, when there is none for the run that sent it (#1262).
+   *
+   * The run is the connection's incarnation when the transport knows it, and
+   * otherwise the one on the member record held for the address.  Either is a
+   * claim at the same trust level as the address the mark is keyed on: both
+   * come from the handshake or from records that address has had admitted.  A
+   * reading taken against another run is no reading at all, which is what
+   * keeps a mark pinned against one process from refusing the next one.
+   */
+  private gossipSenderClockOf(from: NodeAddress): GossipSenderClock | undefined {
+    const clock = this.gossipSenderClocks.get(from.toString());
+    if (clock === undefined || clock.incarnation !== this.gossipSenderIncarnation(from)) return undefined;
+    return clock;
+  }
+
+  /** Which run of `from` is speaking, as far as this node can tell — see {@link gossipSenderClockOf}. */
+  private gossipSenderIncarnation(from: NodeAddress): string | undefined {
+    return from.incarnation ?? this.members.get(from.toString())?.address.incarnation;
+  }
+
+  /**
+   * The highest clock offset a frame from this sender may be credited with
+   * now: the offset it has shown, allowed to rise by
+   * {@link GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS} since the last time a frame
+   * pushed it to that limit, and by no more than one lead in all.  The cap is
+   * what keeps a sender that has been quiet for a day from having banked a
+   * day's worth of drift for an injector to spend.
+   */
+  private allowedGossipOffset(clock: GossipSenderClock, now: number): number {
+    const drifted = clock.allowanceBase + (now - clock.allowanceBaseAt) * GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS;
+    return Math.min(clock.offset + GOSSIP_SEQUENCE_LEAD_MS, Math.max(clock.offset, drifted));
+  }
+
+  /**
+   * Count one frame refused for running past the lead, and say whether the run
+   * of such refusals is now long enough to forget the sender's learned clock
+   * ({@link GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS}).  Any accepted frame ends the
+   * run — {@link rememberGossipSequence} writes a reading without one.
+   */
+  private forgetsGossipSenderClock(key: string, clock: GossipSenderClock, now: number): boolean {
+    const aheadSince = clock.aheadSince ?? now;
+    const aheadFrames = clock.aheadFrames + 1;
+    if (now - aheadSince >= GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS
+      && aheadFrames >= GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES) return true;
+    this.gossipSenderClocks.set(key, { ...clock, aheadSince, aheadFrames });
+    return false;
   }
 
   /**
@@ -3330,6 +3521,42 @@ export class Cluster {
     const key = from.toString();
     if (!this.members.has(key)) return;
     this.acceptedGossipSequences.set(key, sequence);
+    this.gossipSenderClocks.set(key, this.nextGossipSenderClock(from, sequence));
+  }
+
+  /**
+   * Fold an accepted frame into its sender's clock reading (#1262).
+   *
+   * A first frame — or the first of another run — sets the offset outright.
+   * After that the offset only rises, and only as fast as
+   * {@link allowedGossipOffset} lets it: a frame admitted at the edge of the
+   * lead lifts the reading to the allowance and no further, so the bound the
+   * next frame meets has not moved by the lead it just used.  Never lowered: a
+   * delayed frame or a receiver that paused makes a genuine frame look older,
+   * and tightening the bound on that evidence would refuse the frames after it.
+   *
+   * The run is read after the merge, so a frame that introduced a new
+   * incarnation of the address files its reading under that incarnation.
+   */
+  private nextGossipSenderClock(from: NodeAddress, sequence: number): GossipSenderClock {
+    const now = Date.now();
+    const observed = sequence - now;
+    const incarnation = this.gossipSenderIncarnation(from);
+    const previous = this.gossipSenderClocks.get(from.toString());
+    if (previous === undefined || previous.incarnation !== incarnation) {
+      return {
+        incarnation, offset: observed, allowanceBase: observed, allowanceBaseAt: now,
+        aheadSince: undefined, aheadFrames: 0,
+      };
+    }
+    const allowed = this.allowedGossipOffset(previous, now);
+    if (observed > allowed) {
+      return {
+        incarnation, offset: allowed, allowanceBase: allowed, allowanceBaseAt: now,
+        aheadSince: undefined, aheadFrames: 0,
+      };
+    }
+    return { ...previous, offset: Math.max(previous.offset, observed), aheadSince: undefined, aheadFrames: 0 };
   }
 
   /**
@@ -3362,7 +3589,8 @@ export class Cluster {
         `implausible removedAt — more than ${MAX_WALL_CLOCK_SKEW_MS}ms ahead, or not a number`)
       .with('replayed-frame', () =>
         'the frame does not out-number the last one accepted from that peer, or its sequence is not '
-        + `a finite number within maxVersionSkewMs (${this.maxVersionSkewMs}ms) of this clock — `
+        + `a finite number within maxVersionSkewMs (${this.maxVersionSkewMs}ms) of this clock, or it runs `
+        + `more than ${GOSSIP_SEQUENCE_LEAD_MS}ms past the clock that peer has shown — `
         + 'a replay, a duplicate, or a capture with its sequence rewritten')
       .with('self-claim', () =>
         'a status for this node itself that is neither the one it already holds nor the leader '
@@ -3446,7 +3674,7 @@ export class Cluster {
     // Rehydrate any ActorRef markers embedded in the user payload before
     // handing it off — downstream handlers (sharding, pubsub, …) just
     // forward `env.body` and shouldn't each duplicate the decode step.
-    const decoded: EnvelopeMessage = { ...message, body: decodeRefs(message.body, this) };
+    const decoded: EnvelopeMessage = { ...message, body: decodeRefs(message.body, this, from) };
 
     // 1. Explicit per-path handler (pub-sub mediator, singleton manager,
     //    sharding coordinator, …).
@@ -3519,7 +3747,7 @@ export class Cluster {
     }
     const existing = this.members.get(peer.toString());
     if (!existing) return;
-    this.log.debug(`peer ${peer} sent leave — tombstoning (was ${existing.status} v${existing.version})`);
+    this.log.info(`${peer} left the cluster (graceful leave; was ${existing.status} v${existing.version})`);
     const leaving = existing.withStatus('leaving');
     const removed = leaving.withRemoved(Date.now());
     // Tombstone (don't delete) so a stale `up` gossip from a peer that
@@ -3542,17 +3770,22 @@ export class Cluster {
     // not end in `onGossip` — and, on a founder with no seeds, the only thing
     // that ever looks again (#837).
     this.leaderActionsTick();
+    this.gossipRounds += 1;
     const targets = this.reachableMembers().filter(member => !member.address.equals(this.selfAddress));
-    if (targets.length === 0) return;
-    // Push to one random reachable peer each tick — epidemic style.
-    const target = targets[Math.floor(Math.random() * targets.length)]!;
+    const unreachable = this.unreachableGossipTarget();
+    if (targets.length === 0 && unreachable === undefined) return;
     const gossip: GossipMessage = {
       kind: 'gossip',
       from: this.selfAddress.toJSON(),
       sequence: this.nextGossipSequence(),
       members: Array.from(this.members.values()).map(member => this.memberDataForGossip(member)),
     };
-    this.transport.send(target.address, gossip);
+    // Push to one random reachable peer each tick — epidemic style.
+    if (targets.length > 0) this.transport.send(targets[Math.floor(Math.random() * targets.length)]!.address, gossip);
+    // One frame for both: each receiver keeps its own high-water mark for this
+    // node, so a shared sequence is delivered once per peer, as the seed round
+    // shares one.
+    if (unreachable !== undefined) this.transport.send(unreachable.address, gossip);
     // Stock metric: gossip rounds count.
     metricsOf(this.system).counter(
       'cluster_gossip_rounds_total', {},
@@ -3560,6 +3793,39 @@ export class Cluster {
     ).inc();
   }
 
+  /**
+   * The `unreachable` member this round's gossip also goes to, on every
+   * {@link unreachableGossipRounds}-th round — or none (#930, decision D-5).
+   *
+   * Gossip used to go to reachable members only, and a peer is marked
+   * unreachable exactly when nothing arrives from it — so after a symmetric
+   * partition neither side sent the other another frame, and the halves ran
+   * as two clusters until a process restarted.  Heartbeats now reach
+   * unreachable members on every beat ({@link heartbeatTick}), which is what
+   * lets the failure detector see the link come back; this is what then
+   * carries the membership the two sides changed while apart, without
+   * spending a frame per round on a peer that may be gone for good.
+   */
+  private unreachableGossipTarget(): Member | undefined {
+    if (this.unreachableGossipRounds === 0 || this.gossipRounds % this.unreachableGossipRounds !== 0) return undefined;
+    const unreachable = Array.from(this.members.values()).filter((member) =>
+      member.status === 'unreachable' && !member.address.equals(this.selfAddress));
+    if (unreachable.length === 0) return undefined;
+    return unreachable[Math.floor(Math.random() * unreachable.length)];
+  }
+
+  /**
+   * Heartbeat every member that is not on its way out — `unreachable` ones
+   * included (#930, decision D-5).
+   *
+   * An unreachable peer is precisely the one worth probing: a heartbeat that
+   * gets through is how it learns this node is back, and its own heartbeats are
+   * how this node learns the same of it ({@link onHeartbeat} flips it to `up`
+   * and the detector's next verdict marks it reachable).  Sending only to
+   * reachable members made a symmetric partition permanent.  `down` and
+   * `removed` members are excluded: those are decisions, not observations,
+   * and nothing a heartbeat could say reverses them.
+   */
   private heartbeatTick(): void {
     this.heartbeatSeq++;
     const hb: HeartbeatMessage = {
@@ -3568,8 +3834,9 @@ export class Cluster {
       seq: this.heartbeatSeq,
       ts: Date.now(),
     };
-    for (const member of this.reachableMembers()) {
+    for (const member of this.members.values()) {
       if (member.address.equals(this.selfAddress)) continue;
+      if (!member.isReachable() && member.status !== 'unreachable') continue;
       this.transport.send(member.address, hb);
     }
   }
@@ -3584,7 +3851,10 @@ export class Cluster {
       this.trackReachability(member, decision);
       // Heard from again, so no longer parked: forget the warning, and a
       // second silence is reported in its turn.
-      if (decision !== 'down') this.parkedWithoutResolver.delete(member.address.toString());
+      if (decision !== 'down') {
+        this.parkedWithoutResolver.delete(member.address.toString());
+        this.parkedForProvider.delete(member.address.toString());
+      }
       if (decision === 'unreachable' && member.status === 'up') {
         this.log.debug(`FD: ${member.address} → unreachable (heartbeat timeout)`);
         // Announces `MemberUnreachable` itself — see `emitStatusTransition` (#1428).
@@ -3620,11 +3890,12 @@ export class Cluster {
         // tombstone is #940's.
         //
         // Deleting does *not* buy a partition+heal recovery, and the note
-        // that used to stand here claimed it did.  `gossipTick` and
-        // `heartbeatTick` both target `reachableMembers()`, which excludes
-        // `unreachable` — and after this delete the peer is not in the map
-        // at all — so a symmetric partition leaves neither side with a way
-        // to hear the other again.  Closing that is #930.
+        // that used to stand here claimed it did.  It costs one: `heartbeatTick`
+        // and `gossipTick` keep addressing a member held `unreachable`, which
+        // is how a parked peer is heard again once a partition heals (#930),
+        // but after this delete the peer is not in the map at all, so a
+        // symmetric partition that outlasts `down-after` under auto-down
+        // leaves neither side with a way to hear the other again.
         this.deleteMember(member.address.toString());
         // Transient `removed` Member only used for the event emit —
         // not stored, so the missing `removedAt` here is intentional.
@@ -3685,16 +3956,39 @@ export class Cluster {
    * {@link leader} counts only `up` members, so parking the leader elects
    * another, and a singleton or shard coordinator that follows the leader
    * moves with it on `LeaderChanged`.  A parked peer returns to `up` on the
-   * next heartbeat it sends this node ({@link onHeartbeat}); after a symmetric
-   * partition that heartbeat never comes, since neither side heartbeats a peer
-   * it holds unreachable — closing that is #930.
+   * next heartbeat it sends this node ({@link onHeartbeat}), and after a
+   * symmetric partition that heartbeat comes as soon as the network heals:
+   * both sides keep heartbeating members they hold unreachable (#930).
    */
   private holdForResolver(member: Member): void {
     if (this.downing === null) this.reportParkedWithoutResolver(member);
+    else this.reportParkedForProvider(member);
     if (member.status === 'unreachable') return;
     const holder = this.downing === null ? 'until it is removed (auto-down off)' : 'for the downing provider';
     this.log.debug(`FD: ${member.address} → down (was ${member.status}); holding at unreachable ${holder}`);
     this.updateMember(member.withStatus('unreachable'));
+  }
+
+  /**
+   * Say, once per parking, that the detector has given up on `member` and the
+   * configured provider now decides its fate (#994).
+   *
+   * At info rather than the warn {@link reportParkedWithoutResolver} uses:
+   * here something *will* decide, so there is nothing for the operator to do —
+   * but the moment the detector handed a peer over is the one an incident
+   * timeline needs, and the provider's own verdict may come many seconds later
+   * (a stability window, a lease acquire).  Once per parking, not per tick:
+   * {@link parkedForProvider} is cleared with the same edges as
+   * {@link parkedWithoutResolver}.
+   */
+  private reportParkedForProvider(member: Member): void {
+    const key = member.address.toString();
+    if (this.parkedForProvider.has(key)) return;
+    this.parkedForProvider.add(key);
+    this.log.info(
+      `${member.address} parked at unreachable (failure detector: silent past down-after; was ${member.status}) — `
+      + 'the downing provider decides whether it is removed',
+    );
   }
 
   /**
@@ -3743,6 +4037,18 @@ export class Cluster {
     if (previous === reachable) return;
     this.reachability.set(key, reachable);
     if (previous === undefined && reachable) return;
+    // At info, and here rather than at the status write: this is the edge of
+    // this node's own verdict, so it is logged once per change however many
+    // ticks the silence lasts — while the `unreachable` status can be rewritten
+    // by gossip from a peer that hears the member fine and re-marked here on
+    // the next tick, which would make a status-keyed line repeat at the
+    // heartbeat cadence (#994).
+    if (reachable) {
+      this.log.info(`${member.address} marked reachable (failure detector: heard from it again)`);
+    } else {
+      const reason = decision === 'down' ? 'silent past down-after' : 'heartbeat timeout';
+      this.log.info(`${member.address} marked unreachable (failure detector: ${reason})`);
+    }
     this.emit(new ReachabilityChanged(member.address, reachable));
   }
 
@@ -4301,7 +4607,8 @@ export class Cluster {
       return;
     }
 
-    if (incoming.version <= existing.version && !this.promotedAtEqualVersion(existing, incoming)) {
+    if (incoming.version < existing.version
+      || (incoming.version === existing.version && !this.winsEqualVersionTie(existing, incoming))) {
       // Ignored for membership — but the overlays still land, or a claim
       // published after a member's last status change would never spread
       // (#1358, #844), and a label a previous-release relay stripped would
@@ -4336,30 +4643,48 @@ export class Cluster {
   }
 
   /**
-   * The one equal-version pair {@link mergeMember} resolves instead of
-   * ignoring (#935): `up` over `weakly-up`.
+   * Whether `incoming` beats `existing` at the same version — the tie-break
+   * that makes {@link mergeMember} a total order (#935).
    *
-   * Both are successors of the same `joining@E` record.  The member's own
-   * `weaklyUpAfterMs` timer writes `weakly-up@E+1`; the leader, promoting from
-   * the `joining@E` it holds, writes `up@E+1`.  Dropping every record that is
-   * not strictly newer lost the promotion wherever the timer's record had
-   * landed first — on the member itself above all, which then never emitted
-   * `SelfUp` and never became ready while every peer counted it `up`, and
-   * nothing would ever send either side a newer record.  A seed that starts
-   * just after the timer has fired produces exactly this order (#1493).
+   * Versions advance by one from each node's own wall-clock epoch, so two
+   * observers deciding about one member in the same step produce the same
+   * number for different statuses routinely.  Dropping every record that was
+   * not strictly newer kept whichever reached a node first, and neither side
+   * then had a reason to send anything newer: the views diverged for good.  A
+   * tie-break converges only if every node applies the same one, so it may
+   * depend on nothing but the two records.
    *
-   * Resolving toward `up` loses nothing either record says: `up` is where the
-   * leader's decision leaves the member, and `weakly-up` only the member's own
-   * stand-in for that decision until it arrives.  And it is the same answer on
-   * every node, whichever of the two reached it first, which is what lets
-   * them converge — so it applies to every observer, not only to the member.
-   * Only this pair: every other equal-version disagreement is still ignored,
-   * which is the rest of #935.
+   * **The order is the member lifecycle** — {@link MEMBER_STATUSES} in
+   * declaration order, `joining` < `weakly-up` < `up` < `unreachable` <
+   * `leaving` < `down` < `removed` — and the record further along wins.  Each
+   * step is the one that must not be lost to arrival order:
+   *
+   * - `up` over `joining` / `weakly-up`: the leader's promotion supersedes the
+   *   member's own stand-in for it.  The member's `weaklyUpAfterMs` timer
+   *   writes `weakly-up@E+1` while the leader, promoting the `joining@E` it
+   *   holds, writes `up@E+1`; the member that kept its own record never
+   *   emitted `SelfUp` (#1493, the first pair this resolved).
+   * - `unreachable` over `up`: a suspicion is cleared by a *newer* reachable
+   *   record, which the failure detector writes once heartbeats resume; lost
+   *   to a tie, it would hide a member nothing can hear.
+   * - `leaving` over every live status: a leave is the member's own decision
+   *   and is never undone.
+   * - `down`, then `removed`, over everything: a downing decision or a
+   *   tombstone lost to a tie leaves one half of the cluster counting a member
+   *   the other half has written off — the split a resolver exists to prevent.
+   *
+   * Only the status decides.  Within one address, two records at one version
+   * and one status say the same thing about membership; the overlays they
+   * carry (storage identities, configuration facts, app version) have lanes of
+   * their own, which {@link mergeMember} feeds either way.
+   *
+   * It grants a sender no reach it lacked: whatever may be said at an equal
+   * version could already be said at version + 1, and the guards in front —
+   * {@link maySpeakFor} above all, which keeps this node's own record its own —
+   * run before the comparison.
    */
-  private promotedAtEqualVersion(existing: Member, incoming: Member): boolean {
-    return incoming.version === existing.version
-      && existing.status === 'weakly-up'
-      && incoming.status === 'up';
+  private winsEqualVersionTie(existing: Member, incoming: Member): boolean {
+    return MEMBER_STATUSES.indexOf(incoming.status) > MEMBER_STATUSES.indexOf(existing.status);
   }
 
   /**
@@ -4583,7 +4908,10 @@ export class Cluster {
     const previous = this.members.get(key);
     if (previous?.status === 'removed') this.tombstoneCount--;
     if (member.status === 'removed') this.tombstoneCount++;
+    if (previous?.status === 'up') this.upCount--;
+    if (member.status === 'up') this.upCount++;
     this.members.set(key, member);
+    this.publishMembersUp();
     if (member.status === 'removed') {
       this.failureDetector.forget(member.address);
       // A refusal is about a peer this node can no longer count on; once the
@@ -4597,12 +4925,15 @@ export class Cluster {
     const previous = this.members.get(key);
     if (previous === undefined) return;
     if (previous.status === 'removed') this.tombstoneCount--;
+    if (previous.status === 'up') this.upCount--;
     this.members.delete(key);
+    this.publishMembersUp();
     // Same key space, same lifetime.  A verdict left behind here would make the
     // address's next incarnation look like a peer that had recovered.
     this.reachability.delete(key);
     // Likewise, or the next incarnation's parking would go unreported (#1426).
     this.parkedWithoutResolver.delete(key);
+    this.parkedForProvider.delete(key);
     // Likewise: a refusal belongs to the run that sent it, and the address's
     // next incarnation has refused nothing (#940).
     this.refusedBy.delete(key);
@@ -4610,6 +4941,7 @@ export class Cluster {
     // frames of the address's next incarnation, whose counter starts from its
     // own clock rather than from where the previous one left off (#112).
     this.acceptedGossipSequences.delete(key);
+    this.gossipSenderClocks.delete(key);
     // Likewise, or the next incarnation would inherit this one's silence clock
     // and interval window (#1103).  A tombstone's entry already went in
     // `setMember`; this is the one for the routes that delete a live member.
@@ -4622,14 +4954,24 @@ export class Cluster {
     this.setMember(next);
     if (prev) this.emitStatusTransition(prev, next);
     else this.emit(new MemberJoined(next));
-    // Stock metric: members-up gauge.  Updated on every member-set
-    // mutation so all transitions (join, up, down, removed) keep it
-    // current.  Single value per node — labels are deliberately empty
-    // because the gauge is always the local view's snapshot.
+  }
+
+  /**
+   * Stock metric: the members-up gauge, set from the two write doors into
+   * {@link members} so every route keeps it current — the changes this node
+   * makes itself and the ones it learns through the gossip merge alike.  It
+   * used to be set in {@link updateMember} only, so a member another node
+   * promoted, marked unreachable or removed left the figure stale until this
+   * node changed something of its own, and the runbook's
+   * `changes(cluster_members_up[15m])` flapping query read a quiet cluster.
+   * Single value per node — labels are deliberately empty because the gauge is
+   * always the local view's snapshot.
+   */
+  private publishMembersUp(): void {
     metricsOf(this.system).gauge(
       'cluster_members_up', {},
       { help: 'Number of cluster members currently in `up` state.' },
-    ).set(this.upMembers().length);
+    ).set(this.upCount);
   }
 
   /**
@@ -4701,7 +5043,7 @@ export class Cluster {
       this.currentLeader = newLeader;
       const prevStr = prev.fold(() => 'none', (member) => member.address.toString());
       const nextStr = newLeader.fold(() => 'none', (member) => member.address.toString());
-      this.log.debug(`leader changed: ${prevStr} → ${nextStr}`);
+      this.log.info(`leader changed: ${prevStr} → ${nextStr}`);
       this.emit(new LeaderChanged(newLeader));
     }
   }

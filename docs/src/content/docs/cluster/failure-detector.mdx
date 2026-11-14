@@ -92,9 +92,11 @@ arrives within the difference.
 
 ## Heartbeats are explicit; liveness is any frame
 
-Every node sends a heartbeat to each reachable member once per
-`heartbeat-interval`, and the member answers each one with an
-acknowledgment.  That loop is what the detectors rely on, so an idle
+Every node sends a heartbeat to each member once per
+`heartbeat-interval` — `unreachable` ones included, since a heartbeat
+that gets through is how a cut-off peer is seen to come back; only
+`down` and `removed` members are left out — and the member answers
+each one with an acknowledgment.  That loop is what the detectors rely on, so an idle
 cluster is watched exactly as closely as a busy one.
 
 What a frame from a peer *counts for* depends on the question:
@@ -147,7 +149,7 @@ What the cluster *does* with that:
 | Decision | Cluster behavior |
 | --- | --- |
 | `healthy` | Normal routing.  No effect. |
-| `unreachable` | Mark the member `unreachable` in the membership table.  Sharding allocates no new shards to them.  Routers do not skip them yet: a cluster router rebuilds its routees only on `MemberUp` and `MemberRemoved`, so an unreachable member stays a routee until the next of those ([issue #942](https://github.com/pathosDev/actor-ts/issues/942)).  The leader is the first `up` member, so an unreachable leader is replaced in this node's view — and a singleton or shard coordinator that follows the leader moves with it. |
+| `unreachable` | Mark the member `unreachable` in the membership table.  Sharding allocates no new shards to them.  A [cluster router](/cluster/cluster-router/#routee-discovery) drops them from its routees on `MemberUnreachable` and takes them back on `MemberReachable`.  The leader is the first `up` member, so an unreachable leader is replaced in this node's view — and a singleton or shard coordinator that follows the leader moves with it. |
 | `down`, a [downing strategy](/cluster/downing-strategies/) configured | Park the member at `unreachable` and stop.  The strategy decides which addresses to remove; the cluster announces those as `down` and `removed`.  The detector removes nothing itself, whatever `auto-down` says. |
 | `down`, no strategy, `auto-down = on` (the default) | The detector removes the peer itself: `down`, then straight out of the membership table as `removed`.  The surviving nodes take over its shards and singletons. |
 | `down`, no strategy, `auto-down = off` (the opt-out) | Park the member at `unreachable` and stop, with one warning in the log.  Nothing removes it until an operator does — `Cluster.down` or `POST /cluster/down` — or a strategy is configured. |
@@ -238,11 +240,12 @@ singleton.  The leader is the first `up` member of each node's view,
 so parking the leader makes another member leader on that side, and
 a singleton or shard coordinator that follows the leader moves with
 it — each side of a partition can end up hosting its own.  Only a
-strategy that removes one side settles that.  And a healed symmetric
-partition does not currently bring a parked member back to `up`:
-heartbeats and gossip are sent to reachable members only, so neither
-side addresses the other again, and the cluster stays split until an
-operator acts ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+strategy that removes one side settles that.  A healed symmetric
+partition does bring a parked member back to `up`: heartbeats keep
+going to unreachable members, and gossip reaches one of them every
+`cluster.unreachable-gossip-rounds`-th round (3 by default), so once
+the network heals each side hears the other again and the halves merge
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 Parking is integrity over availability: it is what a deployment
 chooses when a forked cluster costs more than a crashed node held as

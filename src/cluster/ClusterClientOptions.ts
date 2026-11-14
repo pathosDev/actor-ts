@@ -137,6 +137,39 @@ export class ClusterClientOptionsValidator extends OptionsValidator<ClusterClien
     }
     this.positiveNumber('askTimeoutMs');
     this.positiveNumber('connectTimeoutMs');
+    if (s.tls !== undefined) this.clientCredentialIsWhole(s.tls);
+  }
+
+  /**
+   * Refuse half a client credential (#1085): `cert` without `key`, or `key`
+   * without `cert`.
+   *
+   * Every runtime adapter dropped the half on the dial — Node and Bun handed
+   * `tls.connect` an undefined `key`, Deno discards both unless both are set —
+   * so the client spoke one-way TLS while its configuration read as mTLS.
+   * Against a listener without `ca` that connected, and the identity binding
+   * that rests on the client's certificate had nothing to bind; against an mTLS
+   * listener it failed with a TLS alert that named no field.  The listener rule
+   * (`assertListenerTlsIsCoherent`) cannot be reused here: `{ ca }` alone is the
+   * correct one-way configuration for a dialer.  Half a credential is the one
+   * shape that is valid nowhere.
+   *
+   * Empty counts as absent, as it does on the listener: an empty string or
+   * buffer is what an unset secret looks like by the time it arrives.  The
+   * value is left out of the message on purpose — it holds a private key.
+   */
+  private clientCredentialIsWhole(tls: TlsTransportOptionsType): void {
+    const hasCertificate = tls.cert !== undefined && tls.cert.length > 0;
+    const hasKey = tls.key !== undefined && tls.key.length > 0;
+    if (hasCertificate === hasKey) return;
+    const present = hasCertificate ? 'cert' : 'key';
+    const absent = hasCertificate ? 'key' : 'cert';
+    this.fail(
+      'tls',
+      `sets \`${present}\` without \`${absent}\`: half a client certificate is no credential, and the `
+      + 'dial would silently fall back to one-way TLS. Supply both, or neither for one-way TLS '
+      + '(`ca` alone authenticates the server)',
+    );
   }
 }
 

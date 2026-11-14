@@ -36,10 +36,11 @@ actor-ts {
     # already have before the stop cascade starts.  The wait ends as soon as
     # the tree goes quiet, so an idle system pays a tick rather than the
     # budget; what is still queued when the budget runs out is dead-lettered
-    # exactly as it was before.  Keep it under
-    # coordinated-shutdown.default-phase-timeout — the last phase awaits
-    # terminate(), so a drain as long as the phase leaves no room to stop
-    # anything.  0 disables draining and restores the pre-#663 behaviour.
+    # exactly as it was before.  Keep it under the budget of the
+    # coordinated-shutdown phase actor-system-terminate (10s unless set) —
+    # that phase awaits terminate(), so a drain as long as the phase leaves
+    # no room to stop anything.  0 disables draining and restores the
+    # pre-#663 behaviour.
     #
     # A throttled or suspended mailbox is never waited on: neither drains at
     # a rate a shutdown can wait for.
@@ -490,6 +491,14 @@ actor-ts {
   cluster {
     gossip-interval = 1s
     seed-retry-interval = 3s
+
+    # On every how-many-th gossip round one unreachable member also receives
+    # the round's frame, so the two halves of a healed partition exchange the
+    # membership they changed while apart.  Heartbeats go to unreachable
+    # members on every beat regardless -- they are what marks a returning
+    # peer reachable again.  0 sends unreachable members no gossip.
+    unreachable-gossip-rounds = 3
+
     weakly-up-after = 0s   # 0 disables auto weakly-up promotion
 
     # How often this node publishes a snapshot of its own membership view --
@@ -1219,12 +1228,13 @@ actor-ts {
 
     # How many frames are held for a peer that cannot take them right now,
     # oldest dropped first -- the newest membership and heartbeat state is the
-    # state worth keeping.  Today that is the buffer in front of the
-    # handshake, so a send racing the handshake is held rather than lost; the
-    # key is named for the category rather than that one buffer, because the
-    # post-handshake backpressure queue is the same quantity with the same
-    # policy and the same warning and will land under this key rather than a
-    # second one.
+    # state worth keeping.  Two buffers, one bound each: the one in front of
+    # the handshake, so a send racing the handshake is held rather than lost,
+    # and the one behind a socket that pushes back, so a peer that stops
+    # reading costs this node at most this many frames instead of its heap.
+    # Frames are held whole, never cut: what the peer receives is a frame
+    # stream with gaps, each gap reported by a warning when it opens and
+    # another naming its size when the socket drains.
     outbound-queue-size = 1000
 
     # How many inbound connections this node accepts before it refuses sockets
@@ -3114,7 +3124,17 @@ actor-ts {
   }
 
   coordinated-shutdown {
+    # Budget of every phase that names none.  actor-system-terminate, the
+    # phase that drains and tears the system down, is seeded with 10s and
+    # never less than this; set it under phases to change it.
     default-phase-timeout = 5s
+    # Bound on a whole run -- the number to size a Kubernetes grace period
+    # against, not the sum of the phase budgets.  Past it the run halts in
+    # the phase it is in and logs, at error, the tasks still pending;
+    # exit-process then exits 1 where exit-code is 0.  An exit at the end of
+    # a run waits for tasks a phase budget abandoned, but never past this.
+    # 0 sets no deadline.
+    overall-timeout = 30s
     terminate-actor-system = true
     exit-process = false   # call process.exit once a run ends, completed or halted
     # Status that exit carries.  Only consulted when exit-process is on; a

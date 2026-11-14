@@ -181,8 +181,8 @@ stateDiagram-v2
 - **`unreachable`** — the failure detector flagged this peer as
   not heartbeating.  Still officially a member, but routing avoids
   it.  Flips back to `up` when it heartbeats this node again — after
-  a pause, though not after a symmetric partition, which leaves
-  neither side heartbeating the other
+  a pause, and after a symmetric partition heals, since both sides
+  keep heartbeating members they hold unreachable
   ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
   If it stays silent, the failure detector removes it at
   `down-after` — the default with no strategy configured — or it
@@ -353,9 +353,13 @@ The protocol carries:
 - **Reachability observations** — "I haven't heard from X recently."
 
 Two peers exchanging gossip merge their tables by picking the
-**higher version** for each member.  This is what makes convergence
-work without a leader-elected coordinator: every concurrent update
-is eventually seen by every peer.
+**higher version** for each member.  When two records carry the same
+version, the status further along the lifecycle wins — `joining` <
+`weakly-up` < `up` < `unreachable` < `leaving` < `down` < `removed` —
+so the order in which records arrive never decides the outcome.  This
+is what makes convergence work without a leader-elected coordinator:
+every concurrent update is eventually seen by every peer, and two
+peers that have seen the same updates hold the same table.
 
 For the deep dive, see
 [Joining and seeds](/cluster/joining-and-seeds/).
@@ -363,8 +367,8 @@ For the deep dive, see
 ## What the failure detector does
 
 The default failure detector is a simple, deterministic one based
-on **elapsed-time thresholds**.  Every node sends each reachable
-member a heartbeat on a fixed cadence and tracks, per peer, when it
+on **elapsed-time thresholds**.  Every node sends each member —
+unreachable ones included — a heartbeat on a fixed cadence and tracks, per peer, when it
 last heard from it: any frame counts as a sign of life, and a peer
 that stays silent past a threshold is flagged.  (The opt-in
 φ-accrual detector reads the same liveness, but learns its timing

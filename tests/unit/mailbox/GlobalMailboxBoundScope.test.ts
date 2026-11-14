@@ -32,7 +32,7 @@ import { StartSingletonOptions } from '../../../src/cluster/singleton/StartSingl
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { SystemGroups } from '../../../src/internal/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { BoundedMailbox, Mailbox, MailboxFullError } from '../../../src/mailbox/index.js';
+import { BoundedMailbox, Mailbox } from '../../../src/mailbox/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
@@ -167,9 +167,13 @@ describe('mailbox.default.overflow is the policy for any bounded mailbox (#862)'
     const options = ActorOptions.create<number>().withMailboxCapacity(2);
     const ref = kit.system.spawnAnonymous(Latched, options);
 
-    // `reject` surfaces at the sender; the built-in `drop-head` swallows these
-    // silently, which is exactly the distinction being pinned.
-    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).toThrow(MailboxFullError);
+    // `reject` dead-letters its refusals by default; the built-in `drop-head`
+    // discards them silently, which is exactly the distinction being pinned.
+    // Neither throws into the sender (#919).
+    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).not.toThrow();
+    const mailbox = mailboxOf(ref) as BoundedMailbox<number>;
+    expect(mailbox.droppedCount).toBeGreaterThan(0);
+    expect(mailbox.deadLetterDrops).toBe(true);
 
     release();
     await kit.system.terminate();

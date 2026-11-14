@@ -246,10 +246,23 @@ replacement arrived, leaving the cache permanently cold.
 
 The router derives its routee set from
 `Cluster.placementCandidates()` — the up-members this node is
-willing to put work on.  Triggers a rebuild on:
+willing to put work on.  It rebuilds on every event that can move a
+member into or out of that set:
 
-- `MemberUp` — a new up-member matching the role.  Add it.
-- `MemberRemoved` — a removed member.  Drop it.
+- `MemberUp` / `MemberReachable` — a member that is (again) up and
+  reachable.  Add it.
+- `MemberUnreachable` — the failure detector stopped hearing from it.
+  Drop it at once, not `downAfterMs` later at its removal: until then
+  its share of the traffic would go into a transport buffer the peer
+  is not reading.
+- `MemberLeft` / `MemberDown` / `MemberRemoved` — a member that is
+  draining, downed or gone.  Drop it.
+- `MemberConfigurationMismatch` — a checked setting diverges (see
+  below).
+
+Messages already handed to the transport before the failure detector
+fires are not recalled; the window that remains is
+`unreachableAfterMs`, not `downAfterMs`.
 
 The set is **ordered deterministically** (by address), so
 round-robin counters stay sane across rebuilds.
@@ -276,9 +289,10 @@ would produce two winners anywhere a role is *elected*, which is why
 [cluster singletons](/cluster/singleton/overview/) and the shard
 coordinator keep reading up-members.
 
-A divergence is not a membership event, so a router that is already
-running applies it at its next rebuild — the next `MemberUp` or
-`MemberRemoved`.  In the ordinary case that is not a wait: the
+A router that is already running applies a divergence when
+`MemberConfigurationMismatch` reports it, and a repair at its next
+rebuild — a repair is not announced.  In the ordinary case neither is a
+wait: the
 settings the framework itself publishes are resolved before a node's
 first frame, so a diverging peer is already outside the candidate
 set by the time joining it fires `MemberUp`.
@@ -287,11 +301,12 @@ set by the time joining it fires `MemberUp`.
 
 ```ts
 router.tell({ payload: 'a' });
-// → if no up-members match `role`, message is dropped with a warning log
+// → if no up-members match `role`, the message goes to dead letters, with a warning log
 ```
 
 **Important:** an empty routee set means **messages drop to dead
-letters**.  The framework doesn't queue while waiting for routees
+letters** — a `DeadLetter` on the system event stream, so the loss is
+observable rather than a log line.  The framework doesn't queue while waiting for routees
 — that would silently grow without bound.
 
 For "start serving once the pool has at least N routees,"
@@ -325,7 +340,13 @@ candidate is a routee**.
 If the local node is a candidate (matches the role), the router
 *may* route to a worker on the same node.  The transport handles
 loopback the same as any cross-node delivery — through the
-transport's local-loopback path.
+transport's local-loopback path.  Every shipped transport has one:
+`TcpTransport` encodes the frame, decodes it again under the same
+caps and hands it to the node's own handler on a microtask, without
+dialling anything, so a message that would not survive the wire does
+not survive the loopback either.  Before 0.19 it dialled its own
+listener instead, which refuses a peer claiming the node's own
+address, and the node's share was lost.
 
 This means the router's load distribution is symmetric — no
 preference for local routees, no penalty either.  Round-robin

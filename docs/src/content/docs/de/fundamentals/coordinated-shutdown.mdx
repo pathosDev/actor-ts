@@ -69,7 +69,7 @@ du etwas registrierst.
 | 2 | `service-unbind` | `system.http(...).bind(...)`, DevTools | HTTP-Server / gRPC-Server / WebSocket-Listener stoppen, neue Verbindungen anzunehmen. |
 | 3 | `service-requests-done` | — | Auf das Ende laufender Requests warten; den Rest abbrechen. |
 | 4 | `service-stop` | Broker-Actors (MQTT, Kafka, NATS, AMQP, …) | Client-Verbindungen schließen, Sockets freigeben. |
-| 5 | `before-cluster-shutdown` | — | Optionale Pre-Cluster-Leave-Hooks. |
+| 5 | `before-cluster-shutdown` | Parallelität, wenn eingeschaltet | Optionale Pre-Cluster-Leave-Hooks.  Die Worker-Systeme ausgelagerter Actors terminieren hier, sodass jeder sein `postStop` bekommt, bevor ein Thread gestoppt wird. |
 | 6 | `cluster-sharding-shutdown-region` | `Cluster.join(...)` | Der Sharding-Region sagen, Entitäten zu übergeben. |
 | 7 | `cluster-leave` | `Cluster.join(...)` | Ein `Cluster.leave()` ausgeben — Leaving-Status gossipen. |
 | 8 | `cluster-exiting` | — | Warten, bis der Cluster den Leave bestätigt. |
@@ -280,9 +280,13 @@ sie in unterschiedliche Phasen mit einem `dependsOn`.
 
 ### Timeouts
 
-Jede Phase hat ein `timeoutMs` (Default 5 s); jeder Task wird in
-einen Timeout-Race gewickelt.  Ein Task, der nicht rechtzeitig
-fertig wird, wird geloggt und entweder:
+Jede Phase hat ein `timeoutMs` (Default 5 s, und 10 s für
+`actor-system-terminate` — die Phase, die das System drainiert und
+herunterfährt); jeder Task wird in einen Timeout-Race gewickelt.  Ein
+Task, der nicht rechtzeitig fertig wird, wird **aufgegeben, nicht
+abgebrochen**: Er läuft weiter, wird auf ERROR-Level mit seiner Phase
+und dem, was in dieser Phase sonst noch offen ist, geloggt und dann
+entweder:
 
 - **Wiederhergestellt** (die Phase fährt fort, `recover: true` —
   der Default).  Die nächste Phase startet.
@@ -316,6 +320,27 @@ fertig wird, wird geloggt und entweder:
   heruntergefahren hat, hat dieser Teardown bereits geflusht.  Der Lauf
   ist bis zu seinem Exit im Gange, ein `terminate()`, das während dieser
   Flushes eintrifft, startet also nichts.
+
+#### Die Gesamtfrist
+
+Die Phasenbudgets begrenzen jede Phase; `overall-timeout` (Default
+`30s`) begrenzt den Lauf.  Ist sie verstrichen, hält der Lauf in der
+Phase an, in der er gerade ist — genau so, wie ihn ein Fehler unter
+`recover: false` anhält, mit demselben Teardown oder Exit danach — und
+loggt ein ERROR, das diese Phase und jeden noch offenen Task nennt,
+einschließlich derer, die ein früheres Budget aufgegeben hat.  Mit
+`exit-process = on` ist das der Exit, mit `1`, wo `exit-code` `0` ist.
+
+Ein Exit am Ende eines *vollständigen* Laufs wartet auf die Tasks, die
+ein Phasenbudget aufgegeben hat, bevor er beendet — ein mitten im
+Schreiben abgeschnittener Journal-Flush ist schlimmer als eine Sekunde
+Warten darauf —, aber nie über die Gesamtfrist hinaus, und was die
+Frist abschneidet, wird vor dem Exit auf ERROR-Level genannt.  Länger
+als `overall-timeout` dauert ein Lauf also nie, egal was die Phasen
+zusammen ergeben: Es ist die eine Zahl, gegen die eine
+Kubernetes-Grace-Period bemessen wird
+([K8s-PreStop-Integration](#k8s-prestop-integration)).  `0` setzt keine
+Frist.
 
 Überschreibe pro Phase:
 
@@ -359,7 +384,7 @@ sein:
 
 | Budget | Key | Default |
 | --- | --- | --- |
-| Die gesamte Phase `actor-system-terminate` | `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`, ersatzweise `…default-phase-timeout` | 5 s |
+| Die gesamte Phase `actor-system-terminate` | `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`, startet mit 10 s und nie unter `…default-phase-timeout` | 10 s |
 | Der Drain darin | `actor-ts.system.shutdown-drain-timeout` | 2 s |
 
 Setzt du das Drain-Budget über das Phasen-Timeout, wird die Phase
@@ -451,8 +476,9 @@ In Kubernetes ist die Pod-Shutdown-Sequenz:
 4. Läuft die Grace-Period vorher ab — PreStop eingerechnet —, sendet K8s SIGKILL.
 ```
 
-Die Grace-Period muss deshalb den PreStop-Sleep **plus** jede Phase mit
-Tasks abdecken, eine nach der anderen — siehe
+Die Grace-Period muss deshalb den PreStop-Sleep **plus** die Pipeline
+abdecken — jede Phase mit Tasks, eine nach der anderen, und nie mehr als
+`overall-timeout` (Default 30 s) — siehe
 [die Grace-Period dimensionieren](/de/operations/deployment/kubernetes/#terminationgraceperiodseconds).
 
 Das Standard-Rezept:
@@ -645,7 +671,9 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
   });
   ```
   Jeder Task ist durch den Phasen-Timeout begrenzt (Default 5s).
-  Darüber hinaus wird der Task aufgegeben und eine Warnung geloggt.
+  Darüber hinaus wird der Task aufgegeben — er läuft weiter — und
+  ein Error geloggt, und der Lauf als Ganzes ist durch
+  `overall-timeout` begrenzt.
   Vertraue einem Task nicht, "so lange zu warten, wie nötig" —
   `setPhaseTimeout` auf das realistische Max oder setze
   `recover: false`, um schnell zu scheitern.

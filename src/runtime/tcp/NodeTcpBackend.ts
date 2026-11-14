@@ -36,6 +36,7 @@ export class NodeTcpBackend implements TcpBackend {
       raw.on('data', (chunk: Uint8Array) => options.handlers.onData(sock, toUint8(chunk)));
       raw.on('close', () => options.handlers.onClose(sock));
       raw.on('error', (err: Error) => options.handlers.onError(sock, err));
+      raw.on('drain', () => options.handlers.onDrain?.(sock));
       options.handlers.onOpen(sock);
     };
     // `listenerUsesTls` both decides and validates — a half-configured `tls`
@@ -177,6 +178,9 @@ function settleOnOpen(
       if (state === 'open') handlers.onError(sock, err);
       else if (state === 'dialing') giveUp(err);
     });
+    raw.on('drain', () => {
+      if (state === 'open') handlers.onDrain?.(sock);
+    });
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
@@ -187,7 +191,7 @@ export interface NodeSocketLike {
   end(): void;
   /** `net.Socket.destroy()` — closes both halves at once, unlike `end()`. */
   destroy(): void;
-  on(event: 'connect' | 'secureConnect' | 'close', listener: () => void): this;
+  on(event: 'connect' | 'secureConnect' | 'close' | 'drain', listener: () => void): this;
   on(event: 'data', listener: (chunk: Uint8Array) => void): this;
   on(event: 'error', listener: (err: Error) => void): this;
   readonly remoteAddress?: string;
@@ -243,7 +247,9 @@ const runtimeSocketModules: NodeSocketModules = {
 
 function wrapSocket(raw: NodeSocketLike): TcpSocketLike {
   return {
-    write(data: Uint8Array): void { raw.write(data); },
+    // Node queues what the kernel will not take and answers `false` past its
+    // high-water mark, which is exactly the contract; `drain` follows (#931).
+    write(data: Uint8Array): boolean { return raw.write(data); },
     end(): void { raw.end(); },
     destroy(): void { raw.destroy(); },
     get remoteAddress(): string | undefined { return raw.remoteAddress; },

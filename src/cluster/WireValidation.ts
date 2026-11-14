@@ -3,6 +3,7 @@ import {
   MAX_CONTEXT_VALUE_LENGTH,
   MAX_LOGGED_ADDRESS_PART_LENGTH,
   MAX_LOGGED_WIRE_KIND_LENGTH,
+  MAX_LOGGED_WIRE_TEXT_LENGTH,
 } from './Constants.js';
 import { isMemberStatus, type MemberData, type WireMessage } from './Protocol.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
@@ -279,6 +280,33 @@ export function sanitizeWireLogContext(
  */
 export function sanitizeWireKindForLog(kind: string): string {
   return escapeForLog(kind, MAX_LOGGED_WIRE_KIND_LENGTH);
+}
+
+/**
+ * Make free text a peer wrote safe to put in a log line (#1629) — the `reason`
+ * of a `hello-refused`, or an address that only survives as its rendered key.
+ *
+ * The escaping of {@link sanitizeWireKindForLog}, clipped at the bound the
+ * wire check already holds a refusal's reason to: a reason is the diagnostic
+ * an operator reads, so clipping it to a frame kind's length would cut off
+ * exactly the part that says why the handshake failed.
+ */
+export function sanitizePeerTextForLog(text: string): string {
+  return escapeForLog(text, MAX_HELLO_REFUSAL_REASON_LENGTH);
+}
+
+/**
+ * Make any other peer-supplied string safe to put in a log line (#1220) — a
+ * region path a `Register` names, an entity id a lifecycle report carries.
+ *
+ * The same escaping as {@link sanitizeWireKindForLog}, clipped at
+ * {@link MAX_LOGGED_WIRE_TEXT_LENGTH} instead, because such a string is longer
+ * by nature than a frame kind.  Takes `unknown` and renders it with `String`,
+ * since the field it is handed was decoded off the wire and nothing has
+ * checked it is a string at all.
+ */
+export function sanitizeWireTextForLog(text: unknown): string {
+  return escapeForLog(String(text), MAX_LOGGED_WIRE_TEXT_LENGTH);
 }
 
 /**

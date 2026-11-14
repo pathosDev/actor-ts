@@ -84,7 +84,7 @@ spec:
         app: actor-ts
     spec:
       serviceAccountName: actor-ts
-      terminationGracePeriodSeconds: 45   # preStop 10 s + 5 phases × 5 s + margin
+      terminationGracePeriodSeconds: 45   # preStop 10 s + overall-timeout 30 s + margin
       containers:
         - name: app
           image: ghcr.io/your-org/your-app:1.2.3
@@ -202,10 +202,19 @@ The clock starts when the pod is marked terminating, so it covers the
 sends SIGKILL.  What SIGTERM starts is the
 [coordinated shutdown](/fundamentals/coordinated-shutdown/): twelve
 phases, run **one after another**, each with its own timeout
-(`actor-ts.coordinated-shutdown.default-phase-timeout`, 5 s).  A phase
-with no task is skipped at no cost, so the budget is
-`preStop + Σ(timeouts of the phases that have tasks)`.  For the app on
-this page:
+(`actor-ts.coordinated-shutdown.default-phase-timeout`, 5 s, and 10 s
+for `actor-system-terminate`) — and the run as a whole bounded by
+`actor-ts.coordinated-shutdown.overall-timeout`, 30 s.  That deadline is
+the number to size the grace period against:
+`preStop + overall-timeout + margin`, which for this manifest is
+`10 s + 30 s + 5 s = 45 s`.  Past it the run halts in whatever phase it
+has reached and logs, at error, the tasks still pending — so the pod is
+never SIGKILLed in the middle of a phase the operator did not budget
+for.
+
+Whether the phases fit under the deadline is the other half.  A phase
+with no task is skipped at no cost, so the pipeline needs
+`Σ(timeouts of the phases that have tasks)`.  For the app on this page:
 
 | Phase | Who registers the task | Worst case |
 | --- | --- | --- |
@@ -213,22 +222,26 @@ this page:
 | `service-requests-done` | your request drain, if you register one | 5 s |
 | `cluster-sharding-shutdown-region` | `Cluster.join` | 5 s |
 | `cluster-leave` | `Cluster.join` | 5 s |
-| `actor-system-terminate` | the built-in terminator | 5 s |
+| `actor-system-terminate` | the built-in terminator | 10 s |
 
-That is `10 s + 5 × 5 s = 35 s`, and 45 leaves ten seconds of margin.
-The tasks inside one phase run in parallel, so the second `bind()`
-costs nothing extra — but every **further phase** that gets a task adds
-its timeout:
+That is `4 × 5 s + 10 s = 30 s` — exactly the deadline.  The tasks
+inside one phase run in parallel, so the second `bind()` costs nothing
+extra — but every **further phase** that gets a task adds its timeout,
+and past 30 s the deadline cuts the run short instead of the grace
+period:
 
 - broker actors close their connections in `service-stop`, and so does
   the offload pool when parallelism is on — **+5 s**;
+- with parallelism on, the workers' systems terminate in
+  `before-cluster-shutdown` — **+5 s**;
 - a dead-letter queue (`actor-ts.dead-letters.store` other than `off`)
   flushes in `before-actor-system-terminate` — **+5 s**;
 - each phase you register into yourself — **+5 s**, or its own
   `timeout` if you set one.
 
-With a grace period the platform fixes for you, turn the phase budget
-down rather than the grace period up:
+When the sum outgrows the deadline, raise `overall-timeout` and the
+grace period together.  With a grace period the platform fixes for
+you, turn the phase budget down rather than the deadline up:
 
 ```hocon
 actor-ts.coordinated-shutdown {
@@ -515,11 +528,10 @@ import { Aside } from '@astrojs/starlight/components';
   If shutdown takes longer than this, K8s SIGKILLs mid-shutdown —
   the cluster doesn't get a clean leave, journals don't flush,
   in-flight requests are killed.  The grace period has to cover the
-  `preStop` sleep **plus** the pipeline, and the pipeline's own worst
-  case is `default-phase-timeout` (5 s) times the number of phases
-  that actually have tasks — not times twelve, because an empty phase
-  is a no-op that costs nothing.  The arithmetic for this page's
-  manifest is under
+  `preStop` sleep **plus** the pipeline, and the pipeline never runs
+  longer than `overall-timeout` (30 s by default) — size the grace
+  period against that, not against the phases.  The arithmetic for
+  this page's manifest is under
   [`terminationGracePeriodSeconds`](#terminationgraceperiodseconds).
 </Aside>
 

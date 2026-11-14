@@ -853,7 +853,11 @@ Cluster-Verbindung und dem `ClusterClientReceptionist`.
 Framework-Aktoren bleiben über ihre registrierten Handler
 erreichbar, also über die Tür, die weiß, auf welcher Verbindung
 ein Frame ankam. Nichts, was ein Betreiber konfigurieren kann,
-öffnet den alten Weg wieder.
+öffnet den alten Weg wieder. Dasselbe gilt für den nackten
+`/user`-Guardian, `actor-ts://<system>/user`: Ein Guardian ist nie
+ein Anwendungs-Endpunkt, er wird also auch dann abgelehnt, wenn ein
+Allow-List-Eintrag `/user/*` dessen Wurzel sonst zulassen würde
+(`reason="guardian-path"`).
 
 Die `/user`-Hälfte ist die Entscheidung des Deployments, denn
 dass ein Peer einen Anwendungsaktor benennt, ist genau die Art,
@@ -887,6 +891,18 @@ wird wie ein fehlender beantwortet — `Terminated` mit
 `existenceConfirmed = false` —, sodass ein Watcher nie hängt und
 die Antwort nichts preisgibt, was die Ablehnung nicht ohnehin
 schon täte; die Ablehnung wird unter `frame="watch"` gezählt.
+
+Und sie bewacht einen Pfad, der in einem Body ankommt. Ein
+`ActorRef` in einer Nachricht überquert das Wire als Marker, und
+ein Marker, der den empfangenden Knoten nennt, wird gegen dessen
+Actor-Baum aufgelöst — er ist also ein Pfad, den der Peer gewählt
+hat, genau wie das Ziel eines Envelopes. Ein Marker, der einen
+`/system`-Actor nennt, oder bei eingeschaltetem `untrusted-mode`
+einen `/user`-Actor außerhalb der Allow-List, wird zu `Nobody`
+dekodiert; ebenso einer, dessen Pfad keine vollständige
+`actor-ts://…`-URI ist und früher zum Root-Guardian aufgelöst
+wurde. Der Rest der Nachricht wird wie bisher zugestellt, und die
+Ablehnung wird unter `frame="ref"` gezählt (#1572).
 
 ### Ein Ref in einer Nachricht bestimmt nicht, wohin dieser Knoten wählt
 
@@ -1142,11 +1158,11 @@ Detectors — der Default ohne konfigurierte Strategie, unter
 `failure-detector.auto-down = on` — löscht rundheraus, statt einen
 Tombstone zu hinterlassen. Begründet wurde das einmal damit, dass
 eine Partition nach dem Heilen den Peer so wiederfinde, und genau
-das bringt das Löschen nicht: Keine Seite schickt einem Peer, den
-sie für unerreichbar hält, Heartbeats oder Gossip, und einen
-gelöschten hat sie gar nicht mehr in ihrer Map, um ihn zu
-adressieren — nach einer symmetrischen Partition hört also keine
-Seite je wieder von der anderen
+das bringt das Löschen nicht: Einen gelöschten Peer hat eine Seite
+gar nicht mehr in ihrer Map, um ihn zu adressieren — nach einer
+symmetrischen Partition hört also keine Seite je wieder von der
+anderen, während ein auf `unreachable` geparkter Peer weiter
+Heartbeats bekommt und zurückkehrt, sobald das Netz heilt
 ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 Unter dem Default entfernen sich die beiden Seiten einer echten
 Partition also gegenseitig und laufen als zwei Cluster weiter — ein
@@ -1174,8 +1190,9 @@ und Singleton-Hosting richten sich nach den Rollen, der Cluster
 schickt also Arbeit an einen Knoten, den er verstoßen hatte.
 
 Jeder Gossip-Frame trägt deshalb eine **Sequence**, die sein
-Autor stempelt — beim Start aus dessen Wanduhr gesetzt und pro
-Frame um eins erhöht — und ein Empfänger merkt sich die höchste,
+Autor aus seiner eigenen Wanduhr stempelt — `max(previous + 1,
+now)`, sodass sie auch bei stehender Uhr streng steigt — und ein
+Empfänger merkt sich die höchste,
 die er von jedem Verbindungs-Peer akzeptiert hat. Ein Frame, der
 diese Marke nicht überbietet, wird als Ganzes verworfen, bevor
 ein einziger Record darin angesehen wird. Der Vergleich selbst
@@ -1188,12 +1205,15 @@ von dem dieser Knoten einen Frame angenommen hat, und für keine
 andere Adresse. Das ist die Grenze, und das dritte Restrisiko
 unten ist das, was außerhalb davon liegt.
 
-Eine Sequence muss außerdem **plausibel** sein — eine endliche
-Zahl, die nicht weiter vor der Uhr des Empfängers liegt als
-`maxVersionSkewMs`, dasselbe Budget, das eine gegossipte Version
-bekommt, denn die Zahl wird aus der Wanduhr des Autors gestempelt.
-Ein Frame außerhalb dieses Budgets wird abgewiesen, genau wie eine
-Wiederholung.
+Eine Sequence muss außerdem **plausibel** sein. Der erste Frame
+eines Absenders — und der erste jeder neuen Inkarnation von ihm —
+hat noch keine Uhr gezeigt, also trifft er auf das Budget, das eine
+gegossipte Version bekommt: eine endliche Zahl, die nicht weiter
+vor der Uhr des Empfängers liegt als `maxVersionSkewMs`. Danach
+kommt die Grenze vom Absender selbst: der Empfänger lernt dessen
+Uhren-Offset aus den Frames, die er annimmt, und lässt einen Frame
+höchstens zehn Sekunden darüber zu. Ein Frame außerhalb einer der
+beiden Grenzen wird abgewiesen, genau wie eine Wiederholung.
 
 Angefangen hat das als die schwächere Regel: der Frame wurde
 gemerged, und nur das *Übernehmen* seiner Zahl als Marke wurde
@@ -1208,10 +1228,40 @@ Zustellung erneut gemerged, unbegrenzt, gegen einen Empfänger, der
 eine Marke für einen noch lebenden Absender hielt. Ihn abzuweisen
 kostet nichts: die Marke bleibt dort, wo der letzte plausible
 Frame sie hinterlassen hat, der nächste Frame des echten Knotens
-überbietet sie also weiterhin und landet. Den echten Knoten für
-immer verstummen zu lassen — der Exploit, den die Versionsgrenze
-oben verhindert — ist damit von beiden Seiten geschlossen statt
-von einer.
+überbietet sie also weiterhin und landet.
+
+**Das Festnageln ist begrenzt, nicht geschlossen.** Bis v0.19 war
+die Grenze für jeden Frame `now + maxVersionSkewMs`, und ein
+Mitschnitt, der *innerhalb* davon umgestempelt wurde — vier Minuten
+voraus gegen den Standard von fünf Minuten —, wurde angenommen und
+zur Marke, sodass die eigenen Frames des echten Knotens, nach seiner
+Uhr nummeriert, abgewiesen wurden, bis die Uhr aufgeholt hatte
+([Issue #1262](https://github.com/pathosDev/actor-ts/issues/1262)).
+Die Grenze aus dem Absender abzuleiten nimmt das zum größten Teil
+weg: ein Frame, der an der Kante angenommen wird, nagelt die Marke
+höchstens für den Vorlauf von zehn Sekunden fest; wiederholte
+Injektionen können sie nicht weiter vorschieben, weil der gelernte
+Offset um höchstens eine Millisekunde pro Sekunde steigt; und die
+Ablesung wird pro (Mitglied, Inkarnation) gehalten, sodass eine
+gegen einen Lauf festgenagelte Marke den nächsten nie abweist. Was
+bleibt, ausgesprochen, damit niemand mehr erwartet:
+
+- Ein Injektor, der an der Kante weiter injiziert, hält die eigenen
+  Frames des Absenders draußen, solange er das tut. Keine Grenze auf
+  einem Draht ohne MAC kann das verhindern; gegenseitiges TLS, das
+  die Handshake-Identität an ein Zertifikat bindet, ist das, was
+  einen Außenstehenden gar nicht erst auf den Draht lässt.
+- Der erste Frame eines Absenders, und der erste jeder neuen
+  Inkarnation, trifft nur auf `maxVersionSkewMs`, sodass ein
+  Mitschnitt, der vor jedem echten Frame zugestellt wird, weiterhin
+  bis zu diesem Budget festnageln kann — der Fall der leeren Marke
+  im zweiten Restrisiko unten.
+- Ein Knoten, dessen Uhr um mehr als den Vorlauf nach vorn springt,
+  wird mit seinem Gossip abgewiesen, bis eine Minute solcher Frames
+  den Empfänger seine Ablesung vergessen lässt. Ein Knoten von vor
+  v0.19 nummeriert seine Frames mit einem Zähler statt mit seiner
+  Uhr, gegen ihn nagelt ein Frame an der Kante also so lange fest,
+  wie dieser Zähler braucht, um darüber zu klettern.
 
 Eine Adresse trägt zusätzlich eine **Inkarnation**: welcher
 *Prozess* unter diesem `system@host:port` antwortet, einmal pro

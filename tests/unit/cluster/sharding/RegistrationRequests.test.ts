@@ -28,6 +28,7 @@ import { NodeAddress, type NodeAddressData } from '../../../../src/cluster/NodeA
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import type { CoordinatorStateData, CoordinatorStateStore } from '../../../../src/cluster/sharding/CoordinatorState.js';
+import { AuthenticatedShardingMessage } from '../../../../src/cluster/sharding/ShardingProtocol.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
@@ -178,6 +179,53 @@ function requestsTo(harness: Harness, address: NodeAddress): string[] {
     .filter((request) => request.to === address.toString())
     .map((request) => request.path.replace(/^actor-ts:\/\/[^/]+/, ''));
 }
+
+describe('a plain object cannot pose as one of the coordinator\'s own commands (#1267)', () => {
+  // The coordinator's internal commands — `request-registrations`,
+  // `coordinator-state-loaded`, `leader-changed`, … — were plain `{ kind }`
+  // objects matched by their string, so anything that reached the mailbox
+  // unattributed and spelled one was obeyed.  Only the envelope trust policy's
+  // `/system` refusal stood in front of that.  They are classes now, and a
+  // plain object spelling one is an unattributed frame, refused.
+  test('a plain request-registrations or coordinator-state-loaded changes nothing', async () => {
+    const harness = await startCoordinator('registration-requests-forged-command');
+    const forgedTarget = stagePeer(harness, 'peer-forged');
+    const fencePeer = stagePeer(harness, 'peer-fence');
+    const resolved = harness.system._resolvePath(coordinatorSegments(harness.system.name, TYPE_NAME));
+    if (resolved.isNone()) throw new Error('coordinator actor not found');
+    const leaderTerm = (harness.coordinator as unknown as { readonly leaderTerm: number }).leaderTerm;
+
+    resolved.value.tell({
+      kind: 'request-registrations',
+      regions: [{ path: PEER_REGION_PATH, node: forgedTarget.toJSON() }],
+    } as never);
+    resolved.value.tell({
+      kind: 'coordinator-state-loaded',
+      term: leaderTerm,
+      data: {
+        leader: harness.cluster.selfAddress.toString(),
+        takenAt: 0,
+        numShards: NUM_SHARDS,
+        regions: [{ key: keyOf(forgedTarget), node: forgedTarget.toJSON(), path: PEER_REGION_PATH, proxy: false, shards: [5] }],
+        shardHome: [[5, keyOf(forgedTarget)]],
+      },
+    } as never);
+    // The fence: a genuine beat from a key the coordinator does not hold is
+    // answered with a request, behind both forged commands.
+    resolved.value.tell(new AuthenticatedShardingMessage(fencePeer, {
+      kind: 'sharding.RegionHeartbeat',
+      region: PEER_REGION_PATH,
+      node: fencePeer.toJSON(),
+    }) as never);
+    await awaitCondition(() => requestsTo(harness, fencePeer).length > 0, {
+      timeoutMs: 4_000,
+      label: 'the coordinator handled everything told to it',
+    });
+
+    expect(requestsTo(harness, forgedTarget)).toEqual([]);
+    expect(harness.coordinator.regions.has(keyOf(forgedTarget))).toBe(false);
+  });
+});
 
 describe('a coordinator asks for the registrations it lacks (#853, #849)', () => {
   test('a snapshot load asks every entry it seeds, and only those', async () => {

@@ -201,18 +201,27 @@ describe('a bound applies to the ordinary class only (#1431)', () => {
     expect(messagesOf(mailbox.drainUser())).toEqual(['control-1', 'control-2', 'bulk-1', 'bulk-2']);
   });
 
-  test('reject — the default when constructed directly — throws for ordinary traffic only', () => {
-    const { mailbox, drops } = boundedMailbox(2);
+  test('reject refuses ordinary traffic only, without throwing into the sender (#919)', () => {
+    const { mailbox, drops } = boundedMailbox(2, 'reject');
     mailbox.enqueue(ordinary('bulk-1'));
     mailbox.enqueue(ordinary('bulk-2'));
 
-    expect(() => mailbox.enqueue(ordinary('bulk-3'))).toThrow(MailboxFullError);
+    expect(() => mailbox.enqueue(ordinary('bulk-3'))).not.toThrow();
     expect(() => mailbox.enqueue(ordinary('control-1'))).not.toThrow();
     expect(() => mailbox.enqueue(ordinary('control-2'))).not.toThrow();
-    // A refusal is not a drop: the sender was told, so nothing is counted.
-    expect(drops).toEqual([]);
-    expect(mailbox.droppedCount).toBe(0);
+    // The refused arrival is reported as what happened to it, and dead-lettered
+    // by the default `reject` gives its queue.
+    expect(drops).toEqual([{ reason: 'drop-new', message: 'bulk-3' }]);
+    expect(mailbox.droppedCount).toBe(1);
+    expect(mailbox.deadLetterDrops).toBe(true);
     expect(messagesOf(mailbox.drainUser())).toEqual(['control-1', 'control-2', 'bulk-1', 'bulk-2']);
+  });
+
+  test('drop-head is the default when constructed directly, as for every bounded queue (#919)', () => {
+    const { mailbox, drops } = boundedMailbox(2);
+    for (const label of ['bulk-1', 'bulk-2', 'bulk-3']) mailbox.enqueue(ordinary(label));
+    expect(drops).toEqual([{ reason: 'drop-head', message: 'bulk-1' }]);
+    expect(messagesOf(mailbox.drainUser())).toEqual(['bulk-2', 'bulk-3']);
   });
 });
 

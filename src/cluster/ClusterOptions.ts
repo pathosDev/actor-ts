@@ -82,6 +82,21 @@ export const DEFAULT_DOWN_SMALLER_ISLAND = false;
 export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
 
 /**
+ * Built-in default for {@link ClusterOptionsType.unreachableGossipRounds} —
+ * on every how-many-th gossip round one `unreachable` member also receives the
+ * round's frame (#930).
+ *
+ * Three: a peer cut off by a partition hears this node's full view within
+ * three gossip intervals of the link coming back (3 s on the shipped 1 s
+ * interval), while a peer that is really gone costs one extra frame every
+ * three rounds rather than one every round.  Heartbeats go to unreachable
+ * members on every beat regardless, and they are what marks a returning peer
+ * reachable; this gossip is what then carries the membership the two halves
+ * changed while apart.
+ */
+export const DEFAULT_UNREACHABLE_GOSSIP_ROUNDS = 3;
+
+/**
  * Built-in default for {@link ClusterOptionsType.maxVersionSkewMs} — how far
  * ahead of the local wall-clock a gossiped member version may be.  The full
  * reasoning for both the rule and the number is on `Cluster.admitsVersion`
@@ -452,6 +467,13 @@ export type ClusterOptionsType = {
   readonly gossipIntervalMs?: number;
   /** How often to resend the initial join gossip to seeds until self is Up. */
   readonly seedRetryIntervalMs?: number;
+  /**
+   * On every how-many-th gossip round one `unreachable` member also receives
+   * the round's frame, so the two halves of a healed partition exchange the
+   * membership they changed while apart (#930).  `0` sends none.  Default
+   * {@link DEFAULT_UNREACHABLE_GOSSIP_ROUNDS}.
+   */
+  readonly unreachableGossipRounds?: number;
   /**
    * How long to keep a `removed` tombstone in the local members map
    * before pruning it.  Tombstones exist so stale gossip from a slow
@@ -857,11 +879,11 @@ export type ClusterOptionsType = {
    * now, before the oldest are dropped.  Default: 1000
    * (`MAX_PENDING_FRAMES` in `cluster/Constants.ts`) (#846).
    *
-   * Today that is the pre-handshake buffer — a `send` racing the handshake is
-   * held rather than lost — and the name is the category rather than that one
-   * buffer: #931 adds the post-handshake backpressure queue, the same quantity
-   * with the same drop-oldest policy and the same one-shot WARN, and it lands
-   * under this field rather than a second one.
+   * Two buffers carry it: the pre-handshake one — a `send` racing the
+   * handshake is held rather than lost — and, since #931, the one behind a
+   * socket that pushes back, with the same drop-oldest policy.  Frames are
+   * held whole, so a peer that stops reading sees gaps, never a cut frame;
+   * see `TcpTransportOptionsType.outboundQueueSize`.
    */
   readonly outboundQueueSize?: number;
   /**
@@ -1006,6 +1028,11 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   /** How often to resend the initial join gossip to seeds until self is Up. */
   withSeedRetryIntervalMs(ms: number): this {
     return this.set('seedRetryIntervalMs', ms);
+  }
+
+  /** On every how-many-th gossip round one `unreachable` member also receives the round's frame; `0` sends none. */
+  withUnreachableGossipRounds(unreachableGossipRounds: number): this {
+    return this.set('unreachableGossipRounds', unreachableGossipRounds);
   }
 
   /** How long to keep a `removed` tombstone before pruning it.  Default 24 h. */
@@ -1249,6 +1276,7 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // strategy configuration.
     this.positiveNumber('gossipIntervalMs');
     this.positiveNumber('seedRetryIntervalMs');
+    this.nonNegativeInt('unreachableGossipRounds');
     this.positiveNumber('tombstoneTtlMs');
     this.positiveNumber('tombstonePruneIntervalMs');
     // Non-negative, not positive: 0 is the documented HOCON default and reads
@@ -1686,7 +1714,7 @@ export function resolveAdvertisedPort(
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
   'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles' | 'appVersion'
-  | 'gossipIntervalMs' | 'seedRetryIntervalMs'
+  | 'gossipIntervalMs' | 'seedRetryIntervalMs' | 'unreachableGossipRounds'
   | 'failureDetectorImplementation' | 'failureDetectorAutoDown' | 'failureDetector' | 'phiAccrual'
   | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'publishStatsIntervalMs' | 'shutdownAfterUnsuccessfulJoinMs'
@@ -1800,6 +1828,9 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
   if (config.hasPath(keys.seedRetryInterval)) {
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);
+  }
+  if (config.hasPath(keys.unreachableGossipRounds)) {
+    out.unreachableGossipRounds = config.getInt(keys.unreachableGossipRounds);
   }
   if (config.hasPath(keys.weaklyUpAfter)) out.weaklyUpAfterMs = config.getDuration(keys.weaklyUpAfter);
   if (config.hasPath(keys.publishStatsInterval)) {
