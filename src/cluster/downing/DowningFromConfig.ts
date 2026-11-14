@@ -242,6 +242,11 @@ class LeaseMajorityFromConfig implements DowningProvider {
   private strategy: LeaseMajority | null = null;
   private stopped = false;
   private readonly renewalScheduler = new Scheduler();
+  /**
+   * The binding `Cluster` handed over at construction, kept until the strategy
+   * it belongs to exists — that is only at the first decision (#1660).
+   */
+  private downSelf: ((reason: string) => void) | null = null;
 
   constructor(private readonly leaseFor: (self: NodeAddress, scheduler: Scheduler) => Lease) {}
 
@@ -253,8 +258,14 @@ class LeaseMajorityFromConfig implements DowningProvider {
       const lease = this.leaseFor(view.self, this.renewalScheduler);
       const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(lease);
       this.strategy = new LeaseMajority(leaseMajorityOptions);
+      if (this.downSelf !== null) this.strategy.bindSelfDown(this.downSelf);
     }
     return this.strategy.decide(view);
+  }
+
+  bindSelfDown(downSelf: (reason: string) => void): void {
+    this.downSelf = downSelf;
+    this.strategy?.bindSelfDown(downSelf);
   }
 
   /**

@@ -251,6 +251,42 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
       },
     },
     {
+      // The claim behind `atomicBatchAppend` (#959), checked where it is
+      // made.  The batch fails on its *second* event — a circular reference
+      // the payload codec refuses — so a backend that writes event by event
+      // has already sent the first one when the failure arrives, and only a
+      // real transaction (or an encode-everything-first append) leaves no
+      // prefix behind.  A journal that declares `false` makes no such claim,
+      // so the scenario asserts only that the batch was rejected; the prefix
+      // it may leave is what `PersistentActor.persistAll` refuses to risk.
+      name: 'a journal declaring atomicBatchAppend leaves no prefix of a batch that fails partway',
+      skip: (harness) => (harness.capabilities?.transactionRollback === false
+        ? 'the harness store does not model a transaction rollback'
+        : null),
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('atomic-batch');
+        const circular: Record<string, unknown> = { kind: 'circular' };
+        circular.self = circular;
+        try {
+          let rejected = false;
+          try {
+            await journal.append<unknown>(persistenceId, [{ event: 'first' }, { event: circular }, { event: 'third' }], 0);
+          } catch {
+            rejected = true;
+          }
+          assert(rejected, 'an append whose second event cannot be encoded must reject');
+          if (journal.atomicBatchAppend === false) return;
+          assertEqual(await journal.highestSeq(persistenceId), 0, 'no event of the failed batch is committed');
+          assertEqual(await journal.read(persistenceId, 1), [], 'no event of the failed batch is readable');
+          const retried = await journal.append(persistenceId, [{ event: 'first' }, { event: 'third' }], 0);
+          assertEqual(retried.map((event) => event.sequenceNr), [1, 2], 'the batch retried at 0 lands at 1..2');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
       name: 'empty append is a no-op and does not check concurrency',
       async run(harness) {
         const journal = await harness.make();

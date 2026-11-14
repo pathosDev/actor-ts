@@ -31,6 +31,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cases; `nightly-flakes.yml` runs a deeper 3 000-case exploration. "Ordering
   under test control" in the flake-diagnosis docs explains it (EN + DE).
 
+- **Every supervised failure is logged by the parent** (#916). The line gives
+  the actor path, the message type, the cause and the directive, with the
+  cause passed as an argument so its stack is rendered. It is at ERROR, or
+  WARN for `Resume`, at most once per actor per second, and the next line
+  counts what the throttle held back. A crash-looping actor used to be
+  restarted with no log output at any level. `actor_restarted_total` now
+  carries a `class` label.
+- **`Journal.atomicBatchAppend`**, a capability every in-tree journal now
+  declares, and `NonAtomicBatchAppendError` (#959). A journal that declares
+  nothing counts as unknown and is never refused.
+- **`DowningProvider.bindSelfDown(downSelf)`** (optional) lets a strategy
+  take this node out between decisions (#1660).
+
+- **Broker acknowledgment settings and a failure event** (#975, #976, #977):
+  HOCON `acknowledgment` and `acknowledgment-timeout` under the kafka, amqp
+  and mqtt blocks, `withAcknowledgment(…)` on their builders, the
+  `acknowledgeDelivery` / `negativelyAcknowledgeDelivery` helpers, and a
+  `BrokerAcknowledgmentFailed` event for an acknowledgment the broker
+  refused. The Kafka consumer logs its commit mode at start.
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -46,6 +66,48 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   before this, the window never elapsed in virtual time. Production behaviour
   is unchanged.
 
+- **An actor whose constructor throws is stopped** (#914). Its watchers get
+  `Terminated`, it leaves its parent, and its queued messages go to dead
+  letters. Before, it was left suspended forever. The same holds when a
+  supervisor's `supervisorStrategy()` or decider itself throws: the throw
+  now escalates as a failure of the supervising actor and is logged at
+  ERROR, where it used to strand the failed child.
+- **A terminating actor with queued user messages no longer busy-spins its
+  dispatcher** until its last child stops (#915). Measured over one
+  teardown, the dispatcher went from about 101 900 executions to fewer than
+  20.
+- **The stock loggers never throw on a value they cannot render** (#1749).
+  Lifecycle and supervision steps act before they log, so a throwing logger
+  can no longer skip a supervision step.
+- **`DurableStateActor` re-reads its record after a
+  `DurableStateConcurrencyError`** before rethrowing it, so the next
+  `persist` can succeed (#963). Before, it replayed the stale revision
+  forever.
+- **The operations docs describe what the framework does** (#992, #1004,
+  #1012, #1013):
+  - The troubleshooting runbook queries only metrics that are emitted, and
+    quotes only log lines the code writes.
+  - The stock-metrics page lists every emitted family.
+  - The version policy names the two patch releases that broke something
+    (0.12.1, 0.12.2).
+  - The Kubernetes recipe now forms a cluster: RBAC grants `get` on
+    `endpoints`, the env names are the ones `Cluster.bootstrap` reads, and
+    both servers bind `0.0.0.0` so the kubelet can probe them.
+  - The recipe sizes its grace period from the shutdown phases (45 s, with
+    the arithmetic shown), and PreStop is ordered before SIGTERM.
+
+  Docs tests now fail on a metric name nothing emits, a log excerpt nothing
+  writes, an unlisted BREAKING patch release, and a Kubernetes sample that
+  does not compile.
+
+- **`AmqpActor` no longer waits forever for `drain` on a closing channel**
+  (#981). The wait fails on close, on error or after 30 s, so one
+  backpressure episode can no longer wedge the outbound path. A failing
+  AMQP ack is logged and published instead of being silently ignored
+  (#976).
+- **The CoordinatedShutdown `service-stop` task no longer leaves a live
+  connection attached to a stopped broker actor** (#1223).
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
@@ -57,6 +119,90 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is. The badge figure moves with the statistic, not with any change in
   coverage. `scripts/coverage-gate.mjs --lcov=…` is a complete gate on its own,
   and `--log` is optional, only supplying bun's mean for the printout.
+
+- **BREAKING — under `OneForOneStrategy`, the classic restart budget belongs
+  to each child, keyed by the child's name and kept by the parent** (#917).
+  It used to be one tally shared by every child of a parent. Each child may
+  now restart `maxRetries` times within `withinTimeRangeMs`, whatever its
+  siblings do.
+  - A child that is stopped and spawned again under the same name inside
+    the window keeps what it already spent, so re-creation buys no fresh
+    allowance. That includes a sharded entity's restart backoff (#1437).
+  - After the window, or immediately on stop under `withinTimeRangeMs: 0`,
+    the name starts again from a whole allowance.
+  - `AllForOneStrategy` keeps one budget for the whole group.
+  - A `supervisorStrategy()` that returns a new strategy object on every
+    call no longer resets the budget; before, that reset meant
+    `maxRetries` never applied. A strategy whose `maxRetries` or
+    `withinTimeRangeMs` changes starts a new tally.
+
+  *Migration:* where siblings used to exhaust one shared budget, so that a
+  parent stopped its whole fan-out after `maxRetries + 1` unrelated
+  failures, each child now restarts up to `maxRetries` times. Use
+  `AllForOneStrategy` for children that are coupled. A parent whose
+  per-call strategy never actually stopped a child now stops it after
+  `maxRetries` restarts in the window, as documented.
+- **BREAKING — a `PersistentActor` whose journal was compacted completely
+  now fails recovery with `JournalIntegrityError`** instead of starting
+  from `initialState()` (#1052). "Compacted completely" means the journal
+  saw events, kept none, and has no snapshot. *Migration:* compact only past
+  a snapshot, or set
+  `actor-ts.persistence.allow-fully-compacted-recovery = on`
+  (`withAllowFullyCompactedRecovery`) to keep the empty restart.
+- **BREAKING — `persistAll` with more than one event is refused on journals
+  that cannot append a batch atomically**: D1, MongoDB and Cassandra (#959).
+  This includes `PersistentFSM` transitions that emit an array of events.
+  The refusal comes before anything is written, so the caller's error means
+  what it says. A mid-batch failure used to commit a prefix the caller was
+  told had failed. *Migration:* emit one event that carries the whole
+  change, use an atomic journal, or set
+  `actor-ts.persistence.allow-non-atomic-batch-append = on` to accept that a
+  failure can commit a prefix.
+
+- **BREAKING — `KafkaActor`, `AmqpActor` and `MqttActor` acknowledge a
+  delivery only after the target replies, which makes them at-least-once**
+  (#975, #976, #977). Before, each acknowledged before the target had
+  processed anything, so a crash in between lost the message. The default
+  is now `acknowledgment: 'on-reply'`:
+  - The actor `ask`s the target with the delivery, and acknowledges or
+    commits on `{ kind: 'acknowledgment' }`.
+  - A `negativeAcknowledgment`, any other reply, or no reply within
+    `acknowledgment-timeout` (30 s) leaves the delivery for redelivery.
+    Kafka does not commit the offset, AMQP nacks with requeue, and MQTT
+    withholds the PUBACK.
+
+  Two MQTT limits remain, and they are documented. mqtt.js offers no
+  `manualAcks`, so the actor defers through the client's `handleMessage`
+  hook, which processes inbound messages one at a time per connection.
+  Redelivery needs `cleanSession: false`, and a QoS 2 message whose
+  processing fails is not redelivered, because mqtt.js answers PUBREC on
+  arrival.
+
+  *Migration:* each target calls `acknowledgeDelivery(delivery)` after it
+  has processed the delivery; an MQTT `onMessage` acknowledges by
+  returning. To keep the old behaviour, set
+  `withAcknowledgment('on-delivery')` or `acknowledgment = "on-delivery"`.
+- **BREAKING — `withConsumer` / `withProducer` on `KafkaOptions` merge with
+  HOCON leaf by leaf** (#975). A partial `withConsumer` no longer erases
+  `consumer.commit-mode` or any other HOCON leaf it does not name.
+  *Migration:* a call that relied on resetting unnamed HOCON leaves must
+  now name them.
+- **BREAKING — `RedisStreamsOptions.blockMs = 0` is refused** (#982). A
+  blocking read without a bound could hold `quit()` forever while the actor
+  stopped. *Migration:* use a positive block.
+
+### Security
+
+- **`KubernetesLease.release()` no longer deletes a Lease record this node
+  does not hold** (#1659). Past the TTL it sends nothing. Otherwise the
+  DELETE carries the `resourceVersion` this holder last wrote as a
+  precondition. A refused precondition (409/412) means "no longer ours" and
+  resolves cleanly. Before, a holder stepping down on a stale view could
+  delete its successor's record.
+- **A node that won a `lease-majority` arbitration stays tied to the lease
+  after the decision is applied** (#1660). If the lease is later reported
+  lost, the node downs itself instead of running beside the side that took
+  the lease.
 
 ## [0.18.0] — 2026-11-10
 

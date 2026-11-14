@@ -418,10 +418,16 @@ open.
 In Kubernetes, the pod-shutdown sequence is:
 
 ```
-1. K8s sends SIGTERM and ends the pod's grace period clock.
-2. K8s also calls the PreStop hook (if configured), running concurrently.
-3. After max(graceful-shutdown, grace-period), K8s sends SIGKILL.
+1. K8s marks the pod terminating and starts its grace-period clock
+   (terminationGracePeriodSeconds).
+2. K8s runs the PreStop hook (if configured) and waits for it to finish.
+3. Only then does K8s send SIGTERM; the pipeline below runs.
+4. If the grace period runs out first — PreStop included — K8s sends SIGKILL.
 ```
+
+The grace period therefore has to cover the PreStop sleep **plus** every
+phase that has tasks, one after another — see
+[sizing the grace period](/operations/deployment/kubernetes/#terminationgraceperiodseconds).
 
 The standard recipe:
 

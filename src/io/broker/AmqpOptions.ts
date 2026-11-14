@@ -6,16 +6,22 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.amqp` > built-in defaults).
  */
-import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { AcknowledgingBrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
+import type { BrokerAcknowledgmentOptionsType, BrokerCommonOptionsType } from './BrokerOptions.js';
 import { findBrokerTlsProblem } from './BrokerTls.js';
 import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { AmqpQueueBinding } from './AmqpActor.js';
 
-export interface AmqpOptionsType extends BrokerCommonOptionsType {
+export interface AmqpOptionsType extends BrokerCommonOptionsType, BrokerAcknowledgmentOptionsType {
   /** AMQP URL (`amqp://user:pass@host:5672/vhost`). */
   readonly url?: string;
-  /** Number of unacked messages a consumer holds at once.  Default: 1. */
+  /**
+   * Number of unacknowledged deliveries a consumer holds at once.  Default: 1.
+   * A real bound in the default `acknowledgment: 'on-reply'` mode and with
+   * `autoAcknowledge: false`, where a delivery stays unacknowledged until it
+   * was processed; under `'on-delivery'` the ack is sent on hand-over, so the
+   * window empties at once and bounds nothing (#976).
+   */
   readonly prefetch?: number;
   /**
    * Queues + bindings + targets to set up after connect.
@@ -24,7 +30,13 @@ export interface AmqpOptionsType extends BrokerCommonOptionsType {
    * actor in this process and has no config-file spelling.
    */
   readonly bindings?: ReadonlyArray<AmqpQueueBinding>;
-  /** Whether to auto-ack consumed deliveries.  Default: true. */
+  /**
+   * Whether the actor acknowledges deliveries itself.  Default: `true` — when
+   * is `acknowledgment`'s to say (by default on the target's reply).  `false`
+   * hands it to the target, which tells the actor
+   * `{ kind: 'acknowledgment' | 'negativeAcknowledgment', delivery }`;
+   * `acknowledgment` does not apply then.
+   */
   readonly autoAcknowledge?: boolean;
   /**
    * TLS material forwarded to amqplib's `socketOptions` — a private CA to
@@ -38,7 +50,7 @@ export interface AmqpOptionsType extends BrokerCommonOptionsType {
   readonly tls?: TlsTransportOptionsType;
 }
 
-export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
+export class AmqpOptionsBuilder extends AcknowledgingBrokerOptionsBuilder<AmqpOptionsType> {
   /** Start a fresh builder.  Equivalent to `new AmqpOptionsBuilder()`. */
   static create(): AmqpOptionsBuilder {
     return new AmqpOptionsBuilder();
@@ -59,7 +71,10 @@ export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
     return this.set('bindings', bindings);
   }
 
-  /** Auto-ack consumed deliveries.  Default `true`. */
+  /**
+   * Let the actor acknowledge deliveries itself (default `true`), per
+   * `withAcknowledgment`; `false` leaves it to explicit commands.
+   */
   withAutoAcknowledge(on = true): this {
     return this.set('autoAcknowledge', on);
   }
@@ -77,6 +92,7 @@ export class AmqpOptionsValidator extends BrokerOptionsValidator<AmqpOptionsType
   }
   protected rules(s: Partial<AmqpOptionsType>): void {
     this.commonRules(s);
+    this.acknowledgmentRules(s);
     this.url('url', ['amqp', 'amqps']);
     this.nonNegativeInt('prefetch'); // 0 = unlimited (AMQP semantics)
     const tlsProblem = findBrokerTlsProblem(s.tls);

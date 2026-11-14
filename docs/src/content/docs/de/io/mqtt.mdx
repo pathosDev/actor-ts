@@ -56,7 +56,7 @@ sind **versiegelt** — die Basisklassen dispatchen an die Hooks unten;
 
 | Hook | Wann |
 | --- | --- |
-| `onMessage(message)` | Eine Nachricht traf auf einer eigenen Subscription dieses Aktors ein.  **Erforderlich.** |
+| `onMessage(message)` | Eine Nachricht traf auf einer eigenen Subscription dieses Aktors ein.  **Erforderlich.**  Die Rückkehr — oder das Settlen des zurückgegebenen Promise — ist das Acknowledgment der Nachricht; ein Throw hält es zurück (siehe [Acknowledgment](#acknowledgment)). |
 | `onConnected()` | Die Verbindung wurde (neu) geöffnet; die Subscription-Registry ist beim Broker erneut angewendet. |
 | `onDisconnected(cause?)` | Die Verbindung brach ab; ein Reconnect-Zyklus kann folgen (gemäß Settings). |
 | `onInvalidMessage(err, message)` | `onMessage` warf einen `MqttDecodeError` (ein lazy `entity()` auf einem fehlerhaften Payload).  Default: loggen + verwerfen.  Erneut werfen zum Eskalieren. |
@@ -98,6 +98,8 @@ interface MqttOptionsType extends BrokerCommonOptionsType {
   codec?: MqttCodec<unknown>;   // Default mqttJsonCodec()
   will?: { topic: string; payload: string | Uint8Array; qos?: 0 | 1 | 2; retain?: boolean };
   tls?: TlsTransportOptionsType;  // Cert-Material für mqtts:// / wss://; nur im Code
+  acknowledgment?: 'on-reply' | 'on-delivery';  // wann der PUBACK rausgeht; Default 'on-reply'
+  acknowledgmentTimeoutMs?: number;             // wie lange 'on-reply' wartet; Default 30_000
 }
 ```
 
@@ -349,13 +351,73 @@ Da diese Kommandos einfache Objekte sind, halte ein selbst definiertes
 fern — sonst würde es als Kommando dispatcht, statt `onSelfMessage` zu
 erreichen.
 
+## Acknowledgment
+
+Standardmäßig bestätigt der Actor eine Nachricht beim Broker **erst, wenn sie
+verarbeitet ist**: Der PUBACK einer QoS-1-Nachricht (der PUBCOMP einer
+QoS-2-Nachricht) geht raus, nachdem `onMessage` zurückgekehrt ist und jedes
+Fan-out-Target mit `{ kind: 'acknowledgment' }` geantwortet hat.  Der Actor
+`ask`t jedes Target mit der Nachricht, ein Target antwortet also auf das
+`replyTo` der Nachricht:
+
+```ts
+import { acknowledgeDelivery } from 'actor-ts/io';
+
+class Mirror extends Actor<MqttMessage> {
+  override onReceive(message: MqttMessage): void {
+    store(message.payload.text());
+    acknowledgeDelivery(message);   // antwortet { kind: 'acknowledgment' }
+  }
+}
+```
+
+Ein Throw aus `onMessage`, eine Antwort `{ kind: 'negativeAcknowledgment',
+reason? }`, jede andere Antwort oder keine Antwort innerhalb von
+`acknowledgmentTimeoutMs` (30 s) hält das Acknowledgment zurück: Der Actor
+baut die Verbindung ohne es ab, und der Broker liefert die Nachricht auf der
+nächsten erneut aus.  Eine nicht dekodierbare Payload, die
+`onInvalidMessage` verwirft, wird bestätigt — eine erneute Auslieferung
+würde auf ewig genauso scheitern.
+
+Drei Folgen, die man kennen sollte:
+
+- **Erneute Auslieferung braucht eine persistente Session.**  Mit
+  `cleanSession: true` — dem Default — verwirft der Broker beim Reconnect
+  die unbestätigten Nachrichten einer Session, eine fehlgeschlagene
+  Nachricht ist dann weg.  Für at-least-once setze
+  `withCleanSession(false)`, eine stabile `clientId` und subscribe mit QoS 1.
+- **QoS 2 ist keine at-least-once-Verarbeitung.**  mqtt.js schickt den
+  PUBREC beim Empfang selbst; der Actor hält nur den PUBCOMP zurück, eine
+  fehlgeschlagene QoS-2-Nachricht wird also nicht erneut ausgeliefert.
+  Nimm QoS 1, wenn die Verarbeitung wiederholt werden muss.  QoS 0 hat gar
+  kein Acknowledgment; eine fehlgeschlagene QoS-0-Nachricht wird geloggt
+  und verworfen.
+- **Eine Nachricht nach der anderen pro Verbindung.**  mqtt.js liest das
+  nächste Paket erst, wenn das aktuelle bestätigt ist — das ist der
+  Backpressure, und ein langsames Target hält die Verbindung auf, nicht die
+  Mailbox des Actors.  Halte `acknowledgmentTimeoutMs` deutlich unter dem
+  Keep-alive-Intervall.
+
+**`acknowledgment: 'on-delivery'`** überlässt das Acknowledgment mqtt.js,
+das es sendet, sobald die Nachricht die Mailbox des Actors erreicht, und
+verlangt von keinem Target eine Antwort (`replyTo` fehlt).  Jedes QoS-Level
+ist dann Ende-zu-Ende at-most-once, und Nachrichten werden nicht mehr
+serialisiert.
+
+```hocon
+actor-ts.io.broker.mqtt {
+  acknowledgment         = "on-reply"   # the default; or "on-delivery"
+  acknowledgment-timeout = 30s          # the default; on-reply only
+}
+```
+
 ## QoS-Level
 
-| QoS | Zustellung | Kosten |
+| QoS | Zustellung (Default `acknowledgment: 'on-reply'`) | Kosten |
 | --- | --- | --- |
 | **0** | At-most-once.  Fire-and-Forget. | Am günstigsten; Nachrichten können verloren gehen. |
-| **1** | At-least-once.  Broker speichert bis ACK. | Default für die meisten Anwendungsfälle.  Duplikate möglich. |
-| **2** | Exactly-once.  Voller Handshake. | Am langsamsten; selten nötig. |
+| **1** | At-least-once, bei persistenter Session: bestätigt, sobald verarbeitet. | Default für die meisten Anwendungsfälle.  Duplikate möglich. |
+| **2** | Exactly-once auf der Leitung; eine Nachricht, deren Verarbeitung scheitert, wird nicht erneut ausgeliefert. | Am langsamsten; selten nötig. |
 
 Für IoT-Telemetrie ist **QoS 1** die typische Balance.  Befehle an
 Geräte: ebenfalls QoS 1 (oder QoS 2, falls Duplikate schädlich wären).

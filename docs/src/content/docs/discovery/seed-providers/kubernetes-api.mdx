@@ -9,11 +9,14 @@ Works without DNS, without SRV, without manual seed-list
 maintenance — the Service is your contract.
 
 ```ts
+import { ActorSystem } from 'actor-ts';
 import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
+const system = ActorSystem.create('my-app');
+
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
-  .withNamespace(process.env.K8S_NAMESPACE!)
+  .withNamespace(process.env.CLUSTER_NAMESPACE!)
   .withServiceName('actor-ts')
   .withSystemName('my-app')
   .withPort(2552);
@@ -26,7 +29,7 @@ const clusterOptions = ClusterOptions.create()
   .withHost('0.0.0.0')
   .withAdvertisedHost(process.env.POD_IP!)
   .withPort(2552)
-  .withSeeds(seeds);
+  .withSeeds(seeds.map((address) => address.toString()));
 await Cluster.join(
   system,
   clusterOptions,
@@ -133,7 +136,7 @@ object can redirect the bootstrap towards:
 
 ```ts
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
-  .withNamespace(process.env.K8S_NAMESPACE!)
+  .withNamespace(process.env.CLUSTER_NAMESPACE!)
   .withServiceName('actor-ts')
   .withSystemName('my-app')
   .withPort(2552)
@@ -195,8 +198,9 @@ From the Service's Endpoints object:
   `<podIP>:<port>`.
 - **Not-ready / pending pods** (in `notReadyAddresses`) → skipped
   (no ready IP yet).
-- **This pod itself** → may be included or not depending on
-  readiness timing; the cluster handles self-as-seed correctly.
+- **This pod itself** → only once it is Ready.  `Cluster.join`
+  drops its own address from the seed list, so a list holding nothing
+  but this pod counts as empty.
 
 ## Cluster-wide vs replica-set
 
@@ -251,10 +255,16 @@ flowchart TB
   class BOOT warn
 ```
 
-If you're the first pod up, the K8s API returns this pod only.
-The framework's self-bootstrap logic handles this:
-`Cluster.join` with seeds containing only itself self-promotes
-to leader.
+If you're the first pod up, the lookup returns an **empty list**:
+with the framework's `/ready` as the readiness probe, a pod is not
+Ready until it is `up` in the cluster, so not even this pod is in the
+Endpoints yet.  `Cluster.join` with no seeds self-elects and founds
+the cluster.  (Were your readiness probe to pass earlier, the list
+could hold this pod alone — `Cluster.join` drops its own address, so
+the outcome is the same.)  That is why the pods have to start one
+after another — a StatefulSet's default `OrderedReady` does — or two
+pods that start together can each find an empty list and found a
+cluster each.
 
 Subsequent pods see the existing pods and join through them.
 

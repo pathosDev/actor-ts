@@ -35,6 +35,8 @@ import {
  * deployments where the data must live in D1, not as a general-purpose journal.
  */
 export class D1Journal extends RelationalJournal {
+  /** No transaction behind `withTransaction` — see the class docblock (#959). */
+  override readonly atomicBatchAppend: boolean = false;
   constructor(options: D1JournalOptions = {}) {
     const resolvedOptions = (options as D1JournalOptionsType);
     new D1JournalOptionsValidator().validate(resolvedOptions);

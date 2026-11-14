@@ -1,7 +1,7 @@
 import type { Clock } from '../../src/Clock.js';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { ActorRestarted, ActorStopped } from '../../src/SystemMessages.js';
+import { ActorRestarted, ActorStopped, Terminated } from '../../src/SystemMessages.js';
 import {
   ActorInitializationError,
   AllForOneStrategy,
@@ -13,6 +13,7 @@ import {
   OneForOneStrategy,
   RestartBudget,
   stoppingStrategy,
+  type StrategyOptions,
   type SupervisorStrategy,
 } from '../../src/Supervision.js';
 import { TestKit } from '../../src/testkit/TestKit.js';
@@ -712,6 +713,215 @@ describe('the parent restart budget slides over withinTimeRangeMs', () => {
         label: 'the third failure inside the window spent the allowance and stopped the child',
       });
       expect(starts.count).toBe(3);
+    } finally {
+      await kit.shutdown();
+    }
+  });
+});
+
+/**
+ * The restart budget belongs to the child that fails, not to the parent that
+ * decides (#917).  It used to be one tally on the parent cell, so five
+ * siblings that each crashed once spent one `maxRetries: 2` allowance between
+ * them and two were stopped having failed once each — and every top-level
+ * actor shared the user guardian's.  `AllForOneStrategy` keeps the shared
+ * tally on purpose: its directive already treats the children as one unit.
+ */
+describe('the restart budget is kept per child', () => {
+  const sys = systemFixture('supervision-per-child-budget');
+
+  /** Counts constructions per child name; `fail` throws, anything else is ignored. */
+  class Sibling extends Actor<string> {
+    constructor(private readonly starts: Map<string, number>) { super(); }
+    override preStart(): void {
+      const name = this.context.self.path.name;
+      this.starts.set(name, (this.starts.get(name) ?? 0) + 1);
+    }
+    override onReceive(message: string): void {
+      if (message === 'fail') throw new FooError();
+    }
+  }
+
+  const KIDS = ['k0', 'k1', 'k2', 'k3', 'k4'] as const;
+
+  /**
+   * A parent over a group of siblings that fails the child named in its
+   * message.  `supervisorStrategy()` builds a fresh strategy on every call —
+   * the shape the supervision guide shows — so the tally must not be keyed on
+   * the strategy object's identity.
+   */
+  function parentClass(build: () => SupervisorStrategy, starts: Map<string, number>, kids: readonly string[]) {
+    return class Parent extends Actor<string> {
+      override supervisorStrategy(): SupervisorStrategy { return build(); }
+      override preStart(): void {
+        for (const name of kids) this.context.spawn(() => new Sibling(starts), name);
+      }
+      override onReceive(childName: string): void {
+        this.context.child(childName).forEach((child) => child.tell('fail' as never));
+      }
+    };
+  }
+
+  const restartTwice = () => new OneForOneStrategy(
+    () => Directive.Restart,
+    { maxRetries: 2, withinTimeRangeMs: 60_000 },
+  );
+
+  test('five siblings that each fail once under maxRetries: 2 all restart', async () => {
+    // One strategy instance for every decision: a tally keyed on identity
+    // would let the fresh-per-call shape pass this case for the wrong reason.
+    const stable = restartTwice();
+    const starts = new Map<string, number>();
+    const parent = sys().spawn(parentClass(() => stable, starts, KIDS), 'five-siblings');
+    await awaitCondition(() => KIDS.every((name) => starts.get(name) === 1), { label: 'all five started' });
+
+    for (const name of KIDS) parent.tell(name);
+
+    await awaitCondition(() => KIDS.every((name) => starts.get(name) === 2), {
+      label: 'every sibling was restarted after its single failure',
+    });
+  });
+
+  test('one child failing maxRetries + 1 times is stopped, and its sibling keeps its allowance', async () => {
+    const starts = new Map<string, number>();
+    const seen: string[] = [];
+    const probe = sys().spawn(() => new LifecycleCollector(seen), 'per-child-collector');
+    sys().eventStream.subscribe(probe, ActorStopped);
+    const parent = sys().spawn(parentClass(restartTwice, starts, ['flaky', 'steady']), 'one-flaky-child');
+    await awaitCondition(() => starts.get('flaky') === 1 && starts.get('steady') === 1, { label: 'both started' });
+
+    parent.tell('flaky');
+    await awaitCondition(() => starts.get('flaky') === 2, { label: 'first restart granted' });
+    parent.tell('flaky');
+    await awaitCondition(() => starts.get('flaky') === 3, { label: 'second restart granted' });
+    parent.tell('flaky');
+    await awaitCondition(() => seen.includes('ActorStopped:flaky'), {
+      label: 'the third failure inside the window spent the allowance and stopped the child',
+    });
+
+    // The sibling's allowance is its own and untouched.
+    parent.tell('steady');
+    await awaitCondition(() => starts.get('steady') === 2, { label: 'the sibling still restarts' });
+    expect(starts.get('flaky')).toBe(3);
+  });
+
+  /**
+   * The other direction of keying the tally by allowance: a strategy whose
+   * allowance really changes gets a fresh tally under the new allowance.
+   * Each case spends a `maxRetries: 2` budget, then changes one of the two
+   * fields and fails again — a kept budget would be full and stop the child.
+   */
+  const ALLOWANCE_CHANGES: ReadonlyArray<readonly [string, StrategyOptions]> = [
+    ['maxRetries 2 → 5, same window', { maxRetries: 5, withinTimeRangeMs: 60_000 }],
+    ['same maxRetries, window 60 s → 30 s', { maxRetries: 2, withinTimeRangeMs: 30_000 }],
+  ];
+  for (const [label, changed] of ALLOWANCE_CHANGES) {
+    test(`a changed allowance starts a fresh tally: ${label}`, async () => {
+      let options: StrategyOptions = { maxRetries: 2, withinTimeRangeMs: 60_000 };
+      const build = () => new OneForOneStrategy(() => Directive.Restart, options);
+      const starts = new Map<string, number>();
+      const seen: string[] = [];
+      const probe = sys().spawn(() => new LifecycleCollector(seen), `allowance-change-collector-${changed.maxRetries}-${changed.withinTimeRangeMs}`);
+      sys().eventStream.subscribe(probe, ActorStopped);
+      const childName = `changing-${changed.maxRetries}-${changed.withinTimeRangeMs}`;
+      const parent = sys().spawn(parentClass(build, starts, [childName]), `${childName}-parent`);
+      await awaitCondition(() => starts.get(childName) === 1, { label: 'the child started' });
+
+      parent.tell(childName);
+      await awaitCondition(() => starts.get(childName) === 2, { label: 'first restart granted' });
+      parent.tell(childName);
+      await awaitCondition(() => starts.get(childName) === 3, { label: 'second restart granted — the old budget is full' });
+
+      options = changed;
+      parent.tell(childName);
+      await awaitCondition(() => starts.get(childName) === 4, {
+        label: 'the restart after the allowance changed was granted from a fresh tally',
+      });
+      expect(seen).not.toContain(`ActorStopped:${childName}`);
+    });
+  }
+
+  test('AllForOneStrategy keeps one budget for the whole group', async () => {
+    const starts = new Map<string, number>();
+    const seen: string[] = [];
+    const probe = sys().spawn(() => new LifecycleCollector(seen), 'all-for-one-budget-collector');
+    sys().eventStream.subscribe(probe, ActorStopped);
+    const group = ['a', 'b', 'c'] as const;
+    const shared = () => new AllForOneStrategy(() => Directive.Restart, { maxRetries: 2, withinTimeRangeMs: 60_000 });
+    const parent = sys().spawn(parentClass(shared, starts, group), 'all-for-one-budget');
+    await awaitCondition(() => group.every((name) => starts.get(name) === 1), { label: 'the group started' });
+
+    parent.tell('a');
+    await awaitCondition(() => group.every((name) => starts.get(name) === 2), { label: 'first group restart' });
+    parent.tell('b');
+    await awaitCondition(() => group.every((name) => starts.get(name) === 3), { label: 'second group restart' });
+    // A third *different* child: under a per-child tally it would restart,
+    // but the group spends its allowance together.
+    parent.tell('c');
+    await awaitCondition(() => group.every((name) => seen.includes(`ActorStopped:${name}`)), {
+      label: 'the shared allowance was spent and the whole group stopped',
+    });
+  });
+});
+
+/**
+ * The per-child tally belongs to the child's *name* and outlives its cell
+ * (#917, #1437): a child stopped for spending its allowance and spawned again
+ * under the same name inside the window inherits the spent tally, so
+ * re-creation is not a way to buy a fresh allowance.  Once the window has
+ * passed, the name starts from a whole one.  Kept on a virtual clock, so
+ * "inside" and "outside" the window are facts of the test.
+ */
+describe('the per-child restart budget survives re-creation under the same name', () => {
+  type ParentCommand = { kind: 'spawn' } | { kind: 'fail' };
+
+  test('inside the window a re-spawned child gets no fresh tally; outside it does', async () => {
+    const { kit } = TestKit.withManualScheduler('supervision-respawn-budget');
+    try {
+      let starts = 0;
+      const stopped: number[] = [];
+      class Kid extends Actor<string> {
+        override preStart(): void { starts++; }
+        override onReceive(): void { throw new FooError(); }
+      }
+      const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2, withinTimeRangeMs: 1_000 });
+      class Parent extends Actor<ParentCommand | Terminated> {
+        override supervisorStrategy(): SupervisorStrategy { return strategy; }
+        override onReceive(message: ParentCommand | Terminated): void {
+          if (message instanceof Terminated) { stopped.push(starts); return; }
+          if (message.kind === 'spawn') this.context.watch(this.context.spawn(Kid, 'kid'));
+          else this.context.child('kid').forEach((kid) => kid.tell('fail' as never));
+        }
+      }
+      const parent = kit.system.spawn(Parent, 'respawning-parent');
+
+      parent.tell({ kind: 'spawn' });
+      await awaitCondition(() => starts === 1, { label: 'the first kid started' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => starts === 2, { label: 'first restart granted' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => starts === 3, { label: 'second restart granted' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => stopped.length === 1, { label: 'the third failure spent the allowance and stopped the kid' });
+
+      // Inside the window: the new kid inherits the spent tally, so its very
+      // first failure is refused and stops it — no restart in between.
+      parent.tell({ kind: 'spawn' });
+      await awaitCondition(() => starts === 4, { label: 'the kid was spawned again under its name' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => stopped.length === 2, {
+        label: 'the re-spawned kid was stopped on its first failure, from the inherited tally',
+      });
+      expect(starts).toBe(4);
+
+      // Outside the window: every recorded restart has aged out, and the name
+      // starts from a whole allowance again.
+      await kit.advance(1_001);
+      parent.tell({ kind: 'spawn' });
+      await awaitCondition(() => starts === 5, { label: 'the kid was spawned a third time' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => starts === 6, { label: 'outside the window the failure was restarted' });
+      expect(stopped).toHaveLength(2);
     } finally {
       await kit.shutdown();
     }

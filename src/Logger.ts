@@ -1,5 +1,5 @@
 import { LogContext, type LogContextData } from './LogContext.js';
-import { jsonSafeReplacer, normaliseArg } from './logging/JsonSafe.js';
+import { jsonSafeReplacer, normaliseArg, UNRENDERABLE_VALUE } from './logging/JsonSafe.js';
 
 export enum LogLevel {
   Debug = 0,
@@ -86,16 +86,16 @@ export class ConsoleLogger implements Logger {
   }
 
   debug(message: string, ...args: unknown[]): void {
-    if (this.enabled(LogLevel.Debug)) console.debug(this.render('DEBUG', message), ...args);
+    if (this.enabled(LogLevel.Debug)) writeToConsole(console.debug, this.render('DEBUG', message), args);
   }
   info(message: string, ...args: unknown[]): void {
-    if (this.enabled(LogLevel.Info)) console.log(this.render('INFO ', message), ...args);
+    if (this.enabled(LogLevel.Info)) writeToConsole(console.log, this.render('INFO ', message), args);
   }
   warn(message: string, ...args: unknown[]): void {
-    if (this.enabled(LogLevel.Warn)) console.warn(this.render('WARN ', message), ...args);
+    if (this.enabled(LogLevel.Warn)) writeToConsole(console.warn, this.render('WARN ', message), args);
   }
   error(message: string, ...args: unknown[]): void {
-    if (this.enabled(LogLevel.Error)) console.error(this.render('ERROR', message), ...args);
+    if (this.enabled(LogLevel.Error)) writeToConsole(console.error, this.render('ERROR', message), args);
   }
 
   withSource(source: string): Logger {
@@ -265,6 +265,37 @@ export class JsonLogger implements Logger {
 export function displayNameOf(fields: LogContextData): string {
   const value = fields[DISPLAY_NAME_FIELD];
   return typeof value === 'string' ? value : '';
+}
+
+/**
+ * Hand a rendered line and its arguments to one `console` method, and never
+ * throw doing it (#1749).
+ *
+ * `console.*` renders its arguments itself, and on Node and Bun that runs an
+ * object's custom inspect (`Symbol.for('nodejs.util.inspect.custom')`) — user
+ * code, which can throw.  `ConsoleLogger` is the default logger, and the
+ * framework reports lifecycle failures through it, so a throw here used to
+ * skip the supervision step of the failure being reported.  On a throw the
+ * line is written once more with every non-primitive argument replaced by
+ * {@link UNRENDERABLE_VALUE} — a primitive has no inspect hook to fail — and
+ * if even that fails the record is dropped rather than raised.
+ */
+function writeToConsole(write: (...data: unknown[]) => void, line: string, args: readonly unknown[]): void {
+  try {
+    write.call(console, line, ...args);
+    return;
+  } catch {
+    // Fall through to the placeholder rendering.
+  }
+  try {
+    write.call(console, line, ...args.map(placeholderUnlessPrimitive));
+  } catch {
+    // A console that cannot print a string either: nothing left to try.
+  }
+}
+
+function placeholderUnlessPrimitive(value: unknown): unknown {
+  return (typeof value === 'object' && value !== null) || typeof value === 'function' ? UNRENDERABLE_VALUE : value;
 }
 
 function formatValue(v: unknown): string {

@@ -38,6 +38,15 @@ class FakeK8sServer implements K8sFetchClient {
   /** When set, the next DELETE fails with a 500 (API server having a bad day). */
   forceDeleteErrorNext = false;
   /**
+   * The status a DELETE whose `preconditions.resourceVersion` no longer matches
+   * is refused with.  The API server answers 409 Conflict; 412 is what an
+   * intermediary or a future server may say for the same refusal, and the
+   * lease has to read both the same way (#1659).
+   */
+  preconditionFailureStatus: 409 | 412 = 409;
+  /** When set, every DELETE is answered 403 — a Role granted without the `delete` verb. */
+  forbidDeletes = false;
+  /**
    * Bearer tokens this API server refuses — every request carrying one is
    * answered 401, for as long as it stays in the set.  Modelling expiry as
    * a property of the *token* rather than of the request count is what lets
@@ -116,9 +125,19 @@ class FakeK8sServer implements K8sFetchClient {
         this.forceDeleteErrorNext = false;
         return { status: 500, body: { code: 500, reason: 'InternalError' } };
       }
+      if (this.forbidDeletes) return { status: 403, body: { code: 403, reason: 'Forbidden' } };
       const key = `${ns}/${name}`;
-      const existed = this.leases.delete(key);
-      if (!existed) return { status: 404, body: { code: 404 } };
+      const stored = this.leases.get(key);
+      if (!stored) return { status: 404, body: { code: 404 } };
+      // `DeleteOptions.preconditions`: the API server deletes only the record
+      // the caller last saw, and refuses one that moved since.
+      const preconditions = (options.body as { preconditions?: { resourceVersion?: string } } | undefined)
+        ?.preconditions;
+      if (preconditions?.resourceVersion !== undefined
+        && preconditions.resourceVersion !== stored.metadata.resourceVersion) {
+        return { status: this.preconditionFailureStatus, body: { code: this.preconditionFailureStatus, reason: 'Conflict' } };
+      }
+      this.leases.delete(key);
       return { status: 200, body: { kind: 'Status', status: 'Success' } };
     }
 
@@ -472,10 +491,150 @@ describe('KubernetesLease — acquire (no existing lease)', () => {
     expect(server.peek('default', 'test-lease')?.spec.renewTime).toBe(renewTimeAfterRelease);
   });
 
+  test('release rejects when RBAC forbids the DELETE, and the record stays behind', async () => {
+    // A Role without the `delete` verb.  The docs' RBAC note used to call this
+    // a working release; it is a failed one, reported like any other (#600).
+    const lease = new KubernetesLease(baseOptions({ scheduler: new ManualScheduler() }));
+    expect(await lease.acquire()).toBe(true);
+    server.forbidDeletes = true;
+
+    await expect(lease.release()).rejects.toThrow(/DELETE lease default\/test-lease → HTTP 403/);
+
+    expect(lease.checkAlive()).toBe(false);
+    expect(server.peek('default', 'test-lease')?.spec.holderIdentity).toBe('test-pod');
+  });
+
   test('release is a no-op when the lease was never held', async () => {
     const lease = new KubernetesLease(baseOptions());
     await lease.release();
     expect(server.log.filter((l) => l.method === 'DELETE')).toHaveLength(0);
+  });
+});
+
+/**
+ * #1659: `release()` gives back only a record this holder still holds.
+ *
+ * The local `held` flag is not evidence of that.  It is cleared by a renewal
+ * that notices the loss, and past the TTL the record may already name another
+ * pod.  So the DELETE is skipped once the deadline has passed, and otherwise
+ * carries the `resourceVersion` of the last record this holder wrote as a
+ * precondition, so the API server refuses to delete a record that moved since.
+ */
+describe('KubernetesLease — release deletes only what it holds (#1659)', () => {
+  const deletes = (): Array<{ method: string; body?: unknown }> =>
+    server.log.filter((entry) => entry.method === 'DELETE');
+
+  test('the DELETE carries the resourceVersion of the record this holder last wrote', async () => {
+    const lease = new KubernetesLease(baseOptions({ scheduler: new ManualScheduler() }));
+    expect(await lease.acquire()).toBe(true);
+    const written = server.peek('default', 'test-lease')!.metadata.resourceVersion;
+
+    await lease.release();
+
+    expect(deletes()).toHaveLength(1);
+    expect(deletes()[0]!.body).toEqual({
+      apiVersion: 'v1',
+      kind: 'DeleteOptions',
+      preconditions: { resourceVersion: written },
+    });
+    expect(server.peek('default', 'test-lease')).toBeUndefined();
+  });
+
+  test.each([409, 412] as const)(
+    'a record taken over inside the TTL survives the old holder\'s release (precondition refused with %d)',
+    async (status) => {
+      server.preconditionFailureStatus = status;
+      const lease = new KubernetesLease(baseOptions({ scheduler: new ManualScheduler() }));
+      expect(await lease.acquire()).toBe(true);
+      expect(lease.checkAlive()).toBe(true);
+
+      // Another writer replaces the record while this holder still believes in
+      // it — the deadline has not passed, so only the precondition stands
+      // between the release and the successor's record.
+      const record = server.peek('default', 'test-lease')!;
+      server.seedLease('default', {
+        ...record,
+        spec: { ...record.spec, holderIdentity: 'pod-b', renewTime: new Date().toISOString() },
+      });
+
+      // A refused precondition means "no longer ours": the release resolves.
+      await lease.release();
+
+      expect(server.peek('default', 'test-lease')?.spec.holderIdentity).toBe('pod-b');
+      expect(lease.checkAlive()).toBe(false);
+    },
+  );
+
+  test('a holder whose TTL ran out sends no DELETE, and a successor\'s record survives', async () => {
+    const stalledOptions = baseOptions({
+      owner: 'pod-a', ttlMs: 100, renewalIntervalMs: 20, scheduler: new ManualScheduler(),
+    });
+    const stalled = new KubernetesLease(stalledOptions);
+    expect(await stalled.acquire()).toBe(true);
+    await awaitCondition(() => !stalled.checkAlive(), { label: "pod-a's 100 ms TTL ran out" });
+
+    // pod-b takes the lapsed record legitimately; pod-a has not noticed, since
+    // its renewal tick never came round.
+    const record = server.peek('default', 'test-lease')!;
+    server.seedLease('default', {
+      ...record,
+      spec: { ...record.spec, renewTime: new Date(Date.now() - 60_000).toISOString() },
+    });
+    const successorOptions = baseOptions({ owner: 'pod-b', scheduler: new ManualScheduler() });
+    const successor = new KubernetesLease(successorOptions);
+    expect(await successor.acquire()).toBe(true);
+
+    await stalled.release();
+
+    expect(deletes()).toHaveLength(0);
+    expect(server.peek('default', 'test-lease')?.spec.holderIdentity).toBe('pod-b');
+    expect(successor.checkAlive()).toBe(true);
+    await successor.release();
+  });
+
+  test('past the TTL nothing is deleted even while the record still names this holder', async () => {
+    const expiringOptions = baseOptions({ ttlMs: 100, renewalIntervalMs: 20, scheduler: new ManualScheduler() });
+    const lease = new KubernetesLease(expiringOptions);
+    expect(await lease.acquire()).toBe(true);
+    await awaitCondition(() => !lease.checkAlive(), { label: 'the 100 ms TTL ran out' });
+    // Nor does a Role without `delete` matter here: nothing reaches it.
+    server.forbidDeletes = true;
+
+    await lease.release();
+
+    // Leaving it to run out costs at most one TTL; deleting a record this
+    // holder can no longer vouch for may cost someone else theirs.
+    expect(deletes()).toHaveLength(0);
+    expect(server.peek('default', 'test-lease')?.spec.holderIdentity).toBe('test-pod');
+  });
+
+  test('a record that moved but still names this holder is re-read and deleted', async () => {
+    const lease = new KubernetesLease(baseOptions({ scheduler: new ManualScheduler() }));
+    expect(await lease.acquire()).toBe(true);
+    // This holder's own renewal landed after the snapshot, or another writer
+    // touched the object without changing the holder.
+    const moved = server.bumpResourceVersion('default', 'test-lease');
+
+    await lease.release();
+
+    expect(deletes()).toHaveLength(2);
+    expect(deletes()[1]!.body).toEqual({
+      apiVersion: 'v1',
+      kind: 'DeleteOptions',
+      preconditions: { resourceVersion: moved },
+    });
+    expect(server.peek('default', 'test-lease')).toBeUndefined();
+  });
+
+  test('a record that is already gone is a clean release', async () => {
+    const lease = new KubernetesLease(baseOptions({ scheduler: new ManualScheduler() }));
+    expect(await lease.acquire()).toBe(true);
+    server.deleteForTest('default', 'test-lease');
+
+    await lease.release();
+
+    expect(deletes()).toHaveLength(1);
+    expect(lease.checkAlive()).toBe(false);
   });
 });
 

@@ -42,14 +42,31 @@ cluster.subscribe((evt) => {
 ```
 
 Check whether `SelfUp` fires.  If not, the local node hasn't
-even bootstrapped.  Look at the seed-provider output:
+even bootstrapped.  Look at what the join logged about its seeds:
 
 ```bash
-kubectl logs pod-1 | grep -i seed
-# → "discovered N seeds: ..."  ← should not be empty
+kubectl logs pod-1 | grep -E 'seed|self-elect'
 ```
 
-If empty: seed provider's selector / DNS / config is wrong.
+```text title="log"
+contacting <n> seed(s): [<address>,…]
+self-electing as first cluster member — <reason>
+still "<status>" after <n> seed-contact round(s), and nothing can promote
+```
+
+- **`contacting … seed(s)`** is a debug line (`logger.level = debug`),
+  written when the join starts with at least one seed other than
+  itself.  The addresses are what discovery returned — check that they
+  are pod IPs on the cluster port.
+- **`self-electing as first cluster member — no seeds configured`**
+  means the seed list was empty, so the node founded a cluster of its
+  own.  On the first pod that is expected; on any other it means
+  discovery found nothing — the seed provider's service name,
+  namespace, RBAC or DNS is wrong, and the node is now a second
+  cluster.
+- **`still "joining" after …`** is a warning: the node reached its
+  seeds, but no member is `up`, so there is no leader to promote it.
+  The rest of the line says what would.
 
 ### Symptom: cluster flaps
 
@@ -71,19 +88,34 @@ Causes:
 Diagnostics:
 
 ```promql
-rate(cluster_unreachable_duration_ms_count[5m]) > 0.1
-# Frequent transitions
+changes(cluster_members_up[15m]) > 4
+# A member that goes unreachable leaves the `up` state and comes back
+# to it when it is heard from again, so each flap moves this gauge twice.
 ```
 
-In logs:
+The gauge is sampled at each scrape, so a flap shorter than the scrape
+interval does not show in it.  The event stream sees every one —
+`MemberUnreachable` when the detector gives up on a member,
+`MemberReachable` when it is heard from again:
 
-```
-[INFO ] cluster — node-X marked unreachable
-[INFO ] cluster — node-X marked reachable
-[INFO ] cluster — node-X marked unreachable
+```ts
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberUnreachable) {
+    system.log.warn(`unreachable: ${evt.member.address}`);
+  } else if (evt instanceof MemberReachable) {
+    system.log.info(`reachable again: ${evt.member.address}`);
+  }
+});
 ```
 
-Persistent flapping signals threshold tuning.
+With `logger.level = debug` the detector logs the first half itself:
+
+```text title="log"
+FD: <address> → unreachable (heartbeat timeout)
+```
+
+The same address going unreachable and coming back again and again
+signals threshold tuning.
 
 ## Sharding
 
@@ -104,22 +136,32 @@ Causes:
 4. **extractEntityId returns undefined** — the message routing
    has nothing to hash.
 
-Diagnostics:
+Diagnostics — no metric counts the shards a node hosts; the shard map
+does, from the [management endpoint](/observability/management/http-endpoints/#get-clustershardstypetypename):
 
-```promql
-sharding_shards_hosted{type="entity-type"}
-# Should equal numShards (total) across the cluster
+```bash
+curl -s http://pod-1:8558/cluster/shards?type=entity-type
+# regions[].shards — the shards each region holds; shardHome — every
+# shard placed so far.  404 means no shard map has reached this node yet.
 ```
 
 Logs:
 
 ```bash
-kubectl logs pod-1 | grep -i shard
-# → "coordinator: allocating shard X to node-Y"
+kubectl logs pod-1 | grep '\[sharding\]'
 ```
 
-If you see "no candidates," your `role` filter rejects every
-node.  Check role tags in `Cluster.join`.
+If the coordinator warns that no member hosting the type carries the
+`role`, your `role` filter rejects every node.  Check
+`actor-ts.sharding.role` against the roles the hosting nodes declare
+(`actor-ts.cluster.roles`, or `withRoles` in `Cluster.join`).
+
+A region whose `numShards` disagrees with the coordinator's is refused
+outright and counted, so that misconfiguration has an alert:
+
+```promql
+increase(cluster_sharding_registrations_refused_total[15m]) > 0
+```
 
 If the coordinator warns that none of the registered regions that can
 host the type "is on a member that is up", the role is fine and the
@@ -170,13 +212,21 @@ Higher threshold = less sensitivity to small imbalances.
 Cause: **deep journal without snapshots**.  Recovery reads
 every event ever.
 
-Diagnostics:
+Diagnostics — with metrics enabled, the journal half of every recovery
+is timed as one `replay` call:
 
 ```promql
-histogram_quantile(0.99, persistence_recovery_duration_ms_bucket)
+histogram_quantile(0.99,
+  sum by (le) (rate(persistence_journal_latency_seconds_bucket{operation="replay"}[5m])))
 ```
 
-If P99 recovery is > 1 second, **set a snapshot policy**:
+`replay` covers reading the events, not folding them: the time your
+`onEvent` spends on each one is not in it.  The snapshot read a
+recovery starts with is `persistence_snapshot_latency_seconds` with
+`operation="load"` — see
+[Persistence metrics](/observability/metrics/stock-metrics/#persistence-metrics).
+
+If P99 replay is > 1 second, **set a snapshot policy**:
 
 ```ts
 override snapshotPolicy() { return everyNEvents(100); }
@@ -351,8 +401,8 @@ actor_mailbox_size{class=...}
 
 histogram_quantile(0.99, rate(actor_mailbox_wait_seconds_bucket[5m]))
 # …and how long messages are waiting before anyone gets to them.
-# A series only exists above 10 000 queued messages, so this is the
-# signal that moves first — a backlog shows up as wait long before
+# The gauge above only has a series past 10 000 queued messages, so this
+# is the signal that moves first — a backlog shows up as wait long before
 # it shows up as size.
 
 histogram_quantile(0.99, rate(actor_mailbox_depth_bucket[5m]))

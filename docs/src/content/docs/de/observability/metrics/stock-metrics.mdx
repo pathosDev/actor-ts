@@ -23,14 +23,14 @@ Dashboard zu verdrahten.
 ## Actor-Metriken
 
 Metriken für Actor-Lebenszyklus und Nachrichtenverarbeitung,
-systemweit aufgezeichnet — jede ist eine einzelne Serie ohne
-Labels:
+systemweit aufgezeichnet — jede eine einzelne Serie ohne Labels,
+außer dem Restart-Zähler, der die Actor-Klasse trägt:
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
 | `actor_created_total` | counter | — | Erfolgreich gestartete Actor. |
 | `actor_terminated_total` | counter | — | Gestoppte Actor (sauberer Stopp oder nach einem Fehler). |
-| `actor_restarted_total` | counter | — | Supervisor-getriebene Restarts. |
+| `actor_restarted_total` | counter | `class` | Supervisor-getriebene Restarts, nach Actor-Klasse. |
 | `actor_messages_delivered_total` | counter | — | An `onReceive` zugestellte User-Nachrichten. |
 | `actor_message_handler_seconds` | histogram | — | Zeit in `onReceive`-Handlern, in Sekunden. |
 
@@ -329,6 +329,7 @@ etwas ablehnt, ist eine Rate auf diesen Klassen Drift und keine Last.
 | `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes, deren Payload einen anderen Absender nennt als die Verbindung, auf der sie ankamen. |
 | `cluster_envelope_refusals_total` | counter | `reason`, `frame` | Eingehende Envelopes, die abgelehnt wurden, weil ihr Zielpfad außerhalb dessen liegt, was dieser Knoten namentlich annimmt. |
 | `cluster_outbound_refusals_total` | counter | `frame` | Frames, die dieser Knoten nicht gesendet hat, weil das Ziel weder ein Mitglied noch ein Knoten war, zu dem er schon eine Verbindung hält. |
+| `cluster_sharding_registrations_refused_total` | counter | `reason`, `type` | Shard-Region-Registrierungen, die ein Coordinator abgelehnt hat. |
 
 Zum Monitoring der Cluster-Gesundheit:
 
@@ -399,6 +400,15 @@ Zum Monitoring der Cluster-Gesundheit:
   Clusters gibt. `frame` ist `envelope` oder `wire`, die Familie sind
   also zwei Serien; das Ziel ist kein Label, und die Log-Zeile, die es
   höchstens alle 30 Sekunden begleitet, nennt es escaped.
+- `cluster_sharding_registrations_refused_total` zählt eine
+  Shard-Region, deren Registrierung der Coordinator abgelehnt hat.
+  `reason` hat heute einen Wert, `num-shards-mismatch`: Die Region wurde
+  mit einer anderen Shard-Anzahl gestartet, als der Coordinator
+  verwaltet. `type` ist der Name des Sharding-Typs, aus den eigenen
+  Sharding-Einstellungen dieses Knotens und nie vom Wire. Jeder Wert
+  über null ist einen Alarm wert — eine Ablehnung ist nie vorübergehend
+  —, siehe
+  [wenn der Coordinator eine Region ablehnt](/de/cluster/sharding/introspection/#wenn-der-coordinator-eine-region-ablehnt).
 
 ## DistributedData-Metriken
 
@@ -573,6 +583,56 @@ bleibt das Label; siehe die Stock-Label-Regel am Ende dieser Seite.
 
 Siehe [Projektionen](/de/persistence/projections/) für die
 Strategien, die diese Metriken beschreiben.
+
+## Offload-Metriken
+
+Der [Offload-Pool](/de/fundamentals/blocking-and-cpu-bound-work/#offloadpool-reine-funktionen-auf-worker-threads)
+erfasst jeden Task, den er abschließt, und wie viele auf einen Worker
+warten:
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `offload_tasks_total` | counter | `task`, `outcome` | Ausgelagerte Task-Läufe, nach Ausgang. |
+| `offload_task_seconds` | histogram | `task` | Wall-Time eines ausgelagerten Tasks, von `run()` bis zu seinem Abschluss, in Sekunden. |
+| `offload_queue_depth` | gauge | — | Ausgelagerte Tasks, die auf einen Worker warten. |
+
+`task` ist Export-Name und Moduldatei des Tasks, `name (file.ts)` —
+begrenzt durch die Tasks, die die Anwendung mit `defineOffloadTask`
+definiert, nie vom Wire. `outcome` ist `ok`, `threw`, `timeout`,
+`aborted`, `lost` (der Worker starb unter dem Task),
+`invalid-arguments` (die Argumente ließen sich nicht an einen Worker
+schicken) oder `unavailable`. Eine `timeout`- oder `threw`-Rate auf
+einem `task` ist der Alarm; ein `offload_queue_depth`, der stetig
+steigt, heißt, dass der Pool für die Last zu klein ist.
+
+## Router-Metriken
+
+Ein [Scatter/Gather-Router](/de/routing/scatter-gather/#metriken)
+erfasst, wie jeder Fan-out endete und wie lange der Aufrufer wartete:
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `router_scatter_gather_resolved_total` | counter | `outcome` | Scatter/Gather-Fan-outs, nach Ausgang. |
+| `router_scatter_gather_latency_seconds` | histogram | — | Zeit vom Verteilen einer Nachricht bis zur Antwort an den Aufrufer, in Sekunden. |
+
+`outcome` ist `first`, `timeout`, `all-failed`, `stopped` oder
+`no-reply-target`; für `no-reply-target`, wo kein Scatter lief, wird
+keine Latenz beobachtet. Keine der beiden Familien trägt einen
+Router-Pfad, mehrere Router in einem System aggregieren also.
+
+## WebSocket-Client-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `websocket_client_inbound_paused_seconds_total` | counter | — | Sekunden, die WebSocket-Client-Sockets durch ihre eingehende High-Water-Mark pausiert waren. |
+
+Bewegt sich nur, wenn `inboundHighWaterMark` gesetzt ist und die
+Runtime einen Client-Socket pausieren kann — in der Praxis Bun; siehe
+[eingehende Flusskontrolle](/de/io/websocket/#eingehende-flusskontrolle).
+Eine Pause wird gebucht, wenn sie endet, beim Resume oder wenn die
+Verbindung geht — ein Socket, der gerade pausiert, ist also noch nicht
+gezählt. Eine steigende Rate heißt, dass `onMessage` nicht mit dem
+mithält, was der Peer publiziert.
 
 ## Worker-Mesh-Metriken
 

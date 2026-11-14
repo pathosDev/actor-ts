@@ -105,9 +105,10 @@ checkpoint, not a deployment step.
 
 - All instances report the same build version (`/health`,
   cluster-management endpoints, or your own deploy-tracker).
-- v1 events are being read by the new code path
-  (`migration_chain_upcast_total{from="1",to="2"}` metric, or a
-  log-line spot-check on `chain.read`).
+- v1 events are being read by the new code path.  The framework
+  neither counts nor logs an upcast, so this check is yours: a log
+  line or a counter of your own around `chain.read`, or a replay of a
+  recorded v1 event through the new build's chain.
 - Writers are still emitting v1 (peek the journal — the most-
   recent record's manifest version should be `1`).
 

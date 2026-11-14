@@ -282,9 +282,13 @@ roleBinding:
 
 Ohne diese rejectet `acquire()` mit 403 (Forbidden).
 
-Ohne `delete` funktioniert `release()`, aber das Lease-Objekt
-bleibt nach dem Release stehen (harmlos; das nächste Acquire
-nutzt es weiter).
+Ohne `delete` rejectet `release()`: Der API-Server beantwortet das
+DELETE mit 403, und das wird wie jedes andere fehlgeschlagene
+Release gemeldet (siehe [Release](#release)).  Das Renewal ist dann
+schon gestoppt, also bleibt der Record stehen, bis seine TTL
+abläuft; danach kann ein anderer Pod ihn übernehmen.  Ein Release,
+das erst nach Ablauf der TTL kommt, sendet gar kein DELETE, stößt
+also nie auf die fehlende Berechtigung und resolved.
 
 ## Was erzeugt wird
 
@@ -421,6 +425,38 @@ Ein Re-Read, der selbst fehlschlägt, fällt in den transienten Fall und
 feuert `onLost`: Besitz, der nicht bestätigt werden kann, darf nicht
 angenommen werden.
 
+## Release
+
+`release()` stoppt die Renewal-Schleife und löscht das `Lease`-Objekt —
+aber nur einen Record, den dieser Halter noch hält (#1659).  Der lokale
+„gehalten“-Zustand beweist das nicht: Ihn löscht erst ein Renewal, das
+den Verlust bemerkt, und eine stehende Event-Loop hält genau dieses
+Renewal auf, während ein anderer Pod den abgelaufenen Record
+rechtmäßig übernimmt.  Deshalb:
+
+- **Nach Ablauf der TTL wird nichts gesendet.**  Der Record kann
+  inzwischen einem anderen gehören, und einer, der noch uns gehört,
+  läuft ohnehin innerhalb einer TTL ab.
+- **Sonst ist das DELETE an eine Bedingung geknüpft**: die
+  `resourceVersion` des letzten Records, den dieser Halter geschrieben
+  hat:
+
+  ```
+  DELETE /apis/coordination.k8s.io/v1/namespaces/<ns>/leases/<name>
+  { apiVersion: "v1", kind: "DeleteOptions",
+    preconditions: { resourceVersion: "148302" } }
+  ```
+
+  Der API-Server weigert sich, einen Record zu löschen, der sich
+  seitdem bewegt hat.  Eine Weigerung (409 oder 412) wird einmal neu
+  gelesen: Ein Record mit einem anderen Halter bleibt stehen, und das
+  Release endet sauber — „nicht mehr unserer“, kein Fehler.  Einer, der
+  noch diesen Owner nennt — sein eigenes Renewal ist dazwischen
+  gelandet —, wird mit der gerade gelesenen Version gelöscht.
+- **404 zählt als freigegeben.**  Jeder andere Fehler lehnt ab, wie
+  bisher: Der Record kann auf dem Server noch beansprucht sein, und der
+  Aufrufer muss das sehen können.
+
 ## Verlust-Erkennung
 
 `onLost` feuert, wenn:
@@ -460,7 +496,8 @@ Jeder Lease-Halter erzeugt:
 - 1 PUT alle `renewalIntervalMs`, solange gehalten — plus 1
   zusätzlicher GET bei dem seltenen Takt, dessen PUT abgelehnt
   wird, um herauszufinden, ob der Lease wirklich verloren ist.
-- 1 DELETE beim Release.
+- 1 DELETE beim Release (keines nach Ablauf der TTL; ein GET und ein
+  zweites DELETE, wenn sich der Record darunter bewegt hat).
 
 Für eine 30-Sekunden-TTL mit 10-Sekunden-Renewal sind das
 **~6 API-Calls pro Minute pro Lease**.  Centbeträge in jedem

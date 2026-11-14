@@ -247,6 +247,25 @@ every ten minutes never exhausts a per-minute budget.  The window
 is measured on `system.clock`, so under a `ManualScheduler` a test
 crosses it by advancing virtual time rather than by sleeping.
 
+The budget belongs to **each child separately**.  Under
+`OneForOneStrategy` only the failures of *that* child count: five
+siblings that crash once each are all five restarted under
+`maxRetries: 2`.  The budget belongs to the child's **name** and is
+kept by the parent, so it survives the restarts it counts *and* the
+child itself: one stopped for spending its allowance and spawned
+again under the same name inside the window inherits the spent
+budget, and its next failure stops it again.  Re-creating a child is
+therefore no way around the bound — a sharded entity re-created
+after its restart backoff gets no fresh allowance either.  Once the
+window has passed, the name starts from a whole allowance; under
+`withinTimeRangeMs: 0` the budget is forgotten when the child stops.  `AllForOneStrategy`
+deliberately keeps **one** budget for the whole group instead: its
+directive restarts every child together anyway, so a failure
+anywhere in the group counts as one restart of the group.  A
+`supervisorStrategy()` that builds a fresh strategy on every call
+does not reset the budget; only a strategy with a different
+`maxRetries` or `withinTimeRangeMs` starts a new tally.
+
 <Aside type="caution" title="The typed wrapper escalates instead">
   [`Behaviors.supervise(...).onFailure(strategy)`](/typed/behaviors/)
   honours the same two knobs and grants the same `maxRetries`

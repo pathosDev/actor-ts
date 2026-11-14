@@ -57,6 +57,11 @@ export interface Lease {
    * on ownership (`LeaseMajority`) has to stop claiming majority until it
    * can.  Backends must therefore propagate the failure rather than
    * swallow it; callers using release purely as cleanup catch it.
+   *
+   * Gives back only this holder's own record (#1659).  A holder that stalled
+   * past its TTL may still think it holds the lease after another node took
+   * it legitimately, and its release must leave the successor's record alone.
+   * Finding the record no longer ours resolves — it is not a failure.
    */
   release(): Promise<void>;
 

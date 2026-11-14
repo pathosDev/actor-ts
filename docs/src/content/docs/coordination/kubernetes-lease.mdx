@@ -273,8 +273,13 @@ roleBinding:
 
 Without these, `acquire()` rejects with 403 (forbidden).
 
-Without `delete`, `release()` works but leaves the Lease object
-behind after release (harmless; the next acquire reuses it).
+Without `delete`, `release()` rejects: the API server answers the
+DELETE with 403, and that is reported like any other failed release
+(see [Release](#release)).  Renewal has stopped by then, so the
+record stays behind until its TTL runs out, after which another pod
+can take it.  A release that comes after the TTL already ran out
+sends no DELETE at all, so it never reaches the missing permission
+and resolves.
 
 ## What gets created
 
@@ -403,6 +408,34 @@ there is no retry budget inside the loop, with two exceptions:
 A re-read that itself fails falls through to the transient case and
 fires `onLost`: ownership that cannot be confirmed may not be assumed.
 
+## Release
+
+`release()` stops the renewal loop and deletes the `Lease` object — but
+only a record this holder still holds (#1659).  The local "held" state
+is no proof of that: it is cleared by a renewal that notices the loss,
+and a stalled event loop keeps that renewal from running while another
+pod legitimately takes the lapsed record.  So:
+
+- **Past the TTL, nothing is sent.**  The record may belong to someone
+  else by now, and one that is still ours runs out within a TTL anyway.
+- **Otherwise the DELETE is conditional** on the `resourceVersion` of
+  the last record this holder wrote:
+
+  ```
+  DELETE /apis/coordination.k8s.io/v1/namespaces/<ns>/leases/<name>
+  { apiVersion: "v1", kind: "DeleteOptions",
+    preconditions: { resourceVersion: "148302" } }
+  ```
+
+  The API server refuses to delete a record that moved since.  A
+  refusal (409, or 412) is re-read once: a record naming another holder
+  is left alone and the release resolves cleanly — "no longer ours",
+  not an error.  One still naming this owner — its own renewal landed
+  in between — is deleted at the version just read.
+- **404 counts as released.**  Any other failure rejects, as before:
+  the record may still be claimed on the server, and the caller has to
+  be able to see that.
+
 ## Loss detection
 
 `onLost` fires when:
@@ -438,7 +471,8 @@ Each lease holder generates:
 - 1 PUT every `renewalIntervalMs` while holding — and 1 extra GET
   on the rare tick whose PUT is rejected, to find out whether the
   lease was actually lost.
-- 1 DELETE on release.
+- 1 DELETE on release (none past the TTL; a GET and a second DELETE
+  when the record moved under it).
 
 For a 30-second TTL with 10-second renewal, that's **~6 API
 calls per minute per lease**.  Pennies on any modest K8s

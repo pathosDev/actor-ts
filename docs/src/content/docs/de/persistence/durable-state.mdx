@@ -247,21 +247,26 @@ try {
   await this.persist(next);
 } catch (e) {
   if (e instanceof DurableStateConcurrencyError) {
-    // Ein anderer Writer war schneller — neu laden und erneut versuchen oder zum User durchreichen.
+    // Ein anderer Writer war schneller — this.state ist schon neu geladen: erneut versuchen oder zum User durchreichen.
   }
 }
 ```
 
 Wenn zwei Writer gleichzeitig dieselbe `persistenceId` aktualisieren,
 lehnt der Revisions-Check des Stores den zweiten mit
-`DurableStateConcurrencyError` ab.  Strategien:
+`DurableStateConcurrencyError` ab.  Bevor der Fehler deinen Handler
+erreicht, liest der Actor den Datensatz neu, sodass `this.state` und
+`this.revision` dem aktuellen Stand des Stores entsprechen und das
+nächste `persist` gelingen kann.  Der Fehler wird trotzdem geworfen,
+weil der Wert, den du schreiben wolltest, aus bereits veraltetem State
+berechnet wurde.  Strategien:
 
 - **Das Problem vermeiden** — stelle sicher, dass immer nur ein
   Actor zur selben Zeit in eine gegebene `persistenceId` schreibt.
   Das ist meistens trivial: jeder `cart-user-42` hat einen Actor
   auf einem Node (per Sharding oder Singleton).
-- **Neu laden und erneut versuchen** — den Fehler fangen, State neu
-  laden, den neuen Wert neu berechnen, erneut persistieren.
+- **Erneut versuchen** — den Fehler fangen, den neuen Wert aus dem
+  bereits neu geladenen `this.state` berechnen, erneut persistieren.
   Funktioniert, wenn die Operation idempotent ist.
 - **Zum Aufrufer durchreichen** — mit einem Fehler antworten; den
   Aufrufer entscheiden lassen, ob er erneut versuchen will.

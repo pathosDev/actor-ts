@@ -353,6 +353,9 @@ export const ConfigKeys = {
         url: 'actor-ts.io.broker.amqp.url',
         prefetch: 'actor-ts.io.broker.amqp.prefetch',
         autoAcknowledge: 'actor-ts.io.broker.amqp.auto-acknowledge',
+        /** `'on-reply'` (default) or `'on-delivery'` — when a delivery is acked (#976). */
+        acknowledgment: 'actor-ts.io.broker.amqp.acknowledgment',
+        acknowledgmentTimeout: 'actor-ts.io.broker.amqp.acknowledgment-timeout',
       },
       /**
        * The IMAP-in / SMTP-out mail bridge (#1133).  One root for both
@@ -525,6 +528,9 @@ export const ConfigKeys = {
           commitTimeout: 'actor-ts.io.broker.kafka.consumer.commit-timeout',
         },
         topics: 'actor-ts.io.broker.kafka.topics',
+        /** `'on-reply'` (default) or `'on-delivery'` — when an auto-commit record may be committed (#975). */
+        acknowledgment: 'actor-ts.io.broker.kafka.acknowledgment',
+        acknowledgmentTimeout: 'actor-ts.io.broker.kafka.acknowledgment-timeout',
       },
       /**
        * `MqttActor`.  `keep-alive` is a duration in **whole seconds**, the
@@ -551,6 +557,9 @@ export const ConfigKeys = {
         cleanSession: 'actor-ts.io.broker.mqtt.clean-session',
         keepAlive: 'actor-ts.io.broker.mqtt.keep-alive',
         protocolVersion: 'actor-ts.io.broker.mqtt.protocol-version',
+        /** `'on-reply'` (default) or `'on-delivery'` — when the PUBACK goes out (#977). */
+        acknowledgment: 'actor-ts.io.broker.mqtt.acknowledgment',
+        acknowledgmentTimeout: 'actor-ts.io.broker.mqtt.acknowledgment-timeout',
       },
       /** `NatsActor`. */
       nats: {
@@ -835,6 +844,17 @@ export const ConfigKeys = {
     maxConcurrentRecoveries: 'actor-ts.persistence.max-concurrent-recoveries',
     recoveryTimeout: 'actor-ts.persistence.recovery-timeout',
     snapshotIsOptional: 'actor-ts.persistence.snapshot-is-optional',
+    /**
+     * Recover a completely compacted journal with no snapshot as the initial
+     * state instead of failing with `JournalIntegrityError` (#1052).
+     */
+    allowFullyCompactedRecovery: 'actor-ts.persistence.allow-fully-compacted-recovery',
+    /**
+     * Allow a multi-event `persistAll` on a journal that declares
+     * `atomicBatchAppend: false`, accepting that a failure can commit a
+     * prefix (#959).
+     */
+    allowNonAtomicBatchAppend: 'actor-ts.persistence.allow-non-atomic-batch-append',
     /**
      * The `CircuitBreakerExtension` id each store is called through — a name,
      * not a block of numbers.  The numbers live under

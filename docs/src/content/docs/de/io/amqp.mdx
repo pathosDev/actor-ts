@@ -45,7 +45,9 @@ amqp.tell({
 interface AmqpOptionsType extends BrokerCommonOptionsType {
   url:        string;                          // amqp:// oder amqps://
   prefetch?:  number;                          // ungeackte Nachrichten pro Consumer; Default 1
-  autoAcknowledge?:      boolean;                         // ACK bei Auslieferung vs. nach Verarbeitung; Default true
+  autoAcknowledge?:      boolean;                         // der Actor ackt (Default true) vs. Deine expliziten Kommandos
+  acknowledgment?:       'on-reply' | 'on-delivery';      // wann der Actor ackt; Default 'on-reply'
+  acknowledgmentTimeoutMs?: number;                       // wie lange 'on-reply' wartet; Default 30_000
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // Queue ↔ Exchange ↔ Routing-Key ↔ Target
   tls?:       TlsTransportOptionsType;         // Cert-Material für einen amqps://-Dial; nur im Code
 }
@@ -69,7 +71,9 @@ unterhalb expliziter Optionen und oberhalb der eingebauten Defaults:
 actor-ts.io.broker.amqp {
   url              = ${?ACTOR_TS_AMQP_URL}  # amqp://user:password@rabbitmq:5672/vhost, or amqps://
   prefetch         = 10                     # default 1; 0 = unlimited
-  auto-acknowledge = false                  # default true
+  auto-acknowledge = true                   # the default; false = explicit commands
+  acknowledgment   = "on-reply"             # the default; or "on-delivery"
+  acknowledgment-timeout = 30s              # the default; on-reply only
 }
 ```
 
@@ -113,11 +117,57 @@ Häufigstes Muster: **`topic`**-Exchanges mit hierarchischen
 Routing-Keys (`orders.placed.priority`, `orders.cancelled`,
 `payments.failed`).
 
-## ACK / NACK
+## Acknowledgment
+
+Standardmäßig ackt der Actor eine Delivery **erst, wenn ihr Target sie
+verarbeitet hat**: Er `ask`t das Target des Bindings mit der Delivery, und
+das Target antwortet auf das `replyTo` der Delivery.  Damit ist der Default
+**at-least-once** — und `prefetch` wird zu einer echten Schranke, weil eine
+Delivery ungeackt bleibt, bis sie erledigt ist.
+
+```ts
+import { acknowledgeDelivery, negativelyAcknowledgeDelivery } from 'actor-ts/io';
+
+class OrderHandler extends Actor<AmqpDelivery> {
+  override async onReceive(delivery: AmqpDelivery): Promise<void> {
+    try {
+      await processOrder(delivery);
+      acknowledgeDelivery(delivery);             // antwortet { kind: 'acknowledgment' }
+    } catch (err) {
+      negativelyAcknowledgeDelivery(delivery, String(err));
+    }
+  }
+}
+```
+
+| Das Target … | Der Actor … |
+| --- | --- |
+| antwortet `{ kind: 'acknowledgment' }` | ackt die Delivery |
+| antwortet `{ kind: 'negativeAcknowledgment', reason? }` | nackt sie mit Requeue — RabbitMQ liefert sie erneut aus |
+| antwortet irgendetwas anderes | nackt sie mit Requeue und loggt, dass die Antwort nicht zum Vertrag gehört |
+| antwortet nicht innerhalb von `acknowledgmentTimeoutMs` (30 s) | nackt sie mit Requeue |
+
+Ein Handler, der wirft, antwortet einfach nie und landet damit in der
+letzten Zeile.  Handler müssen idempotent sein: Eine Delivery kann nach
+ihrer Verarbeitung wiederkommen, wenn die Antwort oder der ACK verloren
+geht.  Ein ACK, den der Broker ablehnt, wird nie verschluckt — er wird mit
+der Queue auf `warn` geloggt und als `BrokerAcknowledgmentFailed`-Event
+veröffentlicht, damit man ihn zählen kann.
+
+**`acknowledgment: 'on-delivery'`** ackt jede Delivery bei der Übergabe an
+die Mailbox des Targets und erwartet keine Antwort (`replyTo` fehlt, beide
+Helfer tun nichts).  Das ist at-most-once: Eine Delivery, die nach der
+Übergabe verloren geht — ein Crash, ein Mailbox-Überlauf —, wird nicht
+erneut ausgeliefert, und `prefetch` begrenzt nichts.  Auf einen
+fehlgeschlagenen ACK folgt keine Übergabe, weil RabbitMQ diese Delivery
+ohnehin erneut ausliefert.
+
+### Explizite Kommandos
 
 Setze `autoAcknowledge: false` in den Settings; dann teilt der Handler das
 Ergebnis per `{ kind: 'acknowledgment', delivery }` oder `{ kind: 'negativeAcknowledgment',
-delivery, requeue }` an die Ref des AMQP-Actors mit.
+delivery, requeue }` an die Ref des AMQP-Actors mit.  `acknowledgment`
+greift in diesem Modus nicht.
 
 ```ts
 class OrderHandler extends Actor<AmqpDelivery> {
@@ -152,7 +202,9 @@ prefetch: 10   // bis zu 10 ungeackte gleichzeitig pro Consumer konsumieren
 ```
 
 Der Framework-Default ist **1** — eine einzige ungeackte
-Nachricht pro Consumer zur selben Zeit.  (Der reine
+Nachricht pro Consumer zur selben Zeit.  Er begrenzt nur dann etwas,
+wenn Deliveries bis zur Verarbeitung ungeackt bleiben — unter dem Default
+`'on-reply'` und mit expliziten Kommandos, nicht unter `'on-delivery'`.  (Der reine
 AMQP-Protokoll-Default ist 0 = unbegrenzt, aber der Actor setzt
 `prefetch` auf 1, sofern Du ihn nicht überschreibst.)  Erhöhe ihn
 auf eine sinnvolle Batch-Größe (10–50), damit der Consumer
