@@ -1,5 +1,6 @@
 /**
- * How a `ClusterClient` connect attempt ends — every way it can (#938, #1751).
+ * How a `ClusterClient` connect attempt ends — every way it can (#938, #1751)
+ * — and what the client refuses before it dials at all (#1763).
  *
  * Driven through a fake `TcpBackend` whose dials open, answer, fail and close
  * when the test says so, installed through the client's private `backend`
@@ -25,6 +26,7 @@ import type {
   TcpSocketLike,
   TlsTransportOptionsType,
 } from '../../../src/runtime/tcp/TcpBackend.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 const CONNECT_TIMEOUT_MS = 150;
 
@@ -379,3 +381,22 @@ describe('an attempt that has ended changes nothing (#1751)', () => {
   });
 });
 
+describe('ClusterClient.ask refuses a per-call timeoutMs outside its domain (#1763)', () => {
+  for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    test(`${timeoutMs} is refused before anything is dialled`, async () => {
+      const { client, backend } = clientOf([2551]);
+      let refusal: unknown;
+      try {
+        await client.ask('/user/service', { kind: 'ping' }, timeoutMs);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect((refusal as OptionsError).field).toBe('timeoutMs');
+      expect((refusal as Error).message)
+        .toContain('ClusterClient.ask: timeoutMs must be a positive finite number');
+      await drain();
+      expect(backend.dials).toHaveLength(0);
+    });
+  }
+});

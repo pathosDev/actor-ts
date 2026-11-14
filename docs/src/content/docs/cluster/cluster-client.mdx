@@ -91,6 +91,11 @@ the deadline, and the next `send` or `ask` dials again.  `close()`
 also ends an attempt still in flight, rejecting every call waiting
 on it.
 
+A per-call `ask` deadline (`client.ask(path, message, timeoutMs)`)
+must be a positive finite number; `0`, a negative value, `NaN`
+and `Infinity` are refused with an `OptionsError` before anything
+is sent.  Leave it out to use `askTimeoutMs`.
+
 `tls` follows the cluster's settings.  `ca` alone is one-way TLS:
 the client checks the server's certificate and presents none.
 For mutual TLS set both `cert` and `key`; a client given only one

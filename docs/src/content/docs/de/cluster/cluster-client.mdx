@@ -97,6 +97,11 @@ Frist, und das nächste `send` oder `ask` wählt neu.  `close()`
 beendet auch einen noch laufenden Versuch und weist jeden Aufruf
 ab, der darauf wartet.
 
+Eine Frist pro `ask`-Aufruf (`client.ask(path, message, timeoutMs)`)
+muss eine positive endliche Zahl sein; `0`, ein negativer Wert,
+`NaN` und `Infinity` werden mit einem `OptionsError` abgewiesen,
+bevor etwas gesendet wird.  Ohne Angabe gilt `askTimeoutMs`.
+
 `tls` folgt den Einstellungen des Clusters.  `ca` allein ist
 einseitiges TLS: Der Client prüft das Zertifikat des Servers und
 legt selbst keines vor.  Für gegenseitiges TLS setzt man `cert`

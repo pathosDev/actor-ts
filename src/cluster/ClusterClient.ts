@@ -48,6 +48,7 @@ import type { Config } from '../config/Config.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { armChainedTimeout, type Cancellable, type HostTimers } from '../Scheduler.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { OptionsError } from '../util/OptionsValidator.js';
 import { randomUuid } from '../util/RandomString.js';
 import { safeStringify } from '../util/SafeStringify.js';
 import { NodeAddress } from './NodeAddress.js';
@@ -149,6 +150,32 @@ function nextAskId(pending?: ReadonlyMap<string, unknown>): string {
 
 /** @internal — test-only handle for the predictability regression. */
 export const _nextAskIdForTest = nextAskId;
+
+/**
+ * Refuse a per-call ask deadline that is not a positive finite number (#1763),
+ * in the shape `ActorRef.ask` refuses one.
+ *
+ * The configured `ask-timeout` has been held to that rule by the options
+ * validator all along; the per-call argument went straight to the deadline.
+ * `0`, a negative value and `NaN` timed the ask out on the next tick under a
+ * message quoting the nonsense value, and `Infinity` armed a chain that never
+ * runs out — an ask that stayed in the pending map until a reply, `close()` or
+ * a dropped connection.  Written out rather than run through a validator: one
+ * comparison on a per-call path, and `Number.isFinite` does not coerce, so a
+ * non-number from untyped JavaScript is refused too.
+ */
+function assertAskTimeout(timeoutMs: number): void {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new OptionsError(
+      'ClusterClient.ask: timeoutMs must be a positive finite number'
+      + ` (got ${OptionsError.renderValue(timeoutMs)})`
+      + ' — an ask that arms no deadline can never settle',
+      'ClusterClient.ask',
+      'timeoutMs',
+      timeoutMs,
+    );
+  }
+}
 
 /**
  * The synthetic port a client without an explicit `clientIdentity` addresses
@@ -267,13 +294,17 @@ export class ClusterClient {
    * cluster-side ask failure.
    *
    * A deadline of any length is waited out in full, one past the host timer
-   * ceiling (~24.9 days) included — see {@link armChainedTimeout}.
+   * ceiling (~24.9 days) included — see {@link armChainedTimeout}.  An
+   * omitted `timeoutMs` means the configured `ask-timeout`; `0`, a negative
+   * value, `NaN` and `Infinity` are refused with an {@link OptionsError}
+   * before anything is dialled or sent (#1763).
    */
   async ask<R = unknown>(
     targetPath: string,
     message: unknown,
     timeoutMs?: number,
   ): Promise<R> {
+    if (timeoutMs !== undefined) assertAskTimeout(timeoutMs);
     await this.ensureConnected();
     // Drawn against the map it is about to key (#1146).  `pending.set` below
     // overwrites, so a repeat would not raise anything — it would replace the
