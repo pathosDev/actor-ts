@@ -853,7 +853,11 @@ Cluster-Verbindung und dem `ClusterClientReceptionist`.
 Framework-Aktoren bleiben über ihre registrierten Handler
 erreichbar, also über die Tür, die weiß, auf welcher Verbindung
 ein Frame ankam. Nichts, was ein Betreiber konfigurieren kann,
-öffnet den alten Weg wieder.
+öffnet den alten Weg wieder. Dasselbe gilt für den nackten
+`/user`-Guardian, `actor-ts://<system>/user`: Ein Guardian ist nie
+ein Anwendungs-Endpunkt, er wird also auch dann abgelehnt, wenn ein
+Allow-List-Eintrag `/user/*` dessen Wurzel sonst zulassen würde
+(`reason="guardian-path"`).
 
 Die `/user`-Hälfte ist die Entscheidung des Deployments, denn
 dass ein Peer einen Anwendungsaktor benennt, ist genau die Art,
@@ -887,6 +891,18 @@ wird wie ein fehlender beantwortet — `Terminated` mit
 `existenceConfirmed = false` —, sodass ein Watcher nie hängt und
 die Antwort nichts preisgibt, was die Ablehnung nicht ohnehin
 schon täte; die Ablehnung wird unter `frame="watch"` gezählt.
+
+Und sie bewacht einen Pfad, der in einem Body ankommt. Ein
+`ActorRef` in einer Nachricht überquert das Wire als Marker, und
+ein Marker, der den empfangenden Knoten nennt, wird gegen dessen
+Actor-Baum aufgelöst — er ist also ein Pfad, den der Peer gewählt
+hat, genau wie das Ziel eines Envelopes. Ein Marker, der einen
+`/system`-Actor nennt, oder bei eingeschaltetem `untrusted-mode`
+einen `/user`-Actor außerhalb der Allow-List, wird zu `Nobody`
+dekodiert; ebenso einer, dessen Pfad keine vollständige
+`actor-ts://…`-URI ist und früher zum Root-Guardian aufgelöst
+wurde. Der Rest der Nachricht wird wie bisher zugestellt, und die
+Ablehnung wird unter `frame="ref"` gezählt (#1572).
 
 ### Ein Ref in einer Nachricht bestimmt nicht, wohin dieser Knoten wählt
 

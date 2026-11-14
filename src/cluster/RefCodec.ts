@@ -54,11 +54,24 @@ export function encodeRefs(value: unknown, cluster: Cluster): unknown {
  * Recursively walk a parsed wire value and replace every `WireActorRef`
  * marker with a live `ActorRef` — a local resolution if the marker points
  * at this cluster's own `selfAddress`, a `RemoteActorRef` otherwise.
- * Missing or malformed markers fall back to `Nobody`.
+ * Missing or malformed markers fall back to `Nobody`, and so does a marker
+ * naming a path on this node that no peer may address by name (#1572).
+ *
+ * `from` is the connection's peer — the party that wrote the body.  A refused
+ * marker is reported against it through `EnvelopeTrust`, under
+ * `frame="ref"`.  An in-process caller with no peer to blame may leave it out:
+ * the marker still decodes to `Nobody`, it is only not counted.
  */
-export function decodeRefs(value: unknown, cluster: Cluster): unknown {
-  return walkDecode(value, cluster, new WeakSet());
+export function decodeRefs(value: unknown, cluster: Cluster, from?: NodeAddress): unknown {
+  return walkDecode(value, { cluster, from: from ?? null }, new WeakSet());
 }
+
+/** What the decode walk carries down to every marker it meets. */
+type DecodeContext = {
+  readonly cluster: Cluster;
+  /** The peer the body came from, or `null` for an in-process caller. */
+  readonly from: NodeAddress | null;
+};
 
 /* ------------------------------ internals -------------------------------- */
 
@@ -131,19 +144,54 @@ function registerAskResponseRef(ref: AskResponseRef, cluster: Cluster): void {
  * a moment later stays usable, and one to a node that never becomes a member
  * is never dialled.
  */
-function decodeSingleRef(wire: WireActorRef, cluster: Cluster): ActorRef {
+function decodeSingleRef(wire: WireActorRef, context: DecodeContext): ActorRef {
   if (wire.path === 'nobody') return Nobody;
   const targetNode = addressOf(wire);
   if (targetNode === null) return Nobody;
+  const { cluster } = context;
   const self = cluster.selfAddress;
-  // Same node: hand back the local ref.  Actors that no longer exist fall
-  // through to Nobody rather than constructing a dangling RemoteActorRef
-  // back to ourselves.
   if (wire.host === self.host && wire.port === self.port && wire.system === self.systemName) {
-    const segs = parsePathSegments(wire.path);
-    return cluster.system._resolvePath(segs).getOrElse(Nobody);
+    return resolveSameNodeMarker(wire.path, context);
   }
   return new RemoteActorRef(targetNode, wire.path, cluster);
+}
+
+/**
+ * The local ref a same-node marker names — or `Nobody`, when the path names
+ * nothing a peer may address by name.
+ *
+ * A marker in a body is a path a remote party chose, exactly like an
+ * envelope's `to`, and it gets the same two guards `dispatchEnvelope` and
+ * `RemoteWatcher` apply to theirs (#1572).  Without them the decoder was the
+ * one reader of a wire path with no trust decision in it:
+ *
+ * - **An empty segment list is `Nobody`.**  `parsePathSegments` answers `[]`
+ *   for anything that is not a full `actor-ts://…` URI — a bare `/user/x`,
+ *   garbage, an empty string — and `_resolvePath([])` answers the root
+ *   guardian, which is right for its in-process callers and never a wire
+ *   endpoint.
+ * - **`EnvelopeTrust.refusalFor` is asked before the tree walk**, so `/system`
+ *   is refused in every configuration and an `untrusted-mode` allow-list
+ *   narrows `/user` here as it does for an envelope — and, as there, the
+ *   answer does not depend on whether the actor exists.  A refusal is reported
+ *   against the connection's peer, folded with the envelope-level ones and
+ *   never carrying the body.
+ *
+ * Neither guard throws: a throw inside the wire handler drops the peer's
+ * connection (#563), and one bad field should cost that field, not the rest
+ * of the body.  Actors that no longer exist likewise fall through to `Nobody`
+ * rather than to a dangling `RemoteActorRef` back to this node.
+ */
+function resolveSameNodeMarker(path: string, context: DecodeContext): ActorRef {
+  const segments = parsePathSegments(path);
+  if (segments.length === 0) return Nobody;
+  const trust = context.cluster._envelopeTrust;
+  const refusal = trust.refusalFor(segments);
+  if (refusal !== null) {
+    if (context.from !== null) trust.report(context.from, 'ref', refusal);
+    return Nobody;
+  }
+  return context.cluster.system._resolvePath(segments).getOrElse(Nobody);
 }
 
 /** The marker's node, validated, or `null` when it names none. */
@@ -186,28 +234,57 @@ function carriesNoRef(value: object): boolean {
     || ArrayBuffer.isView(value);
 }
 
-function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unknown {
+/**
+ * Walk one container with `value` on the ancestor path for as long as its own
+ * subtree is being walked — and no longer.
+ *
+ * Both walkers used to add every container to `ancestors` and never take it
+ * out again, which is visited-detection rather than cycle-detection: it cannot
+ * tell "this object contains itself" from "this object appears twice in the
+ * body", so the second occurrence of every shared sub-object crossed the wire
+ * as `null` (#946).  Removing it once its subtree is done keeps the set to the
+ * current path, so a shared value arrives in every position it held — as two
+ * equal copies, which is what a JSON wire can carry — while a genuine cycle is
+ * still cut where it closes, at the back-edge, exactly as before.
+ *
+ * Without a `try`/`finally` on purpose: a throw abandons the whole walk, and
+ * the set is the walk's own, built fresh by {@link encodeRefs} or
+ * {@link decodeRefs} for every call.
+ */
+function withAncestor<TValue extends object>(
+  value: TValue,
+  ancestors: WeakSet<object>,
+  walkContainer: (container: TValue) => unknown,
+): unknown {
+  if (ancestors.has(value)) return null;  // a genuine cycle: cut the back-edge
+  ancestors.add(value);
+  const out = walkContainer(value);
+  ancestors.delete(value);
+  return out;
+}
+
+function walk(value: unknown, encodeRef: RefEncoder, ancestors: WeakSet<object>): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value !== 'object') return value;
   if (value instanceof ActorRef) return encodeRef(value);
   if (carriesNoRef(value)) return value;
+  return withAncestor(value, ancestors, (container) => walkContainer(container, encodeRef, ancestors));
+}
 
-  if (seen.has(value as object)) return null;  // break cycles
-  seen.add(value as object);
-
+function walkContainer(value: object, encodeRef: RefEncoder, ancestors: WeakSet<object>): unknown {
   if (Array.isArray(value)) {
-    return value.map((v) => walk(v, encodeRef, seen));
+    return value.map((v) => walk(v, encodeRef, ancestors));
   }
 
   if (value instanceof BidirectionalMap) {
     return new BidirectionalMap(
-      Array.from(value.entries(), ([k, v]) => [k, walk(v, encodeRef, seen)] as [unknown, unknown]),
+      Array.from(value.entries(), ([k, v]) => [k, walk(v, encodeRef, ancestors)] as [unknown, unknown]),
     );
   }
   if (value instanceof BidirectionalMultiMap) {
     const out = new BidirectionalMultiMap<unknown, unknown>();
     for (const left of value.lefts()) {
-      for (const right of value.get(left)) out.add(left, walk(right, encodeRef, seen));
+      for (const right of value.get(left)) out.add(left, walk(right, encodeRef, ancestors));
     }
     return out;
   }
@@ -215,11 +292,11 @@ function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unk
     // Values only: a ref used as a Map *key* would have to be rewritten
     // without changing the key's identity, which no rebuild can promise.
     const out = new Map();
-    for (const [k, v] of value.entries()) out.set(k, walk(v, encodeRef, seen));
+    for (const [k, v] of value.entries()) out.set(k, walk(v, encodeRef, ancestors));
     return out;
   }
   if (value instanceof Set) {
-    return new Set(Array.from(value).map((v) => walk(v, encodeRef, seen)));
+    return new Set(Array.from(value).map((v) => walk(v, encodeRef, ancestors)));
   }
 
   const out: Record<string, unknown> = {};
@@ -230,27 +307,27 @@ function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unk
     // field's members instead.  Defined, it is a field like any other.
     if (k === '__proto__') {
       Object.defineProperty(out, k, {
-        value: walk(v, encodeRef, seen), enumerable: true, writable: true, configurable: true,
+        value: walk(v, encodeRef, ancestors), enumerable: true, writable: true, configurable: true,
       });
     } else {
-      out[k] = walk(v, encodeRef, seen);
+      out[k] = walk(v, encodeRef, ancestors);
     }
   }
   return out;
 }
 
-function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): unknown {
+function walkDecode(value: unknown, context: DecodeContext, ancestors: WeakSet<object>): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value !== 'object') return value;
 
-  if (isWireActorRef(value)) return decodeSingleRef(value, cluster);
+  if (isWireActorRef(value)) return decodeSingleRef(value, context);
   if (carriesNoRef(value)) return value;
+  return withAncestor(value, ancestors, (container) => walkDecodeContainer(container, context, ancestors));
+}
 
-  if (seen.has(value as object)) return null;
-  seen.add(value as object);
-
+function walkDecodeContainer(value: object, context: DecodeContext, ancestors: WeakSet<object>): unknown {
   if (Array.isArray(value)) {
-    return value.map((v) => walkDecode(v, cluster, seen));
+    return value.map((v) => walkDecode(v, context, ancestors));
   }
 
   // The container branches mirror `walk` exactly.  They were missing here,
@@ -259,23 +336,23 @@ function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): un
   // `Object.entries` tail on arrival and was delivered as `{}`.
   if (value instanceof BidirectionalMap) {
     return new BidirectionalMap(
-      Array.from(value.entries(), ([k, v]) => [k, walkDecode(v, cluster, seen)] as [unknown, unknown]),
+      Array.from(value.entries(), ([k, v]) => [k, walkDecode(v, context, ancestors)] as [unknown, unknown]),
     );
   }
   if (value instanceof BidirectionalMultiMap) {
     const out = new BidirectionalMultiMap<unknown, unknown>();
     for (const left of value.lefts()) {
-      for (const right of value.get(left)) out.add(left, walkDecode(right, cluster, seen));
+      for (const right of value.get(left)) out.add(left, walkDecode(right, context, ancestors));
     }
     return out;
   }
   if (value instanceof Map) {
     const out = new Map();
-    for (const [k, v] of value.entries()) out.set(k, walkDecode(v, cluster, seen));
+    for (const [k, v] of value.entries()) out.set(k, walkDecode(v, context, ancestors));
     return out;
   }
   if (value instanceof Set) {
-    return new Set(Array.from(value).map((v) => walkDecode(v, cluster, seen)));
+    return new Set(Array.from(value).map((v) => walkDecode(v, context, ancestors)));
   }
 
   const out: Record<string, unknown> = {};
@@ -285,10 +362,10 @@ function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): un
     // decoded object's prototype (security audit #9).
     if (k === '__proto__') {
       Object.defineProperty(out, k, {
-        value: walkDecode(v, cluster, seen), enumerable: true, writable: true, configurable: true,
+        value: walkDecode(v, context, ancestors), enumerable: true, writable: true, configurable: true,
       });
     } else {
-      out[k] = walkDecode(v, cluster, seen);
+      out[k] = walkDecode(v, context, ancestors);
     }
   }
   return out;

@@ -255,12 +255,24 @@ dauerhaft kalt.
 
 Der Router leitet seine Routee-Menge aus
 `Cluster.placementCandidates()` ab — den Up-Mitgliedern, auf die
-dieser Node Arbeit zu legen bereit ist. Auslöser eines
-Neuaufbaus:
+dieser Node Arbeit zu legen bereit ist. Er baut sie bei jedem
+Ereignis neu auf, das ein Mitglied in diese Menge hinein- oder aus
+ihr herausbringen kann:
 
-- `MemberUp` — ein neues Up-Mitglied mit passender Rolle.
-  Hinzufügen.
-- `MemberRemoved` — ein entferntes Mitglied. Rauswerfen.
+- `MemberUp` / `MemberReachable` — ein Mitglied, das (wieder) up und
+  erreichbar ist. Hinzufügen.
+- `MemberUnreachable` — der Failure Detector hört nichts mehr von
+  ihm. Sofort rauswerfen, nicht erst `downAfterMs` später bei seiner
+  Entfernung: bis dahin ginge sein Anteil am Verkehr in einen
+  Transport-Puffer, den der Peer nicht liest.
+- `MemberLeft` / `MemberDown` / `MemberRemoved` — ein Mitglied, das
+  sich abmeldet, gedowned oder weg ist. Rauswerfen.
+- `MemberConfigurationMismatch` — eine geprüfte Einstellung weicht ab
+  (siehe unten).
+
+Nachrichten, die schon an den Transport übergeben waren, bevor der
+Failure Detector anschlägt, werden nicht zurückgeholt; das Fenster,
+das bleibt, ist `unreachableAfterMs`, nicht `downAfterMs`.
 
 Die Menge ist **deterministisch geordnet** (per Adresse), sodass
 Round-Robin-Counter über Neuaufbauten hinweg vernünftig bleiben.
@@ -288,10 +300,10 @@ ausschließen. Hier kostet das ein Routee; überall, wo eine Rolle
 [Cluster-Singletons](/de/cluster/singleton/overview/) und der
 Shard-Koordinator weiterhin die Up-Mitglieder.
 
-Eine Abweichung ist kein Mitgliedschaftsereignis, ein bereits
-laufender Router wendet sie also beim nächsten Neuaufbau an — beim
-nächsten `MemberUp` oder `MemberRemoved`. Im Normalfall ist das
-keine Wartezeit: die Einstellungen, die das Framework selbst
+Ein bereits laufender Router wendet eine Abweichung an, sobald
+`MemberConfigurationMismatch` sie meldet, und eine Behebung beim
+nächsten Neuaufbau — eine Behebung wird nicht angekündigt. Im
+Normalfall ist beides keine Wartezeit: die Einstellungen, die das Framework selbst
 veröffentlicht, sind aufgelöst, bevor der erste Frame eines Nodes
 läuft, ein abweichender Peer ist also schon außerhalb der
 Kandidatenmenge, wenn sein Beitritt `MemberUp` auslöst.
@@ -300,11 +312,12 @@ Kandidatenmenge, wenn sein Beitritt `MemberUp` auslöst.
 
 ```ts
 router.tell({ payload: 'a' });
-// → wenn kein Up-Mitglied `role` matched, wird die Nachricht mit einem Warn-Log fallengelassen
+// → wenn kein Up-Mitglied `role` matched, geht die Nachricht in die Dead Letters, mit einem Warn-Log
 ```
 
 **Wichtig:** eine leere Routee-Menge bedeutet, dass **Nachrichten
-in Dead Letters fallen**. Das Framework puffert nicht, während es
+in Dead Letters fallen** — als `DeadLetter` im Event-Stream des
+Systems, der Verlust ist also beobachtbar statt nur eine Logzeile. Das Framework puffert nicht, während es
 auf Routees wartet — das würde stillschweigend unbegrenzt wachsen.
 
 Für "fang erst an zu bedienen, wenn der Pool mindestens N Routees
