@@ -3323,7 +3323,7 @@ ports, roles and restart pacing are the `worker-mesh.*` and
 | `worker-cluster.restart-min-backoff` | `200ms` | Delay before the first respawn of a crashed slot. |
 | `worker-cluster.restart-max-backoff` | `10s` | Ceiling for the respawn delay, which doubles per attempt. |
 | `worker-cluster.restart-random-factor` | `0.2` | ± jitter fraction on each respawn delay, in `[0, 1]`. |
-| `worker-cluster.max-restarts` | `10` | Restarts granted per slot inside the window before it is retired; `-1` restarts forever. |
+| `worker-cluster.max-restarts` | `10` | Restarts granted per slot inside the window before it is retired; `-1` restarts forever, with the backoff still growing to `restart-max-backoff`. |
 | `worker-cluster.restart-window` | `60s` | Sliding window the restart budget counts over; `0` never resets the tally. |
 
 The four duration keys drop the `Ms` suffix their options-object fields carry

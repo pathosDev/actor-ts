@@ -3548,7 +3548,7 @@ Hostnamen, Ports, Rollen und Restart-Pacing der Threads sind die
 | `worker-cluster.restart-min-backoff` | `200ms` | Wartezeit vor dem ersten Respawn eines abgestürzten Slots. |
 | `worker-cluster.restart-max-backoff` | `10s` | Obergrenze für die Respawn-Wartezeit, die pro Versuch verdoppelt wird. |
 | `worker-cluster.restart-random-factor` | `0.2` | ±-Jitter-Anteil auf jede Respawn-Wartezeit, in `[0, 1]`. |
-| `worker-cluster.max-restarts` | `10` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` startet unbegrenzt neu. |
+| `worker-cluster.max-restarts` | `10` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` startet unbegrenzt neu, der Backoff wächst dabei weiter bis `restart-max-backoff`. |
 | `worker-cluster.restart-window` | `60s` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück. |
 
 Die vier Duration-Keys lassen das `Ms`-Suffix ihrer Felder im Options-Objekt weg

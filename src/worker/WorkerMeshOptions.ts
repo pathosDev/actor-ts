@@ -196,7 +196,7 @@ export class WorkerMeshOptionsBuilder extends OptionsBuilder<WorkerMeshOptionsTy
     return this.set('restartRandomFactor', restartRandomFactor);
   }
 
-  /** Restarts granted per slot inside the window; `-1` = forever.  Default: 10. */
+  /** Restarts granted per slot inside the window; `-1` = forever, the backoff still grows.  Default: 10. */
   withMaxRestarts(maxRestarts: number): this {
     return this.set('maxRestarts', maxRestarts);
   }
@@ -259,7 +259,7 @@ export class WorkerMeshOptionsValidator extends OptionsValidator<WorkerMeshOptio
     this.numberInRange('restartRandomFactor', 0, 1);
     this.nonNegativeNumber('restartWindowMs');
     if (s.maxRestarts !== undefined && (!Number.isInteger(s.maxRestarts) || s.maxRestarts < -1)) {
-      this.fail('maxRestarts', 'must be an integer >= -1 (-1 = unlimited)', s.maxRestarts);
+      this.fail('maxRestarts', 'must be an integer >= -1 (-1 = unlimited restarts, the backoff still grows)', s.maxRestarts);
     }
     if (s.restartMinBackoffMs !== undefined && s.restartMaxBackoffMs !== undefined
       && s.restartMaxBackoffMs < s.restartMinBackoffMs) {
