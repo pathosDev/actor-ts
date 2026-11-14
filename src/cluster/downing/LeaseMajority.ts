@@ -99,6 +99,14 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  * produce a usable win: the strategy keeps arbitrating and returns no
  * decision, which is the same conservative posture as a pending acquire.
  *
+ * **Applied win (#1660)**
+ *
+ * Re-validation covers a win that is asked for again; it cannot cover one
+ * that was applied, because `Cluster` stops asking then.  So once `decide`
+ * has handed a win out, the strategy watches the lease's `onLost`, and a
+ * loss downs this node through the binding `Cluster` passes to
+ * {@link bindSelfDown} — see {@link onLeaseLost}.
+ *
  * **Fencing tokens (optional)**
  *
  * If the underlying `Lease` implements `acquireWithToken()` (K8s
@@ -170,11 +178,35 @@ export class LeaseMajority implements DowningProvider {
   /** Set once by {@link shutdown}; every decision after it is the empty one. */
   private stopped = false;
 
+  /**
+   * True from the moment {@link decide} hands out a won arbitration until the
+   * lease behind it is lost or the strategy is shut down (#1660).
+   *
+   * Handing it out is what makes it matter: `Cluster` applies whatever
+   * `decide` returns, tombstoning the other side, and then stops asking about
+   * that partition — the next view has nobody unreachable, so {@link reset}
+   * runs and nothing here consults the lease again.  This flag is what keeps
+   * the survival that decision granted tied to the lease after that.  It
+   * survives `reset()` on purpose, for exactly that reason.
+   */
+  private survivalRestsOnLease = false;
+
+  /** How `Cluster` takes this node out between decisions — see {@link bindSelfDown}. */
+  private downSelf: ((reason: string) => void) | null = null;
+
+  /** Unsubscribes {@link onLeaseLost} from the lease; called by {@link shutdown}. */
+  private readonly stopWatchingLease: () => void;
+
   private readonly options: LeaseMajorityOptionsType;
 
   constructor(options: LeaseMajorityOptions) {
     this.options = options as LeaseMajorityOptionsType;
     new LeaseMajorityOptionsValidator().validate(this.options);
+    this.stopWatchingLease = this.options.lease.onLost((reason) => this.onLeaseLost(reason));
+  }
+
+  bindSelfDown(downSelf: (reason: string) => void): void {
+    this.downSelf = downSelf;
   }
 
   decide(view: ClusterPartitionView): DowningDecision {
@@ -234,7 +266,10 @@ export class LeaseMajority implements DowningProvider {
       // Cached from a prior tick on this same view.  A won arbitration is
       // returned only while the lease behind it is still held (#937);
       // otherwise it is dropped here and the kickoff below arbitrates afresh.
-      if (!this.decisionRestsOnLease || this.options.lease.checkAlive()) {
+      if (!this.decisionRestsOnLease) return this.decision;
+      if (this.options.lease.checkAlive()) {
+        // Handed out from here on, so applied: survival now rests on the lease.
+        this.survivalRestsOnLease = true;
         return this.decision;
       }
       this.decision = null;
@@ -298,11 +333,33 @@ export class LeaseMajority implements DowningProvider {
   async shutdown(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.survivalRestsOnLease = false;
+    this.stopWatchingLease();
     this.reset();
     await this.options.lease.release();
   }
 
   /* ------------------------------ internals ------------------------------ */
+
+  /**
+   * The lease reported itself lost (#1660).  If a win resting on it was handed
+   * out, this node survived the split only because it held the lease, and it
+   * cannot tell a lapse nobody noticed from the other side having taken the
+   * record and downed this one — which is the case that forks the cluster.
+   * So it fails closed: this node downs itself through the binding `Cluster`
+   * gave it, once, and the cluster stops rather than splits.
+   *
+   * The watch lasts until {@link shutdown}, not for a fixed window after the
+   * win: the other side can arbitrate as long as any of its members runs and
+   * still sees this one unreachable, and this side has no way to learn when
+   * that has stopped.  No `down-removal-margin` exists to bound it, and the
+   * downed members' tombstone lifetime — a day by default — is no tighter.
+   */
+  private onLeaseLost(reason: string): void {
+    if (this.stopped || !this.survivalRestsOnLease) return;
+    this.survivalRestsOnLease = false;
+    this.downSelf?.(`the lease behind an applied lease-majority win was lost: ${reason}`);
+  }
 
   /**
    * Run a single acquire attempt, scoped to a captured epoch.  The

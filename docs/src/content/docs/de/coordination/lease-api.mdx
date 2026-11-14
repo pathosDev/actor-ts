@@ -134,6 +134,18 @@ dieses Acquire resolved.  Ein Acquire, auf das man nicht mehr
 wartet, lässt sich also erst rückgängig machen, wenn es sich
 zurückmeldet.
 
+**Ein Release gibt immer nur den eigenen Record des Halters
+zurück.**  Ein Halter, der länger als seine TTL stand, kann sich
+noch für den Halter halten, während ein anderer Node den Lease
+rechtmäßig übernommen hat; sein Release darf den Record des
+Nachfolgers nicht löschen.  Beide eingebauten Backends halten das
+ein: `InMemoryLease` entfernt einen Record nur, solange er diesen
+Owner nennt, und `KubernetesLease` sendet nach Ablauf der TTL
+nichts und knüpft das DELETE sonst an den Record, den es zuletzt
+geschrieben hat (#1659).  Ist der Record nicht mehr unserer, ist
+das ein sauberes Release, kein Reject.  Ein eigenes Backend muss
+dieselbe Garantie geben.
+
 ## `checkAlive(): boolean`
 
 ```ts
