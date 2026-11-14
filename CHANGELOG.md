@@ -44,6 +44,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`DowningProvider.bindSelfDown(downSelf)`** (optional) lets a strategy
   take this node out between decisions (#1660).
 
+- **Broker acknowledgment settings and a failure event** (#975, #976, #977):
+  HOCON `acknowledgment` and `acknowledgment-timeout` under the kafka, amqp
+  and mqtt blocks, `withAcknowledgment(…)` on their builders, the
+  `acknowledgeDelivery` / `negativelyAcknowledgeDelivery` helpers, and a
+  `BrokerAcknowledgmentFailed` event for an acknowledgment the broker
+  refused. The Kafka consumer logs its commit mode at start.
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -93,6 +100,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   writes, an unlisted BREAKING patch release, and a Kubernetes sample that
   does not compile.
 
+- **`AmqpActor` no longer waits forever for `drain` on a closing channel**
+  (#981). The wait fails on close, on error or after 30 s, so one
+  backpressure episode can no longer wedge the outbound path. A failing
+  AMQP ack is logged and published instead of being silently ignored
+  (#976).
+- **The CoordinatedShutdown `service-stop` task no longer leaves a live
+  connection attached to a stopped broker actor** (#1223).
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
@@ -131,6 +146,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   change, use an atomic journal, or set
   `actor-ts.persistence.allow-non-atomic-batch-append = on` to accept that a
   failure can commit a prefix.
+
+- **BREAKING — `KafkaActor`, `AmqpActor` and `MqttActor` acknowledge a
+  delivery only after the target replies, which makes them at-least-once**
+  (#975, #976, #977). Before, each acknowledged before the target had
+  processed anything, so a crash in between lost the message. The default
+  is now `acknowledgment: 'on-reply'`:
+  - The actor `ask`s the target with the delivery, and acknowledges or
+    commits on `{ kind: 'acknowledgment' }`.
+  - A `negativeAcknowledgment`, any other reply, or no reply within
+    `acknowledgment-timeout` (30 s) leaves the delivery for redelivery.
+    Kafka does not commit the offset, AMQP nacks with requeue, and MQTT
+    withholds the PUBACK.
+
+  Two MQTT limits remain, and they are documented. mqtt.js offers no
+  `manualAcks`, so the actor defers through the client's `handleMessage`
+  hook, which processes inbound messages one at a time per connection.
+  Redelivery needs `cleanSession: false`, and a QoS 2 message whose
+  processing fails is not redelivered, because mqtt.js answers PUBREC on
+  arrival.
+
+  *Migration:* each target calls `acknowledgeDelivery(delivery)` after it
+  has processed the delivery; an MQTT `onMessage` acknowledges by
+  returning. To keep the old behaviour, set
+  `withAcknowledgment('on-delivery')` or `acknowledgment = "on-delivery"`.
+- **BREAKING — `withConsumer` / `withProducer` on `KafkaOptions` merge with
+  HOCON leaf by leaf** (#975). A partial `withConsumer` no longer erases
+  `consumer.commit-mode` or any other HOCON leaf it does not name.
+  *Migration:* a call that relied on resetting unnamed HOCON leaves must
+  now name them.
+- **BREAKING — `RedisStreamsOptions.blockMs = 0` is refused** (#982). A
+  blocking read without a bound could hold `quit()` forever while the actor
+  stopped. *Migration:* use a positive block.
 
 ### Security
 
