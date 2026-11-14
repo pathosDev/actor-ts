@@ -27,6 +27,7 @@ import type {
   TlsTransportOptionsType,
 } from '../../../src/runtime/tcp/TcpBackend.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 const CONNECT_TIMEOUT_MS = 150;
 
@@ -182,7 +183,7 @@ function internals(client: ClusterClient): ClientInternals {
 function helloAcknowledgment(port: number): Uint8Array {
   return encodeFrame({
     kind: 'hello-ack',
-    wireVersion: 2,
+    wireVersion: CLUSTER_WIRE_VERSION,
     self: new NodeAddress('contact-point', '127.0.0.1', port, 'test-run').toJSON(),
   });
 }

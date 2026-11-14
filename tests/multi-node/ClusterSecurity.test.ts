@@ -327,6 +327,7 @@ describe('Cluster — gossip exploit defenses', () => {
  * same address to simulate the attack.
  */
 import { TcpTransport } from '../../src/cluster/Transport.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../src/cluster/WireVersion.js';
 
 describe('Transport — hello-handshake hijack defense', () => {
   test('exploit: second hello with same claimed identity is rejected', () => {
@@ -368,7 +369,7 @@ describe('Transport — hello-handshake hijack defense', () => {
 
     // First hello on conn1 — legitimate, accepted.
     const helloFrame = (): Uint8Array => {
-      const message = JSON.stringify({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: claimedPeer.toJSON() });
+      const message = JSON.stringify({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: claimedPeer.toJSON() });
       const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
@@ -411,7 +412,7 @@ describe('Transport — hello-handshake hijack defense', () => {
 
     const peer = new NodeAddress('hijack', '10.0.0.99', 5001, 'test-run');
     const helloFrame = (): Uint8Array => {
-      const message = JSON.stringify({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() });
+      const message = JSON.stringify({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peer.toJSON() });
       const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
@@ -532,8 +533,8 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
   // The tie-break is "the dial from the lexicographically smaller address
   // wins", and these two addresses differ only in that octet — so A's dial
   // is the one that must survive, on both sides.
-  const helloFromA = frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeA.toJSON() });
-  const helloFromB = frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeB.toJSON() });
+  const helloFromA = frameOf({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: nodeA.toJSON() });
+  const helloFromB = frameOf({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: nodeB.toJSON() });
 
   test('exploit: two nodes dialling each other at once still converge', async () => {
     // --- node A dials B, and B's hello arrives before A's ack ---
@@ -575,7 +576,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(aInboundAtB);
 
     // --- A completes its handshake on the surviving connection ---
-    a.raw.onData(aOutbound, frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeB.toJSON() }));
+    a.raw.onData(aOutbound, frameOf({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: nodeB.toJSON() }));
     expect(a.raw.byPeer.get(nodeB.toString())?.peer).not.toBeNull();
   });
 
@@ -786,7 +787,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       expect(a.raw.byPeer.size).toBe(0);
     });
 
-    const helloAckFromB = frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeB.toJSON() });
+    const helloAckFromB = frameOf({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: nodeB.toJSON() });
 
     /**
      * The three things a late `hello-ack` must not leave behind.  `byPeer.has`
@@ -985,7 +986,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       const dial = a.dials[0]!;
       await dial.openThenResolve();
       const nodeBAdvertised = new NodeAddress('sim', 'node-b.internal', 5000, 'test-run');
-      dial.handlers.onData(dial.socket, frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeBAdvertised.toJSON() }));
+      dial.handlers.onData(dial.socket, frameOf({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: nodeBAdvertised.toJSON() }));
       expect(a.raw.byPeer.get(nodeB.toString())).toBe(connection);
       expect(a.raw.byPeer.get(nodeBAdvertised.toString())).toBe(connection);
 
@@ -1010,7 +1011,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       const intruder = abortableSocket();
       b.raw.attachInbound(intruder);
       const nodeC = new NodeAddress('sim', '10.0.0.3', 5000, 'test-run');
-      const hijackThenFreshClaim = concatFrames(helloFromA, frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeC.toJSON() }));
+      const hijackThenFreshClaim = concatFrames(helloFromA, frameOf({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: nodeC.toJSON() }));
       b.raw.onData(intruder, hijackThenFreshClaim);
 
       expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(established);

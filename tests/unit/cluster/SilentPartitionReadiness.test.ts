@@ -10,6 +10,7 @@ import { encodeFrame } from '../../../src/cluster/Protocol.js';
 import type { MemberStatus } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import { NoopLogger } from '../../../src/Logger.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 /**
  * The `cluster-transport` readiness check versus the *canonical* partition
@@ -79,7 +80,7 @@ function internals(transport: TcpTransport): TransportInternals {
 function handshake(transport: TcpTransport, peer: NodeAddress): MockSocket {
   const socket = mockSocket();
   internals(transport).attachInbound(socket);
-  internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
+  internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peer.toJSON() }));
   return socket;
 }
 

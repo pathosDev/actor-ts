@@ -27,6 +27,7 @@ import type {
   TcpSocketLike,
 } from '../../../src/runtime/tcp/TcpBackend.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
 const CERT = readFileSync(new URL('localhost-cert.pem', FIXTURES), 'utf8');
@@ -126,7 +127,7 @@ describe('the dial writes one hello (#1475)', () => {
             // Ack the first hello only, as a peer would: the second one is the
             // defect, and answering it would hide nothing either way.
             if (message.kind === 'hello' && received.filter((m) => m.kind === 'hello').length === 1) {
-              socket.write(encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() }));
+              socket.write(encodeFrame({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: peer.toJSON() }));
             }
           }
         },
@@ -384,7 +385,7 @@ describe('a dial that misses its deadline is given up, and says how far it got (
     const { transport, dials } = dialling();
     transport.send(target, heartbeat(1));
     await dials[0]!.open();
-    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: target.toJSON() }));
+    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: target.toJSON() }));
 
     await transport.shutdown();
 
@@ -467,7 +468,7 @@ describe('an acked dial is one peer, under however many keys', () => {
     transport.send(dialled, heartbeat(1));
     await dials[0]!.open();
 
-    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: announced.toJSON() }));
+    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: announced.toJSON() }));
     expect([...internals(transport).byPeer.keys()].sort()).toEqual([announced.toString(), dialled.toString()].sort());
 
     expect(transport.peers().map(String)).toEqual([announced.toString()]);
@@ -483,7 +484,7 @@ describe('an acked dial is one peer, under however many keys', () => {
     transport.send(address, heartbeat(1));
     await dials[0]!.open();
 
-    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: address.toJSON() }));
+    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: address.toJSON() }));
 
     expect(transport.peers().map(String)).toEqual([address.toString()]);
   });
@@ -499,7 +500,7 @@ describe('an acked dial is one peer, under however many keys', () => {
 describe('a crossing dial is not reported as a hijack', () => {
   /** Sorts after `self`, so `self`'s dial is the one the tie-break keeps. */
   const nodeB = new NodeAddress('dialler', '127.0.0.2', 2_552, 'test-run');
-  const helloFromB = encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeB.toJSON() });
+  const helloFromB = encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: nodeB.toJSON() });
 
   test('the side whose dial survives turns the other away without crying hijack', async () => {
     const log = new CapturingLogger();
@@ -565,13 +566,13 @@ describe('a crossing dial is not reported as a hijack', () => {
       transport.send(peer, heartbeat(1));
       await dials[0]!.open();
       const dialled = dials[0]!.socket;
-      internals(transport).onData(dialled, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() }));
+      internals(transport).onData(dialled, encodeFrame({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: peer.toJSON() }));
       const established = internals(transport).byPeer.get(peer.toString());
       expect(established).toBeDefined();
 
       const intruder = recordingSocket();
       internals(transport).attachInbound(intruder);
-      internals(transport).onData(intruder, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
+      internals(transport).onData(intruder, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peer.toJSON() }));
 
       expect(internals(transport).byPeer.get(peer.toString())).toBe(established);
       expect({ destroyed: dialled.destroyed, ended: dialled.ended }).toEqual({ destroyed: false, ended: false });

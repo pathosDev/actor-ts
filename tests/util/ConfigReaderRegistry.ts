@@ -142,6 +142,7 @@ import { readPersistencePluginIdsFromConfig } from '../../src/persistence/Persis
 import { readProjectionOptionsFromConfig } from '../../src/persistence/projection/ProjectionOptions.js';
 import { readInMemorySnapshotStoreOptionsFromConfig } from '../../src/persistence/snapshot-stores/InMemorySnapshotStoreOptions.js';
 import { readReadConstraintsOptionsFromConfig } from '../../src/serialization/ReadConstraintsOptions.js';
+import { readWireDecodeOptionsFromConfig } from '../../src/serialization/WireDecodeOptions.js';
 import { readOtelAdapterOptionsFromConfig } from '../../src/tracing/OtelAdapterOptions.js';
 import { readOtelLogsAdapterOptionsFromConfig } from '../../src/tracing/OtelLogsAdapterOptions.js';
 import { readOffloadPoolOptionsFromConfig } from '../../src/worker/OffloadPoolOptions.js';
@@ -587,6 +588,11 @@ const serializationReaders: readonly ReaderEntry[] = [
     name: 'readReadConstraintsOptionsFromConfig',
     read: readReadConstraintsOptionsFromConfig,
     suite: 'tests/unit/serialization/ReadConstraints.test.ts',
+  },
+  {
+    name: 'readWireDecodeOptionsFromConfig',
+    read: readWireDecodeOptionsFromConfig,
+    suite: 'tests/unit/cluster/WireTagAllowList.test.ts',
   },
 ];
 

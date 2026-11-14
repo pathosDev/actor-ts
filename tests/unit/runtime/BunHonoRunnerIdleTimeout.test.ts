@@ -57,7 +57,6 @@ const earliestCutSeconds = (seconds: number): number => SWEEP_SECONDS * (Math.ce
 
 describe('BunHonoRunner — an explicit idleTimeoutMs reaches Bun.serve in whole seconds, rounded up', () => {
   test.each([
-    [0, 0],
     [100, 1],
     [1_500, 2],
     [5_000, 5],
@@ -97,6 +96,15 @@ describe('BunHonoRunner — an explicit idleTimeoutMs reaches Bun.serve in whole
     expect(new BunHonoRunner(capturingBun().bun).idleTimeoutCeilingMs).toBe(255_000);
   });
 
+  test('0 never reaches Bun.serve, which reads it as never closing — it is the only bound there (#1767)', async () => {
+    const { bun, bags } = capturingBun();
+    const runner = new BunHonoRunner(bun);
+
+    await expect(runner.serve({ host: '127.0.0.1', port: 0, fetch: hello, idleTimeoutMs: 0 })).rejects.toThrow(/only bound/);
+    expect(bags, 'Bun.serve was called with idleTimeout 0').toEqual([]);
+    expect(runner.idleTimeoutIsOnlyBound).toBe(true);
+  });
+
   test('a set idleTimeoutMs is reported applied; the explicit value beats the derived one', async () => {
     const { bag, handle } = await serveWith({ idleTimeoutMs: 5_000, requestDeadlineMs: 30_000 });
 
@@ -129,7 +137,6 @@ describe('BunHonoRunner — an explicit idleTimeoutMs reaches Bun.serve in whole
     [36_000, 30_000],
     [32_000, 26_000],
     [255_000, 250_000],
-    [0, 30_000],
   ])('idleTimeoutMs %d under a %d ms deadline lets the 503 win, and says nothing', async (idleTimeoutMs, requestDeadlineMs) => {
     const { handle } = await serveWith({ idleTimeoutMs, requestDeadlineMs });
 

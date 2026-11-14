@@ -85,6 +85,7 @@ export function trackSocket(
     send: (data) => socket.send(data),
     close: (code, reason) => socket.close(code, reason),
     terminate: socket.terminate ? () => socket.terminate!() : undefined,
+    ping: socket.ping ? () => socket.ping!() : undefined,
     setListeners: (l) => {
       socket.setListeners({
         onMessage: (data) => l.onMessage(data),
@@ -93,6 +94,7 @@ export function trackSocket(
           l.onClose(code, reason);
         },
         onError: (err) => l.onError(err),
+        onPong: () => l.onPong?.(),
       });
     },
     get readyState() {
@@ -133,10 +135,12 @@ function decrementOnClose(
     send: (data) => socket.send(data),
     close: (code, reason) => socket.close(code, reason),
     terminate: socket.terminate ? () => socket.terminate!() : undefined,
+    ping: socket.ping ? () => socket.ping!() : undefined,
     setListeners: (l) => socket.setListeners({
       onMessage: (data) => l.onMessage(data),
       onClose: (code, reason) => { fire(); l.onClose(code, reason); },
       onError: (err) => l.onError(err),
+      onPong: () => l.onPong?.(),
     }),
     get readyState() { return socket.readyState; },
     bufferedAmount: socket.bufferedAmount ? () => socket.bufferedAmount!() : undefined,
@@ -258,6 +262,7 @@ function guardAcceptHandoff(
     send: (data) => socket.send(data),
     close: (code, reason) => socket.close(code, reason),
     terminate: socket.terminate ? () => socket.terminate!() : undefined,
+    ping: socket.ping ? () => socket.ping!() : undefined,
     setListeners: (l) => {
       attached = true;
       if (abandonedWith !== null) {

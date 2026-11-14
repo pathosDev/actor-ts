@@ -87,7 +87,9 @@ A short tour of what's in the box:
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections
   (event by event or a group per call with `withHandleGroup`, and a
   per-projection handler-failure strategy: retry with backoff, skip to dead
-  letters, or stop), persistence-query, replicated event sourcing.  Journals for in-memory,
+  letters, or stop; by-tag reads re-read a lookback window and deduplicate,
+  so an event committed late is still delivered once), persistence-query,
+  replicated event sourcing.  Journals for in-memory,
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
   Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,
@@ -102,7 +104,8 @@ A short tour of what's in the box:
   backends, response caching, rate-limiting, idempotency-key dedup.  Typed
   **WebSocket** routes: `websocket(path, actorRef)` binds a
   `WebsocketServerActor` (typed messages, `reply` / `broadcast`,
-  connect/disconnect hooks); `WebsocketClientActor` is the reconnecting
+  connect/disconnect hooks, a server heartbeat that reaps half-open
+  peers); `WebsocketClientActor` is the reconnecting
   client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
   a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
   Basic auth, JWT auth, request-id, timeout); HTML-escaping helpers; and

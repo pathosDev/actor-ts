@@ -181,6 +181,31 @@ ref.tell({ when: new Date() });
 ref.tell({ onDone: () => {} });
 ```
 
+**What the receiver builds is its own decision** (#1303).  The
+sender writes every tag; the receiving node constructs only the
+ones in `actor-ts.serialization.wire.admitted-tags`, which by
+default are the data tags — `date`, `bytes`, `typed-array`, `map`,
+`set`, `bigint`, the two bidirectional maps and `number`.  A
+`RegExp`, `URL`, `Error` or an `undefined` in a value position
+(array slot, `Set` member, `Map` entry) is therefore **not
+reconstructed on a default node**: the frame carrying it is
+refused — skipped, with a WARN naming the tag — and never reaches
+the actor.  It is not delivered as a plain object instead, because
+that would change the value's class without anyone noticing.  The
+connection, and the frames batched beside the refused one, are
+kept.  A frame is bytes a peer wrote, so this is the line between a
+peer sending data and a peer choosing which classes your actors
+receive — an attacker-authored `RegExp` included.
+
+```hocon
+# every node that receives an Error across the wire
+actor-ts.serialization.wire.admitted-tags = [date, bytes, typed-array, map, set, bigint, bidirectional-map, bidirectional-multi-map, number, error]
+```
+
+An unset object property is not a tag — it is dropped, as
+`JSON.stringify` drops it — so ordinary optional fields cross
+every allow-list.
+
 ## Where serialization fires
 
 ```
@@ -222,6 +247,15 @@ import { Aside } from '@astrojs/starlight/components';
   refuse.  Round-trip the message through `JsonSerializer` — the
   same tree the wire frames, only stricter about `undefined` — in
   an ordinary unit test instead.
+</Aside>
+
+<Aside type="caution" title="Upgrading from v0.18 is stop-and-start">
+  A v0.18 node writes `RegExp`, `URL`, `Error` and value-position
+  `undefined` tags unasked, and a v0.19 node would refuse every frame
+  carrying one.  So v0.19.0 moves the cluster wire to version 3, and
+  the two refuse each other at the handshake, by version, instead of
+  losing those frames one at a time (#1303).  Upgrade every node in
+  one window.
 </Aside>
 
 <Aside type="caution" title="Upgrading a running cluster">

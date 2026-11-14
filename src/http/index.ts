@@ -46,6 +46,8 @@ export {
   IpAllowlistOptions,
   IpAllowlistOptionsBuilder,
   IpAllowlistOptionsValidator,
+  clientIpResolver,
+  resolveClientIp,
   strictTransportSecurity,
   hsts,
   HstsOptions,
@@ -92,6 +94,7 @@ export {
 export type {
   BearerTokenAuthOptions,
   IpAllowlistOptionsType,
+  ClientIpResolver,
   HstsOptionsType,
   CspOptionsType,
   CspDirectives,
@@ -114,6 +117,8 @@ export type {
 } from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
+export { EntityOptions, EntityOptionsBuilder, EntityOptionsValidator } from './EntityOptions.js';
+export type { EntityOptionsType } from './EntityOptions.js';
 
 // HTML form bodies — `application/x-www-form-urlencoded`, the one request
 // media type that is not also a cluster-wire codec, hence its home here.
@@ -210,9 +215,13 @@ export {
   RateLimitOptions,
   RateLimitOptionsBuilder,
   RateLimitOptionsValidator,
+  DEFAULT_RATE_LIMIT_FAILURE_MODE,
   idempotent,
+  DEFAULT_IDEMPOTENCY_HANDLER_ERROR_POLICY,
+  DEFAULT_IDEMPOTENCY_LOCK_TTL_MS,
   DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
   DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH,
+  DEFAULT_IDEMPOTENCY_TTL_MS,
   IdempotencyOptions,
   IdempotencyOptionsBuilder,
   IdempotencyOptionsValidator,
@@ -221,6 +230,9 @@ export {
 export type {
   RateLimitOptionsType,
   RateLimitContext,
+  RateLimitBackendErrorContext,
+  RateLimitFailureMode,
+  IdempotencyHandlerErrorPolicy,
   IdempotencyOptionsType,
   ResponseCacheOptions,
 } from './cache/index.js';

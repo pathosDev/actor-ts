@@ -9,6 +9,7 @@ import {
   type Http2SessionLike,
   type NodeHttpServerLike,
 } from '../../../src/http/backend/HttpServerBackend.js';
+import { DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS } from '../../../src/http/Constants.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { completeText, get, path } from '../../../src/http/Route.js';
@@ -355,4 +356,87 @@ describe('the idle timer counts open streams', () => {
 
     expect(server.armed, 'a closed session left its idle timer armed').toBe(0);
   });
+
+  /**
+   * #1757 — with `idle-timeout` unset, an HTTP/2 session was the backend's
+   * and the runtime's: 72 s on Fastify under Node, 144 s and extended by every
+   * PING under Bun, never closed on Hono under Node.  Through
+   * `applyServerOptions`, which every pair a `node:http2` server backs goes
+   * through, the framework's own timer is armed at the default instead.
+   */
+  function appliedUnset(listener: { updateSettings?: unknown }) {
+    const sessionListeners: Array<(session: Http2SessionLike) => void> = [];
+    const server = {
+      ...listener,
+      on: ((event: string, handler: (session: Http2SessionLike) => void) => {
+        if (event === 'session') sessionListeners.push(handler);
+        return server;
+      }) as NodeHttpServerLike['on'],
+    } as NodeHttpServerLike;
+    const delays: number[] = [];
+    const pending = new Map<number, () => void>();
+    let nextHandle = 0;
+    const hostTimers: HostTimers = {
+      setTimeout: (callback, milliseconds) => { delays.push(milliseconds ?? 0); nextHandle++; pending.set(nextHandle, callback); return nextHandle; },
+      clearTimeout: (handle) => { pending.delete(handle as number); },
+      setInterval: () => { throw new Error('the idle timer arms no interval'); },
+      clearInterval: () => { /* nothing to clear */ },
+    };
+    const report = applyServerOptions(server, { requestTimeoutMs: 0 }, hostTimers);
+    return {
+      report,
+      delays,
+      connect: () => {
+        const fake = fakeSession();
+        for (const handler of sessionListeners) handler(fake.session);
+        return fake;
+      },
+      fire: (): void => {
+        const due = [...pending];
+        pending.clear();
+        for (const [, callback] of due) callback();
+      },
+    };
+  }
+
+  test('unset on an HTTP/2 listener, the framework arms its own timer at the default, and the report says so (#1757)', () => {
+    const server = appliedUnset({ updateSettings: () => { /* an HTTP/2 listener */ } });
+    const connection = server.connect();
+
+    expect(server.report.http2SessionIdleDefaultMs).toBe(DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS);
+    expect(DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS).toBe(72_000);
+    // The runtime's own timer — the one Bun doubles and a PING resets — is
+    // cleared, and only a stream holds the framework's off.
+    expect(connection.runtimeTimeouts).toEqual([0]);
+    expect(server.delays).toEqual([DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS]);
+    server.fire();
+    expect(connection.closes).toBe(1);
+  });
+
+  test('unset on an HTTP/1.1-only listener, nothing is armed and nothing is reported', () => {
+    const server = appliedUnset({});
+
+    expect(server.report).not.toHaveProperty('http2SessionIdleDefaultMs');
+    expect(server.connect().runtimeTimeouts).toEqual([]);
+  });
+});
+
+describe('unset idle-timeout on a live HTTP/2 listener (#1757)', () => {
+  test('the framework-built Fastify backend reports the session default in effect', async () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http2-session-idle-default', systemOptions);
+    cleanups.push(() => system.terminate());
+    const serverOptions = HttpServerOptions.create()
+      .withTls({ cert: CERT, key: KEY })
+      .withHttp2();
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .withServerOptions(serverOptions)
+      .bind(path('', get(() => completeText(200, 'ok'))));
+    cleanups.push(() => binding.unbind(0));
+
+    expect(binding.serverOptionsReport?.http2SessionIdleDefaultMs).toBe(DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS);
+  }, LIVE_TEST_TIMEOUT_MS);
 });

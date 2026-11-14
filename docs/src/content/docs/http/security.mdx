@@ -129,8 +129,8 @@ the whole server does.
   ```
 
   What the forwarded headers do here: `X-Forwarded-For` is read only by
-  [`IpAllowlist`](/http/middleware/ip-allowlist/), and only once you have
-  named the proxies; `X-Forwarded-Proto` is read by nothing — `Csrf` gets
+  [`IpAllowlist`](/http/middleware/ip-allowlist/) and the
+  `clientIpResolver` it shares, and only once you have named the proxies; `X-Forwarded-Proto` is read by nothing — `Csrf` gets
   the scheme from `expectedScheme` instead, precisely because a forwarded
   scheme is set by whoever sends the request.
 - **Trusting client IPs.** `req.remoteAddress` is the socket peer, not a
@@ -264,8 +264,9 @@ the [Route DSL](/http/route-dsl/).
   capped until you say so. **These reach a connection through a `node:http` server**, so
   Fastify, Express and Hono-on-Node carry them, Hono on Bun carries
   `idle-timeout` alone — so there it is the only bound on a request whose
-  body stops arriving and on an idle connection, and `0` leaves such a
-  connection open until the client closes it — and Hono on Deno neither
+  body stops arriving and on an idle connection, and `bind()` refuses `0`,
+  which would leave such a connection open until the client closes it — and
+  Hono on Deno neither
   — see the [configuration reference](/reference/configuration/) for the table.
   Where one cannot, `bind()` says so: every bound you set that the backend
   reports not in effect is named in one warning when the server binds — a bound
@@ -306,25 +307,24 @@ the [Route DSL](/http/route-dsl/).
     does not reset it: a client pinging every 300 ms has its idle session
     closed on time.
 
-  **Left unset**, an idle HTTP/2 session on the default backend is bounded by
-  Fastify's own session timer: **72 s on Node, but 144 s on Bun**, which fires
-  it at twice its value — and on Bun that timer counts a PING frame as
-  activity, so a client pinging once a second held a session with no request
-  on it open for as long as it kept pinging (still open at 170 s, bun 1.4.2).
-  On Hono over Node an unset `idle-timeout` leaves an idle HTTP/2 session
-  bounded by nothing at all. **Set `idle-timeout` on any HTTP/2 listener.**
+  **Left unset**, an idle HTTP/2 session is closed at **72 s** by actor-ts's
+  own timer, PINGs or not, on Fastify under Node and Bun and on Hono over Node.
+  Before that it was the backend's: Fastify's session timer, which Bun fires at
+  144 s and resets on every PING frame — a client pinging once a second held a
+  session with no request on it open for as long as it kept pinging (still
+  open at 170 s, bun 1.4.2) — and on Hono over Node nothing at all.
 
-  **On Bun, an HTTP/1.1 connection on the HTTP/2 listener is bounded by
-  neither.** The listener keeps HTTP/1.1 available on the same port, and Bun
-  hands such a connection to handling that reads neither `keepAliveTimeout`
-  nor `requestTimeout`: a keep-alive HTTP/1.1 connection was still open 8 s
-  after its response under an 800 ms `idle-timeout`, and a stalled HTTP/1.1
-  body 40 s in under a 2 s `request-timeout` (bun 1.4.2) — where Node closes the
-  first at 1.8 s and answers the second `408` at the next sweep. So on Bun the
-  two are reported held for HTTP/2 only and `bind()` warns; `header-timeout`
-  and `max-connections` hold for both protocols there. Where untrusted clients
-  can reach an HTTP/2 listener on Bun, terminate HTTP/1.1 in front of the
-  process or keep the listener HTTP/1.1-only.
+  **On Bun, the HTTP/1.1 connections on the HTTP/2 listener are bounded by
+  actor-ts itself.** The listener keeps HTTP/1.1 available on the same port,
+  and Bun hands such a connection to handling that reads neither
+  `keepAliveTimeout` nor `requestTimeout`: a keep-alive HTTP/1.1 connection was
+  still open 8 s after its response under an 800 ms `idle-timeout`, and a
+  stalled HTTP/1.1 body 40 s in under a 2 s `request-timeout` (bun 1.4.2). So
+  actor-ts arms its own timers on each such connection — idle between
+  requests, and a receive deadline per request, answered `408` — and both keys
+  are in effect for both protocols there, as `header-timeout` and
+  `max-connections` already were. Refusing HTTP/1.1 through ALPN was the
+  alternative, and it would turn away every client that cannot speak h2.
 
   **`header-timeout` is different, and deliberately so: actor-ts arms the
   deadline itself rather than handing the number to the runtime and hoping.**

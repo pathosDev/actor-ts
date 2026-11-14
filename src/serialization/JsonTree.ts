@@ -1,15 +1,25 @@
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { ownedBytes } from './ByteViews.js';
-import { MAX_BIGINT_DIGITS, MAX_BIGNUM_BYTES, MAX_BIGNUM_MAGNITUDE } from './Constants.js';
+import {
+  JSON_TREE_TAG_NAMES,
+  MAX_BIGINT_DIGITS,
+  MAX_BIGNUM_BYTES,
+  MAX_BIGNUM_MAGNITUDE,
+  type JsonTreeTagName,
+} from './Constants.js';
 import { DEFAULT_MAX_NESTING_DEPTH } from './ReadConstraintsOptions.js';
 import { binaryBytesOf, binaryKindOf, rebuildBinaryView, rebuildError } from './RichTypes.js';
 import { SerializationError } from './Serializer.js';
 
 /**
- * The tagged JSON tree format — one walker, two consumers: `JsonSerializer`
- * (HTTP marshalling) and the persistence `PayloadCodec` (every journal /
- * snapshot store / durable-state store).  Values that plain JSON silently
+ * The tagged JSON tree format — one walker, three consumers: `JsonSerializer`
+ * (HTTP marshalling), the cluster wire (`cluster/Protocol.ts`) and the
+ * persistence `PayloadCodec` (every journal / snapshot store / durable-state
+ * store).  A request body and a peer's frame are not bytes this framework
+ * wrote, so `entity()` and the wire decode through an allow-list
+ * ({@link JsonTreeTagOptions}, #967, #1303); the full tag set is for reading
+ * back the framework's own output.  Values that plain JSON silently
  * corrupts (`Set`/`Map` → `{}`, `Date` → string, `bigint` → throw,
  * `Uint8Array` → index-keyed object, `NaN`/`Infinity`/`-0` → `null`/`0`,
  * `RegExp`/`Error` → `{}`, `URL` → string, typed arrays → index objects)
@@ -117,6 +127,61 @@ export const FRAMING_TAGS: ReadonlySet<string> = new Set([LITERAL_TAG, SERIALIZE
 const RESERVED_TAGS: ReadonlySet<string> = new Set([...TYPE_TAGS, ...FRAMING_TAGS]);
 
 /**
+ * Wire/format vocabulary: each allow-list name and the tag key it admits —
+ * one per entry of {@link TYPE_TAGS}.  The names are the vocabulary of
+ * {@link JsonTreeTagOptions.tags}, of `entity()`'s opt-in and of
+ * `actor-ts.serialization.wire.admitted-tags`, so the three cannot drift into
+ * three spellings of one tag set.  Names rather than the `__x__` keys because
+ * they are written by people, in code and in HOCON.
+ */
+const TAG_BY_NAME: Readonly<Record<JsonTreeTagName, string>> = {
+  'date': DATE_TAG,
+  'bytes': BYTES_TAG,
+  'map': MAP_TAG,
+  'set': SET_TAG,
+  'bidirectional-map': BIDIRECTIONAL_MAP_TAG,
+  'bidirectional-multi-map': BIDIRECTIONAL_MULTI_MAP_TAG,
+  'bigint': BIGINT_TAG,
+  'number': NUMBER_TAG,
+  'undefined': UNDEFINED_TAG,
+  'regexp': REGEXP_TAG,
+  'url': URL_TAG,
+  'error': ERROR_TAG,
+  'typed-array': TYPEDARRAY_TAG,
+};
+
+/** The reverse of {@link TAG_BY_NAME}, for naming a refused tag in its error. */
+const NAME_BY_TAG: ReadonlyMap<string, JsonTreeTagName> = new Map(
+  (Object.entries(TAG_BY_NAME) as Array<[JsonTreeTagName, string]>).map(([name, tag]) => [tag, name]),
+);
+
+/**
+ * A decode met a type tag its allow-list does not admit (#967, #1303).
+ *
+ * A subclass of `SerializationError` so every caller that already answers a
+ * bad payload keeps answering this one — `entity()` with a 400 — and a
+ * separate class so the cluster wire can tell "a peer asked for a class this
+ * node will not build" apart from "a peer sent bytes that do not parse", and
+ * refuse the one frame instead of the connection.
+ *
+ * Refusing rather than handing the tag on as plain data is the point: the
+ * sender wrote the tagged format and meant a `RegExp`, so a receiver that
+ * delivered `{ __regexp__: … }` instead would change the value's class without
+ * telling anyone.  `tags: []` is the mode in which the keys carry no meaning
+ * at all, and there nothing is refused.
+ */
+export class RefusedTagError extends SerializationError {
+  /** The allow-list name of the refused tag, e.g. `'regexp'`. */
+  readonly tag: JsonTreeTagName;
+
+  constructor(tag: JsonTreeTagName) {
+    super(`tag '${tag}' is not admitted by this decode's allow-list`);
+    this.name = 'RefusedTagError';
+    this.tag = tag;
+  }
+}
+
+/**
  * How `undefined` is handled during encode.  `'reject'` throws (the HTTP
  * marshalling contract — a lossy payload is a bug there); `'omit'` matches
  * `JSON.stringify` for object properties (an `undefined` value drops the
@@ -141,13 +206,34 @@ export type JsonTreeEncodeOptions = {
  * inherit — measured on Bun, Node and Deno, it accepts 100 000 levels of `[`
  * on all three — so the recursion that overflows is this file's own (#880).
  */
-export type JsonTreeDecodeOptions = {
+export type JsonTreeDecodeOptions = JsonTreeTagOptions & {
   /**
    * Container levels to descend before refusing the payload.  Defaults to
    * {@link DEFAULT_MAX_NESTING_DEPTH}; the operator-facing knob is
    * `actor-ts.serialization.read-constraints.max-nesting-depth`.
    */
   readonly maxNestingDepth?: number;
+};
+
+/**
+ * Which tags a decode acts on — the one decode-options shape both untrusted
+ * edges use: `entity()` (#967) through `JsonSerializer`, and the cluster wire
+ * (#1303) through `FrameDecoder`.
+ */
+export type JsonTreeTagOptions = {
+  /**
+   * The type tags this decode constructs, by {@link JsonTreeTagName}.
+   *
+   *   - **Left out** — every tag.  For bytes this framework wrote itself: the
+   *     persistence `PayloadCodec` and `JsonSerializer`'s own round trip.
+   *   - **`[]`** — plain JSON.  No key is special, `__literal__` included, so
+   *     the result is exactly what `JSON.parse` produced.  `entity()`'s
+   *     default.
+   *   - **A non-empty list** — the tagged format, restricted.  A listed tag
+   *     constructs its class, `__literal__` unwraps, and any other type tag
+   *     throws {@link RefusedTagError} before its content is read.
+   */
+  readonly tags?: readonly JsonTreeTagName[];
 };
 
 /**
@@ -163,6 +249,12 @@ const NOT_TAGGED = Symbol('not-tagged');
 type DecodeContext = {
   /** Levels {@link decodeNode} may descend; see {@link JsonTreeDecodeOptions}. */
   readonly maxNestingDepth: number;
+  /**
+   * Tag keys this decode constructs, or `null` for all of them; see
+   * {@link JsonTreeTagOptions.tags}.  Empty means plain JSON, which
+   * {@link decodeNode} honours by never looking for a tag at all.
+   */
+  readonly admittedTags: ReadonlySet<string> | null;
 };
 
 type EncodeContext = {
@@ -194,8 +286,27 @@ export function encodeJsonTree(value: unknown, options?: JsonTreeEncodeOptions):
 export function decodeJsonTree(value: unknown, options?: JsonTreeDecodeOptions): unknown {
   const context: DecodeContext = {
     maxNestingDepth: options?.maxNestingDepth ?? DEFAULT_MAX_NESTING_DEPTH,
+    admittedTags: options?.tags === undefined ? null : admittedTagKeys(options.tags),
   };
   return decodeNode(value, context, 0);
+}
+
+/**
+ * Resolve an allow-list to the tag keys it admits.  An unknown name throws:
+ * it is a caller's typo (`'regex'`), and quietly admitting less than was asked
+ * for would surface later as payloads refused for no visible reason.
+ */
+function admittedTagKeys(names: readonly JsonTreeTagName[]): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const name of names) {
+    if (!Object.hasOwn(TAG_BY_NAME, name)) {
+      throw new SerializationError(
+        `unknown JsonTree tag name '${String(name)}'; expected one of ${JSON_TREE_TAG_NAMES.join(', ')}`,
+      );
+    }
+    keys.add(TAG_BY_NAME[name]);
+  }
+  return keys;
 }
 
 /* -------------------------------- Encode --------------------------------- */
@@ -495,7 +606,7 @@ function decodeNode(value: unknown, context: DecodeContext, depth: number): unkn
   if (Array.isArray(value)) return value.map((entry) => decodeNode(entry, context, depth + 1));
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj);
-  if (keys.length === 1) {
+  if (keys.length === 1 && context.admittedTags?.size !== 0) {
     const tagged = decodeTagged(keys[0]!, obj, context, depth);
     if (tagged !== NOT_TAGGED) return tagged;
   }
@@ -516,6 +627,14 @@ function decodeTagged(
   depth: number,
 ): unknown {
   const childDepth = depth + 1;
+  // Ahead of the switch, so a refused tag's content is never read: a refused
+  // `__regexp__` is not compiled, a refused `__bigint__` never reaches
+  // `BigInt()`.  `NAME_BY_TAG` holds type tags only, so `__literal__` and any
+  // non-tag key fall through to the switch as before.
+  const refusedName = context.admittedTags === null || context.admittedTags.has(key)
+    ? undefined
+    : NAME_BY_TAG.get(key);
+  if (refusedName !== undefined) throw new RefusedTagError(refusedName);
   switch (key) {
     case DATE_TAG: {
       const iso = obj[DATE_TAG];

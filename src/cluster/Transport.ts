@@ -15,6 +15,7 @@ import {
 import { NodeAddress } from './NodeAddress.js';
 import { certificateVouchesFor } from './PeerIdentity.js';
 import type { ReadConstraintsOptions } from '../serialization/ReadConstraintsOptions.js';
+import type { WireDecodeOptions } from '../serialization/WireDecodeOptions.js';
 import { TcpTransportOptionsValidator } from './TcpTransportOptions.js';
 import type { TcpTransportOptions, TcpTransportOptionsType } from './TcpTransportOptions.js';
 import {
@@ -299,6 +300,8 @@ export class TcpTransport implements Transport {
   private readonly bindPort: number;
   /** Decode ceilings for every {@link FrameDecoder} this transport builds (#880). */
   private readonly readConstraints: ReadConstraintsOptions;
+  /** The tag allow-list for every {@link FrameDecoder} this transport builds (#1303). */
+  private readonly wireDecode: WireDecodeOptions;
   /** The four association-lifecycle bounds, resolved once (#846). */
   private readonly handshakeTimeoutMs: number;
   private readonly outboundQueueSize: number;
@@ -348,6 +351,7 @@ export class TcpTransport implements Transport {
     this.bindHost = settings.bindHost ?? self.host;
     this.bindPort = settings.bindPort ?? self.port;
     this.readConstraints = settings.readConstraints ?? {};
+    this.wireDecode = settings.wireDecode ?? {};
     this.handshakeTimeoutMs = settings.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
     this.connectTimeoutMs = settings.connectTimeoutMs ?? this.handshakeTimeoutMs;
     this.outboundQueueSize = settings.outboundQueueSize ?? MAX_PENDING_FRAMES;
@@ -356,7 +360,7 @@ export class TcpTransport implements Transport {
     this.refusedInbound = {
       socket: null,
       peer: null,
-      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints, this.wireDecode),
       pending: [],
       outbound: false,
       opened: true,
@@ -604,13 +608,15 @@ export class TcpTransport implements Transport {
     if (frame === null) return;
     queueMicrotask(() => {
       if (this.stopped) return;
+      const decoder = new FrameDecoder(this.maxFrameBytes, this.readConstraints, this.wireDecode);
       let decoded: WireMessage[];
       try {
-        decoded = new FrameDecoder(this.maxFrameBytes, this.readConstraints).push(frame);
+        decoded = decoder.push(frame);
       } catch (err) {
         this.log.warn(`frame-decoder error on a frame from ${target}; dropping it`, err as Error);
         return;
       }
+      this.reportRefusals(decoder, target);
       for (const value of decoded) {
         const checked = validateWireFrame(value);
         if ('problem' in checked) {
@@ -672,7 +678,7 @@ export class TcpTransport implements Transport {
     const connection: Connection = {
       socket: sock,
       peer: null,
-      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints, this.wireDecode),
       pending: [],
       outbound: false,
       opened: true,
@@ -703,7 +709,7 @@ export class TcpTransport implements Transport {
     const connection: Connection = {
       socket: null,
       peer: null,
-      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints, this.wireDecode),
       pending: [],
       outbound: true,
       opened: false,
@@ -832,6 +838,7 @@ export class TcpTransport implements Transport {
       return;
     }
     this.trackIncompleteFrame(connection);
+    this.reportRefusals(connection.decoder, this.peerForLog(connection));
     for (const frame of frames) {
       // Two tiers, because the two failures mean different things.  A frame
       // that fails its shape check is *this frame's* problem — skip it and
@@ -857,6 +864,21 @@ export class TcpTransport implements Transport {
         this.dropConnection(connection);
         return;
       }
+    }
+  }
+
+  /**
+   * Log every frame the last `push` refused for using a tag outside the
+   * allow-list (#1303) — one WARN per frame, naming the tag, so an operator
+   * whose peer sends a `RegExp` sees which tag to admit instead of an `ask`
+   * that times out for no visible reason.
+   */
+  private reportRefusals(decoder: FrameDecoder, peer: string): void {
+    for (const refusal of decoder.lastRefusals()) {
+      this.log.warn(
+        `refusing a frame from ${peer}: ${refusal.message} `
+        + '(actor-ts.serialization.wire.admitted-tags)',
+      );
     }
   }
 

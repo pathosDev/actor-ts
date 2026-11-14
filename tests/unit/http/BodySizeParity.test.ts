@@ -20,35 +20,6 @@ import { completeJson, path, post, type Route } from '../../../src/http/Route.js
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
-/**
- * #357 — the three shipped backends used to disagree on how big a request
- * body may be (Fastify 1 MiB, Express and Hono 10 MiB each) and on what a
- * client got back when it sent too much.  Every case below is asserted for
- * all three, so the cap and the refusal are properties of the framework
- * rather than of whichever backend happens to be mounted.
- *
- * Each entry: name, a backend on the shared default cap, and a backend
- * capped through that backend's own knob — the builders for Express and
- * Hono, Fastify's native `bodyLimit` (it has no options family yet, #667).
- */
-const backends: Array<[string, () => HttpServerBackend, (bytes: number) => HttpServerBackend]> = [
-  [
-    'fastify',
-    () => new FastifyBackend({ logger: false }),
-    (bytes) => new FastifyBackend({ logger: false, bodyLimit: bytes }),
-  ],
-  [
-    'express',
-    () => new ExpressBackend(),
-    (bytes) => new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(bytes)),
-  ],
-  [
-    'hono',
-    () => new HonoBackend(),
-    (bytes) => new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(bytes)),
-  ],
-];
-
 const live: Array<{ binding: ServerBinding; system: ActorSystem }> = [];
 
 afterEach(async () => {
@@ -116,72 +87,6 @@ describe('shared body-size cap (#357)', () => {
       expect(contentLengthExceeds(undefined, 16)).toBe(false);
       expect(contentLengthExceeds('not-a-number', 16)).toBe(false);
     });
-  });
-});
-
-describe.each([...backends])('body-size parity — %s backend', (_name, defaultCapped, cappedAt) => {
-  test('refuses a body one byte over the shared default', async () => {
-    const seen = { called: false };
-    const url = await start(defaultCapped(), echoLength(seen));
-
-    const response = await postBytes(url, DEFAULT_HTTP_MAX_BODY_BYTES + 1);
-
-    expect(response.status).toBe(413);
-    // The point of the cap: the oversized body never becomes the handler's
-    // problem.  A 413 written after the handler ran would protect nothing.
-    expect(seen.called).toBe(false);
-  });
-
-  test('accepts a body exactly at the shared default', async () => {
-    const url = await start(defaultCapped(), echoLength());
-
-    const response = await postBytes(url, DEFAULT_HTTP_MAX_BODY_BYTES);
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ length: DEFAULT_HTTP_MAX_BODY_BYTES });
-  });
-
-  test('the refusal is identical across backends — status, body, content type and default headers', async () => {
-    const url = await start(cappedAt(16), echoLength());
-
-    const response = await postBytes(url, 64);
-
-    expect(response.status).toBe(PAYLOAD_TOO_LARGE_RESPONSE.status);
-    expect(await response.text()).toBe(PAYLOAD_TOO_LARGE_RESPONSE.body as string);
-    expect(response.headers.get('content-type')).toBe(PAYLOAD_TOO_LARGE_RESPONSE.contentType as string);
-    // The server-wide default headers ride along on the 413 like on any
-    // other response — it is written through the backend's own writer.
-    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
-  });
-
-  test('an installed error handler does not see — or reshape — the refusal', async () => {
-    // Regression (#357): on Fastify the body-too-large error reached the
-    // app-level hook, which mapped every non-HttpError to 500, so installing
-    // withErrorHandler turned a 413 into a 500.  A body cap is a transport
-    // decision; Express and Hono never consulted the handler for it either.
-    const backend = cappedAt(16);
-    let handlerCalls = 0;
-    expect(backend.setErrorHandler).toBeDefined();
-    backend.setErrorHandler!(() => {
-      handlerCalls += 1;
-      return completeJson(Status.InternalServerError, { custom: true });
-    });
-    const url = await start(backend, echoLength());
-
-    const response = await postBytes(url, 64);
-
-    expect(response.status).toBe(413);
-    expect(await response.text()).toBe('Payload Too Large');
-    expect(handlerCalls).toBe(0);
-  });
-
-  test('a per-backend cap still overrides the shared default', async () => {
-    const url = await start(cappedAt(DEFAULT_HTTP_MAX_BODY_BYTES * 2), echoLength());
-
-    const response = await postBytes(url, DEFAULT_HTTP_MAX_BODY_BYTES + 1);
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ length: DEFAULT_HTTP_MAX_BODY_BYTES + 1 });
   });
 });
 

@@ -107,8 +107,10 @@ Basisklasse liest den `Cluster` vom `ActorSystem`
 (siehe [`this.cluster`](/de/cluster/overview/#den-cluster-aus-einem-actor-heraus-erreichen)).
 Zwei zusätzliche Dinge zu spezifizieren:
 
-- **`resolver()`** — wie nebenläufige Events gemergt werden
-  (optional; Default ist Last-Writer-Wins).
+- **`resolver()`** — wie nebenläufige Events abgeglichen werden
+  (optional; der Default, `null`, faltet jedes Event in kanonischer
+  Reihenfolge — siehe
+  [Conflict Resolver](/de/persistence/replicated-event-sourcing/conflict-resolver/)).
 - **Ein Journal pro Replica.**  Jede Replica schreibt ihren eigenen
   Stream: Sie hängt jedes Event, das sie beobachtet — ihre eigenen und
   jedes, das ein Peer publiziert —, an das Journal ihres Nodes an, ein
@@ -251,22 +253,34 @@ ohne lebenden Subscriber wird nie erneut gesendet —, und die Nummer
 zurückzugeben hieße, sie doppelt zu vergeben, sobald ein Append aus
 einem Timeout doch noch landet.
 
-**Ein Append, der in das Timeout lief, kann trotzdem landen.**  Das
-`call-timeout` gibt auf; es bricht nicht ab.  Erreicht der
-Schreibvorgang das Journal doch, faltet und verteilt nichts das Event —
-beides tut nur ein erfolgreiches `persist` —, also bekommt es kein Peer
-je, und das Journal dieser Replica enthält ein Event, das ihr Zustand
-nicht zeigt.  Ob eine spätere Recovery es faltet, hängt davon ab, wo
-sie beginnt.  Die Landung schiebt die Journal-Position, die ein
-Snapshot festhält, über das Event hinaus; ein danach aufgenommener
-Snapshot zählt das Event also als abgedeckt, und eine Recovery aus
-diesem Snapshot faltet es nie.  Ein vollständiges Replay tut es — ohne
-Snapshot, oder wenn `snapshot-is-optional` auf das Journal ausweicht,
-weil der Snapshot Store nicht antwortete —, der wiederhergestellte
-Zustand der Replica hängt also davon ab, ob dieser Snapshot gelesen
-wurde.  Ein Store, der festschreibt und die Antwort auf dem Rückweg
-verliert, nimmt denselben Weg ganz ohne Breaker, und noch repariert
-nichts diese Divergenz.
+**Ein Append, dessen Ausgang `persist` nicht gesehen hat, wird
+geklärt.**  Das `call-timeout` gibt auf; es bricht nicht ab — und ein
+Store kann festschreiben und die Antwort auf dem Rückweg verlieren.  Die
+Replica wartet deshalb, bis der Journal-Aufruf selbst endet.  Wartete
+er noch auf seinen Platz in der Kette, wird er abgebrochen, und nichts
+wird geschrieben.  Sonst bedeutet Erfolg, dass er gelandet ist, ein
+`JournalConcurrencyError`, dass er es nicht ist, und jeder andere Fehler
+wird geklärt, indem die Replica das Journal ab dem Head, den der Append
+sah, zurückliest und nach der Event-ID sucht.  Ein gelandetes Event
+wird gefaltet und verteilt, genau wie es ein erfolgreiches `persist`
+getan hätte — ohne `afterPersist`, denn dem Aufrufer wurde der
+Fehlschlag schon gemeldet.  Ein abgelehntes `persist` heißt also „nicht
+bestätigt“, nicht „nie geschehen“.
+
+Drei Sicherungen schließen die Fenster darum herum.  Bis das Event
+gefaltet ist, gilt seine Journal-Position nicht als abgedeckt: Ein
+Snapshot aus dieser Zeit hält die Position eins davor fest, und eine
+Recovery daraus spielt das Event ab.  Eine gestoppte Instanz übergibt,
+was ihre Journal-Aufrufe noch schulden, an ihre Nachfolgerin auf
+diesem Knoten, die darauf wartet, bevor ihre Recovery liest — unter
+`recovery-timeout`, wie die Reads —, sodass sie ein spät gelandetes
+Event abspielt und dessen `seqAtReplica` nie erneut vergibt.  Und eine
+Recovery veröffentlicht die eigenen Events dieser Replica nach dem
+Snapshot erneut, damit eines, das nach dem Stopp seiner Instanz
+gelandet ist, die Peers doch erreicht; sie deduplizieren über die
+Event-ID.  Lässt sich der Ausgang nicht klären, weil das Journal nicht
+lesbar ist, ist das eine Warnung, und erst die nächste Recovery faltet
+das Event und veröffentlicht es erneut — falls es gelandet ist.
 
 **Die Recovery ist geschützt wie die eines `PersistentActor`.**  Sie
 wartet auf eine von `max-concurrent-recoveries` Freigaben, liest den
@@ -286,12 +300,23 @@ Speichern, das der Breaker abweist oder an dem der Store scheitert, ist
 eine Warnung und lässt den Actor nie scheitern: Die nächste Recovery
 beginnt beim vorherigen Snapshot oder spielt das Journal ab.
 
-**Appends von Events aus Peers sind noch nicht geschützt.**  Das
-Anhängen eines Events, das von einem Peer kam, läuft ohne Warten
-nebenher und konkurriert mit sich selbst; #958 gibt ihm eine
-serialisierte Append-Kette, und dorthin gehört der Breaker.  Bis dahin
-erreichen diese Appends das Journal auch bei offenem Breaker, und
-`call-timeout` begrenzt sie nicht.
+**Appends von Events aus Peers laufen in einer Kette, durch den
+Breaker.**  Jeder Journal-Aufruf, den die Replica nach der Recovery
+macht — ein eigenes `persist`, das Anhängen eines Events von einem
+Peer, das Nachlesen, ob ein Append mit unbekanntem Ausgang gelandet
+ist — wartet, bis der vorige beantwortet ist, sodass kein Head-Probe
+neben einem noch laufenden Append liest und schnell aufeinander
+folgende Events eines Peers sich nicht mehr gegenseitig aus dem
+Journal verdrängen.  Das Anhängen eines Peer-Events läuft durch den
+Journal-Breaker und `call-timeout`.  Das Event ist bereits gefaltet,
+und niemand sendet es erneut, also wird ein Versuch, der nachweislich
+nichts geschrieben hat — der Breaker offen, ein verlorener bedingter
+Append, ein Fehler, nach dem das Journal das Event nicht enthält —
+wiederholt, bis zu drei Versuche mit wachsender Pause.  Ist das
+Budget verbraucht, oder lässt sich der Ausgang nicht klären, weil
+das Journal nicht lesbar ist, scheitert der Actor über seinen
+Supervisor: Seinem Journal fehlt ein Event, das sein State enthält,
+und eine Recovery aus diesem Journal enthält es nicht.
 
 ## Die Komponenten
 
@@ -320,7 +345,8 @@ Jedes bekommt seine eigene Deep-Dive-Seite.
   ```ts
   // "User ändert Namen in EU und US gleichzeitig — was gewinnt?"
   ```
-  Replicated ES verlangt, dass du einen Resolver definierst.  Wenn
+  Replicated ES verlangt, dass du entscheidest, was nebenläufige
+  Events bedeuten — der Default wendet beide an.  Wenn
   "was gewinnt" keine sinnvolle Antwort hat, ist Replicated ES
   die falsche Form — verwende ein Single-Writer-Muster
   (Singleton / Sharding).

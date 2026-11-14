@@ -28,6 +28,7 @@ import {
   isHealthy,
   managementRoutes,
   shardRegionCheckName,
+  SHUTDOWN_READINESS_CHECK_NAME,
   STARTUP_READINESS_CHECK_NAME,
 } from '../../../src/management/index.js';
 import type { HealthCheckResult } from '../../../src/management/index.js';
@@ -551,7 +552,10 @@ describe('the startup readiness check (#1473)', () => {
     await system.whenTerminated();
 
     const readiness = await health.checkReadiness();
-    expect(readiness.map((r) => r.name)).toEqual([STARTUP_READINESS_CHECK_NAME]);
+    // The failed startup shut the system down, and a shutdown under way says
+    // "draining" beside it (#997).
+    expect(readiness.map((r) => r.name)).toEqual([STARTUP_READINESS_CHECK_NAME, SHUTDOWN_READINESS_CHECK_NAME]);
+    expect(readiness[1]!.status).toBe(false);
     expect(readiness[0]!.status).toBe(false);
     expect(readiness[0]!.detail).toContain('"open-journal"');
     expect(readiness[0]!.detail).toContain('connection refused');

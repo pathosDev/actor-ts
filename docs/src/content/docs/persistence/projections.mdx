@@ -133,8 +133,11 @@ spelling before the projection first runs, and keep it.
 
 If the handler runs but the cursor isn't persisted, the projection
 **re-processes the same event** on restart.  This is **at-least-once
-delivery** — the framework guarantees no event is missed, but
-duplicates are possible.
+delivery**: duplicates are possible, and an event is not missed as
+long as its write commits within the
+[lookback window](#late-commits-and-the-lookback-window) of the
+moment it was stamped.  A by-tag event that commits later than that
+is missed.
 
 With [`handleGroup`](#grouped-handlers) the unit of replay is the
 group.  The cursor is persisted once per group, to its last event,
@@ -152,6 +155,64 @@ Handlers must be **idempotent**:
 If you can't make the handler idempotent, the projection has to
 participate in a 2-phase commit with the offset save — much more
 complex, not provided out of the box.
+
+## Late commits and the lookback window
+
+A by-tag cursor is an `Offset` ordered by the event's `timestamp`, and
+every journal stamps an event with `Date.now()` **before** its write
+commits.  So the order events are stamped in is not the order they
+become visible in.  Writer A stamps an event at 10:00:00.000 and its
+transaction waits on a lock; writer B stamps one at 10:00:00.005 and
+commits at once.  The projection handles B and moves its cursor past
+10:00:00.005.  Then A commits, carrying the earlier stamp.
+
+A projection that only read forward from its cursor would never see A.
+So each poll of a by-tag projection starts **`lookbackWindowMs` behind
+its newest handled event**, and drops what it already handled, keyed
+on `(persistenceId, sequenceNr)`.  A is handled when it becomes
+visible, and nothing is handled twice.  This works the same on every
+backend.  No backend has to change, because each one already answers a
+query from an earlier offset.
+
+```ts
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-balance-view')
+  .withTag('account')
+  .withLookbackWindowMs(60_000);
+```
+
+- **Default: 30 s**, or `actor-ts.projection.lookback-window`.  That
+  is the longest deadline any shipped journal puts on its own write: the
+  D1 transport's 30 s, against SQL Server's 15 s request timeout,
+  Cassandra's 2 s coordinator write timeout and SQLite's 1 s busy
+  timeout.  A write slower than its deadline fails rather than commits.
+  Postgres and MariaDB have no statement deadline by default.  If you
+  let their lock waits run longer, bound appends with the journal
+  breaker's `call-timeout`, or raise the window to match.  Writers on
+  different nodes also add their clock skew to the gap.
+- **An event that commits more than the window after its stamp is
+  missed.**  The window turns a late commit from silent loss into a
+  bounded case.  It is not a commit-ordered sequence: Cassandra,
+  DynamoDB and D1 cannot assign one.
+- **The cost is a re-read.**  Every poll fetches the window's worth of
+  the tag again.  At the default one-second poll, each event is read
+  about thirty times.  A busy tag on a backend with tight write
+  deadlines can afford a shorter window.  `0` reads forward only, which
+  is the behaviour before the window existed.
+- **The deduplication is saved with the cursor.**  Each commit stores the
+  newest handled `sequenceNr` of every persistence id with an event
+  inside the window, beside the offset.  A restart therefore neither
+  replays the window nor misses an event that committed late while the
+  projection was down.  The state is bounded: one entry per persistence
+  id written to the tag within the window.  A cursor saved before the
+  window existed resumes without replaying anything behind it.
+
+A live `eventsByTag` stream reads through the same window.  It takes its
+size from `LiveQueryOptions.lookbackWindowMs` (default 30 s), because
+the query layer has no config to read.  The stream's state is not
+persisted: when you resume a stream from a saved offset, nothing stamped
+before that offset is delivered.  If you need a late commit caught
+across a restart, use a projection.
 
 ## When the handler throws
 
@@ -194,8 +255,8 @@ projection gives up on it.
 
 Failure handling is usually an *operational* decision — the same code
 wants `retry-and-fail` in production and `skip` in a dev loop — so
-the four fields, the poll cadence and the group size also have
-process-wide defaults under `actor-ts.projection`:
+the four fields, the poll cadence, the group size and the lookback
+window also have process-wide defaults under `actor-ts.projection`:
 
 ```hocon
 actor-ts.projection {
@@ -205,6 +266,7 @@ actor-ts.projection {
   max-retry-backoff     = 60s
   poll-interval         = 1s
   group-after-envelopes = 50   # handleGroup projections only
+  lookback-window       = 60s  # byTag projections only
 }
 ```
 

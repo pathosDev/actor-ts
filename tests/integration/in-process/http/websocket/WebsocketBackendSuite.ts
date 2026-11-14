@@ -569,5 +569,103 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 7 });
       ws.close();
     });
+
+    describe('server heartbeat (#651)', () => {
+      const HEARTBEAT_MS = 250;
+
+      test('a peer that answers no ping is dropped, and the route admits the next client', async () => {
+        const events: string[] = [];
+        const { base } = await bindServer(events, (s) => {
+          const routeOptions = WebsocketRouteOptions.create()
+            .withHeartbeatIntervalMs(HEARTBEAT_MS)
+            .withMaxConnections(1);
+          return websocket('/ws', s, routeOptions);
+        });
+        const silent = await silentPeer(`${base}/ws`);
+        try {
+          await awaitCondition(() => events.some((e) => e.startsWith('connect:')), {
+            timeoutMs: 3_000,
+            label: 'the silent peer was connected',
+          });
+          // Dropped between one and two intervals after it went quiet; the
+          // budget is generous because the server's timers run in real time.
+          await awaitCondition(() => events.some((e) => e.startsWith('disconnect:')), {
+            timeoutMs: 20 * HEARTBEAT_MS,
+            label: 'the silent peer was dropped',
+          });
+          await silent.closed;
+        } finally {
+          silent.destroy();
+        }
+        // The one slot came back: a real client is admitted and served.
+        const ws = await wsOpen(`${base}/ws`);
+        ws.send(JSON.stringify({ kind: 'ping', n: 1 }));
+        expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 1 });
+        ws.close();
+      });
+
+      test('a client that answers pings stays connected across several intervals', async () => {
+        const events: string[] = [];
+        const { base } = await bindServer(events, (s) => {
+          const routeOptions = WebsocketRouteOptions.create().withHeartbeatIntervalMs(HEARTBEAT_MS);
+          return websocket('/ws', s, routeOptions);
+        });
+        // The runtime's own `WebSocket` answers pings by itself and sends
+        // nothing else here, so only the pong path keeps it alive.
+        const ws = await wsOpen(`${base}/ws`);
+        // The elapsed time IS the assertion: eight intervals with nothing but
+        // pongs on the wire, where an unheard pong drops the client by the second.
+        await sleep(8 * HEARTBEAT_MS);
+        expect(events.filter((e) => e.startsWith('disconnect:'))).toEqual([]);
+        ws.send(JSON.stringify({ kind: 'ping', n: 2 }));
+        expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 2 });
+        ws.close();
+      });
+    });
+  });
+}
+
+/**
+ * A peer that completes the upgrade and then goes quiet: raw TCP, so the
+ * server's pings arrive as bytes nobody answers — the half-open peer #651 is
+ * about, short of pulling a cable.  `closed` settles when the server drops the
+ * socket; `destroy` releases it on every path, so no handle outlives the case.
+ */
+function silentPeer(url: string): Promise<{ readonly closed: Promise<void>; destroy(): void }> {
+  const target = new URL(url);
+  const port = Number(target.port);
+  const key = randomBytes(16).toString('base64');
+  const request = `GET ${target.pathname} HTTP/1.1\r\n`
+    + `Host: ${target.hostname}:${port}\r\n`
+    + 'Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n'
+    + `Sec-WebSocket-Key: ${key}\r\n\r\n`;
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, target.hostname);
+    let upgraded = false;
+    let markClosed = (): void => { /* replaced below */ };
+    const closed = new Promise<void>((done) => { markClosed = done; });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`timeout awaiting the upgrade from ${url}`));
+    }, 3_000);
+    socket.on('connect', () => socket.write(request));
+    socket.on('data', (chunk: Buffer) => {
+      if (upgraded) return;
+      if (!chunk.toString('latin1').startsWith('HTTP/1.1 101')) {
+        clearTimeout(timer);
+        socket.destroy();
+        reject(new Error(`upgrade refused: ${chunk.toString('latin1').split('\r\n')[0]}`));
+        return;
+      }
+      upgraded = true;
+      clearTimeout(timer);
+      resolve({ closed, destroy: () => socket.destroy() });
+    });
+    socket.on('error', () => { /* observed as the close that follows */ });
+    socket.on('close', () => {
+      clearTimeout(timer);
+      markClosed();
+      if (!upgraded) reject(new Error('socket closed before the upgrade'));
+    });
   });
 }

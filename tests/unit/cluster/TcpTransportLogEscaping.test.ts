@@ -18,6 +18,7 @@ import { encodeFrame } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import type { TcpSocketLike } from '../../../src/runtime/tcp/TcpBackend.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 const self = new NodeAddress('sim', '10.0.0.100', 5_000, 'test-run');
 /** A host that, rendered raw, ends the record and starts a forged one. */
@@ -43,7 +44,7 @@ interface TransportInternals {
 const internals = (transport: TcpTransport): TransportInternals => transport as unknown as TransportInternals;
 
 function handshake(kind: 'hello' | 'hello-ack', address: NodeAddress): Uint8Array {
-  return encodeFrame({ kind, wireVersion: 2, minWireVersion: 2, self: address.toJSON() });
+  return encodeFrame({ kind, wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: address.toJSON() });
 }
 
 /** An accepted socket that has announced `identity`, on a fresh transport. */
@@ -132,8 +133,8 @@ describe('TcpTransport escapes a peer-supplied address in its log lines (#1629)'
     internals(transport).onData(socket, encodeFrame({
       kind: 'hello-refused',
       self: forger.toJSON(),
-      wireVersion: 2,
-      minWireVersion: 2,
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
       reason: 'too old\n2026-11-14T00:00:00Z ERROR forged',
     }));
 

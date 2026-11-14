@@ -20,6 +20,7 @@ import { encodeFrame, FrameDecoder, type WireMessage } from '../../../src/cluste
 import { getTcpBackend } from '../../../src/runtime/tcp/index.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 const started: ActorSystem[] = [];
 
@@ -84,7 +85,7 @@ describe('a hello naming the receiving node itself, over a real socket', () => {
       // The address alone, without the incarnation the node knows itself by:
       // identity is the address, here as in every map a peer is keyed in.
       const claim = new NodeAddress(self.systemName, self.host, self.port);
-      socket.write(encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: claim.toJSON() }));
+      socket.write(encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: claim.toJSON() }));
       // A frame the node would answer, had the connection been given an identity.
       socket.write(encodeFrame({ kind: 'heartbeat', from: claim.toJSON(), seq: 1, ts: 0 }));
       // Whichever comes first: the node closing the socket, or the node answering on it.

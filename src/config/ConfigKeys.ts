@@ -812,6 +812,10 @@ export const ConfigKeys = {
       connectionMailboxCapacity: 'actor-ts.http.websocket.connection-mailbox-capacity',
       /** Comment-only in `reference.conf`; only meaningful beside a capacity. */
       connectionMailboxOverflow: 'actor-ts.http.websocket.connection-mailbox-overflow',
+      /** Server-side ping interval per connection; `0` turns it off (#651). */
+      heartbeatInterval: 'actor-ts.http.websocket.heartbeat-interval',
+      /** Close after this long without an inbound message; `0`, the default, is off (#651). */
+      idleTimeout: 'actor-ts.http.websocket.idle-timeout',
     },
     /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
     client: {
@@ -1555,6 +1559,8 @@ export const ConfigKeys = {
    *
    * `groupAfterEnvelopes` reaches `handleGroup` projections only; a `handle`
    * projection has no group to size and ignores it (#1448).
+   * `lookbackWindow` reaches `byTag` projections only; a by-persistence-id
+   * cursor is a sequence number, which a late commit cannot pass (#957).
    */
   projection: {
     recoveryStrategy: 'actor-ts.projection.recovery-strategy',
@@ -1563,6 +1569,7 @@ export const ConfigKeys = {
     maxRetryBackoff: 'actor-ts.projection.max-retry-backoff',
     pollInterval: 'actor-ts.projection.poll-interval',
     groupAfterEnvelopes: 'actor-ts.projection.group-after-envelopes',
+    lookbackWindow: 'actor-ts.projection.lookback-window',
   },
 
   /**
@@ -2223,6 +2230,14 @@ export const ConfigKeys = {
       maxNestingDepth: 'actor-ts.serialization.read-constraints.max-nesting-depth',
       maxDocumentBytes: 'actor-ts.serialization.read-constraints.max-document-bytes',
       maxStringLength: 'actor-ts.serialization.read-constraints.max-string-length',
+    },
+    /**
+     * What the cluster wire's decoder builds out of a peer's frame (#1303) —
+     * read by `readWireDecodeOptionsFromConfig` and handed to every
+     * `FrameDecoder` a node's transport builds, and nothing else.
+     */
+    wire: {
+      admittedTags: 'actor-ts.serialization.wire.admitted-tags',
     },
   },
 

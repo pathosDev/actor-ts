@@ -1425,7 +1425,7 @@ read at all, so a malformed value does not stop that node either.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
-| `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
+| `http.shutdown-grace-period` | `4s` | How long `unbind()` lets in-flight requests finish before their connections are forced closed — the same on Fastify, Express and Hono.  `0` forces at once.  On shutdown the drain is a `service-requests-done` task, so keep it under that phase's budget (`default-phase-timeout`, `5s`); `/ready` answers `503` from the start of the pipeline. |
 | `http.server` | *(see below)* | Connection-level bounds for the listening socket itself. |
 | `http.cors` | *(see below)* | Per-route defaults for the [`cors()`](/http/middleware/cors/) directive. |
 | `http.hsts` | *(see below)* | The policy the [`hsts()`](/http/middleware/security-headers/) middleware sends. |
@@ -1440,9 +1440,16 @@ wrote yourself.  An unrecognised name fails the `bind()` with a
 `ConfigError` rather than silently falling back to Fastify.  Express and
 Hono are optional peer dependencies, imported only if you name them.
 
-The grace period defaults to `0` — force as soon as the server closes —
-because that is what `unbind()` has always done in practice.  Raise it if
-you want in-flight requests to finish.
+The grace period defaults to `4s`, and it means the same on every backend:
+`unbind()` stops accepting at once, lets the requests in flight finish for
+up to that long, then forces what is still open; `0` forces at once.  On a
+coordinated shutdown the server stops accepting in `service-unbind` and
+drains in `service-requests-done`, and `/ready` has answered `503` since
+`before-service-unbind`.  The 4 s sit inside that phase's 5 s budget, with
+a second left for the forced close — raise the phase's `timeout` with the
+grace period.  Until v0.19 the default was `0`, which severed every
+request in flight on a rolling deploy, and Express quietly waited a second
+where the others did not.
 
 It is usually an upper bound rather than a delay: `unbind()` returns as soon
 as the server has actually closed.  Where a backend's `close()` cannot
@@ -1456,7 +1463,7 @@ The bounds on a **connection** — as against a route on it — come from
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it — on the Hono backend under Bun, where it is the only bound on a request whose body stops arriving, that leaves such a connection open until the client closes it (§ below).  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
+| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it — except on the Hono backend under Bun, where it is the only bound on a request whose body stops arriving, so `0` is refused (§ below).  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
 | `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  A shorter `request-timeout` is the header deadline too: the guard runs on the smaller of the two.  `0` disables it.  At most `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`.  Shorter than `header-timeout`, it bounds the header phase as well, since the headers are part of the request.  At most `4294967295` ms. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
@@ -1593,10 +1600,11 @@ A value you set is written as given.  Where it can cut a silent handler before
 the request deadline's `503` — its earliest cut lands less than 2 s past the
 deadline — `bind()` warns, naming the key, the value and the deadline: the
 `5s` of the example above cuts a handler that has written nothing from 4 s on.
-`0` turns it off, and here it is the only bound on a request whose body stops
+`0` is refused here: it is the only bound on a request whose body stops
 arriving and on a connection idle between requests, since none of the other
-three is installed: with `0` such a connection stays open until the client
-closes it.
+three is installed, and `Bun.serve` reads `0` as never closing — such a
+connection would stay open until the client closes it.  `bind()` fails with an
+`OptionsError` naming the key and `withIdleTimeoutMs`.
 
 Unset, it is not Bun's own 10 s, which cut any handler silent for about 12 s
 with no response at all.  It is derived from the server's longest request
@@ -1635,12 +1643,17 @@ on both runtimes, and a PING frame resets nothing — and a stream whose request
 is still arriving at `request-timeout` is answered `408` and reset.  A stream
 in flight holds its session, so a slow handler, a long poll and an SSE stream
 outlive the idle bound as they do on HTTP/1.1, and a request received in full
-is never cut by the receive deadline.  Unset, an idle HTTP/2 session is left to
-Fastify's own session timer — 72 s on Node, 144 s on Bun, which fires it at
-twice the value and lets a PING reset it — and on Hono over Node to nothing at
-all.  On Bun the HTTP/2 listener bounds a connection that negotiates HTTP/1.1
-on the same port by neither key, so there both are reported held for HTTP/2
-only and `bind()` warns.  None
+is never cut by the receive deadline.  Unset, an idle HTTP/2 session is closed
+at **72 s** by the same timer of actor-ts's own — Fastify's own value, so
+Fastify on Node behaves as it did, while Fastify on Bun (which fired Fastify's
+timer at 144 s and let a PING reset it) and Hono over Node (which closed an
+idle session never) now get the same bound; the binding report carries it as
+`http2SessionIdleDefaultMs`.  HTTP/1.1 keep-alive keeps the backend's own value.
+On Bun the HTTP/2 listener reads neither `keepAliveTimeout` nor
+`requestTimeout` for a connection that negotiates HTTP/1.1 on the same port, so
+actor-ts bounds those too, with timers of its own: idle between requests, and
+a receive deadline per request, answered `408`.  Both keys are in effect for
+both protocols there.  None
 of this is the Hono backend under Bun, whose sessions `Bun.serve`'s own
 whole-connection bound holds (§ above), set or derived: an idle session there
 was closed within one sweep of a `4s` value (bun 1.4.2), and a silent stream
@@ -1885,6 +1898,8 @@ defaults from `actor-ts.http.websocket`:
 | `http.websocket.accept-timeout` | `10s` | How long an admitted upgrade waits for its connection actor before the socket is closed and its `max-connections` slot released.  `Infinity` switches the watchdog off and is code-only, because HOCON has no `Infinity` literal — `withAcceptTimeoutMs(Infinity)` and a `withConfig` overrides object both reach it. |
 | `http.websocket.connection-mailbox-capacity` | *(unset)* | Queued outbound messages each connection actor may hold — the queue `connection.tell`, `sendRaw` and `close` go into — before the overflow policy sheds frames; `close()` is never shed.  Unset, a connection falls through like any other application actor: to the [`deployment`](#actor-tsdeployment) entry matching its path, then to `mailbox.default.capacity`.  A positive integer; `0` is refused rather than read as "off". |
 | `http.websocket.connection-mailbox-overflow` | *(unset)* | `drop-head` / `drop-new` / `reject` for a full connection mailbox.  Needs a capacity from the route or the leaf above — a configured one, global or per path, does not count — and is refused at `bind()` without one.  Unset, it falls through to the matching deployment entry's `mailbox-overflow`, then to `mailbox.default.overflow`. |
+| `http.websocket.heartbeat-interval` | `30s` | How often each connection sends its peer a protocol-level ping.  A connection from which nothing — no pong, no frame — arrived since the previous ping is dropped without a close handshake, and the hub hears `1001` `"heartbeat timeout"`, so a half-open peer gives back its actor, its `clients` entry and its `max-connections` slot within two intervals.  `0` turns it off.  Hono on Deno cannot ping and warns once per route; Deno's own `idleTimeout` covers it there. |
+| `http.websocket.idle-timeout` | `0s` | Close a connection with `1001` `"idle timeout"` after this long without an inbound message; pongs do not count.  `0`, the default, turns it off. |
 
 The same leaf rule applies here: kebab-case, unit suffix dropped, and a retired
 camelCase spelling is a `ConfigError` rather than a cap that silently reverted
@@ -1934,6 +1949,7 @@ for any window a caller would plausibly configure.
 | `serialization.read-constraints.max-nesting-depth` | `256` | Container levels a decoder will descend before refusing the payload.  Never raised past the encoder's own ceiling. |
 | `serialization.read-constraints.max-document-bytes` | `0` | Ceiling on one document before it is parsed — checked in `JsonSerializer` / `CborSerializer`, and on the cluster wire against the frame's length prefix.  `0` = no ceiling of our own. |
 | `serialization.read-constraints.max-string-length` | `20M` | Ceiling on one CBOR byte string, text string or map key, checked against the length prefix before the bytes are allocated.  `0` removes it. |
+| `serialization.wire.admitted-tags` | `[date, bytes, typed-array, map, set, bigint, bidirectional-map, bidirectional-multi-map, number]` | The `JsonTree` tags a cluster frame from a peer may use.  A frame using any other tag is refused and logged; the connection stays up.  `regexp`, `undefined`, `error` and `url` are out by default.  `[]` decodes frames as plain JSON (#1303). |
 
 These bound what this node **reads**, never what it writes.  A peer that
 completes the handshake, or any client whose body reaches a serializer, chooses
@@ -2167,8 +2183,8 @@ would tolerate the tampering, and turn an integrity control into a retry.
 
 The five behaviour leaves cover every `PersistentActor`, and a
 `ReplicatedEventSourcedActor`'s own `persist`, its recovery and its snapshot
-saves; its append of an event a peer sent is not behind the journal breaker
-until #958.  `DurableStateActor` is outside all of this: none of these leaves
+saves, and its append of an event a peer sent goes through the journal breaker
+too (#958).  `DurableStateActor` is outside all of this: none of these leaves
 reaches a durable-state store, whether its `DurableStateOptions` name one or it
 uses the system-wide store `persistence.durable-state.plugin` selects.
 
@@ -2640,6 +2656,7 @@ be enumerated in `reference.conf`.
 | `projection.max-retry-backoff` | `60s` | Ceiling on that doubling delay.  Must be at least `retry-backoff` — a projection whose merged settings say otherwise refuses to start. |
 | `projection.poll-interval` | `1s` | How often a projection asks the journal for new events. |
 | `projection.group-after-envelopes` | `20` | Most events per `handleGroup` call ([grouped handlers](/persistence/projections/#grouped-handlers)).  Grouped projections only — a `handle` projection is delivered one event per call and ignores it. |
+| `projection.lookback-window` | `30s` | How far behind its newest handled event a by-tag projection re-reads, so an event committed after the projection passed its stamp is still handled — once ([late commits](/persistence/projections/#late-commits-and-the-lookback-window)).  By-tag projections only; `0` reads forward only. |
 
 These are the **process-wide** defaults for every projection.
 `ProjectionOptions` on a single projection outranks them, and they

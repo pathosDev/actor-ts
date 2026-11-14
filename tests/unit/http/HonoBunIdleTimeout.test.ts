@@ -223,18 +223,28 @@ describe('Hono under Bun — a set idle-timeout is Bun.serve\'s idleTimeout', ()
     expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(true);
   }, 15_000);
 
-  test('idle-timeout = 0 leaves it open past 6 s — and past the default it would get if the 0 were lost — and it still serves', async () => {
-    // Under a 1 s deadline the derived default is 8 s, so a 0 dropped on the
-    // way and read as unset would close the connection inside this window.
-    const binding = await bindHono('actor-ts.http.server.idle-timeout = 0\nactor-ts.http.request-timeout.deadline = 1s');
+});
 
-    // An absence cannot be polled for: the window is the observation.
-    const closedAfterMs = await idleCloseAfterResponse(binding, 2 * ONE_SWEEP_MS + 2 * SLACK_MS);
+describe('Hono under Bun — idle-timeout = 0 fails bind(), since it would remove the only bound (#1767)', () => {
+  // Bun.serve reads idleTimeout 0 as "never close", and on this pair nothing
+  // else bounds a request whose body stops arriving or a connection left idle:
+  // header-timeout, request-timeout and max-connections cannot be installed.
+  test('HOCON idle-timeout = 0 is refused, naming the key and the builder method', async () => {
+    const refusal = await refusalOf(bindHono('actor-ts.http.server.idle-timeout = 0'));
 
-    expect(closedAfterMs, `idle-timeout = 0 closed the connection ${closedAfterMs} ms after its response`).toBeNull();
-    const second = await exchange(binding, '/', 2_000);
-    expect(second.status).toBe(Status.OK);
-  }, 20_000);
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as Error).message).toContain('actor-ts.http.server.idle-timeout');
+    expect((refusal as Error).message).toContain('withIdleTimeoutMs');
+    expect((refusal as Error).message).toContain('only bound');
+  });
+
+  test('so is withIdleTimeoutMs(0)', async () => {
+    const serverOptions = HttpServerOptions.create().withIdleTimeoutMs(0);
+    const refusal = await refusalOf(bindHono('', ok, (builder) => builder.withServerOptions(serverOptions)));
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('idleTimeoutMs');
+  });
 });
 
 describe('Hono under Bun — unset, the idle timeout is derived from the longest request deadline', () => {

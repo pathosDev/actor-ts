@@ -17,6 +17,7 @@ import {
   bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
+  drainWindowOf,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -29,7 +30,11 @@ import type {
   ServerListenOptions,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import { bufferWebsocketEvents } from '../websocket/SocketAdapter.js';
+import {
+  bufferWebsocketEvents,
+  runtimeSocketPingOf,
+  subscribeRuntimeSocketPong,
+} from '../websocket/SocketAdapter.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
@@ -255,6 +260,34 @@ function refuseIdleTimeoutPastCeiling(runner: HonoServerRunner, idleTimeoutMs: n
 }
 
 /**
+ * Refuse `idle-timeout = 0` on a runner whose idle timeout is the only bound it
+ * can install — `Bun.serve`, today (#1767).
+ *
+ * There `header-timeout`, `request-timeout` and `max-connections` are
+ * unavailable, and `0` is written as `Bun.serve`'s own `idleTimeout: 0`, which
+ * never closes a connection: a request whose body stops arriving, or a
+ * keep-alive connection left idle, would stay open until the client closes it
+ * (measured on bun 1.4.2: still open after 40 s).  That takes away more than a
+ * value past the ceiling would, which is already refused, so `0` is refused
+ * the same way rather than warned about — a warning names the exposure and
+ * leaves the bound gone.  Every other backend and runtime keeps accepting
+ * `0`: each has bounds of its own beside it.
+ */
+function refuseIdleTimeoutOff(runner: HonoServerRunner, idleTimeoutMs: number | undefined): void {
+  if (runner.idleTimeoutIsOnlyBound !== true || idleTimeoutMs !== 0) return;
+  throw new OptionsError(
+    `HttpServerOptions: ${ConfigKeys.http.server.idleTimeout} (withIdleTimeoutMs in code) is 0, which turns the idle `
+      + 'timeout off, and on the Hono backend on this runtime it is the only bound on a request whose body stops '
+      + 'arriving and on a connection left idle — header-timeout, request-timeout and max-connections cannot be '
+      + 'installed here — so such a connection would stay open until the client closes it. Set a positive value, '
+      + 'or leave it unset to derive one from the request deadline.',
+    'HttpServerOptions',
+    'idleTimeoutMs',
+    idleTimeoutMs,
+  );
+}
+
+/**
  * Hono-backed HTTP backend — a thin adapter that compiles the actor-ts
  * routing DSL onto a Hono app and serves it with `Bun.serve`.  Hono is a
  * lightweight router that runs well on Bun and covers the middleware cases
@@ -342,6 +375,7 @@ export class HonoBackend implements HttpServerBackend {
     this.bodyCapBytes = bodyCapOf('HonoBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
     const runner = await getHonoRunner();
     refuseIdleTimeoutPastCeiling(runner, serverOptions?.idleTimeoutMs);
+    refuseIdleTimeoutOff(runner, serverOptions?.idleTimeoutMs);
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
 
@@ -456,20 +490,24 @@ export class HonoBackend implements HttpServerBackend {
         const srv = this.server;
         if (!srv) return;
         this.server = null;
-        if (gracePeriodMs && gracePeriodMs > 0) {
+        const grace = drainWindowOf(gracePeriodMs);
+        if (grace > 0) {
           // Race a graceful stop against the grace window — whichever wins
           // first resolves.  After the window we force-close regardless.
+          // A graceful stop only drains if the runner's promise waits for the
+          // requests in flight: Bun's used to resolve at once, so the force
+          // below cut them with any window (#997).
+          let timer: ReturnType<typeof setTimeout> | undefined;
           await Promise.race([
             srv.stop(true),
             new Promise<void>((resolve) => {
-              const timer = setTimeout(() => resolve(), gracePeriodMs);
+              timer = setTimeout(() => resolve(), grace);
               (timer as { unref?: () => void }).unref?.();
             }),
           ]);
-          await srv.stop(false); // force any still-active connections
-          return;
+          clearTimeout(timer);
         }
-        await srv.stop(false);
+        await srv.stop(false); // force any still-active connections
       },
     };
   }
@@ -568,6 +606,13 @@ export class HonoBackend implements HttpServerBackend {
         get terminate() {
           return terminateOf(ws?.raw);
         },
+        // The server heartbeat's ping (#651): Bun's `ServerWebSocket` and
+        // `ws`'s `WebSocket` have one, Deno's standard `WebSocket` does not.
+        // Their pongs come back through `onOpen`'s subscription below (`ws`)
+        // and through the runner's `pong` handler (Bun).
+        get ping() {
+          return runtimeSocketPingOf(ws?.raw);
+        },
         remoteAddress: adapted.remoteAddress,
         get protocol() {
           return ws?.protocol;
@@ -576,8 +621,10 @@ export class HonoBackend implements HttpServerBackend {
       return {
         onOpen: (_evt, wsContext) => {
           ws = wsContext;
+          subscribeRuntimeSocketPong(wsContext.raw, () => events.onPong());
           reg.onConnection(adapted, adapter);
         },
+        onPong: () => events.onPong(),
         onMessage: (evt, wsContext) => {
           ws = wsContext;
           events.onMessage(coerceWebsocketData(evt.data));

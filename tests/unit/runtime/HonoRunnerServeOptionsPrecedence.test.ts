@@ -209,3 +209,48 @@ describe('DenoHonoRunner — serveOptions go in beneath the runner\'s own fields
     });
   }
 });
+
+/**
+ * A graceful stop followed by a forced one, which is the order `HonoBackend`'s
+ * unbind uses whenever a grace window is set, and since #997 one is set by
+ * default.  On Deno, aborting the serve signal after `shutdown()` has
+ * released the listener throws `BadResource` out of an event listener,
+ * uncaught, and that took the smoke run down on Deno.  The stand-in throws
+ * the same way, so a runner that aborts after a completed shutdown fails here.
+ */
+describe('DenoHonoRunner — a forced stop after a graceful one is a no-op (#997)', () => {
+  const hadDeno = Object.prototype.hasOwnProperty.call(globalThis, 'Deno');
+  const realDeno = (globalThis as { Deno?: unknown }).Deno;
+  afterEach(() => {
+    if (hadDeno) Object.defineProperty(globalThis, 'Deno', { value: realDeno, configurable: true, writable: true });
+    else delete (globalThis as { Deno?: unknown }).Deno;
+  });
+
+  test('stop(true) then stop(false) neither aborts the released listener nor throws', async () => {
+    let released = false;
+    let abortedAfterRelease = false;
+    Object.defineProperty(globalThis, 'Deno', {
+      value: {
+        serve: (bag: Record<string, unknown>) => {
+          (bag.signal as AbortSignal).addEventListener('abort', () => {
+            if (released) abortedAfterRelease = true;
+          });
+          return {
+            finished: Promise.resolve(),
+            addr: { port: 4321 },
+            shutdown: async (): Promise<void> => { released = true; },
+          };
+        },
+      },
+      configurable: true,
+      writable: true,
+    });
+    const handle = await new DenoHonoRunner().serve({ host: '127.0.0.1', port: 0, fetch: hello });
+
+    await handle.stop(true);
+    await handle.stop(false);
+
+    expect(released).toBe(true);
+    expect(abortedAfterRelease).toBe(false);
+  });
+});

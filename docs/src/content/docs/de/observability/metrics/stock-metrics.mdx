@@ -624,6 +624,20 @@ erfasst, wie jeder Fan-out endete und wie lange der Aufrufer wartete:
 keine Latenz beobachtet. Keine der beiden Familien trägt einen
 Router-Pfad, mehrere Router in einem System aggregieren also.
 
+## HTTP-Middleware-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `http_rate_limit_backend_errors_total` | counter | `prefix` | Requests, die ein Rate-Limiter nicht zählen konnte, weil sein Cache ausfiel. |
+
+Nur vorhanden, wenn einem `rateLimit` eine Registry über `metrics`
+übergeben wurde — die Middleware läuft außerhalb jedes Actors und hat
+sonst keine.  `prefix` ist der `keyPrefix` des Limiters, mehrere Limiter
+bleiben also unterscheidbar.  Jede Rate über null bedeutet, dass der
+Limiter gerade nicht zählt: unter `failureMode: 'open'` gehen diese
+Requests unbegrenzt durch, unter `'closed'` bekommen sie 503.  Siehe
+[wenn der Cache ausfällt](/de/http/middleware/rate-limit/#wenn-der-cache-ausfällt).
+
 ## WebSocket-Client-Metriken
 
 | Metrik | Typ | Labels | Bedeutung |

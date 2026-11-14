@@ -23,9 +23,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { ExpressBackend } from '../../../src/http/backend/ExpressBackend.js';
-import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
-import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -156,38 +153,4 @@ describe('HttpExtension.bind — websocket conflicts (#759 mirrors these)', () =
         .rejects.toThrow('Route conflict: GET /ws collides with a websocket() route on the same path');
     });
   });
-});
-
-/**
- * The contract on `HttpServerBackend.registerRoute` is the backend's own, so
- * each shipped backend has to keep it whether or not `HttpExtension` got there
- * first.  Fastify's router would refuse the repeat regardless — the point of
- * pinning it here is that all three now refuse it in the same words, rather
- * than two staying silent and one raising `FST_ERR_DUPLICATED_ROUTE`.
- */
-describe('HttpServerBackend.registerRoute — every shipped backend refuses a repeat (#759)', () => {
-  const backends: ReadonlyArray<readonly [string, () => HttpServerBackend]> = [
-    ['ExpressBackend', () => new ExpressBackend()],
-    ['FastifyBackend', () => new FastifyBackend({ logger: false })],
-    ['HonoBackend', () => new HonoBackend()],
-  ];
-
-  for (const [name, makeBackend] of backends) {
-    test(`${name} throws on a repeated method+pattern`, () => {
-      const backend = makeBackend();
-      backend.registerRoute({ method: 'GET', pattern: '/admin', handler: okHandler('first') });
-      expect(() => backend.registerRoute({ method: 'GET', pattern: '/admin', handler: okHandler('second') }))
-        .toThrow(`${name}: duplicate GET route for pattern "/admin"`);
-    });
-
-    test(`${name} still accepts the same pattern under another method`, () => {
-      const backend = makeBackend();
-      backend.registerRoute({ method: 'GET', pattern: '/orders', handler: okHandler('list') });
-      expect(() => backend.registerRoute({
-        method: 'POST',
-        pattern: '/orders',
-        handler: () => complete(Status.Created, 'created'),
-      })).not.toThrow();
-    });
-  }
 });

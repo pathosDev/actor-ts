@@ -28,7 +28,8 @@
  * put in a map or an array can be mistaken for one.
  */
 
-import { MAX_BIGNUM_BYTES, MAX_BIGNUM_MAGNITUDE, MAX_NESTING_DEPTH } from './Constants.js';
+import { MAX_BIGNUM_BYTES, MAX_BIGNUM_MAGNITUDE, MAX_NESTING_DEPTH, type JsonTreeTagName } from './Constants.js';
+import { RefusedTagError, type JsonTreeTagOptions } from './JsonTree.js';
 import {
   defaultReadConstraintsOptions,
   ReadConstraintsOptionsValidator,
@@ -541,6 +542,28 @@ export class CborDecoder {
   private view!: DataView;
   /** Ceilings this decoder applies — resolved and validated once, here. */
   private readonly constraints: Required<ReadConstraintsOptionsType>;
+  /**
+   * The rich types this decoder builds, by their `JsonTree` tag name, or
+   * `null` for all of them — see the constructor.
+   */
+  private readonly admittedTags: ReadonlySet<JsonTreeTagName> | null;
+  /**
+   * One byte string the next read may take without the `bytes` check: the
+   * body of a bignum, or a typed array's bytes, which the tag around them
+   * already answered for.  Consumed by the first byte string read, and reset
+   * when the tag's body is done.
+   */
+  private byteStringAnswered = false;
+  /**
+   * The next tag a read may take without its own check, because the
+   * framework collection around it was admitted and is built out of it: a
+   * `BidirectionalMap` is a tag-259 map, a `BidirectionalMultiMap` a tag-259
+   * map whose values are tag-258 sets (`valueTag`).  Consumed by the next
+   * tagged item whatever its number — a mismatch is checked like any other —
+   * and cleared once the item it was meant for is read, so it can never reach
+   * a user value inside the collection.
+   */
+  private answeredTag: AnsweredTag | null = null;
 
   /**
    * The constraints are optional and default to
@@ -549,13 +572,45 @@ export class CborDecoder {
    * — compiling and behaving exactly as before (#880).  Where the decoder is
    * reached from an `ActorSystem`, `CborSerializer` hands it what
    * `actor-ts.serialization.read-constraints.*` resolved to.
+   *
+   * `tagOptions` is the JSON tree's allow-list in the same names (#967), so a
+   * route's `EntityOptions.withTags` means the same thing whichever codec its
+   * body arrives in.  Left out, every rich type is built — the codec's own
+   * round trip.  A list restricts the decode to the JSON data model plus the
+   * listed types: a `Date`, `Set`, `Map`, `URL`, bignum, `RegExp`, `Error`,
+   * typed array or framework collection needs its name, and so do the three
+   * things CBOR carries without a tag that JSON cannot express at all — a byte
+   * string (`bytes`), simple value 23 (`undefined`), an integer past 2^53
+   * (`bigint`) and a non-finite float (`number`).  Anything else throws
+   * `RefusedTagError` before the value is built.
+   *
+   * `[]` therefore refuses where the JSON tree passes data through, and that
+   * difference is the format's, not a choice: `{"__date__": …}` is also a
+   * plain JSON object, but a CBOR tag has no untagged reading to fall back to,
+   * and dropping it would hand the caller a different value without saying so.
    */
-  constructor(readConstraints: ReadConstraintsOptions = {}) {
+  constructor(readConstraints: ReadConstraintsOptions = {}, tagOptions: JsonTreeTagOptions = {}) {
     this.constraints = {
       ...defaultReadConstraintsOptions,
       ...(readConstraints as Partial<ReadConstraintsOptionsType>),
     };
     new ReadConstraintsOptionsValidator().validate(this.constraints);
+    this.admittedTags = tagOptions.tags === undefined ? null : new Set(tagOptions.tags);
+  }
+
+  /** Throw unless `name` is admitted — called before the value it names is built. */
+  private admit(name: JsonTreeTagName): void {
+    if (this.admittedTags !== null && !this.admittedTags.has(name)) throw new RefusedTagError(name);
+  }
+
+  /** Read a tag body whose one byte string the tag has already been admitted for. */
+  private readAnsweredBody(depth: number): unknown {
+    this.byteStringAnswered = true;
+    try {
+      return this.readValue(depth);
+    } finally {
+      this.byteStringAnswered = false;
+    }
   }
 
   decode(bytes: Uint8Array): unknown {
@@ -596,12 +651,19 @@ export class CborDecoder {
     const len = this.readLength(add);
 
     switch (major) {
-      case 0: return typeof len === 'bigint' ? len : Number(len);
+      case 0:
+        if (typeof len !== 'bigint') return Number(len);
+        this.admit('bigint');
+        return len;
       case 1: {
+        if (typeof len === 'bigint') this.admit('bigint');
         const value = typeof len === 'bigint' ? -(len as bigint) - 1n : -Number(len) - 1;
         return value;
       }
-      case 2: return this.readBytes(this.requireStringLength(Number(len)));
+      case 2:
+        if (this.byteStringAnswered) this.byteStringAnswered = false;
+        else this.admit('bytes');
+        return this.readBytes(this.requireStringLength(Number(len)));
       case 3: return new TextDecoder().decode(this.readBytes(this.requireStringLength(Number(len))));
       case 4: {
         const out: unknown[] = [];
@@ -655,10 +717,68 @@ export class CborDecoder {
    * Every other tag reads its body normally and is interpreted by `applyTag`.
    */
   private readTagged(tag: number, depth: number): unknown {
-    if (tag === TAG_MAP) return new Map(this.readEntryPairs(depth));
-    const inner = this.readValue(depth + 1);
-    if (tag === TAG_GENERIC_OBJECT) return this.readGenericObject(inner);
+    // Each tag is admitted before its body is read, so a refused one costs no
+    // more than its header: a refused bignum is never parsed, a refused
+    // `Set`'s members are never walked.
+    const answered = this.answeredTag !== null && this.answeredTag.tag === tag ? this.answeredTag : null;
+    this.answeredTag = null;
+    const admittedAs = TAG_NAMES.get(tag);
+    if (admittedAs !== undefined && answered === null) this.admit(admittedAs);
+    if (tag === TAG_MAP) return new Map(this.readEntryPairs(depth, answered?.valueTag));
+    if (tag === TAG_GENERIC_OBJECT) {
+      const name = this.peekGenericObjectName();
+      const genericAs = name === undefined ? undefined : genericObjectTagName(name);
+      if (genericAs !== undefined) this.admit(genericAs);
+      return this.readGenericObject(this.readGenericObjectBody(genericAs, depth + 1));
+    }
+    const inner = tag === TAG_UNSIGNED_BIGNUM || tag === TAG_NEGATIVE_BIGNUM
+      ? this.readAnsweredBody(depth + 1)
+      : this.readValue(depth + 1);
     return this.applyTag(tag, inner);
+  }
+
+  /**
+   * A `27([name, …])` body, with the structure an admitted class is built out
+   * of answered for: a typed array's bytes, a framework collection's map (and
+   * the multi-map's value sets).  Everything the caller put inside is still
+   * checked.
+   */
+  private readGenericObjectBody(genericAs: JsonTreeTagName | undefined, depth: number): unknown {
+    if (genericAs === 'typed-array') return this.readAnsweredBody(depth);
+    if (genericAs === 'bidirectional-map' || genericAs === 'bidirectional-multi-map') {
+      this.answeredTag = genericAs === 'bidirectional-map'
+        ? { tag: TAG_MAP }
+        : { tag: TAG_MAP, valueTag: TAG_SET };
+      try {
+        return this.readValue(depth);
+      } finally {
+        this.answeredTag = null;
+      }
+    }
+    return this.readValue(depth);
+  }
+
+  /**
+   * The class name of a `27([name, ...arguments])` body, read without
+   * consuming anything — so the name can be admitted before a `RegExp` is
+   * compiled or an `Error`'s cause is walked.  `undefined` when the body is
+   * not that shape; `readGenericObject` reports the malformation itself.
+   */
+  private peekGenericObjectName(): string | undefined {
+    const start = this.pos;
+    try {
+      const header = this.bytes[this.pos];
+      if (header === undefined || header >>> 5 !== 4) return undefined;
+      this.pos++;
+      if (this.readLength(header & 0x1f) === 0) return undefined;
+      const first = this.bytes[this.pos];
+      if (first === undefined || first >>> 5 !== 3) return undefined;
+      this.pos++;
+      const length = Number(this.readLength(first & 0x1f));
+      return new TextDecoder().decode(this.readBytes(this.requireStringLength(length)));
+    } finally {
+      this.pos = start;
+    }
   }
 
   /**
@@ -701,7 +821,7 @@ export class CborDecoder {
    * means a truncated payload dies on the first `readValue` past the end,
    * which is the same way `case 4` stays safe.
    */
-  private readEntryPairs(depth: number): Array<[unknown, unknown]> {
+  private readEntryPairs(depth: number, valueTag?: number): Array<[unknown, unknown]> {
     if (depth > this.constraints.maxNestingDepth) {
       throw new CborDecodeError(
         `CBOR nesting deeper than ${this.constraints.maxNestingDepth} at offset ${this.pos}`,
@@ -718,7 +838,13 @@ export class CborDecoder {
     const count = Number(this.readLength(ib & 0x1f));
     const pairs: Array<[unknown, unknown]> = [];
     for (let i = 0; i < count; i++) {
-      pairs.push([this.readValue(depth + 1), this.readValue(depth + 1)]);
+      const key = this.readValue(depth + 1);
+      if (valueTag !== undefined) this.answeredTag = { tag: valueTag };
+      try {
+        pairs.push([key, this.readValue(depth + 1)]);
+      } finally {
+        this.answeredTag = null;
+      }
     }
     return pairs;
   }
@@ -780,21 +906,33 @@ export class CborDecoder {
     if (add === 20) return false;
     if (add === 21) return true;
     if (add === 22) return null;
-    if (add === 23) return undefined;
-    if (add === 25) return this.readHalfFloat();
+    if (add === 23) {
+      this.admit('undefined');
+      return undefined;
+    }
+    if (add === 25) return this.admitFloat(this.readHalfFloat());
     if (add === 26) {
       if (this.pos + 4 > this.bytes.byteLength) throw new CborDecodeError('Truncated float32');
       const value = this.view.getFloat32(this.pos, false);
       this.pos += 4;
-      return value;
+      return this.admitFloat(value);
     }
     if (add === 27) {
       if (this.pos + 8 > this.bytes.byteLength) throw new CborDecodeError('Truncated float64');
       const value = this.view.getFloat64(this.pos, false);
       this.pos += 8;
-      return value;
+      return this.admitFloat(value);
     }
     throw new CborDecodeError(`Unsupported simple value ${add}`);
+  }
+
+  /**
+   * `NaN` and `±Infinity` are the JSON tree's `number` tag; `-0` is not, since
+   * `JSON.parse('-0')` produces it too.
+   */
+  private admitFloat(value: number): number {
+    if (!Number.isFinite(value)) this.admit('number');
+    return value;
   }
 
   private readHalfFloat(): number {
@@ -847,6 +985,39 @@ export class CborDecoder {
         // Unknown tag — pass the inner value through.
         return inner;
     }
+  }
+}
+
+/** A tag the framework collection around it has already been admitted for — see `CborDecoder.answeredTag`. */
+type AnsweredTag = {
+  readonly tag: number;
+  /** For a map: the tag each of its values is, answered the same way. */
+  readonly valueTag?: number;
+};
+
+/**
+ * Registered tags by the allow-list name they are admitted under.  Wire/format
+ * vocabulary: the mapping is what the tag numbers above mean.  Unknown tags
+ * are not here, and pass their body through as before.
+ */
+const TAG_NAMES: ReadonlyMap<number, JsonTreeTagName> = new Map<number, JsonTreeTagName>([
+  [TAG_DATETIME, 'date'],
+  [TAG_EPOCH_DATETIME, 'date'],
+  [TAG_UNSIGNED_BIGNUM, 'bigint'],
+  [TAG_NEGATIVE_BIGNUM, 'bigint'],
+  [TAG_URI, 'url'],
+  [TAG_SET, 'set'],
+  [TAG_MAP, 'map'],
+]);
+
+/** The allow-list name a `27([name, …])` class is admitted under, if it is one this codec builds. */
+function genericObjectTagName(name: string): JsonTreeTagName | undefined {
+  switch (name) {
+    case 'BidirectionalMap': return 'bidirectional-map';
+    case 'BidirectionalMultiMap': return 'bidirectional-multi-map';
+    case 'RegExp': return 'regexp';
+    case 'Error': return 'error';
+    default: return isBinaryKind(name) ? 'typed-array' : undefined;
   }
 }
 

@@ -186,6 +186,12 @@ export interface WSEventsLike {
   onMessage?(evt: { data: unknown }, ws: WSContextLike): void;
   onClose?(evt: { code?: number; reason?: string }, ws: WSContextLike): void;
   onError?(evt: unknown, ws: WSContextLike): void;
+  /**
+   * Not Hono's: the Bun runner calls it from `Bun.serve`'s `websocket.pong`
+   * handler, the only place Bun reports a pong (#651).  Hono's own adapters
+   * never call it.
+   */
+  onPong?(): void;
 }
 
 /** Hono `upgradeWebSocket` middleware factory. */
@@ -223,6 +229,15 @@ export interface HonoServerRunner {
    * the configuration vocabulary, which `src/runtime/` does not import.
    */
   readonly idleTimeoutCeilingMs?: number;
+  /**
+   * `true` on a runner whose idle timeout is the only connection bound it can
+   * install — no header deadline, no receive deadline, no connection cap — so
+   * an {@link HonoServeOptions.idleTimeoutMs} of `0` would leave a request
+   * whose body stops arriving open until the client closes it.  The backend
+   * refuses `0` on such a runner, by the key's name, for the reason it
+   * refuses a value past {@link idleTimeoutCeilingMs} (#1767).
+   */
+  readonly idleTimeoutIsOnlyBound?: boolean;
   serve(options: HonoServeOptions): Promise<HonoServerHandle>;
   /**
    * Optional capability — all three built-in runners implement it.

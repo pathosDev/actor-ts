@@ -17,6 +17,7 @@ import { getTcpBackend, type TcpListener, type TcpSocketLike } from '../../../sr
 import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { assertDoesNotCompleteWithin } from '../../util/AsyncAssertions.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 /**
  * A `ClusterClient` deadline past the host timer ceiling waits in full.
@@ -143,7 +144,7 @@ async function contactPoint(options: { readonly holdHelloAcknowledgment: boolean
   const acknowledge = (socket: TcpSocketLike): void => {
     const acknowledgment: HelloAcknowledgmentMessage = {
       kind: 'hello-ack',
-      wireVersion: 2,
+      wireVersion: CLUSTER_WIRE_VERSION,
       self: new NodeAddress('contact-point', '127.0.0.1', boundPort, 'test-run').toJSON(),
     };
     socket.write(encodeFrame(acknowledgment));

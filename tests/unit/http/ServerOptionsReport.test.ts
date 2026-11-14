@@ -297,15 +297,18 @@ describe('a configured server bound the backend did not install is reported at b
       expect(heldAtCeiling(warnings)[0]).toContain('300000 ms');
     });
 
-    test('nothing is said where 255 s still covers the deadline, where the key is 0, or on a backend that derives nothing', async () => {
+    test('nothing is said where 255 s still covers the deadline, or on a backend that derives nothing — where the key is 0 too', async () => {
       // A set key is not derived, so it is never held at the ceiling — a set
       // value too short for the deadline has a warning of its own, below.
+      // `0` is refused on Hono under Bun (#1767), and binds without a word on
+      // the backends that have other bounds.
       expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 250s } }')).warnings).toEqual([]);
-      expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 0 } }')).warnings).toEqual([]);
       for (const backend of ['fastify', 'express']) {
         const { binding, warnings } = await bindTimed(`actor-ts.http { backend = ${backend}, request-timeout { deadline = 300s } }`);
         expect(warnings, backend).toEqual([]);
         expect(binding.serverOptionsReport, backend).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
+        const zero = await bindTimed(`actor-ts.http { backend = ${backend}, request-timeout { deadline = 300s }, server { idle-timeout = 0 } }`);
+        expect(zero.warnings, backend).toEqual([]);
       }
     });
   });
@@ -357,8 +360,8 @@ describe('a configured server bound the backend did not install is reported at b
       expect(cutsBeforeDeadline(warnings)[0]).toContain('cut from 4000 ms on');
     });
 
-    test('nothing is said once the earliest cut is 2 s past the deadline, for 0, or where the idle timeout is a keep-alive window', async () => {
-      for (const idleTimeout of ['33s', '36s', '0']) {
+    test('nothing is said once the earliest cut is 2 s past the deadline, or where the idle timeout is a keep-alive window', async () => {
+      for (const idleTimeout of ['33s', '36s']) {
         const { binding, warnings } = await bindTimed(`actor-ts.http { backend = hono, server { idle-timeout = ${idleTimeout} } }`);
         expect(warnings, idleTimeout).toEqual([]);
         expect(binding.serverOptionsReport, idleTimeout).not.toHaveProperty('idleTimeoutEarliestCutMs');
@@ -397,10 +400,10 @@ describe('a configured server bound the backend did not install is reported at b
  * `requestTimeout`: measured on bun 1.4.2, a keep-alive HTTP/1.1 connection
  * was still open 8 s after its response under an 800 ms idle-timeout, and a
  * stalled HTTP/1.1 body 40 s in under a 2 s request-timeout — while the
- * report said both were in effect and bind() was silent.  Both bounds hold
- * for HTTP/2 there, through the framework's own timers, so the report says
- * not in effect, names the protocol each holds for, and bind() warns in
- * those words.  Under Node the same listener reads both properties for
+ * report said both were in effect and bind() was silent.  The framework now
+ * holds both for HTTP/1.1 there with timers of its own (#1756,
+ * `Http1OnHttp2Listener.test.ts`), so the report says in effect again, and
+ * means it.  Under Node the same listener reads both properties for
  * HTTP/1.1, and the header cap is the one that holds for HTTP/1.1 only —
  * `tests/smoke/cases/49-http2-connection-bounds.mjs` holds that half.
  */
@@ -419,18 +422,13 @@ describe('on an HTTP/2 listener a bound held for one protocol is reported as not
     return builder.withServerOptions(serverOptions);
   };
 
-  test('idle-timeout and request-timeout on Fastify\'s HTTP/2 listener under Bun hold for HTTP/2 only, and bind() says so', async () => {
+  test('idle-timeout and request-timeout on Fastify\'s HTTP/2 listener under Bun hold for both protocols, and nothing is said (#1756)', async () => {
     const { binding, warnings } = await bindUnder(onBackend('fastify', 'idle-timeout = 800ms\nrequest-timeout = 20s'), overHttp2);
 
-    expect(binding.serverOptionsReport?.idleTimeoutMs, 'idle-timeout reported in effect over HTTP/1.1 connections it never bounds').toBe(false);
-    expect(binding.serverOptionsReport?.requestTimeoutMs, 'request-timeout reported in effect over HTTP/1.1 connections it never bounds').toBe(false);
-    expect(binding.serverOptionsReport?.heldForOneProtocol).toEqual({ idleTimeoutMs: 'HTTP/2', requestTimeoutMs: 'HTTP/2' });
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('actor-ts.http.server.idle-timeout and actor-ts.http.server.request-timeout');
-    expect(warnings[0]).toContain('"fastify"');
-    expect(warnings[0]).toContain('for HTTP/2 only');
-    expect(warnings[0]).toContain('a connection that negotiates HTTP/1.1 on the same port is not bounded by them');
-    expect(warnings[0], 'a bound that holds for HTTP/2 was called inert').not.toContain('nothing here');
+    expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(true);
+    expect(binding.serverOptionsReport?.requestTimeoutMs).toBe(true);
+    expect(binding.serverOptionsReport).not.toHaveProperty('heldForOneProtocol');
+    expect(warnings).toEqual([]);
   });
 
   test('the same block on Fastify\'s TLS listener without HTTP/2 is in effect, and nothing is said', async () => {
@@ -457,10 +455,7 @@ describe('on an HTTP/2 listener a bound held for one protocol is reported as not
     const { binding, warnings } = await bindUnder(onBackend('fastify', 'max-header-bytes = 1KiB'), overHttp2);
 
     expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(true);
-    expect(binding.serverOptionsReport?.heldForOneProtocol).not.toHaveProperty('maxHeaderBytes');
-    // The shipped request-timeout is in every resolved policy, so the report
-    // carries it held for HTTP/2 here too — and says nothing, since nobody set it.
-    expect(binding.serverOptionsReport?.heldForOneProtocol).toEqual({ requestTimeoutMs: 'HTTP/2' });
+    expect(binding.serverOptionsReport).not.toHaveProperty('heldForOneProtocol');
     expect(warnings).toEqual([]);
   });
 

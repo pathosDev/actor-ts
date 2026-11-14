@@ -119,8 +119,8 @@ export const DEFAULT_PERSISTENCE_AUTO_START = true;
  * over `actor-ts.persistence` over the built-in defaults — and applies to
  * every `PersistentActor` and every `ReplicatedEventSourcedActor` in the
  * system: to the replicated actor's local `persist`, its recovery and its
- * snapshot saves, though not yet to its append of an event a peer sent, which
- * waits for the serialized append chain of #958.  It is system-wide rather
+ * snapshot saves, and — through the journal breaker, in its serialized append
+ * chain (#958) — to its append of an event a peer sent.  It is system-wide rather
  * than per journal plugin because the extension resolves exactly one journal per
  * system: `registerXxxPlugins` makes several plugin ids *registerable*, but
  * `journal.plugin` selects one of them and a second store is reached by

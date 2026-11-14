@@ -31,14 +31,19 @@ export type HttpRequest = {
   /** Raw bytes of the request body (undefined for GET / HEAD). */
   readonly body: Uint8Array | null;
   /**
-   * Optional remote IP address of the client as the server saw it
-   * (NOT the value of `x-forwarded-for` — that's a header the client can
-   * spoof, and one every common proxy *appends* to rather than replacing,
-   * so no fixed position in it is trustworthy either).  Backends SHOULD
-   * populate this from the underlying socket peer; a consumer that needs
-   * the client's own address from behind a proxy MUST say which proxies it
-   * trusts (see `IpAllowlist`'s `trustedProxies` option), because that is
-   * the only thing that makes a position in the chain meaningful.
+   * The **socket peer** — the address of whatever opened the TCP
+   * connection — on all three backends (Fastify, Express, Hono).  No
+   * forwarding header is consulted, so behind a reverse proxy this is the
+   * proxy, not the client.  (Nor should it be `x-forwarded-for`: that is a
+   * header the client can spoof, and one every common proxy *appends* to
+   * rather than replacing, so no fixed position in it is trustworthy.)
+   *
+   * A consumer that needs the client's own address from behind a proxy
+   * MUST say which proxies it trusts, because that is the only thing that
+   * makes a position in the chain meaningful.  The supported way is
+   * `clientIpResolver(trustedProxies)` (`http/middleware/ClientIp.ts`,
+   * #1236) — the same walk `IpAllowlist`'s `trustedProxies` option runs —
+   * for a rate-limit key, a log line or anything else.
    */
   readonly remoteAddress?: string;
   /**

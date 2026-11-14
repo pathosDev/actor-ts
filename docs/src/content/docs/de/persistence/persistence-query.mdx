@@ -264,6 +264,18 @@ aus derselben Entity in ihrer ursprünglichen Sequenz bleiben.
 den Offset, der zusammen mit jedem Event zurückgegeben wird; setze
 beim Neustart vom persistierten Offset fort.
 
+**Offset-Reihenfolge ist nicht Commit-Reihenfolge.**  Der `timestamp`
+wird genommen, *bevor* der Write committet, also kann das Event eines
+langsamen Writers nach einem neueren sichtbar werden.  `eventsByTag`
+beginnt deshalb jedes Lesen `lookbackWindowMs` hinter dem neuesten
+ausgelieferten Event und verwirft, was es schon ausgeliefert hat, mit
+`(persistenceId, sequenceNr)` als Schlüssel.  Ein solches spätes Event
+wird trotzdem ausgeliefert, genau einmal, und kommt hinter neueren an.
+`currentEventsByTag` ist ein einmaliges Lesen ohne Gedächtnis; ein
+Konsument, der es von seiner eigenen Position aus pollt, verpasst
+späte Events — nimm `eventsByTag`, eine [Projektion](/de/persistence/projections/#späte-commits-und-das-lookback-fenster)
+oder `TagLookbackWindow`, durch das beide lesen.
+
 ## Tag-Filter
 
 ```ts
@@ -345,6 +357,7 @@ Live-Streams pollen das Journal.  Konfigurierbar über
 | Option | Default | Was |
 | --- | --- | --- |
 | `pollIntervalMs` | 1000 | Wie oft auf neue Events geprüft wird. |
+| `lookbackWindowMs` | 30000 | Nur `eventsByTag`: wie weit hinter dem neuesten ausgelieferten Event jedes Lesen beginnt, damit ein spät committetes Event trotzdem ausgeliefert wird.  `0` liest nur vorwärts. |
 
 Für Sub-Poll-Intervall-Delivery siehe
 [Push-basierte Query](/de/persistence/push-based-query/).

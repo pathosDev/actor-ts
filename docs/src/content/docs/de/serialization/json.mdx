@@ -106,6 +106,39 @@ Grobe Zahlen pro Serialize-/Deserialize-Paar:
 `JSON.parse` / `JSON.stringify` sind nativer Code in V8/JSC —
 schnell genug, dass JSON-Serialisierung selten zum Bottleneck wird.
 
+## Welche Tags ein Decode befolgt
+
+Ein Tag ist eine Anweisung, eine Klasse zu bauen, und eine Anweisung
+ist nur von einem Schreiber befolgenswert, dem man vertraut.  Deshalb
+nimmt der Decoder eine Allow-List — `tags`, nach Namen: `date`,
+`bytes`, `map`, `set`, `bidirectional-map`, `bidirectional-multi-map`,
+`bigint`, `number`, `undefined`, `regexp`, `url`, `error`,
+`typed-array` — und jeder Leser übergibt die, die zu den Bytes passt,
+die er liest (#967, #1303):
+
+| Leser | Tags, die er befolgt |
+| --- | --- |
+| Persistence-`PayloadCodec`, `new JsonSerializer()` | Alle — diese Bytes hat das Framework selbst geschrieben, und gespeicherte Zeilen müssen weiter dekodieren. |
+| `entity()` auf einem HTTP-Request | Keine: Der Body ist reines JSON, außer die Route schaltet Tags mit `EntityOptions.withTags([...])` frei — siehe [Marshalling](/de/http/marshalling/#json-bodies-sind-reines-json). |
+| Der Cluster-Wire (`FrameDecoder`) | Die Daten-Tags — `date`, `bytes`, `typed-array`, `map`, `set`, `bigint`, die beiden bidirektionalen Maps, `number` — gesetzt über `actor-ts.serialization.wire.admitted-tags`.  Ein Frame mit einem anderen Tag wird abgelehnt und geloggt; siehe den [Überblick](/de/serialization/overview/). |
+
+```ts
+import { JsonSerializer } from 'actor-ts/serialization';
+
+const plain = new JsonSerializer({}, { tags: [] });          // reines JSON
+const dated = new JsonSerializer({}, { tags: ['date'] });    // nur __date__ baut eine Klasse
+```
+
+`tags: []` ist reines JSON: Kein Schlüssel ist besonders, auch
+`__literal__` nicht.  Eine nicht-leere Liste ist das getaggte Format,
+beschränkt auf diese Namen — gelistete Tags bauen ihre Klasse,
+`__literal__` wird ausgepackt, und jeder andere Tag wirft
+`RefusedTagError` (ein `SerializationError`), bevor sein Inhalt
+gelesen wird; ein abgelehntes `__regexp__` wird also nie kompiliert.
+Ein abgelehnter Tag wird nie als einfaches Objekt weitergereicht: Der
+Schreiber meinte eine `RegExp`, und etwas anderes auszuliefern, ohne
+es zu sagen, wäre ein stiller Klassenwechsel.
+
 ## Was der Decoder ablehnt
 
 `fromBinary` lehnt ein Dokument, das gar kein JSON ist, mit einem

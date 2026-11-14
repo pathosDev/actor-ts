@@ -70,3 +70,21 @@ export const MAX_BIGINT_DIGITS: number = MAX_BIGNUM_MAGNITUDE.toString().length;
  * decoding.
  */
 export const RESERVED_SERIALIZER_IDS_BELOW = 100;
+
+/**
+ * Every name a `JsonTree` decode allow-list may hold, one per type tag
+ * (#967, #1303).  Listing all of them admits the full set.
+ *
+ * Here rather than beside the tag keys in `JsonTree.ts` because three files
+ * read it and two are options files — `http/EntityOptions.ts` and
+ * `WireDecodeOptions.ts` validate a list against it — which may not import a
+ * functional module to reach a constant.  `JsonTree.ts` maps each name to its
+ * key, and that map's `Record` type is what keeps the two in step.
+ */
+export const JSON_TREE_TAG_NAMES = [
+  'date', 'bytes', 'map', 'set', 'bidirectional-map', 'bidirectional-multi-map',
+  'bigint', 'number', 'undefined', 'regexp', 'url', 'error', 'typed-array',
+] as const;
+
+/** One entry of {@link JSON_TREE_TAG_NAMES}. */
+export type JsonTreeTagName = typeof JSON_TREE_TAG_NAMES[number];

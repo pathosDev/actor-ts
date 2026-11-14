@@ -102,6 +102,8 @@ type WebsocketRouteOptions<TOut, TIn> = {
   acceptTimeoutMs?:    number;                        // setup deadline; default 10 000, Infinity to disable
   connectionMailboxCapacity?: number;                 // per-connection queue bound; default unset (global bound)
   connectionMailboxOverflow?: 'drop-head' | 'drop-new' | 'reject'; // needs a capacity
+  heartbeatIntervalMs?: number;                       // server ping interval; default 30 000, 0 to disable
+  idleTimeoutMs?:       number;                       // close after this long without a message; default 0 (off)
 };
 ```
 
@@ -243,6 +245,44 @@ Upgrade also nicht über `acceptTimeoutMs` hinaus festhalten und zu einem
 Kommando ein wie jede andere Nachricht in dieser Mailbox, und hinter einem
 FIFO-Rückstau, dessen Abarbeitung länger als `acceptTimeoutMs` dauert, wird
 die neue Verbindung weiterhin mit 1013 geschlossen.
+
+#### Heartbeat und Idle-Timeout
+
+Ein Peer kann ohne Close-Frame verschwinden — ein gezogenes Kabel, ein
+Laptop, der eingeschlafen ist, ein NAT, das die Zuordnung vergessen hat.
+Auf seinem Socket kommt dann nichts mehr an und wird nie wieder etwas
+ankommen, und ohne Prüfung bleiben der Actor der Verbindung, ihr Eintrag in
+den `clients` des Hubs und ihr `maxConnections`-Platz für die Lebensdauer
+des Prozesses bestehen.
+
+- **`heartbeatIntervalMs`** (Default 30 s) schickt jedem Peer in jedem
+  Intervall einen Ping auf Protokollebene.  Eine Verbindung, von der seit
+  dem vorigen Ping nichts kam — kein Pong, kein Frame —, wird ohne
+  Close-Handshake getrennt, den ein verschwundener Peer ohnehin nicht
+  beantworten könnte, und das `onClientDisconnected` des Hubs hört
+  `{ code: 1001, reason: 'heartbeat timeout', initiatedBy: 'server' }`.  Ein
+  toter Peer ist zwischen einem und zwei Intervallen, nachdem er verstummt
+  ist, verschwunden, und sein Platz mit ihm.  Jeder konforme Client
+  beantwortet einen Ping von selbst — Browser, `ws`, Bun und Deno —, an
+  deinem Protokoll ändert sich also nichts.  `0` schaltet ihn ab.
+- **`idleTimeoutMs`** (Default aus) schließt eine Verbindung mit `1001`
+  `'idle timeout'`, sobald so lange keine eingehende Nachricht kam.  Pongs
+  zählen nicht: Ein Peer, der jeden Ping beantwortet, aber nichts sagt, ist
+  nach diesem Maß untätig.  Was „zu still“ heißt, entscheidet dein
+  Protokoll, deshalb ist es aus, solange du es nicht setzt.
+
+```ts
+const liveRouteOptions = WebsocketRouteOptions.create()
+  .withHeartbeatIntervalMs(15_000)
+  .withIdleTimeoutMs(5 * 60_000);
+websocket('/ws', chat, liveRouteOptions);
+```
+
+Der Heartbeat läuft auf allen drei Backends mit einer Ausnahme: Hono unter
+**Deno**, dessen Standard-`WebSocket` keinen Ping senden kann.  Eine Route
+dort warnt einmal, dass ihre Verbindungen ohne Heartbeat laufen; Denos
+eigenes `idleTimeout` an `Deno.upgradeWebSocket` (Default 120 s) pingt
+weiterhin und trennt einen Peer, der nicht antwortet.
 
 ### Origin-Prüfungen (CSWSH-Schutz)
 
@@ -515,19 +555,19 @@ abgearbeitet ist.  Alles andere behält die Ankunftsreihenfolge, deshalb
 gilt die Reihenfolge pro Verbindung weiter: das `onClientDisconnected`
 einer Verbindung läuft nach ihren eigenen eingereihten Frames.
 
-**Eine Begrenzung verwirft den Rest, nie diese beiden.**  Begrenzt du den
+**Eine Begrenzung verwirft Frames, nie den Lebenszyklus einer Verbindung.**  Begrenzt du den
 Hub mit `withMailboxCapacity()`, mit einem
 [`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)-Eintrag
 für seinen Pfad (`"/user/chat"`), wo seine Spawn-Stelle nicht deine ist,
 oder lässt du `actor-ts.mailbox.default.capacity` ihn erreichen — in dieser
-Rangfolge —, gilt die Grenze für Frames, `onClientDisconnected` und deine
-`TSelf`-Nachrichten; das Spawn-Kommando und `onClientConnected` werden
-weder gezählt noch verworfen.  Ein begrenzter Hub unter Last nimmt also weiterhin jedes
-Upgrade an und führt jeden neuen Client in `this.clients`, während eine
-Flut auf die Kapazität gekürzt wird.  Verlieren kann er weiterhin ein
-Disconnect, und dann bleibt ein Client in `this.clients`, der längst weg
-ist — dieser Teil ist dein Protokoll, und nur du weißt, ob ein Verlust
-akzeptabel ist.
+Rangfolge —, gilt die Grenze für Frames und deine `TSelf`-Nachrichten.
+Das Spawn-Kommando, `onClientConnected` und `onClientDisconnected` werden
+nie verworfen, weder von einer Begrenzung noch von einem
+`throttle({ onExcess: 'drop' })`, und nur die ersten beiden nehmen die
+Kontrollspur: ein Disconnect behält seinen Platz hinter den Frames seiner
+Verbindung.  Ein begrenzter Hub unter Last nimmt also weiterhin jedes
+Upgrade an, führt jeden neuen Client in `this.clients` und entfernt jeden
+Client, der geht, während eine Flut auf die Kapazität gekürzt wird.
 
 Das Spawn-Kommando ist dasjenige, das nicht verloren gehen darf.  Es wird
 genau einmal gesendet — aus dem Upgrade-Callback des Backends — und trägt
@@ -546,9 +586,13 @@ Mailbox und die Reihenfolge, die sie allem gibt: auf einer schlichten
 FIFO-Queue wartet das Spawn-Kommando hinter jedem Frame, der vor ihm
 eingereiht wurde.  Verworfen werden kann es trotzdem nicht — es nimmt die
 Spur eines `Terminated` der Death-Watch, die `drop-head`, `drop-new`,
-`reject` und eine `PriorityMailbox` alle unangetastet lassen —, aber
-`onClientConnected` ist dort eine gewöhnliche Nachricht, und eine Grenze,
-die in diese Mailbox eingebaut ist, kann es verwerfen.
+`reject` und eine `PriorityMailbox` alle unangetastet lassen —, und das
+gilt ebenso für `onClientConnected` und `onClientDisconnected`.  Verliert
+eine Mailbox ein Disconnect trotzdem — eine eigene, deren `enqueue` es
+verwirft —, fängt das die Death-Watch des Hubs auf den Aktor der Verbindung
+ab: sobald dieser Aktor gestoppt ist, wird ein Client, der noch in
+`this.clients` steht, entfernt, und `onClientDisconnected` läuft mit Code
+`1006` und `initiatedBy: 'error'`, begleitet von einer Warnung im Log.
 
 Für strikte Ankunftsreihenfolge bei allem gibst du dem Hub eine eigene
 FIFO-Mailbox — und begrenzt sie, denn der Hub ist der Actor, den seine
@@ -794,6 +838,8 @@ actor-ts.http.websocket {
   # Unset by default; a route's own value wins over both.
   # connection-mailbox-capacity = 256
   # connection-mailbox-overflow = "drop-head"
+  heartbeat-interval    = 30s   # 0 to disable
+  idle-timeout          = 0s    # off
 }
 ```
 

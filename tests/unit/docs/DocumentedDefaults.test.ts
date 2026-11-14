@@ -91,6 +91,7 @@ import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
 import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS, MAX_INBOUND_CONNECTIONS, MAX_PENDING_FRAMES } from '../../../src/cluster/Constants.js';
 import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
+import { DEFAULT_WIRE_ADMITTED_TAGS } from '../../../src/serialization/WireDecodeOptions.js';
 import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
@@ -147,6 +148,7 @@ import { DEFAULT_CASSANDRA_ALL_IDS_TABLE, DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACT
 import { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from '../../../src/persistence/Constants.js';
 import { CASSANDRA_REPLICATION_CLASSES } from '../../../src/persistence/journals/CassandraPluginOptions.js';
 import {
+  DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS,
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES,
@@ -171,7 +173,7 @@ import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOpti
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
 import { DEFAULT_BACKOFF_DRAIN_GRACE_MS, DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_FORWARD_DURING_GRACE, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
 import { DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES, DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
-import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS, DEFAULT_TAG_LOOKBACK_WINDOW_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY, DEFAULT_ALLOW_NON_ATOMIC_BATCH_APPEND, DEFAULT_JOURNAL_BREAKER_ID, DEFAULT_MAX_CONCURRENT_RECOVERIES, DEFAULT_RECOVERY_TIMEOUT_MS, DEFAULT_SNAPSHOT_BREAKER_ID, DEFAULT_SNAPSHOT_IS_OPTIONAL } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 import { DEFAULT_PERSISTENCE_AUTO_START } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 import { DEFAULT_STARTUP_PHASE_TIMEOUT_MS } from '../../../src/CoordinatedStartupOptions.js';
@@ -484,6 +486,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // rather than being filed away as a feature switch with no constant (#880).
   { key: 'actor-ts.serialization.read-constraints.max-document-bytes', kind: 'bytes', constant: DEFAULT_MAX_DOCUMENT_BYTES },
   { key: 'actor-ts.serialization.read-constraints.max-string-length', kind: 'bytes', constant: DEFAULT_MAX_STRING_LENGTH },
+  { key: 'actor-ts.serialization.wire.admitted-tags', kind: 'list', constant: DEFAULT_WIRE_ADMITTED_TAGS },
 
   /* --- cluster bootstrap --- */
   { key: 'actor-ts.cluster.bootstrap.poll-interval', kind: 'duration', constant: DEFAULT_POLL_INTERVAL_MS },
@@ -801,6 +804,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.worker-cluster.restart-window', kind: 'duration', constant: DEFAULT_RESTART_WINDOW_MS },
 
   /* --- http --- */
+  { key: 'actor-ts.http.shutdown-grace-period', kind: 'duration', constant: DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS },
   { key: 'actor-ts.http.websocket.max-frame-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES },
   { key: 'actor-ts.http.websocket.max-buffered-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_POLICY.maxBufferedBytes },
   { key: 'actor-ts.http.websocket.on-oversize-frame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
@@ -809,6 +813,8 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.http.websocket.max-pre-attach-frames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
   { key: 'actor-ts.http.websocket.max-pre-attach-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
   { key: 'actor-ts.http.websocket.accept-timeout', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
+  { key: 'actor-ts.http.websocket.heartbeat-interval', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.heartbeatIntervalMs },
+  { key: 'actor-ts.http.websocket.idle-timeout', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.idleTimeoutMs },
   // The two connection-mailbox leaves (#1432) ship comment-only, and unset is
   // their documented default rather than a gap: it leaves each connection
   // actor to `actor-ts.mailbox.default.*`, so there is no constant behind them
@@ -1036,6 +1042,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.projection.max-retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS },
   { key: 'actor-ts.projection.poll-interval', kind: 'duration', constant: DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS },
   { key: 'actor-ts.projection.group-after-envelopes', kind: 'int', constant: DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES },
+  { key: 'actor-ts.projection.lookback-window', kind: 'duration', constant: DEFAULT_TAG_LOOKBACK_WINDOW_MS },
 
   /* --- logging: pipeline --- */
   { key: 'actor-ts.logger.close-timeout', kind: 'duration', constant: DEFAULT_SINK_CLOSE_TIMEOUT_MS },
@@ -1396,7 +1403,6 @@ const FEATURE_SWITCHES: readonly string[] = [
   // produce the identical policy.  It is also only consulted while
   // `remote.untrusted-mode` is on, which is the switch this one qualifies (#877).
   'actor-ts.remote.trusted-selection-paths',
-  'actor-ts.http.shutdown-grace-period', // 0ms = close listeners at once
   'actor-ts.sharding.remember-entities',
   'actor-ts.sharding.max-entities', // 0 = unbounded
   // `[]` = gate readiness on no sharded type, the same empty-list sentinel as

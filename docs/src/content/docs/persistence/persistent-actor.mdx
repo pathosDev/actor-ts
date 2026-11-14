@@ -432,8 +432,7 @@ application family already registered under one of these names, say
 with, what the store said.
 
 Several callers reach a store without going through these breakers,
-so none of the above sees them: a `ReplicatedEventSourcedActor`'s
-append of an event it received from a peer (#958); the journal-backed
+so none of the above sees them: the journal-backed
 remember-entities store `JournalRememberEntitiesStore` (#852);
 `readEvents`, the protected helper for reading an actor's own events
 back; the durable [dead-letter queue](/operations/dead-letters/),
@@ -446,21 +445,16 @@ handed.
 
 [`ReplicatedEventSourcedActor`](/persistence/replicated-event-sourcing/overview/#when-the-stores-are-down)
 follows all five settings for its local `persist`, its recovery and
-its snapshot saves, through the same two breakers.  Three things
-differ.  Its append of an event a peer sent is not behind the journal
-breaker yet: that append is fire-and-forget and races itself, and its
-breaker belongs in the serialized append chain #958 introduces.  A
+its snapshot saves, through the same two breakers, and its append of
+an event a peer sent goes through the journal breaker as well, in a
+serialized append chain that retries it (#958).  Two things differ.  A
 recovery that fails — past `recovery-timeout`, or refused by a
 breaker — fails `preStart`, because the class has no
-`onRecoveryFailure`.  And a timed-out write is **not** safe by
-construction there: if it lands, nothing folds or broadcasts the
-event — only a successful `persist` does either — so no peer ever
-receives it, and the replica's journal holds an event its state does
-not show.  Whether a later recovery folds it depends on where that
-recovery starts: a snapshot taken after the landing counts the event
-as covered, so a recovery from that snapshot never folds it, while a
-full replay — no snapshot, or `snapshot-is-optional` falling back to
-the journal — does.
+`onRecoveryFailure`.  And a timed-out write is not simply failed
+there: the actor waits for the journal call to settle, and if the
+write landed after all it folds and broadcasts the event then, as
+the successful `persist` would have (#1732).  A rejected `persist`
+there means "not confirmed", not "never happened".
 
 [`DurableStateActor`](/persistence/durable-state/) is outside all of
 this: none of these settings reaches a durable-state store, whether

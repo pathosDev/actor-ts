@@ -579,6 +579,20 @@ each fan-out ended and how long the caller waited:
 no scatter ran.  Neither family carries a router path, so several
 routers in one system aggregate.
 
+## HTTP middleware metrics
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `http_rate_limit_backend_errors_total` | counter | `prefix` | Requests a rate limiter could not count because its cache failed. |
+
+Present only when a `rateLimit` is handed a registry through `metrics` —
+the middleware runs outside any actor and has none otherwise.  `prefix`
+is the limiter's `keyPrefix`, so several limiters stay apart.  Any
+non-zero rate means the limiter is not counting right now: under
+`failureMode: 'open'` those requests pass unlimited, under `'closed'`
+they are answered 503.  See
+[when the cache fails](/http/middleware/rate-limit/#when-the-cache-fails).
+
 ## WebSocket client metrics
 
 | Metric | Type | Labels | Meaning |

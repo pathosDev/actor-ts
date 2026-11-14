@@ -37,6 +37,8 @@ const EVERY_LEAF = `
     accept-timeout        = 30s
     connection-mailbox-capacity = 64
     connection-mailbox-overflow = "drop-new"
+    heartbeat-interval    = 45s
+    idle-timeout          = 5m
   }
 `;
 
@@ -53,6 +55,8 @@ const EVERY_LEAF_READ: ResolvedWebsocketPolicy = {
   acceptTimeoutMs: 30_000,
   connectionMailboxCapacity: 64,
   connectionMailboxOverflow: 'drop-new',
+  heartbeatIntervalMs: 45_000,
+  idleTimeoutMs: 300_000,
 };
 
 describe('resolveWebsocketPolicy', () => {
@@ -96,8 +100,8 @@ describe('resolveWebsocketPolicy', () => {
     expect(policy.onBackpressure).toBe(DEFAULT_WEBSOCKET_POLICY.onBackpressure);
   });
 
-  test('each of the eleven fields resolves route > HOCON > built-in default', () => {
-    // The case above samples four fields; this holds the order for all eleven,
+  test('each of the thirteen fields resolves route > HOCON > built-in default', () => {
+    // The case above samples four fields; this holds the order for all thirteen,
     // with the HOCON layer coming through readWebsocketPolicyOptionsFromConfig.
     const sys = systemWith(EVERY_LEAF);
     expect(resolveWebsocketPolicy(sys, {})).toEqual(EVERY_LEAF_READ);
@@ -115,6 +119,8 @@ describe('resolveWebsocketPolicy', () => {
       acceptTimeoutMs: 1_500,
       connectionMailboxCapacity: 8,
       connectionMailboxOverflow: 'reject',
+      heartbeatIntervalMs: 2_000,
+      idleTimeoutMs: 9_000,
     };
     expect(resolveWebsocketPolicy(sys, route)).toEqual(route);
   });
@@ -253,7 +259,49 @@ describe('readWebsocketPolicyOptionsFromConfig', () => {
       maxPreAttachFrames: DEFAULT_WEBSOCKET_POLICY.maxPreAttachFrames,
       maxPreAttachBytes: DEFAULT_WEBSOCKET_POLICY.maxPreAttachBytes,
       acceptTimeoutMs: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs,
+      heartbeatIntervalMs: DEFAULT_WEBSOCKET_POLICY.heartbeatIntervalMs,
+      idleTimeoutMs: DEFAULT_WEBSOCKET_POLICY.idleTimeoutMs,
     });
+  });
+
+  test('the heartbeat and idle leaves are read on their own, each from its own key, as durations (#651)', () => {
+    expectExactOptions(
+      readWebsocketPolicyOptionsFromConfig(Config.parseString('actor-ts.http.websocket.heartbeat-interval = 10s')),
+      { heartbeatIntervalMs: 10_000 },
+    );
+    expectExactOptions(
+      readWebsocketPolicyOptionsFromConfig(Config.parseString('actor-ts.http.websocket.idle-timeout = 750')),
+      { idleTimeoutMs: 750 },
+    );
+    // `0` is the off-switch both leaves ship or document, and it is read as such.
+    expectExactOptions(
+      readWebsocketPolicyOptionsFromConfig(Config.parseString('actor-ts.http.websocket.heartbeat-interval = 0')),
+      { heartbeatIntervalMs: 0 },
+    );
+  });
+
+  test('the shipped heartbeat is 30 s and the idle timeout off (#651)', () => {
+    expect(DEFAULT_WEBSOCKET_POLICY.heartbeatIntervalMs).toBe(30_000);
+    expect(DEFAULT_WEBSOCKET_POLICY.idleTimeoutMs).toBe(0);
+  });
+
+  test('the builder methods set the heartbeat and idle fields (#651)', () => {
+    const routeOptions = WebsocketRouteOptions.create()
+      .withHeartbeatIntervalMs(5_000)
+      .withIdleTimeoutMs(60_000);
+    expect({ ...routeOptions }).toEqual({ heartbeatIntervalMs: 5_000, idleTimeoutMs: 60_000 });
+    const policy = resolveWebsocketPolicy(systemWith(''), routeOptions as WebsocketRouteOptionsType<unknown, unknown>);
+    expect(policy.heartbeatIntervalMs).toBe(5_000);
+    expect(policy.idleTimeoutMs).toBe(60_000);
+  });
+
+  test.each([
+    ['heartbeatIntervalMs', -1],
+    ['heartbeatIntervalMs', 1.5],
+    ['idleTimeoutMs', -1],
+    ['idleTimeoutMs', Number.NaN],
+  ])('%s = %p is refused when the policy resolves (#651)', (field, value) => {
+    expect(() => resolveWebsocketPolicy(systemWith(''), { [field]: value })).toThrow(new RegExp(field));
   });
 
   test.each([

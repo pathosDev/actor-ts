@@ -17,6 +17,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 const self = new NodeAddress('sim', '10.0.0.100', 5_000, 'test-run');
 
@@ -129,8 +130,8 @@ describe('TcpTransport delivers a frame addressed to its own node (#1813)', () =
   test('a handshake frame addressed to the node itself is not handed to the handler', async () => {
     const { transport, delivered } = startTransport();
 
-    transport.send(self, { kind: 'hello', self: self.toJSON(), wireVersion: 2, minWireVersion: 2 } as WireMessage);
-    transport.send(self, { kind: 'hello-ack', self: self.toJSON(), wireVersion: 2 } as WireMessage);
+    transport.send(self, { kind: 'hello', self: self.toJSON(), wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION } as WireMessage);
+    transport.send(self, { kind: 'hello-ack', self: self.toJSON(), wireVersion: CLUSTER_WIRE_VERSION } as WireMessage);
     await settle();
 
     expect(delivered).toEqual([]);
