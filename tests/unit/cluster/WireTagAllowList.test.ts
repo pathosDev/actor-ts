@@ -34,6 +34,7 @@ import {
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 interface MockSocket {
   ended: boolean;
@@ -114,7 +115,7 @@ function receiver(options?: TcpTransportOptions): {
   const socket = mockSocket();
   const internals = transport as unknown as TransportInternals;
   internals.attachInbound(socket);
-  internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
+  internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peer.toJSON() }));
   const received: WireMessage[] = [];
   transport.setHandler((_from, message) => { received.push(message); });
   return { transport, socket, log, received, feed: (frame) => internals.onData(socket, frame) };

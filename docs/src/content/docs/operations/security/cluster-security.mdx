@@ -557,6 +557,10 @@ Widening the list widens what every peer may make you build, so
 add a tag only where your own messages carry it, and on every node
 that receives them.  `[]` decodes frames as plain JSON.
 
+A v0.18 node never gets as far as a refused frame: the allow-list is
+why v0.19.0 speaks cluster wire version 3, and a version-2 `hello`
+is refused at the handshake with both versions named.
+
 ## What a well-formed frame still cannot grow
 
 Shape validation says a frame is *readable*, not that acting on

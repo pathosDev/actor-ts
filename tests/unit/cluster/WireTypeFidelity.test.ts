@@ -33,6 +33,7 @@ import { CborSerializer } from '../../../src/serialization/CborSerializer.js';
 import { SerializationExtension } from '../../../src/serialization/SerializationExtension.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 interface MockSocket {
   writes: Uint8Array[];
@@ -115,11 +116,11 @@ function connect(receiverOptions?: TcpTransportOptions): Link {
   const receiverSocket = mockSocket();
   (sender as unknown as TransportInternals).attachInbound(senderSocket);
   (sender as unknown as TransportInternals).onData(
-    senderSocket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: addressB.toJSON() }),
+    senderSocket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: addressB.toJSON() }),
   );
   (receiver as unknown as TransportInternals).attachInbound(receiverSocket);
   (receiver as unknown as TransportInternals).onData(
-    receiverSocket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: addressA.toJSON() }),
+    receiverSocket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: addressA.toJSON() }),
   );
 
   const received: WireMessage[] = [];

@@ -42,6 +42,7 @@ import {
   type TcpListener,
   type TcpSocketLike,
 } from '../../../src/runtime/tcp/index.js';
+import { CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 /**
  * #858 — `actor-ts.cluster.client` is the block for the one config consumer in
@@ -126,7 +127,7 @@ async function handshakingContactPoint(): Promise<TcpListener> {
           if (frame.kind !== 'hello') continue;
           const acknowledgment: HelloAcknowledgmentMessage = {
             kind: 'hello-ack',
-            wireVersion: 2,
+            wireVersion: CLUSTER_WIRE_VERSION,
             self: new NodeAddress('contact-point', '127.0.0.1', boundPort, 'test-run').toJSON(),
           };
           sock.write(encodeFrame(acknowledgment));

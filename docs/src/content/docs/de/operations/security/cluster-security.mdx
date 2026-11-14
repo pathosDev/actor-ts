@@ -598,6 +598,11 @@ kann; nimm einen Tag also nur dort auf, wo deine eigenen
 Nachrichten ihn tragen, und auf jedem Node, der sie empfängt.  `[]`
 dekodiert Frames als reines JSON.
 
+Ein v0.18-Node kommt gar nicht bis zu einem abgelehnten Frame: Die
+Allow-List ist der Grund, warum v0.19.0 Cluster-Wire-Version 3
+spricht, und ein `hello` mit Version 2 wird beim Handshake
+abgewiesen, mit beiden Versionen im Grund.
+
 ## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
 
 Die Shape-Prüfung sagt, dass ein Frame *lesbar* ist — nicht,

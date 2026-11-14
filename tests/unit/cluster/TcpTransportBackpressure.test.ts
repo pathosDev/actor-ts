@@ -21,6 +21,7 @@ import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import type { TcpSocketHandlers, TcpSocketLike } from '../../../src/runtime/tcp/TcpBackend.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 /** A socket that records every write and answers what `accepting` says. */
 type ThrottledSocket = TcpSocketLike & {
@@ -67,7 +68,7 @@ function connected(outboundQueueSize = 1_000): { transport: TcpTransport; socket
   transports.push(transport);
   const socket = throttledSocket();
   internals(transport).attachInbound(socket);
-  internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
+  internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peer.toJSON() }));
   socket.writes.length = 0;  // the hello-ack
   return { transport, socket, log };
 }
@@ -238,7 +239,7 @@ describe('a dial honours back-pressure from its first write (#931)', () => {
     transport.send(peer, heartbeat(1));
     transport.send(peer, heartbeat(2));
     await Promise.resolve();
-    handlers!.onData(socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() }));
+    handlers!.onData(socket, encodeFrame({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: peer.toJSON() }));
 
     // Only the hello went out; both frames wait for the drain.
     expect(socket.writes).toHaveLength(1);

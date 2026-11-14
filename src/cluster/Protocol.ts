@@ -475,9 +475,9 @@ const HEADER_SIZE = 4;
  * the ones in `actor-ts.serialization.wire.admitted-tags` — the data tags by
  * default — and refuses a frame that uses any other, so a `RegExp`, `URL`,
  * `Error` or value-position `undefined` sent to a node on the default list
- * never arrives.  That is also what breaks a rolling upgrade from v0.18: an
- * older node writes those tags unasked, and its frames carrying them are
- * refused by an upgraded peer.
+ * never arrives.  An older node writes those tags unasked, which is why the
+ * allow-list came with cluster wire version 3: a v0.18 node is refused at the
+ * handshake by version instead of losing those frames one at a time.
  *
  * **Rolling upgrade from a pre-tag node is not safe either.**  A frame from a
  * node older than #450 is untagged JSON, and `decodeJsonTree` interprets a tag

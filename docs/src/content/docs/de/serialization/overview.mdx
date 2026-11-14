@@ -257,15 +257,14 @@ import { Aside } from '@astrojs/starlight/components';
   strenger bei `undefined`.
 </Aside>
 
-<Aside type="caution" title="Upgrade von v0.18: RegExp, URL, Error und undefined">
-  Ein v0.18-Node schreibt diese vier Tags ungefragt, und ein
-  v0.19-Node mit der Default-Allow-List lehnt jeden Frame ab, der
-  einen davon trägt — der übrige Verkehr kommt durch.  Ein
-  **Rolling Upgrade ist daher nicht sicher** für einen Cluster,
-  dessen Nachrichten einen davon tragen: in einem Fenster upgraden
-  oder die Tags für die Dauer in
-  `actor-ts.serialization.wire.admitted-tags` auf den neuen Nodes
-  listen (#1303).
+<Aside type="caution" title="Ein Upgrade von v0.18 ist Stopp und Start">
+  Ein v0.18-Node schreibt `RegExp`-, `URL`-, `Error`- und
+  `undefined`-Tags an Wertpositionen ungefragt, und ein v0.19-Node
+  würde jeden Frame ablehnen, der einen davon trägt.  Deshalb hebt
+  v0.19.0 das Cluster-Wire auf Version 3, und die beiden weisen
+  einander beim Handshake ab, anhand der Version, statt diese Frames
+  einzeln zu verlieren (#1303).  Aktualisiere alle Nodes in einem
+  Fenster.
 </Aside>
 
 <Aside type="caution" title="Einen laufenden Cluster aktualisieren">

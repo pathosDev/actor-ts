@@ -31,6 +31,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { DEFAULT_MAX_FRAME_BYTES, encodeFrame } from '../../../src/cluster/Protocol.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 type MockSocket = {
   ended: boolean;
@@ -139,8 +140,8 @@ function armedDelays(run: () => void): unknown[] {
 function partialHello(bytes: number): Uint8Array {
   const frame = encodeFrame({
     kind: 'hello',
-    wireVersion: 2,
-    minWireVersion: 2,
+    wireVersion: CLUSTER_WIRE_VERSION,
+    minWireVersion: MIN_CLUSTER_WIRE_VERSION,
     self: new NodeAddress('inbound-guards', '10.0.0.7', 2_552, 'test-run').toJSON(),
   });
   return frame.subarray(0, bytes);
@@ -173,8 +174,8 @@ describe('an inbound socket cannot hold a half-received frame forever', () => {
 
     internals(transport).onData(socket, encodeFrame({
       kind: 'hello',
-      wireVersion: 2,
-      minWireVersion: 2,
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
       self: new NodeAddress('inbound-guards', '10.0.0.8', 2_552, 'test-run').toJSON(),
     }));
 
@@ -192,8 +193,8 @@ describe('an inbound socket cannot hold a half-received frame forever', () => {
 
     const frame = encodeFrame({
       kind: 'hello',
-      wireVersion: 2,
-      minWireVersion: 2,
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
       self: new NodeAddress('inbound-guards', '10.0.0.9', 2_552, 'test-run').toJSON(),
     });
     for (let i = 0; i < frame.byteLength - 1; i += 1) {
@@ -280,8 +281,8 @@ describe('inbound connections are capped', () => {
     // replaced, so the rest of the frame still completes.
     const frame = encodeFrame({
       kind: 'hello',
-      wireVersion: 2,
-      minWireVersion: 2,
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
       self: new NodeAddress('inbound-guards', '10.0.0.7', 2_552, 'test-run').toJSON(),
     });
     internals(transport).onData(socket, frame.subarray(3));
@@ -330,7 +331,7 @@ describe('a frame the decoder refuses is always reported (#1484)', () => {
     const socket = mockSocket();
     internals(transport).attachInbound(socket);
     const peer = new NodeAddress('inbound-guards', '10.0.0.13', 2_552, 'test-run');
-    internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
+    internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peer.toJSON() }));
     expect(log.warnings).toEqual([]);
 
     internals(transport).onData(socket, oversizedPrefix());
@@ -404,8 +405,8 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
 
     internals(transport).onData(socket, encodeFrame({
       kind: 'hello',
-      wireVersion: 2,
-      minWireVersion: 2,
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
       self: new NodeAddress('inbound-guards', '10.0.0.11', 2_552, 'test-run').toJSON(),
     }));
 
@@ -431,8 +432,8 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
 
     const frame = encodeFrame({
       kind: 'hello',
-      wireVersion: 2,
-      minWireVersion: 2,
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
       self: new NodeAddress('inbound-guards', '10.0.0.12', 2_552, 'test-run').toJSON(),
     });
     for (let index = 0; index < frame.byteLength; index += 1) {
@@ -574,8 +575,8 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     );
     const peer = new NodeAddress('unreachable-peer', '127.0.0.1', 19_499, 'test-run');
     try {
-      transport.send(peer, { kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() });
-      transport.send(peer, { kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() });
+      transport.send(peer, { kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peer.toJSON() });
+      transport.send(peer, { kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: peer.toJSON() });
       transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
 
       const pending = internals(transport).byPeer.get(peer.toString())?.pending ?? [];
