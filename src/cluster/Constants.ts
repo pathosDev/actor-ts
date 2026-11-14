@@ -670,3 +670,18 @@ export const ENVELOPE_REFUSAL_REPORT_INTERVAL_MS = 30_000;
  * message it sends would otherwise decide how often this node logs.
  */
 export const OUTBOUND_REFUSAL_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * How many events `JournalRememberEntitiesStore` lets accumulate behind its
+ * last snapshot before it folds the stream into a new one and deletes the
+ * prefix (#649).
+ *
+ * The actual interval is the larger of this and the size of the last
+ * snapshot, so the cost of a compaction — a read of the stream and one
+ * snapshot event — is paid at most once per that many appends, and a
+ * coordinator start reads at most one snapshot plus one interval of tail.
+ * A thousand keeps that tail well under a second to replay on every in-tree
+ * journal, while a type with steady passivation churn still compacts often
+ * enough that its log stops growing.
+ */
+export const REMEMBER_ENTITIES_COMPACTION_MIN_EVENTS = 1_000;
