@@ -23,7 +23,7 @@ import type { NodeAddressData } from '../NodeAddress.js';
 export type CoordinatorStateData = {
   /** Replica that wrote this snapshot.  Informational + LWW tiebreak. */
   readonly leader: string;
-  /** Wall-clock millis at write time.  LWW tiebreak. */
+  /** Wall-clock millis at write time.  The DistributedData store stamps its register no lower than this, and above the write it replaces (#950). */
   readonly takenAt: number;
   /** Region table — keyed by the same `regionKey` the coordinator uses. */
   readonly regions: ReadonlyArray<RegionInfoData>;
@@ -103,7 +103,7 @@ export interface CoordinatorStateStore {
  * worst case).
  *
  * **CRDT shape**: a single `LWWRegister<CoordinatorStateData>`.
- * Tiebreak via `(timestamp, replicaId)` is exactly what we want —
+ * Stamped above the register it replaces, so each write outranks the one before it (#950) —
  * the most recent writer (=most recent leader) wins.
  *
  * **Latency**: DD's default gossip is push-to-one-random-peer per
@@ -132,7 +132,17 @@ export class DistributedDataCoordinatorStateStore implements CoordinatorStateSto
     this.dd.update<LWWRegister<CoordinatorStateData>>(
       this.keyFor(typeName),
       () => LWWRegister.empty<CoordinatorStateData>(),
-      (reg) => reg.assign(this.replicaId, state, state.takenAt),
+      // Stamped strictly above the register this write replaces, never with
+      // `takenAt` alone (#950).  The coordinator coalesces a rebalance burst
+      // into a follow-up save, which routinely lands in the millisecond of the
+      // one before it: same `takenAt`, same replica id, different `shardHome`.
+      // Two registers tied on both halves of the order, and the later snapshot
+      // could lose.  `takenAt` still leads while the clock moves forward, and a
+      // clock that stepped back (an NTP correction) no longer lets a newer
+      // snapshot lose to an older one.  Peers' writes count too: the register
+      // here is the merged view, so a new leader's first save outranks what
+      // the previous leader last wrote.
+      (reg) => reg.assign(this.replicaId, state, Math.max(state.takenAt, reg.timestamp() + 1)),
     );
     // The update is fire-and-forget (DD serialises through its
     // mailbox) — we don't await write-to-disk.  That's fine: load
