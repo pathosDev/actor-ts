@@ -153,8 +153,10 @@ export abstract class BrokerActor<
   private _shutdownTaskName: string | null = null;
 
   /**
-   * Whether `postStop` has begun — i.e. whether this instance is still
-   * allowed to hold a connection.
+   * Whether this instance has lost the right to hold a connection — set by
+   * whichever comes first of `postStop` and the CoordinatedShutdown
+   * `service-stop` task (#1223).  Never cleared: after either, the actor is on
+   * its way out and no path may connect it again.
    *
    * A reconnect attempt runs on the *system* scheduler, detached from the
    * mailbox (see {@link _scheduleReconnect}), so it can resume from its own
@@ -834,8 +836,15 @@ export abstract class BrokerActor<
       Phases.ServiceStop,
       name,
       async () => {
-        // Stop the reconnect loop first: reconnecting mid-shutdown would
-        // re-open the very transport this task exists to close.
+        // First, for the reason `postStop` sets it first: a reconnect attempt
+        // already past its entry check is parked in the subclass's connect,
+        // and when it resumes it must abandon what it opened.  Without the
+        // flag it adopted the connection after the teardown below had cleared
+        // the transport gate, so `postStop`'s own `_closeTransport()` later
+        // returned at its first line and the handle was never closed (#1223).
+        this._stopped = true;
+        // Stop the reconnect loop: reconnecting mid-shutdown would re-open the
+        // very transport this task exists to close.
         this._scheduledReconnectCancel?.();
         this._scheduledReconnectCancel = null;
         if (this._transportOpened) this._state = 'disconnecting';
