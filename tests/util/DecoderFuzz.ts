@@ -1,4 +1,5 @@
 import fc from 'fast-check';
+import { parseHocon } from '../../src/config/HoconParser.js';
 import { JSON_TREE_TAG_NAMES, type JsonTreeTagName } from '../../src/serialization/Constants.js';
 import { BidirectionalMap } from '../../src/util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../../src/util/BidirectionalMultiMap.js';
@@ -281,4 +282,58 @@ export function jsonTreeDocumentArbitrary(): fc.Arbitrary<unknown> {
       fc.tuple(fc.constantFrom(...JSON_TREE_KEYS), tie('value')).map(([tag, body]) => ({ [tag]: body })),
     ),
   })).value;
+}
+
+/* --------------------------------- HOCON ---------------------------------- */
+
+/**
+ * Everything wrong with parsing `text`, or `[]`.  The parser has no error class
+ * of its own: its contract is a plain `Error` whose message begins
+ * `HOCON parse error at line`, which names the line and column to an operator.
+ * A `RangeError`, a `TypeError`, or an `Error` without that prefix is foreign.
+ */
+export function hoconViolations(text: string): string[] {
+  const outcome = outcomeOf(() => parseHocon(text));
+  if (outcome.kind === 'decoded') return [];
+  const error = outcome.error;
+  if (error instanceof Error && error.constructor === Error && error.message.startsWith('HOCON parse error at line ')) {
+    return [];
+  }
+  return [foreignError(outcome, []) ?? 'unreachable'];
+}
+
+/**
+ * A valid HOCON document, rendered from a random model in a random style —
+ * `=` or `:`, commas or newlines, comments, quoted or bare keys, path
+ * expressions, the `key { … }` shorthand, substitutions — so a mutation of it
+ * lands inside every construct the parser knows.  Validity is the point: the
+ * properties edit or cut it afterwards, and the closer the start is to valid
+ * the deeper an edit reaches.
+ */
+export function hoconDocumentArbitrary(): fc.Arbitrary<string> {
+  const bareKey = fc.stringMatching(/^[a-z][a-z0-9_-]{0,5}$/);
+  const scalar = fc.oneof(
+    fc.integer().map(String),
+    fc.double({ noNaN: true, noDefaultInfinity: true }).map(String),
+    fc.constantFrom('true', 'false', 'null', 'localhost:2552', '30s', 'two words'),
+    fc.string({ maxLength: 8 }).map((text) => JSON.stringify(text)),
+    fc.constantFrom('${?a}', '${?a.b}', '"x"${?y}"z"'),
+  );
+  const separator = fc.constantFrom(' = ', ': ', '=', ' : ');
+  const lineEnd = fc.constantFrom('\n', ', ', ',\n', ' # note\n', ' // note\n');
+  const key = fc.oneof(
+    bareKey,
+    fc.array(bareKey, { minLength: 2, maxLength: 3 }).map((segments) => segments.join('.')),
+    bareKey.map((segment) => JSON.stringify(segment)),
+  );
+  return fc.letrec<{ value: string; object: string }>((tie) => ({
+    value: fc.oneof(
+      { depthSize: 'small', withCrossShrink: true },
+      scalar,
+      fc.array(tie('value'), { maxLength: 3 }).map((items) => `[${items.join(', ')}]`),
+      tie('object').map((body) => `{\n${body}}`),
+    ),
+    object: fc.array(fc.tuple(key, separator, tie('value'), lineEnd), { maxLength: 4 }).map((fields) =>
+      fields.map(([name, assign, value, end]) => `${name}${assign}${value}${end}`).join('')),
+  })).object.chain((body) => fc.constantFrom(body, `{\n${body}}`));
 }

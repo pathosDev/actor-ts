@@ -3859,6 +3859,11 @@ Listen zusammenfügen (`{ a = 1 } { b = 2 }`, `[1] [2]`, `${base} { … }`),
 `+=` und Strings in dreifachen Anführungszeichen
 ([#537](https://github.com/pathosDev/actor-ts/issues/537)).
 
+Ein Dokument darf höchstens 256 Ebenen tief verschachtelt sein; jeder Schlüssel
+eines Pfadausdrucks, jedes Objekt unter einem Schlüssel und jede Liste zählt
+eine Ebene.  Tiefer wird mit einem Parse-Fehler abgelehnt, der die Zeile nennt
+([#1369](https://github.com/pathosDev/actor-ts/issues/1369)).
+
 ### Includes werden nicht unterstützt
 
 ```hocon
