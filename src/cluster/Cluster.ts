@@ -383,6 +383,13 @@ export class Cluster {
    * it is meant to prevent.  Live entries are `members.size - tombstoneCount`.
    */
   private tombstoneCount = 0;
+  /**
+   * How many entries of {@link members} are `up` — kept beside the map by
+   * {@link setMember} and {@link deleteMember}, the way {@link tombstoneCount}
+   * is, so the `cluster_members_up` gauge can follow every write without a
+   * scan of the map per merged record.
+   */
+  private upCount = 0;
 
   /**
    * What this node's failure detector last said about each peer, keyed exactly
@@ -4901,7 +4908,10 @@ export class Cluster {
     const previous = this.members.get(key);
     if (previous?.status === 'removed') this.tombstoneCount--;
     if (member.status === 'removed') this.tombstoneCount++;
+    if (previous?.status === 'up') this.upCount--;
+    if (member.status === 'up') this.upCount++;
     this.members.set(key, member);
+    this.publishMembersUp();
     if (member.status === 'removed') {
       this.failureDetector.forget(member.address);
       // A refusal is about a peer this node can no longer count on; once the
@@ -4915,7 +4925,9 @@ export class Cluster {
     const previous = this.members.get(key);
     if (previous === undefined) return;
     if (previous.status === 'removed') this.tombstoneCount--;
+    if (previous.status === 'up') this.upCount--;
     this.members.delete(key);
+    this.publishMembersUp();
     // Same key space, same lifetime.  A verdict left behind here would make the
     // address's next incarnation look like a peer that had recovered.
     this.reachability.delete(key);
@@ -4942,14 +4954,24 @@ export class Cluster {
     this.setMember(next);
     if (prev) this.emitStatusTransition(prev, next);
     else this.emit(new MemberJoined(next));
-    // Stock metric: members-up gauge.  Updated on every member-set
-    // mutation so all transitions (join, up, down, removed) keep it
-    // current.  Single value per node — labels are deliberately empty
-    // because the gauge is always the local view's snapshot.
+  }
+
+  /**
+   * Stock metric: the members-up gauge, set from the two write doors into
+   * {@link members} so every route keeps it current — the changes this node
+   * makes itself and the ones it learns through the gossip merge alike.  It
+   * used to be set in {@link updateMember} only, so a member another node
+   * promoted, marked unreachable or removed left the figure stale until this
+   * node changed something of its own, and the runbook's
+   * `changes(cluster_members_up[15m])` flapping query read a quiet cluster.
+   * Single value per node — labels are deliberately empty because the gauge is
+   * always the local view's snapshot.
+   */
+  private publishMembersUp(): void {
     metricsOf(this.system).gauge(
       'cluster_members_up', {},
       { help: 'Number of cluster members currently in `up` state.' },
-    ).set(this.upMembers().length);
+    ).set(this.upCount);
   }
 
   /**
