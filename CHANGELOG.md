@@ -9,6 +9,55 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **Fault-injecting persistence stores in the testkit** (#1024).
+  `FaultInjectingJournal` and `FaultInjectingSnapshotStore` wrap any `Journal`
+  or `SnapshotStore` and make chosen operations fail on a deterministic script:
+  `withFailOn`, `withFailAfterCalls`, `withFailOnce`, `withError`, and
+  `withFailurePoint('before-operation' | 'after-operation')`. A failure before
+  the operation refuses the call; a failure after it loses the acknowledgement
+  of a call the store has already performed. `withGapAfterSeq` hands back a
+  history with a hole in it. The shared persistence contract now runs the
+  lost-acknowledgement scenarios against every backend. `PersistentActor` is
+  now tested under a failed append inside `persistAll`, a snapshot save that
+  fails after the append succeeded, a gapped stream and a recovery read that
+  fails part-way. The testing page documents the stores (EN + DE).
+- **Reliable delivery is tested with message order under test control**
+  (#1370). fast-check's scheduler decides whether a delivery, a retransmit or
+  an acknowledgement arrives first, and a reference model checks the result:
+  nothing lost, nothing handled twice, no sequence gap. A failing run prints
+  the interleaving and a replay `path` that reproduces it. Each commit runs 40
+  cases; `nightly-flakes.yml` runs a deeper 3 000-case exploration. "Ordering
+  under test control" in the flake-diagnosis docs explains it (EN + DE).
+
+### Fixed
+
+- **A parent's restart budget measures `withinTimeRangeMs` on
+  `system.clock`**, so under a `ManualScheduler` a test crosses the window by
+  advancing virtual time (#1019). `AllForOneStrategy` fan-out and the sliding
+  window are now covered by tests that fail when either branch is
+  neutralised. The supervision page no longer claims the parent side grants
+  `maxRetries + 1` restarts (EN + DE); it has granted `maxRetries` since the
+  budget was unified.
+- **The split-brain resolver's stability window reads `system.clock`**, the
+  same clock as the failure detector (#1424). A `MultiNodeSpec` on a shared
+  `ManualScheduler` can now drive a downing strategy all the way to a removal;
+  before this, the window never elapsed in virtual time. Production behaviour
+  is unchanged.
+
+### Changed
+
+- **The aggregate coverage floor and the README badge are weighted by lines
+  now, `Σ LH / Σ LF` over every lcov record under `src/`** (#1016). They used
+  to read bun's `All files` row, which is the mean of per-file percentages:
+  ten 12-line barrels at 100 % cancelled out a 1000-line coordinator at 40 %.
+  The per-module floors were already weighted. The `src/` prefix keeps test
+  files out of the denominator whatever bun's `coverageSkipTestFiles` default
+  is. The badge figure moves with the statistic, not with any change in
+  coverage. `scripts/coverage-gate.mjs --lcov=…` is a complete gate on its own,
+  and `--log` is optional, only supplying bun's mean for the printout.
+
 ## [0.18.0] — 2026-11-10
 
 ### Added
