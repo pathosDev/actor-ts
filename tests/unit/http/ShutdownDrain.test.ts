@@ -25,7 +25,7 @@ import { complete, concat, get, path, type Route } from '../../../src/http/Route
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { healthChecksOf, managementRoutes } from '../../../src/management/index.js';
+import { healthChecksOf, managementRoutes, SHUTDOWN_READINESS_CHECK_NAME } from '../../../src/management/index.js';
 
 const BACKENDS = ['fastify', 'express', 'hono'] as const;
 type BackendName = typeof BACKENDS[number];
@@ -162,5 +162,32 @@ describe.each([...BACKENDS])('one drain semantics on the %s backend (#997)', (ba
 
     expect(outcome).toEqual({ status: 200, body: 'done' });
     expect(events).toEqual(['readiness-503', 'new-connections-refused', 'in-flight-completed', 'listener-closed']);
+  });
+});
+
+describe('a health-check registry first built while a shutdown runs (#997)', () => {
+  test('starts out red: the shutdown check is already failing', async () => {
+    // The registry is built on first use.  One first asked for once the run
+    // is under way missed the before-service-unbind task that would have
+    // turned it red, and must not answer ready for the rest of the drain.
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('shutdown-drain-late-registry', options);
+    systems.push(system);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    let readiness: ReadonlyArray<{ name: string; status: boolean }> | undefined;
+    // The first access to the registry anywhere in this system, made from
+    // inside the run.
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'test-late-registry', async () => {
+      readiness = await healthChecksOf(system).checkReadiness();
+    });
+
+    await shutdown.run();
+
+    expect(readiness).toBeDefined();
+    const draining = readiness!.find((result) => result.name === SHUTDOWN_READINESS_CHECK_NAME);
+    expect(draining, `readiness carried no shutdown check: ${JSON.stringify(readiness)}`).toBeDefined();
+    expect(draining!.status).toBe(false);
   });
 });
