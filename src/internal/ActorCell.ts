@@ -189,11 +189,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * Does this actor's mailbox want its drops dead-lettered (#773)?
    *
    * Copied out of the mailbox in {@link _wireDropReporting} rather than read
-   * through it on every drop, and `false` for the shapes that cannot ask: a
-   * mailbox that does not report drops at all, and one the framework built
-   * from `withMailboxCapacity` or the global default — the `ControlAwareMailbox`
-   * a declaring actor is given included — which has no door onto the switch.
-   * That door is `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
+   * through it on every drop, and `false` for a mailbox that does not report
+   * drops at all.  One the framework built from `withMailboxCapacity` or the
+   * global default — the `ControlAwareMailbox` a declaring actor is given
+   * included — has no door onto the switch and takes its policy's default,
+   * which is on for `reject` alone (#919).  The door is
+   * `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
    */
   private _deadLetterMailboxDrops = false;
   private actor: Actor<TMessage> | null = null;
@@ -3117,15 +3118,14 @@ type MailboxBound = {
 /**
  * @internal The single writer of `actor_mailbox_dropped_total`.
  *
- * Two places lose a message to a full mailbox and report it here: the cell's
- * drop observer, for whatever a bound sheds, and a `WebsocketServerActor`
- * whose `reply` or `broadcast` met a connection that refused the frame under
- * `reject` — the queue threw rather than dropped, but the hub then let the
- * frame go, so the loss is the same one a `drop-new` bound reports.  One
- * function rather than one `counter(...)` call per site, so the family's labels
- * and help text cannot drift apart between them.
+ * Two sites in the cell report here — the drop observer, and the flush of the
+ * drops deferred while no class was known.  A `WebsocketServerActor` used to
+ * be a third, counting a frame a `reject` connection queue threw back at it;
+ * `reject` reports through the observer like every other policy now (#919).
+ * One function rather than one `counter(...)` call per site, so the family's
+ * labels and help text cannot drift apart between them.
  */
-export function countMailboxDrops(
+function countMailboxDrops(
   metrics: MetricsRegistry, className: string, reason: MailboxDropReason, delta: number,
 ): void {
   metrics.counter(

@@ -45,8 +45,9 @@ export type ControlAwareMailboxOptionsType<T> = {
    * three `BoundedMailbox` policies, which mean the same thing here because
    * the ordinary class is a FIFO queue just like that one.  Only meaningful
    * together with {@link capacity}, and rejected without it.  Default
-   * `reject`, as on every mailbox you construct yourself: naming a capacity
-   * says how much you will hold, not what you are willing to lose.
+   * `drop-head`, the same default every bounded FIFO queue has, whoever
+   * builds it (#919).  `reject` refuses the arrival and dead-letters it; it
+   * never throws into the sender.
    */
   readonly overflow?: BoundedMailboxOverflow;
   /**
@@ -62,7 +63,7 @@ export type ControlAwareMailboxOptionsType<T> = {
   readonly onDrop?: MailboxDropObserver<T>;
   /**
    * Route every dropped envelope to `system.deadLetters` rather than only
-   * counting it (#773).  Default `false`, for the reason
+   * counting it (#773).  Default `false` (`true` under `reject`, #919), for the reason
    * `BoundedMailboxOptionsType.deadLetterDrops` gives: the drop runs on the
    * sender's stack, and a dead letter is a durable capture plus a synchronous
    * publish.
@@ -122,7 +123,7 @@ export class ControlAwareMailboxOptionsBuilder<T> extends OptionsBuilder<Control
     return this.set('capacity', capacity);
   }
 
-  /** What to do when an ordinary message arrives on a full mailbox.  Default `reject`. */
+  /** What to do when an ordinary message arrives on a full mailbox.  Default `drop-head`. */
   withOverflow(overflow: BoundedMailboxOverflow): this {
     return this.set('overflow', overflow);
   }
@@ -132,7 +133,7 @@ export class ControlAwareMailboxOptionsBuilder<T> extends OptionsBuilder<Control
     return this.set('onDrop', onDrop);
   }
 
-  /** Dead-letter each dropped envelope instead of only counting it.  Default `false`. */
+  /** Dead-letter each dropped envelope instead of only counting it.  Default `false`, `true` under `reject`. */
   withDeadLetterDrops(deadLetterDrops: boolean): this {
     return this.set('deadLetterDrops', deadLetterDrops);
   }

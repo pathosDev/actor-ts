@@ -109,7 +109,7 @@ class ArrayBoundedMailboxModel extends ArrayMailboxModel {
 
   override enqueue(envelope: Envelope<number>): void {
     if (this.size >= this.capacity) {
-      if (this.overflow === 'reject') throw new Error('mailbox full');
+      // `reject` refuses the arrival like `drop-new` — never a throw (#919).
       if (this.overflow === 'drop-head') {
         const evicted = super.evictOldest();
         if (evicted !== undefined) this.recordDrop('drop-head');
@@ -215,8 +215,7 @@ class ArrayPriorityMailboxModel extends ArrayMailboxModel {
 
   override enqueue(envelope: Envelope<number>): void {
     if (this.capacity !== undefined && this.entries.length >= this.capacity) {
-      if (this.overflow === 'reject') throw new Error('mailbox full');
-      if (this.overflow === 'drop-new') {
+      if (this.overflow === 'drop-new' || this.overflow === 'reject') {
         this.recordDrop('drop-new');
         return;
       }
@@ -302,8 +301,7 @@ class ArrayControlAwareMailboxModel extends ArrayMailboxModel implements Signali
       return;
     }
     if (this.capacity !== undefined && this.userQueue.length >= this.capacity) {
-      if (this.overflow === 'reject') throw new Error('mailbox full');
-      if (this.overflow === 'drop-new') {
+      if (this.overflow === 'drop-new' || this.overflow === 'reject') {
         this.recordDrop('drop-new');
         return;
       }

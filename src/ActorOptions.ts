@@ -21,19 +21,10 @@ import type { SupervisorStrategy } from './Supervision.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 import { OptionsValidator } from './util/OptionsValidator.js';
 
-/**
- * Built-in default for {@link ActorOptionsType.mailboxOverflow}.
- * `drop-head` discards the oldest queued message when a new one arrives on
- * a full mailbox — the right shape for telemetry-style workloads where
- * stale messages are worthless and the freshest snapshot is the only thing
- * that matters.
- *
- * `reject` would be the more cautious-looking default and is the wrong one:
- * it throws `MailboxFullError` into the *sender's* `onReceive`, so the
- * actor that fails and restarts is the one that sent to a slow actor, not
- * the slow actor itself (#919).
- */
-export const DEFAULT_MAILBOX_OVERFLOW: BoundedMailboxOverflow = 'drop-head';
+// The default lives beside the mailbox options it is also the default of, so
+// a hand-built `BoundedMailbox` and the one the cell builds cannot disagree
+// (#919); re-exported here, where it has always been imported from.
+export { DEFAULT_MAILBOX_OVERFLOW } from './mailbox/BoundedMailboxOptions.js';
 
 /**
  * Builds the actor's mailbox.  Called once, when the cell is constructed —
@@ -365,7 +356,8 @@ export type DefaultMailboxConfiguration = {
    * global bound: an actor that sets `withMailboxCapacity` and no policy of
    * its own takes this one.  That is the same shape as
    * `actor-ts.actor.throughput`, and it is what makes "this deployment
-   * rejects instead of dropping" expressible in one line.
+   * refuses and dead-letters instead of dropping silently" expressible in
+   * one line.
    */
   readonly overflow?: BoundedMailboxOverflow;
 };

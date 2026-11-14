@@ -353,8 +353,10 @@ Siehe [Runtime — Compatibility Matrix](/de/runtime/compatibility-matrix/).
   Vier häufige Ursachen:
   - **Der Ref zeigt auf einen gestoppten Actor** — Nachrichten
     werden an `/deadLetters` geroutet (prüfe das System-Log).
-  - **Die Mailbox ist voll** mit `reject`-Overflow — `tell` wirft
-    `MailboxFullError` am Sender.  Fang es dort, wo Du tellst.
+  - **Die Mailbox ist voll** — eine begrenzte Mailbox verwirft nach
+    ihrer Overflow-Policy, und unter `reject` ist jede abgelehnte
+    Nachricht ein Dead Letter, der den vollen Actor nennt.  `tell`
+    wirft dafür nie.
   - **Recovery ist noch nicht abgeschlossen** für einen
     `PersistentActor` — Nachrichten, die vor `onRecoveryComplete`
     gesendet werden, warten in der Mailbox.  Langsame Recovery

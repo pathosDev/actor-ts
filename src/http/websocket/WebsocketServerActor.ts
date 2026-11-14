@@ -37,13 +37,10 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
-import { countMailboxDrops } from '../../internal/ActorCell.js';
-import { MailboxFullError } from '../../mailbox/DroppingMailbox.js';
 import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import { classNameOf } from '../../util/ClassName.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
-import { WebsocketConnectionActor } from './WebsocketConnectionActor.js';
 import type {
   WebsocketAcceptCommand,
   WebsocketConnectedSignal,
@@ -135,31 +132,20 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   }
 
   /**
-   * One connection's frame, with that connection's refusal contained here.
+   * One connection's frame.  A plain `tell`, and that is all it needs to be.
    *
    * A route may bound its connections with `connectionMailboxOverflow:
-   * 'reject'`, and a full `reject` queue throws `MailboxFullError` on the
-   * sender's stack — which for `reply` and `broadcast` is this hub.  Uncaught,
-   * one connection that had fallen behind failed the hub, and the restart tore
-   * down every connection it had spawned; `broadcast` also stopped at the first
-   * refusal, so every client after the slow one missed the frame as well.
-   *
-   * So the frame is lost for that connection alone, and counted the way a
-   * bound that drops reports the same loss: `actor_mailbox_dropped_total` under
-   * the connection actor's class, reason `drop-new` — the arriving frame is the
-   * one that did not make it.  Nothing else is caught.  A `tell` the
-   * application makes on a connection itself still throws on its own stack,
-   * which is what `reject` promises a sender; and `closeAll` needs no guard,
-   * because a close takes the exempt door no bound refuses (#985).
+   * 'reject'`, and a full `reject` queue used to throw `MailboxFullError` on
+   * the sender's stack — which for `reply` and `broadcast` is this hub — so a
+   * `try` here contained it and counted the lost frame by hand.  `reject` no
+   * longer throws into a sender (#919): the connection's own mailbox refuses
+   * the frame, and the cell counts it in `actor_mailbox_dropped_total` under
+   * the connection actor's class, reason `drop-new`, and dead-letters it.  One
+   * connection that fell behind still misses the frame alone, and `broadcast`
+   * still reaches every client after it.
    */
   private _tellConnection(client: WebsocketConnection<TOut>, message: TOut): void {
-    try {
-      client.tell(message);
-    } catch (e) {
-      if (!(e instanceof MailboxFullError)) throw e;
-      const metrics = this.system._metricsRegistry;
-      if (metrics !== null) countMailboxDrops(metrics, WebsocketConnectionActor.name, 'drop-new', 1);
-    }
+    client.tell(message);
   }
 
   /* ----------------------- sealed dispatch ----------------------- */
