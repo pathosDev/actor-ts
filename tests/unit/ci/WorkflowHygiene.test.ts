@@ -1385,6 +1385,7 @@ describe('workflow hygiene', () => {
       'integration-brokers.yml',
       'integration.yml',
       'multi-runtime.yml',
+      'mutation.yml',
       'nightly-flakes.yml',
       'package-health.yml',
       'typecheck-dev.yml',
