@@ -515,19 +515,19 @@ abgearbeitet ist.  Alles andere behält die Ankunftsreihenfolge, deshalb
 gilt die Reihenfolge pro Verbindung weiter: das `onClientDisconnected`
 einer Verbindung läuft nach ihren eigenen eingereihten Frames.
 
-**Eine Begrenzung verwirft den Rest, nie diese beiden.**  Begrenzt du den
+**Eine Begrenzung verwirft Frames, nie den Lebenszyklus einer Verbindung.**  Begrenzt du den
 Hub mit `withMailboxCapacity()`, mit einem
 [`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)-Eintrag
 für seinen Pfad (`"/user/chat"`), wo seine Spawn-Stelle nicht deine ist,
 oder lässt du `actor-ts.mailbox.default.capacity` ihn erreichen — in dieser
-Rangfolge —, gilt die Grenze für Frames, `onClientDisconnected` und deine
-`TSelf`-Nachrichten; das Spawn-Kommando und `onClientConnected` werden
-weder gezählt noch verworfen.  Ein begrenzter Hub unter Last nimmt also weiterhin jedes
-Upgrade an und führt jeden neuen Client in `this.clients`, während eine
-Flut auf die Kapazität gekürzt wird.  Verlieren kann er weiterhin ein
-Disconnect, und dann bleibt ein Client in `this.clients`, der längst weg
-ist — dieser Teil ist dein Protokoll, und nur du weißt, ob ein Verlust
-akzeptabel ist.
+Rangfolge —, gilt die Grenze für Frames und deine `TSelf`-Nachrichten.
+Das Spawn-Kommando, `onClientConnected` und `onClientDisconnected` werden
+nie verworfen, weder von einer Begrenzung noch von einem
+`throttle({ onExcess: 'drop' })`, und nur die ersten beiden nehmen die
+Kontrollspur: ein Disconnect behält seinen Platz hinter den Frames seiner
+Verbindung.  Ein begrenzter Hub unter Last nimmt also weiterhin jedes
+Upgrade an, führt jeden neuen Client in `this.clients` und entfernt jeden
+Client, der geht, während eine Flut auf die Kapazität gekürzt wird.
 
 Das Spawn-Kommando ist dasjenige, das nicht verloren gehen darf.  Es wird
 genau einmal gesendet — aus dem Upgrade-Callback des Backends — und trägt
@@ -546,9 +546,13 @@ Mailbox und die Reihenfolge, die sie allem gibt: auf einer schlichten
 FIFO-Queue wartet das Spawn-Kommando hinter jedem Frame, der vor ihm
 eingereiht wurde.  Verworfen werden kann es trotzdem nicht — es nimmt die
 Spur eines `Terminated` der Death-Watch, die `drop-head`, `drop-new`,
-`reject` und eine `PriorityMailbox` alle unangetastet lassen —, aber
-`onClientConnected` ist dort eine gewöhnliche Nachricht, und eine Grenze,
-die in diese Mailbox eingebaut ist, kann es verwerfen.
+`reject` und eine `PriorityMailbox` alle unangetastet lassen —, und das
+gilt ebenso für `onClientConnected` und `onClientDisconnected`.  Verliert
+eine Mailbox ein Disconnect trotzdem — eine eigene, deren `enqueue` es
+verwirft —, fängt das die Death-Watch des Hubs auf den Aktor der Verbindung
+ab: sobald dieser Aktor gestoppt ist, wird ein Client, der noch in
+`this.clients` steht, entfernt, und `onClientDisconnected` läuft mit Code
+`1006` und `initiatedBy: 'error'`, begleitet von einer Warnung im Log.
 
 Für strikte Ankunftsreihenfolge bei allem gibst du dem Hub eine eigene
 FIFO-Mailbox — und begrenzt sie, denn der Hub ist der Actor, den seine

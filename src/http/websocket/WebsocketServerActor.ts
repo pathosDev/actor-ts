@@ -33,6 +33,14 @@
  * invalid frames, `TSelf` — so the order per connection above is unchanged:
  * a connection's `onClientDisconnected` still runs after its own queued
  * frames.
+ *
+ * Neither lifecycle signal can be shed (#986): the connection actor reports
+ * both through the door no bound and no `throttle({ onExcess: 'drop' })` may
+ * discard, so `onClientDisconnected` runs for every connection that ran
+ * `onClientConnected`, and it leaves `clients`.  Should a `disconnected` be
+ * lost all the same — a mailbox of your own that drops it — the hub's
+ * death-watch on the connection actor makes it good: the entry is removed and
+ * the hook runs with `{ code: 1006, initiatedBy: 'error' }`, with a warning.
  */
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
@@ -44,6 +52,7 @@ import type { WebsocketConnection } from './WebsocketConnection.js';
 import type {
   WebsocketAcceptCommand,
   WebsocketConnectedSignal,
+  WebsocketConnectionStoppedSignal,
   WebsocketDataSignal,
   WebsocketDisconnectedSignal,
   WebsocketInvalidSignal,
@@ -192,6 +201,7 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
       .with({ kind: 'websocket-disconnected', connection: P.when(isLiveConnection) }, (m) =>
         this.onWebsocketDisconnected(m))
       .with({ kind: 'websocket-invalid', connection: P.when(isLiveConnection) }, (m) => this.onWebsocketInvalid(m))
+      .with({ kind: 'websocket-connection-stopped' }, isIssuedStopNotice, (m) => this.onWebsocketConnectionStopped(m))
       .otherwise(() => this.onSelfMessage(message as TSelf));
   }
 
@@ -204,7 +214,11 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
    * mailbox bound (#1432).  Absent options spawn it exactly as before.
    */
   private onWebsocketAccept(command: WebsocketAcceptCommand): void {
-    this.context.spawn(command.actor, command.name, command.options);
+    const child = this.context.spawn(command.actor, command.name, command.options);
+    // The connection's id is the name it is spawned under (`wireConnection`).
+    const notice: WebsocketConnectionStoppedSignal = { kind: 'websocket-connection-stopped', id: command.name };
+    issuedStopNotices.add(notice);
+    this.context.watchWith(child, notice);
   }
 
   /*
@@ -234,12 +248,33 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   }
 
   private async onWebsocketDisconnected(signal: WebsocketDisconnectedSignal<TOut>): Promise<void> {
-    this._current = signal.connection;
+    await this._endClient(signal.connection, signal.info);
+  }
+
+  /**
+   * The reaper (#986).  A client still in `clients` once its connection actor
+   * has stopped is one whose `disconnected` never arrived — the notice comes
+   * after it on the same lane, so for a healthy connection the entry is gone
+   * already and this does nothing.  The close the actor recorded went with the
+   * lost signal, so the hook hears an abnormal closure.
+   */
+  private async onWebsocketConnectionStopped(signal: WebsocketConnectionStoppedSignal): Promise<void> {
+    const client = this._clients.get(signal.id);
+    if (client === undefined) return;
+    this.log.warn(
+      `WebsocketServerActor: connection ${signal.id} stopped without its disconnected signal reaching the hub — `
+      + 'removed it from clients and ran onClientDisconnected',
+    );
+    await this._endClient(client, { code: 1006, reason: '', initiatedBy: 'error' });
+  }
+
+  private async _endClient(client: WebsocketConnection<TOut>, info: WebsocketCloseInfo): Promise<void> {
+    this._current = client;
     try {
-      await this.onClientDisconnected(signal.connection, signal.info);
+      await this.onClientDisconnected(client, info);
     } finally {
       this._current = null;
-      this._clients.delete(signal.connection.id);
+      this._clients.delete(client.id);
     }
   }
 
@@ -279,6 +314,21 @@ function isLiveConnection(value: unknown): boolean {
   return value instanceof ActorRef
     && typeof (value as { close?: unknown }).close === 'function'
     && typeof (value as { abort?: unknown }).abort === 'function';
+}
+
+/**
+ * The stop notices hubs registered with `watchWith` (#986).  Module-level, not
+ * per instance, because a notice outlives the instance that registered it: a
+ * restart tears the connections down and their notices reach the new instance,
+ * which must recognise them as the framework's rather than decline them as
+ * forgeries.  A `WeakSet`, so a notice nobody delivers costs nothing.
+ * Identity is the test for the reason {@link isLiveConnection} gives: no
+ * decoded body is one of these objects.
+ */
+const issuedStopNotices = new WeakSet<object>();
+
+function isIssuedStopNotice(value: unknown): value is WebsocketConnectionStoppedSignal {
+  return typeof value === 'object' && value !== null && issuedStopNotices.has(value);
 }
 
 /**

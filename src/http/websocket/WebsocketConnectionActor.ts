@@ -22,6 +22,7 @@
  */
 import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
+import { LocalActorRef } from '../../internal/LocalActorRef.js';
 import {
   isSendableCloseCode,
   sendableCloseReason,
@@ -42,6 +43,8 @@ import {
   websocketDataSignal,
   websocketDisconnectedSignal,
   websocketInvalidSignal,
+  type WebsocketConnectedSignal,
+  type WebsocketDisconnectedSignal,
   type WebsocketServerRef,
 } from './WebsocketMessages.js';
 import type { ResolvedWebsocketPolicy } from './WebsocketPolicy.js';
@@ -61,6 +64,8 @@ export type WebsocketConnectionDeps<TOut, TIn, TSelf> = {
   readonly id: string;
   readonly upgrade: WebsocketUpgradeInfo;
 };
+
+type HubLifecycleSignal<TOut> = WebsocketConnectedSignal<TOut> | WebsocketDisconnectedSignal<TOut>;
 
 export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
   extends Actor<WebsocketOutboundCommand<TOut>> {
@@ -88,7 +93,7 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     this.connection = connection;
     // Tell the hub 'connected' BEFORE attaching listeners, so it is
     // mailbox-ordered before any inbound data flushed by setListeners.
-    this.d.hub.tell(websocketConnectedSignal<TOut>(connection), connection);
+    this.reportLifecycle(websocketConnectedSignal<TOut>(connection), connection);
     this.d.socket.setListeners({
       onMessage: (data) => this.handleInbound(data),
       onClose: (code, reason) => this.handleClose(code, reason),
@@ -141,12 +146,37 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     if (this.connection && !this.disconnectReported) {
       this.disconnectReported = true;
       const info: WebsocketCloseInfo = this.closeInfo ?? { code: 1011, reason: '', initiatedBy: 'error' };
-      this.d.hub.tell(websocketDisconnectedSignal<TOut>(this.connection, info), this.connection);
+      this.reportLifecycle(websocketDisconnectedSignal<TOut>(this.connection, info), this.connection);
     }
     if (!this.closed) {
       this.closed = true;
       this.shutSocket();
     }
+  }
+
+  /**
+   * Report `connected` or `disconnected` through the door no bound and no
+   * dropping throttle may shed (#986) — the seam `websocket-accept` and
+   * `close()` already take.  These two decide whether the hub's `clients`
+   * holds this connection: a shed `disconnected` left the entry, and the
+   * application's state keyed on it, for the life of the process; a shed
+   * `connected` served a client that never appeared in `clients`.
+   *
+   * The envelope still takes the **tail** of the hub's user lane (or its
+   * control lane, for `connected`, where the hub declares one), so the order
+   * per connection stands: `connected` before every frame flushed by
+   * `setListeners`, `disconnected` after every frame told before it.  A hub
+   * that is not locally hosted keeps its plain `tell` — no cell, no queue to
+   * be exempt from.  A terminated hub dead-letters the envelope, the honest
+   * outcome: nobody is left to serve the connection.
+   */
+  private reportLifecycle(signal: HubLifecycleSignal<TOut>, connection: WebsocketConnection<TOut>): void {
+    const hub = this.d.hub;
+    if (hub instanceof LocalActorRef) {
+      hub.getCell().postSignalEnvelope({ message: signal, sender: connection });
+      return;
+    }
+    hub.tell(signal, connection);
   }
 
   /* ------------------------------ inbound ------------------------------- */

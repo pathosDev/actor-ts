@@ -482,18 +482,18 @@ connection's backlog to drain.  Everything else keeps arrival order,
 which is why the order per connection still holds: a connection's
 `onClientDisconnected` runs after its own queued frames.
 
-**A bound sheds the rest, never those two.**  Bound the hub with
+**A bound sheds frames, never the connection's lifecycle.**  Bound the hub with
 `withMailboxCapacity()`, with an
 [`actor-ts.deployment`](/reference/configuration/#actor-tsdeployment) entry
 for its path (`"/user/chat"`) where its spawn site is not yours to edit, or
 let `actor-ts.mailbox.default.capacity` reach it — in that order of
-precedence — and the bound applies to frames, `onClientDisconnected` and
-your `TSelf` messages; the spawn command and `onClientConnected` are neither
-counted nor shed.  A bounded hub under load therefore still accepts every
-upgrade and lists every new client in `this.clients`, while a flood is
-cut down to the capacity.  What it can still lose is a disconnect, which
-leaves a client in `this.clients` after it has gone — that part is your
-protocol, and only you know whether losing one is acceptable.
+precedence — and the bound applies to frames and your `TSelf` messages.
+The spawn command, `onClientConnected` and `onClientDisconnected` are never
+shed, neither by a bound nor by a `throttle({ onExcess: 'drop' })`, and only
+the first two ride the control lane: a disconnect keeps its place behind its
+connection's frames.  A bounded hub under load therefore still accepts every
+upgrade, lists every new client in `this.clients` and removes every client
+that leaves, while a flood is cut down to the capacity.
 
 The spawn command is the one that must not be lost.  It is sent exactly
 once, from the backend's upgrade callback, and it carries the only
@@ -510,9 +510,13 @@ spawned with a mailbox of its own keeps exactly that mailbox, and the
 order it gives everything: on a plain FIFO queue the spawn command waits
 its turn behind every frame queued before it.  It still cannot be shed —
 it takes the lane a death-watch `Terminated` takes, which `drop-head`,
-`drop-new`, `reject` and a `PriorityMailbox` all leave alone — but
-`onClientConnected` is an ordinary message there, and a bound built into
-that mailbox can drop it.
+`drop-new`, `reject` and a `PriorityMailbox` all leave alone — and so do
+`onClientConnected` and `onClientDisconnected`.  A mailbox that loses a
+disconnect anyway, one of your own whose `enqueue` discards it, is caught
+by the hub's death-watch on the connection's actor: once that actor has
+stopped, a client still in `this.clients` is removed and
+`onClientDisconnected` runs with code `1006` and `initiatedBy: 'error'`,
+beside a warning in the log.
 
 To keep strict arrival order for everything, give the hub a FIFO mailbox of
 its own — and bound it, because the hub is the actor its peers feed:
