@@ -27,6 +27,8 @@ import {
 } from '../../../../src/cluster/sharding/RememberEntitiesStore.js';
 import type { JournalEntry, PersistentEvent } from '../../../../src/persistence/JournalTypes.js';
 import { InMemoryJournal } from '../../../../src/persistence/journals/InMemoryJournal.js';
+import { FaultInjectingJournal } from '../../../../src/testkit/FaultInjectingJournal.js';
+import { FaultInjectingJournalOptions } from '../../../../src/testkit/FaultInjectingJournalOptions.js';
 
 const TYPE_NAME = 'orders';
 const PERSISTENCE_ID = `sharding-coordinator-${TYPE_NAME}`;
@@ -179,6 +181,75 @@ describe('JournalRememberEntitiesStore — compaction (#649)', () => {
     const journal = new InMemoryJournal();
     await churn(new JournalRememberEntitiesStore(journal), REMEMBER_ENTITIES_COMPACTION_MIN_EVENTS * 2, 0);
     expect((await journal.read(PERSISTENCE_ID, 1)).length).toBeLessThanOrEqual(REMEMBER_ENTITIES_COMPACTION_MIN_EVENTS + 1);
+  });
+});
+
+/** An `InMemoryJournal` that counts the snapshot events appended to it. */
+class SnapshotCountingJournal extends InMemoryJournal {
+  snapshotsWritten = 0;
+
+  override async append<E>(
+    persistenceId: string,
+    entries: ReadonlyArray<JournalEntry<E>>,
+    expectedSeq: number,
+  ): Promise<PersistentEvent<E>[]> {
+    const written = await super.append(persistenceId, entries, expectedSeq);
+    for (const entry of entries) {
+      if ((entry.event as { kind?: unknown }).kind === 'snapshot') this.snapshotsWritten++;
+    }
+    return written;
+  }
+}
+
+describe('JournalRememberEntitiesStore — what a compaction costs, and how often (#649)', () => {
+  test('after a snapshot of S > MIN live entities the next compaction waits S events, not MIN', async () => {
+    // The amortisation the design rests on: a snapshot of S entities is paid
+    // for by S appends.  Compacting every MIN events would write a 50 000-entity
+    // snapshot per thousand events on a large registry.
+    const minimum = REMEMBER_ENTITIES_COMPACTION_MIN_EVENTS;
+    const journal = new SnapshotCountingJournal();
+    const store = new JournalRememberEntitiesStore(journal);
+    let next = 0;
+    const startOne = async (): Promise<void> => {
+      await store.append(TYPE_NAME, { kind: 'started', shardId: next % 11, entityId: `live-${next}` });
+      next++;
+    };
+
+    // Only starts, so each snapshot holds everything appended so far: the first
+    // at MIN (S = MIN), the second MIN later (S = 2·MIN).
+    for (let index = 0; index < minimum * 2; index++) await startOne();
+    expect(journal.snapshotsWritten).toBe(2);
+
+    // The interval is now 2·MIN.  One short of it there is still no third
+    // snapshot — in particular none at MIN — and the next append writes it.
+    for (let index = 0; index < minimum * 2 - 1; index++) await startOne();
+    expect(journal.snapshotsWritten).toBe(2);
+    await startOne();
+    expect(journal.snapshotsWritten).toBe(3);
+  });
+
+  test('a failed compaction is retried only after the back-off, and the appends behind it succeed', async () => {
+    // Every read of the stream fails, so every compaction fails at its first
+    // step.  `append` never reads, so the events themselves keep landing.
+    const minimum = REMEMBER_ENTITIES_COMPACTION_MIN_EVENTS;
+    const inner = new InMemoryJournal();
+    const readFaults = FaultInjectingJournalOptions.create().withFailOn('read');
+    const journal = new FaultInjectingJournal(inner, readFaults);
+    const store = new JournalRememberEntitiesStore(journal);
+    const append = (index: number): Promise<void> =>
+      store.append(TYPE_NAME, { kind: 'started', shardId: 0, entityId: `e-${index}` });
+
+    for (let index = 0; index < minimum; index++) await append(index);
+    expect(journal.callsTo('read')).toBe(1);
+
+    // The appends after it do not try again: a journal that just refused must
+    // not take a full read on every append.
+    for (let index = minimum; index < minimum * 2 - 1; index++) await append(index);
+    expect(journal.callsTo('read')).toBe(1);
+    await append(minimum * 2 - 1);
+    expect(journal.callsTo('read')).toBe(2);
+
+    expect(await inner.highestSeq(PERSISTENCE_ID)).toBe(minimum * 2);
   });
 });
 
