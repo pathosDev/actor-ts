@@ -84,8 +84,21 @@ einem 400 abgelehnt, statt als Objekt einer anderen Klasse
 weitergereicht zu werden.  Das einfache Options-Objekt
 `{ tags: ['date'] }` funktioniert ebenso.  Ein unbekannter Name ist
 ein Fehler der Route selbst, also wirft er `OptionsError` (ein 500),
-nicht den 400 des Clients.  Die Freischaltung gilt nur für
-JSON-Bodies; CBOR- und Form-Bodies ignorieren sie.
+nicht den 400 des Clients.
+
+**Ein CBOR-Body folgt derselben Regel.**  CBOR trägt reiche Typen
+nativ — ein Tag macht ein `Date`, ein `Set`, eine Bignum oder eine
+`RegExp`, und der Simple Value 23 ist ein `undefined` —, also
+dekodiert ein CBOR-Body standardmäßig nur reine Daten, das
+JSON-Datenmodell: `null`, Booleans, endliche Zahlen, Strings, Arrays
+und Maps mit String-Schlüsseln.  Alles andere braucht seinen Namen in
+derselben Liste: `bytes` für einen Byte-String, `bigint` für eine
+Bignum oder eine Ganzzahl jenseits von 2^53, `number` für `NaN` oder
+`±Infinity` und so weiter.  Anders als bei JSON ist ein nicht
+freigeschalteter CBOR-Typ ein 400, der ihn nennt, statt Daten — ein
+CBOR-Tag hat keine ungetaggte Form, auf die man zurückfallen könnte,
+ihn durchzureichen gäbe dem Handler also einen anderen Wert.
+Form-Bodies tragen nichts, das sich einschränken ließe.
 
 ### Nicht unterstützte Media-Types
 

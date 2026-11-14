@@ -153,6 +153,21 @@ $ cat events.cbor | cbor-diag
 For debugging, you may want to **briefly switch to JSON** when
 hunting a bug, then switch back.
 
+## Restricting what a decode builds
+
+`new CborSerializer(readConstraints, { tags: [...] })` and
+`new CborDecoder(readConstraints, { tags: [...] })` take the JSON
+tree's allow-list, in the same names (`date`, `bytes`, `map`, `set`,
+`bigint`, `number`, `undefined`, `regexp`, `url`, `error`,
+`typed-array`, the two bidirectional maps).  Left out, everything is
+built — the serializer's own round trip.  With a list, the decode
+accepts the JSON data model plus the listed types and throws
+`RefusedTagError` for anything else before building it.  `entity()`
+passes `[]` for a CBOR request body unless the route opts in (#967).
+The structure an admitted framework collection is made of — the map
+inside a `BidirectionalMap` — needs no name of its own; a value
+stored inside it still does.
+
 ## What the decoder refuses
 
 A binary format is read from a length prefix, which makes a hostile payload

@@ -22,8 +22,13 @@ export type EntityOptionsType = {
    * A non-empty list switches the body to the tagged format, restricted to
    * those names: each listed tag constructs its class, `__literal__` unwraps,
    * and any other tag is refused with a 400 naming it rather than handed on as
-   * data of a different class.  JSON bodies only; CBOR and form bodies ignore
-   * it.
+   * data of a different class.
+   *
+   * A CBOR body reads the same list in the same names (#967): plain data — the
+   * JSON data model — by default, and every rich type, a byte string, an
+   * `undefined`, a 64-bit integer past 2^53 and a non-finite float each need
+   * their name.  An unadmitted one is always a 400 there, because a CBOR tag
+   * has no untagged reading to pass through.  Form bodies ignore it.
    */
   readonly tags?: readonly JsonTreeTagName[];
 };

@@ -22,14 +22,14 @@ import { HttpError, type HttpRequest, Status } from './Types.js';
  * parameter.  Parsing the header first and looking the result up exactly is
  * what closes that (#669).
  *
- * Each factory takes the tag options of the request being decoded, and only
- * the JSON one uses them: CBOR and form bodies have no `JsonTree` tags.
+ * Each factory takes the tag options of the request being decoded.  JSON and
+ * CBOR honour them (#967); a form body has no rich types to restrict.
  */
 type SerializerFactory = (tagOptions: JsonTreeTagOptions) => Serializer;
 const MEDIA_TYPE_TO_SERIALIZER: ReadonlyMap<string, SerializerFactory> = new Map<string, SerializerFactory>([
   ['application/json', (tagOptions) => new JsonSerializer({}, tagOptions)],
-  ['application/cbor', () => new CborSerializer()],
-  ['application/x-cbor', () => new CborSerializer()],
+  ['application/cbor', (tagOptions) => new CborSerializer({}, tagOptions)],
+  ['application/x-cbor', (tagOptions) => new CborSerializer({}, tagOptions)],
   ['application/x-www-form-urlencoded', () => new FormUrlEncodedSerializer()],
 ]);
 
@@ -88,9 +88,9 @@ const PLAIN_JSON: JsonTreeTagOptions = { tags: [] };
  * it: `normaliseHeaders` only sets the header for object bodies, so a string
  * body ships bare and a blanket rule would 415 the framework's own client.
  *
- * `tagOptions` reaches the JSON decoder only, and its default is plain JSON
- * (`{ tags: [] }`): a request body is bytes a stranger wrote, so no tag in it
- * picks a value's runtime class unless the route asked for that tag (#967).
+ * `tagOptions` reaches the JSON and CBOR decoders, and its default is plain
+ * data (`{ tags: [] }`): a request body is bytes a stranger wrote, so no tag in
+ * it picks a value's runtime class unless the route asked for that tag (#967).
  */
 export function pickRequestSerializer(
   request: HttpRequest,

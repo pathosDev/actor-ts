@@ -80,8 +80,19 @@ names: each listed tag builds its class, the `__literal__` escape
 unwraps, and any other tag is refused with a 400 rather than handed
 on as an object of another class.  The plain options object
 `{ tags: ['date'] }` works too.  An unknown name is the route's own
-bug, so it throws `OptionsError` (a 500), not the client's 400.  The
-opt-in applies to JSON bodies only; CBOR and form bodies ignore it.
+bug, so it throws `OptionsError` (a 500), not the client's 400.
+
+**A CBOR body follows the same rule.**  CBOR carries rich types
+natively — a tag makes a `Date`, a `Set`, a bignum or a `RegExp`,
+and simple value 23 is an `undefined` — so by default a CBOR body
+decodes only plain data, the JSON data model: `null`, booleans,
+finite numbers, strings, arrays and string-keyed maps.  Anything
+else needs its name in the same list: `bytes` for a byte string,
+`bigint` for a bignum or an integer past 2^53, `number` for `NaN`
+or `±Infinity`, and so on.  Unlike JSON, an unadmitted CBOR type is
+a 400 naming it rather than data — a CBOR tag has no untagged form
+to fall back to, so passing it through would hand the handler a
+different value.  Form bodies carry nothing to restrict.
 
 ### Unsupported media types
 

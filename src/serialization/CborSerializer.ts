@@ -1,4 +1,5 @@
 import { CborDecoder, CborEncoder } from './CborCodec.js';
+import type { JsonTreeTagOptions } from './JsonTree.js';
 import {
   defaultReadConstraintsOptions,
   ReadConstraintsOptionsValidator,
@@ -34,18 +35,26 @@ export class CborSerializer implements Serializer<unknown> {
   readonly includesManifest = false;
   /** Ceilings handed to every {@link CborDecoder} this serializer builds. */
   private readonly constraints: Required<ReadConstraintsOptionsType>;
+  /** Which rich types {@link fromBinary} builds — see `CborDecoder`. */
+  private readonly tagOptions: JsonTreeTagOptions;
 
   /**
    * Read constraints are optional and default to the built-ins, so every
    * `new CborSerializer()` in the tree keeps working; `SerializationExtension`
    * is what hands over what config resolved to.
+   *
+   * `tagOptions` left out builds every rich type — this serializer's own round
+   * trip.  `entity()` passes `{ tags: [] }` unless its route opts in, so a CBOR
+   * request body is plain data by default, as a JSON one is (#967); see
+   * `CborDecoder`'s constructor for what a list admits.
    */
-  constructor(readConstraints: ReadConstraintsOptions = {}) {
+  constructor(readConstraints: ReadConstraintsOptions = {}, tagOptions: JsonTreeTagOptions = {}) {
     this.constraints = {
       ...defaultReadConstraintsOptions,
       ...(readConstraints as Partial<ReadConstraintsOptionsType>),
     };
     new ReadConstraintsOptionsValidator().validate(this.constraints);
+    this.tagOptions = tagOptions;
   }
 
   manifest(_obj: unknown): string { return ''; }
@@ -63,6 +72,6 @@ export class CborSerializer implements Serializer<unknown> {
         `CborSerializer: document of ${bytes.byteLength} bytes exceeds maxDocumentBytes ${ceiling}`,
       );
     }
-    return new CborDecoder(this.constraints).decode(bytes);
+    return new CborDecoder(this.constraints, this.tagOptions).decode(bytes);
   }
 }

@@ -175,7 +175,7 @@ export class RefusedTagError extends SerializationError {
   readonly tag: JsonTreeTagName;
 
   constructor(tag: JsonTreeTagName) {
-    super(`JsonTree tag '${tag}' is not admitted by this decode's allow-list`);
+    super(`tag '${tag}' is not admitted by this decode's allow-list`);
     this.name = 'RefusedTagError';
     this.tag = tag;
   }
