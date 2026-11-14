@@ -121,15 +121,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   and `--log` is optional, only supplying bun's mean for the printout.
 
 - **BREAKING — under `OneForOneStrategy`, the classic restart budget belongs
-  to each child, not to the parent** (#917). `AllForOneStrategy` keeps one
-  budget shared by the group. A `supervisorStrategy()` that returns a new
-  strategy object on every call no longer resets the budget; that reset
-  meant `maxRetries` never applied. A strategy whose allowance changes gets
-  a fresh tally. *Migration:* where siblings used to exhaust one shared
-  budget, each child is now restarted up to `maxRetries` times. Use
+  to each child, keyed by the child's name and kept by the parent** (#917).
+  It used to be one tally shared by every child of a parent. Each child may
+  now restart `maxRetries` times within `withinTimeRangeMs`, whatever its
+  siblings do.
+  - A child that is stopped and spawned again under the same name inside
+    the window keeps what it already spent, so re-creation buys no fresh
+    allowance. That includes a sharded entity's restart backoff (#1437).
+  - After the window, or immediately on stop under `withinTimeRangeMs: 0`,
+    the name starts again from a whole allowance.
+  - `AllForOneStrategy` keeps one budget for the whole group.
+  - A `supervisorStrategy()` that returns a new strategy object on every
+    call no longer resets the budget; before, that reset meant
+    `maxRetries` never applied. A strategy whose `maxRetries` or
+    `withinTimeRangeMs` changes starts a new tally.
+
+  *Migration:* where siblings used to exhaust one shared budget, so that a
+  parent stopped its whole fan-out after `maxRetries + 1` unrelated
+  failures, each child now restarts up to `maxRetries` times. Use
   `AllForOneStrategy` for children that are coupled. A parent whose
-  per-call strategy never stopped a child now stops it after `maxRetries`
-  restarts in the window, as documented.
+  per-call strategy never actually stopped a child now stops it after
+  `maxRetries` restarts in the window, as documented.
 - **BREAKING — a `PersistentActor` whose journal was compacted completely
   now fails recovery with `JournalIntegrityError`** instead of starting
   from `initialState()` (#1052). "Compacted completely" means the journal
