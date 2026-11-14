@@ -297,15 +297,18 @@ describe('a configured server bound the backend did not install is reported at b
       expect(heldAtCeiling(warnings)[0]).toContain('300000 ms');
     });
 
-    test('nothing is said where 255 s still covers the deadline, where the key is 0, or on a backend that derives nothing', async () => {
+    test('nothing is said where 255 s still covers the deadline, or on a backend that derives nothing — where the key is 0 too', async () => {
       // A set key is not derived, so it is never held at the ceiling — a set
       // value too short for the deadline has a warning of its own, below.
+      // `0` is refused on Hono under Bun (#1767), and binds without a word on
+      // the backends that have other bounds.
       expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 250s } }')).warnings).toEqual([]);
-      expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 0 } }')).warnings).toEqual([]);
       for (const backend of ['fastify', 'express']) {
         const { binding, warnings } = await bindTimed(`actor-ts.http { backend = ${backend}, request-timeout { deadline = 300s } }`);
         expect(warnings, backend).toEqual([]);
         expect(binding.serverOptionsReport, backend).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
+        const zero = await bindTimed(`actor-ts.http { backend = ${backend}, request-timeout { deadline = 300s }, server { idle-timeout = 0 } }`);
+        expect(zero.warnings, backend).toEqual([]);
       }
     });
   });
@@ -357,8 +360,8 @@ describe('a configured server bound the backend did not install is reported at b
       expect(cutsBeforeDeadline(warnings)[0]).toContain('cut from 4000 ms on');
     });
 
-    test('nothing is said once the earliest cut is 2 s past the deadline, for 0, or where the idle timeout is a keep-alive window', async () => {
-      for (const idleTimeout of ['33s', '36s', '0']) {
+    test('nothing is said once the earliest cut is 2 s past the deadline, or where the idle timeout is a keep-alive window', async () => {
+      for (const idleTimeout of ['33s', '36s']) {
         const { binding, warnings } = await bindTimed(`actor-ts.http { backend = hono, server { idle-timeout = ${idleTimeout} } }`);
         expect(warnings, idleTimeout).toEqual([]);
         expect(binding.serverOptionsReport, idleTimeout).not.toHaveProperty('idleTimeoutEarliestCutMs');

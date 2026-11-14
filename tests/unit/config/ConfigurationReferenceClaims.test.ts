@@ -65,8 +65,8 @@ describe('idle-timeout on the Hono backend under Bun (#1487)', () => {
   const deadlineMs = reference.getDuration(ConfigKeys.http.requestTimeout.deadline);
   const earliestCutSeconds = (bunIdleTimeoutOf({ idleTimeoutMs: exampleMs, requestDeadlineMs: deadlineMs }).earliestCutMs ?? NaN) / 1_000;
 
-  test('0 is written as Bun.serve\'s own 0, which never closes, and the example is one bind() warns about', () => {
-    expect(bunIdleTimeoutOf({ idleTimeoutMs: 0, requestDeadlineMs: deadlineMs }).seconds).toBe(0);
+  test('0, which Bun.serve reads as never closing, is refused, and the example is one bind() warns about', () => {
+    expect(() => bunIdleTimeoutOf({ idleTimeoutMs: 0, requestDeadlineMs: deadlineMs })).toThrow(/only bound/);
     expect(example).toBe('5');
     // A cut is reported only when it lands less than 2 s past the deadline,
     // which is what makes bind() warn.
@@ -78,21 +78,22 @@ describe('idle-timeout on the Hono backend under Bun (#1487)', () => {
   const ONLY_BOUND = 'the only bound on a request whose body stops arriving';
   const EINZIGE_SCHRANKE = 'die einzige Schranke für einen Request, dessen Body nicht mehr weiterkommt';
 
-  test('reference.conf says 0 there leaves a stalled connection open, and where the example cuts', () => {
+  test('reference.conf says 0 there is refused, since it would leave a stalled connection open, and where the example cuts', () => {
     expect(REFERENCE).toContain(`${ONLY_BOUND} and on a connection idle between requests`);
-    expect(REFERENCE).toContain('so 0 leaves such a connection open until the client closes it');
+    expect(REFERENCE).toContain('so bind() refuses 0, which Bun.serve reads as never closing and which would leave such a connection open until the client closes it');
     expect(REFERENCE).toContain(`the ${example}s below cuts a handler that has written nothing from ${earliestCutSeconds}s on`);
   });
 
   test.each([
-    ['reference/configuration.mdx', ONLY_BOUND, 'until the client closes it'],
-    ['de/reference/configuration.mdx', EINZIGE_SCHRANKE, 'bis der Client sie schließt'],
-    ['http/security.mdx', ONLY_BOUND, 'until the client closes it'],
-    ['de/http/security.mdx', EINZIGE_SCHRANKE, 'bis der Client sie schließt'],
-  ])('%s says 0 leaves a stalled connection open there', (path, onlyBound, untilClosed) => {
+    ['reference/configuration.mdx', ONLY_BOUND, 'until the client closes it', 'refuse'],
+    ['de/reference/configuration.mdx', EINZIGE_SCHRANKE, 'bis der Client sie schließt', 'lehnt'],
+    ['http/security.mdx', ONLY_BOUND, 'until the client closes it', 'refuse'],
+    ['de/http/security.mdx', EINZIGE_SCHRANKE, 'bis der Client sie schließt', 'lehnt'],
+  ])('%s says 0 would leave a stalled connection open there, and is refused', (path, onlyBound, untilClosed, refused) => {
     const text = prose(page(path));
     expect(text).toContain(onlyBound);
     expect(text).toContain(untilClosed);
+    expect(text).toContain(refused);
   });
 
   test.each([

@@ -34,36 +34,39 @@ const zeroMentions = (prose: string): number => prose.split('`0`').length - 1;
 const pages = [
   {
     page: 'http/backends/hono.mdx',
-    exposure: '`0` turns it off, and on Hono under Bun it is the only bound on a request whose body stops arriving and '
-      + 'on a connection left idle between requests, since none of the other three is installed: with `0` such a '
-      + 'connection stays open until the client closes it.',
+    exposure: 'Keep it positive: `bind()` refuses `0` with an `OptionsError` naming the key and `withIdleTimeoutMs`. '
+      + '`0` would turn it off, and on Hono under Bun it is the only bound on a request whose body stops arriving and '
+      + 'on a connection left idle between requests, since none of the other three is installed: such a connection '
+      + 'would stay open until the client closes it.',
     zeroMentions: 3,
   },
   {
     page: 'de/http/backends/hono.mdx',
-    exposure: '`0` schaltet ihn ab, und unter Hono auf Bun ist er die einzige Schranke für einen Request, dessen Body '
+    exposure: 'Lass ihn positiv: `bind()` lehnt `0` mit einem `OptionsError` ab, der den Key und `withIdleTimeoutMs` '
+      + 'nennt. `0` schaltete ihn ab, und unter Hono auf Bun ist er die einzige Schranke für einen Request, dessen Body '
       + 'nicht mehr weiterkommt, und für eine Verbindung, die zwischen zwei Requests untätig ist, weil keine der '
-      + 'anderen drei installiert wird: mit `0` bleibt eine solche Verbindung offen, bis der Client sie schließt.',
+      + 'anderen drei installiert wird: eine solche Verbindung bliebe offen, bis der Client sie schließt.',
     zeroMentions: 3,
   },
   {
     page: 'http/middleware/timeout.mdx',
-    exposure: '`0` turns it off, and it is the only bound there on a request whose body stops arriving and on a '
-      + 'connection left idle between requests — `header-timeout`, `request-timeout` and `max-connections` cannot be '
-      + 'installed on that pair — so with `0` such a connection stays open until the client closes it.',
-    zeroMentions: 3,
+    exposure: 'Keep `idle-timeout` positive on that backend under Bun: `bind()` refuses `0`. It is the only bound there '
+      + 'on a request whose body stops arriving and on a connection left idle between requests — `header-timeout`, '
+      + '`request-timeout` and `max-connections` cannot be installed on that pair — so turned off, such a connection '
+      + 'would stay open until the client closes it.',
+    zeroMentions: 2,
   },
   {
     page: 'de/http/middleware/timeout.mdx',
-    exposure: '`0` schaltet ihn ab, und er ist dort die einzige Schranke für einen Request, dessen Body nicht mehr '
-      + 'weiterkommt, und für eine Verbindung, die zwischen zwei Requests untätig ist — `header-timeout`, '
-      + '`request-timeout` und `max-connections` lassen sich auf diesem Paar nicht installieren —, mit `0` bleibt '
-      + 'eine solche Verbindung also offen, bis der Client sie schließt.',
-    zeroMentions: 3,
+    exposure: 'Lass `idle-timeout` auf diesem Backend unter Bun positiv: `bind()` lehnt `0` ab. Er ist dort die einzige '
+      + 'Schranke für einen Request, dessen Body nicht mehr weiterkommt, und für eine Verbindung, die zwischen zwei '
+      + 'Requests untätig ist — `header-timeout`, `request-timeout` und `max-connections` lassen sich auf diesem Paar '
+      + 'nicht installieren —, abgeschaltet bliebe eine solche Verbindung also offen, bis der Client sie schließt.',
+    zeroMentions: 2,
   },
 ] as const;
 
-describe('idle-timeout = 0 on Hono under Bun is described, not offered (#1487)', () => {
+describe('idle-timeout = 0 on Hono under Bun is described as refused, not offered (#1487, #1767)', () => {
   for (const { page, exposure, zeroMentions: expected } of pages) {
     test(`${page} says what 0 does there, and mentions it nowhere else`, () => {
       const prose = renderedProse(page);

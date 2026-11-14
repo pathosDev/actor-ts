@@ -698,7 +698,8 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  *     so a handler that writes nothing, a long poll or a sparse SSE stream is
  *     cut too — in whole seconds rounded up, checked on a 4 s sweep that can
  *     close a connection up to one sweep early, and at most 255 s: a longer
- *     one is refused at `listen()`.  Unset, the runner derives it from the
+ *     one is refused at `listen()`, and so is `0`, since it is the only bound
+ *     there (#1767).  Unset, the runner derives it from the
  *     server's longest request deadline, 36 s for the built-in 30 s, so that
  *     `requestTimeout()`'s `503` is written before Bun cuts the connection —
  *     see `bunIdleTimeoutOf` in `src/runtime/http/BunHonoRunner.ts`.  An idle
