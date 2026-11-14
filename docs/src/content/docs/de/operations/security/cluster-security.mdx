@@ -1142,11 +1142,11 @@ Detectors — der Default ohne konfigurierte Strategie, unter
 `failure-detector.auto-down = on` — löscht rundheraus, statt einen
 Tombstone zu hinterlassen. Begründet wurde das einmal damit, dass
 eine Partition nach dem Heilen den Peer so wiederfinde, und genau
-das bringt das Löschen nicht: Keine Seite schickt einem Peer, den
-sie für unerreichbar hält, Heartbeats oder Gossip, und einen
-gelöschten hat sie gar nicht mehr in ihrer Map, um ihn zu
-adressieren — nach einer symmetrischen Partition hört also keine
-Seite je wieder von der anderen
+das bringt das Löschen nicht: Einen gelöschten Peer hat eine Seite
+gar nicht mehr in ihrer Map, um ihn zu adressieren — nach einer
+symmetrischen Partition hört also keine Seite je wieder von der
+anderen, während ein auf `unreachable` geparkter Peer weiter
+Heartbeats bekommt und zurückkehrt, sobald das Netz heilt
 ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 Unter dem Default entfernen sich die beiden Seiten einer echten
 Partition also gegenseitig und laufen als zwei Cluster weiter — ein

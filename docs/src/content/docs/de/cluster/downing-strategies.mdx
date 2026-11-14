@@ -779,11 +779,13 @@ Entfernung hatte.
 | Niemanden: keine Strategie und `auto-down = off`, das Opt-out | Entfernt wird nichts — der Peer wird auf `unreachable` geparkt. | Mit seinem nächsten Heartbeat an diesen Node wieder `up`. |
 
 Der Rückweg der letzten Zeile braucht einen Heartbeat des Peers an
-diesen Node, und der beendet eine Pause, keine Partition: Nachdem
-eine symmetrische Partition geheilt ist, schickt keine Seite einem
-Peer, den sie für unerreichbar hält, Heartbeats oder Gossip, also
-bleiben die geparkten Mitglieder geparkt und der Cluster gespalten,
-bis ein Operator handelt
+diesen Node, und das funktioniert nach einer Partition genauso wie
+nach einer Pause: Jeder Node schickt den Mitgliedern, die er für
+unerreichbar hält, weiter Heartbeats und in jeder
+`unreachable-gossip-rounds`-ten Runde einem von ihnen Gossip. Heilt
+eine symmetrische Partition, kommen die Heartbeats also durch, die
+geparkten Mitglieder kehren nach `up` zurück und die beiden Hälften
+wachsen zusammen
 ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 Ein Tombstone weist so lange ab, wie der größere der beiden Werte
@@ -830,9 +832,10 @@ deshalb kommt ein abgestürztes Mitglied unter `auto-down` immer wieder
 zurück
 ([was der Detector entscheidet](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht)
 hat die Messung). Einer geheilten Partition hilft das Löschen auch
-nicht: Keine Seite schickt einem Peer, den sie für unerreichbar hält,
-Heartbeats oder Gossip, und nach dem Löschen gibt es gar keinen Eintrag
-mehr, den sie adressieren könnte
+nicht: Nach dem Löschen bleibt kein Eintrag, dem man Heartbeats
+schicken könnte, also sprechen sich die beiden Seiten nie wieder an —
+während ein auf `unreachable` geparkter Peer durch die Partition
+hindurch weiter Heartbeats bekommt und zurückkehrt, sobald sie heilt
 ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 **Ein Neustart wird über die Version wieder aufgenommen.** Ein Prozess

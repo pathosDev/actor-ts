@@ -470,6 +470,14 @@ actor-ts {
   cluster {
     gossip-interval = 1s
     seed-retry-interval = 3s
+
+    # On every how-many-th gossip round one unreachable member also receives
+    # the round's frame, so the two halves of a healed partition exchange the
+    # membership they changed while apart.  Heartbeats go to unreachable
+    # members on every beat regardless -- they are what marks a returning
+    # peer reachable again.  0 sends unreachable members no gossip.
+    unreachable-gossip-rounds = 3
+
     weakly-up-after = 0s   # 0 disables auto weakly-up promotion
 
     # How often this node publishes a snapshot of its own membership view --

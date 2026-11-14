@@ -723,10 +723,11 @@ removed.
 | Nobody: no strategy and `auto-down = off`, the opt-out | Nothing is removed — the peer is parked at `unreachable`. | Back to `up` on its next heartbeat to this node. |
 
 The last row's way back needs the peer to send this node a heartbeat,
-which ends a pause, not a partition: after a symmetric partition
-heals, neither side heartbeats or gossips a peer it holds
-unreachable, so the parked members stay parked and the cluster stays
-split until an operator acts
+and that works after a partition as well as after a pause: every node
+keeps heartbeating the members it holds unreachable, and gossips one of
+them every `unreachable-gossip-rounds`-th round, so once a symmetric
+partition heals the heartbeats get through, the parked members return
+to `up` and the two halves merge
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 A tombstone refuses for the larger of `tombstone.time-to-live` and
@@ -765,9 +766,10 @@ announced for it and its remote watchers were sent a node-loss
 refuse a survivor's stale record of it either, which is why a crashed
 member keeps coming back under `auto-down`
 ([what the detector decides](/cluster/failure-detector/#what-the-detector-decides--and-doesnt)
-has the measurement). Nor does deleting help a healed partition:
-neither side heartbeats or gossips a peer it holds unreachable, and
-after the delete there is no entry to address at all
+has the measurement). Nor does deleting help a healed partition: after
+the delete there is no entry left to heartbeat, so the two sides never
+address each other again — where a peer parked at `unreachable` keeps
+being heartbeated through the partition and returns once it heals
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 **A restart is readmitted by version.** A process seeds its version

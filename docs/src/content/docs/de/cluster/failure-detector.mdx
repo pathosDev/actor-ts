@@ -96,8 +96,10 @@ solange ein Heartbeat innerhalb der Differenz eintrifft.
 ## Heartbeats sind explizit; Lebenszeichen ist jeder Frame
 
 Jeder Node schickt einmal pro `heartbeat-interval` einen Heartbeat an
-jedes erreichbare Mitglied, und das Mitglied beantwortet jeden mit einer
-Bestätigung.  Auf diese Schleife verlassen sich die Detectoren, also
+jedes Mitglied — auch an `unreachable`-Mitglieder, denn ein Heartbeat,
+der durchkommt, ist das, woran ein abgeschnittener Peer als zurück
+erkannt wird; nur `down`- und `removed`-Mitglieder bleiben außen vor —,
+und das Mitglied beantwortet jeden mit einer Bestätigung.  Auf diese Schleife verlassen sich die Detectoren, also
 wird ein leerlaufender Cluster genauso genau beobachtet wie ein
 beschäftigter.
 
@@ -258,11 +260,12 @@ Sicht jedes Nodes, das Parken des Leaders macht auf dieser Seite
 also ein anderes Mitglied zum Leader, und ein Singleton oder
 Shard-Koordinator, der dem Leader folgt, zieht mit um — jede Seite
 einer Partition kann am Ende ihren eigenen haben. Nur eine
-Strategie, die eine Seite entfernt, klärt das. Und eine geheilte
-symmetrische Partition holt ein geparktes Mitglied derzeit nicht
-nach `up` zurück: Heartbeats und Gossip gehen nur an erreichbare
-Mitglieder, also spricht keine Seite die andere je wieder an, und
-der Cluster bleibt gespalten, bis ein Operator handelt
+Strategie, die eine Seite entfernt, klärt das. Eine geheilte
+symmetrische Partition holt ein geparktes Mitglied dagegen nach `up`
+zurück: Heartbeats gehen weiter an unerreichbare Mitglieder, und
+Gossip erreicht in jeder `cluster.unreachable-gossip-rounds`-ten
+Runde (Default 3) eines von ihnen, also hört nach dem Heilen des Netzes
+jede Seite die andere wieder und die Hälften wachsen zusammen
 ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 Parken ist Integrität vor Verfügbarkeit: Es ist das, was ein

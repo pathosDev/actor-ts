@@ -1045,10 +1045,11 @@ What makes it an exploit is an entry the receiver has
 removal — the default with no strategy configured, under
 `failure-detector.auto-down = on` — deletes outright rather than
 leaving a tombstone. That was once justified as letting a healed
-partition re-discover the peer, and deleting buys no such thing:
-neither side heartbeats or gossips a peer it holds unreachable, and
-a deleted one is not in its map to address at all, so after a
-symmetric partition neither side hears from the other again
+partition re-discover the peer, and deleting buys no such thing: a
+deleted peer is not in the map to address at all, so after a
+symmetric partition neither side hears from the other again — where
+a peer parked at `unreachable` keeps being heartbeated and returns
+once the network heals
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 Under the default, both sides of a real partition therefore remove
 each other and run on as two clusters, which is one more reason a

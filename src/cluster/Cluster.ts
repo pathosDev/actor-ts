@@ -51,6 +51,7 @@ import {
   DEFAULT_DOWN_SMALLER_ISLAND,
   DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
+  DEFAULT_UNREACHABLE_GOSSIP_ROUNDS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
   DEFAULT_UNTRUSTED_MODE,
@@ -352,6 +353,10 @@ export class Cluster {
   private readonly failureDetector: FailureDetectorLike;
   private readonly gossipIntervalMs: number;
   private readonly seedRetryIntervalMs: number;
+  /** {@link ClusterOptionsType.unreachableGossipRounds}; `0` sends unreachable members no gossip. */
+  private readonly unreachableGossipRounds: number;
+  /** Gossip rounds run so far — what {@link unreachableGossipRounds} counts. */
+  private gossipRounds = 0;
   private readonly seedAddrs: NodeAddress[] = [];
   /** Refused sends since the last report — see {@link reportOutboundRefusal}. */
   private outboundRefusalsSuppressed = 0;
@@ -705,6 +710,7 @@ export class Cluster {
     );
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
+    this.unreachableGossipRounds = options.unreachableGossipRounds ?? DEFAULT_UNREACHABLE_GOSSIP_ROUNDS;
     this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
     // Same `0` sentinel one line up: no timer, which is what an unset field
     // means too (#842).
@@ -3720,17 +3726,22 @@ export class Cluster {
     // not end in `onGossip` — and, on a founder with no seeds, the only thing
     // that ever looks again (#837).
     this.leaderActionsTick();
+    this.gossipRounds += 1;
     const targets = this.reachableMembers().filter(member => !member.address.equals(this.selfAddress));
-    if (targets.length === 0) return;
-    // Push to one random reachable peer each tick — epidemic style.
-    const target = targets[Math.floor(Math.random() * targets.length)]!;
+    const unreachable = this.unreachableGossipTarget();
+    if (targets.length === 0 && unreachable === undefined) return;
     const gossip: GossipMessage = {
       kind: 'gossip',
       from: this.selfAddress.toJSON(),
       sequence: this.nextGossipSequence(),
       members: Array.from(this.members.values()).map(member => this.memberDataForGossip(member)),
     };
-    this.transport.send(target.address, gossip);
+    // Push to one random reachable peer each tick — epidemic style.
+    if (targets.length > 0) this.transport.send(targets[Math.floor(Math.random() * targets.length)]!.address, gossip);
+    // One frame for both: each receiver keeps its own high-water mark for this
+    // node, so a shared sequence is delivered once per peer, as the seed round
+    // shares one.
+    if (unreachable !== undefined) this.transport.send(unreachable.address, gossip);
     // Stock metric: gossip rounds count.
     metricsOf(this.system).counter(
       'cluster_gossip_rounds_total', {},
@@ -3738,6 +3749,39 @@ export class Cluster {
     ).inc();
   }
 
+  /**
+   * The `unreachable` member this round's gossip also goes to, on every
+   * {@link unreachableGossipRounds}-th round — or none (#930, decision D-5).
+   *
+   * Gossip used to go to reachable members only, and a peer is marked
+   * unreachable exactly when nothing arrives from it — so after a symmetric
+   * partition neither side sent the other another frame, and the halves ran
+   * as two clusters until a process restarted.  Heartbeats now reach
+   * unreachable members on every beat ({@link heartbeatTick}), which is what
+   * lets the failure detector see the link come back; this is what then
+   * carries the membership the two sides changed while apart, without
+   * spending a frame per round on a peer that may be gone for good.
+   */
+  private unreachableGossipTarget(): Member | undefined {
+    if (this.unreachableGossipRounds === 0 || this.gossipRounds % this.unreachableGossipRounds !== 0) return undefined;
+    const unreachable = Array.from(this.members.values()).filter((member) =>
+      member.status === 'unreachable' && !member.address.equals(this.selfAddress));
+    if (unreachable.length === 0) return undefined;
+    return unreachable[Math.floor(Math.random() * unreachable.length)];
+  }
+
+  /**
+   * Heartbeat every member that is not on its way out — `unreachable` ones
+   * included (#930, decision D-5).
+   *
+   * An unreachable peer is precisely the one worth probing: a heartbeat that
+   * gets through is how it learns this node is back, and its own heartbeats are
+   * how this node learns the same of it ({@link onHeartbeat} flips it to `up`
+   * and the detector's next verdict marks it reachable).  Sending only to
+   * reachable members made a symmetric partition permanent.  `down` and
+   * `removed` members are excluded: those are decisions, not observations,
+   * and nothing a heartbeat could say reverses them.
+   */
   private heartbeatTick(): void {
     this.heartbeatSeq++;
     const hb: HeartbeatMessage = {
@@ -3746,8 +3790,9 @@ export class Cluster {
       seq: this.heartbeatSeq,
       ts: Date.now(),
     };
-    for (const member of this.reachableMembers()) {
+    for (const member of this.members.values()) {
       if (member.address.equals(this.selfAddress)) continue;
+      if (!member.isReachable() && member.status !== 'unreachable') continue;
       this.transport.send(member.address, hb);
     }
   }
@@ -3801,11 +3846,12 @@ export class Cluster {
         // tombstone is #940's.
         //
         // Deleting does *not* buy a partition+heal recovery, and the note
-        // that used to stand here claimed it did.  `gossipTick` and
-        // `heartbeatTick` both target `reachableMembers()`, which excludes
-        // `unreachable` — and after this delete the peer is not in the map
-        // at all — so a symmetric partition leaves neither side with a way
-        // to hear the other again.  Closing that is #930.
+        // that used to stand here claimed it did.  It costs one: `heartbeatTick`
+        // and `gossipTick` keep addressing a member held `unreachable`, which
+        // is how a parked peer is heard again once a partition heals (#930),
+        // but after this delete the peer is not in the map at all, so a
+        // symmetric partition that outlasts `down-after` under auto-down
+        // leaves neither side with a way to hear the other again.
         this.deleteMember(member.address.toString());
         // Transient `removed` Member only used for the event emit —
         // not stored, so the missing `removedAt` here is intentional.
@@ -3866,9 +3912,9 @@ export class Cluster {
    * {@link leader} counts only `up` members, so parking the leader elects
    * another, and a singleton or shard coordinator that follows the leader
    * moves with it on `LeaderChanged`.  A parked peer returns to `up` on the
-   * next heartbeat it sends this node ({@link onHeartbeat}); after a symmetric
-   * partition that heartbeat never comes, since neither side heartbeats a peer
-   * it holds unreachable — closing that is #930.
+   * next heartbeat it sends this node ({@link onHeartbeat}), and after a
+   * symmetric partition that heartbeat comes as soon as the network heals:
+   * both sides keep heartbeating members they hold unreachable (#930).
    */
   private holdForResolver(member: Member): void {
     if (this.downing === null) this.reportParkedWithoutResolver(member);

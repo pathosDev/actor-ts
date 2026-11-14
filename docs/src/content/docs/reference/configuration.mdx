@@ -50,6 +50,7 @@ actor-ts {
   cluster {
     gossip-interval     = 1s
     seed-retry-interval = 3s
+    unreachable-gossip-rounds = 3 # 0 = no gossip to unreachable members
     weakly-up-after     = 0s      # 0 = opt-in only
     max-members         = 1000
     max-tombstones      = 10000
@@ -405,6 +406,7 @@ replay from it.
 | `cluster.roles` | `[]` | Role tags this node carries.  Shard regions, singletons, the per-role thresholds and the role-filtered downing strategies all place **by** role. |
 | `cluster.app-version` | *(unset)* | The application version this node states to its peers — a label for operators, shown on `/cluster/members` and wherever a member is printed; nothing places, routes or downs on it.  Comment-only in `reference.conf`: unset states none and puts nothing on the wire — see below. |
 | `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
+| `cluster.unreachable-gossip-rounds` | `3` | On every how-many-th gossip round one `unreachable` member also receives the round's frame, so a healed partition merges.  Heartbeats reach unreachable members on every beat regardless.  `0` sends them no gossip — see [Failure detector](/cluster/failure-detector/). |
 | `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | How often this node publishes a `ClusterStatsPublished` sample of its membership view on `system.eventStream`.  `0` arms no timer — see below. |
 | `cluster.shutdown-after-unsuccessful-join` | `0s` | How long a node may stay `joining` or `weakly-up` before it gives up the join.  At the deadline, if nothing can promote it any more, it logs a warning, leaves and runs the coordinated-shutdown pipeline with `ClusterJoinUnsuccessfulReason`; otherwise it asks again every `seed-retry-interval`.  `0` sets no deadline — see [Joining and seeds](/cluster/joining-and-seeds/). |
