@@ -36,14 +36,40 @@ was experimentell ist und was zu erwarten ist.
 
 Pre-1.0:
 
-- **Patch-Versionen (0.x.Y)** — Bugfixes, keine Breaking Changes.
+- **Patch-Versionen (0.x.Y)** — Bugfixes, keine neuen Features. Sie
+  sollen keinen Breaking Change enthalten, und das hat nicht immer
+  gehalten: Zwei der bisher drei Patch-Releases haben einen Eintrag
+  mit `BREAKING`-Markierung ausgeliefert.
+  - **0.12.1** hat das `Cluster`-Konstruktorargument von
+    `ReplicatedEventSourcedActor` entfernt und `replicaId` einen
+    Default gegeben (#833) — eine Subklasse, die den Cluster an
+    `super(...)` übergab, kompilierte nicht mehr.
+  - **0.12.2** hat geändert, wie jeder Persistence-Store Payloads
+    kodiert (#888), damit `Set`-, `Map`-, `Date`-, `Uint8Array`- und
+    `bigint`-Werte auf dem Weg in die Datenbank nicht mehr korrumpiert
+    werden. Zeilen älterer Versionen lesen sich unverändert, aber
+    Zeilen, die 0.12.2 und später schreiben, tragen Tag-Objekte, die
+    eine *ältere* Version als Tag-Form statt als Wert liest. Ein
+    Rolling Deploy ist genau dieser Zustand — alte Pods lesen Zeilen,
+    die die neuen geschrieben haben —, eine solche Änderung braucht
+    also den phasenweisen Rollout aus
+    [Rolling Migration](/de/operations/upgrades/rolling-migration/),
+    keinen Neustart Pod für Pod.
+
+  Ein Caret- oder Tilde-Bereich (`^0.12.0`, `~0.12.0`) installiert
+  einen Patch ohne Nachfrage, schützt dich also vor keinem solchen
+  Eintrag.
 - **Minor-Versionen (0.X.0)** — neue Features, können Breaking
   Changes enthalten.
 - **Major-Version (1.0.0)** — API-Stabilisierungs-Commitment.
 
 Lies das
 [CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
-vor dem Upgrade von Minor-Versionen.
+vor **jedem** Upgrade, Patch-Versionen eingeschlossen — jeder
+Breaking Change ist dort mit einer `BREAKING`-Markierung
+gekennzeichnet, in welcher Art Release er auch kommt. Wer ein Upgrade
+erst nehmen will, wenn er es gelesen hat, pinnt eine exakte Version
+statt eines Bereichs.
 
 Ein Minor-Bump kann auch den **Cluster-Wire** ändern. Das CHANGELOG hält
 das pro Release fest, fasst es aber nicht über Releases hinweg zusammen —
@@ -52,12 +78,20 @@ der Cluster muss in einem Schritt aktualisiert werden.
 [Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/#cluster-wire-kompatibilität-pro-release)
 trägt die Tabelle pro Release; zwei aufeinanderfolgende Releases stehen darauf.
 
-## Security-Fixes
+## Unterstützte Versionen
 
-Es gibt **keine Maintenance-Branches**, "supported" heißt also die
-jeweils letzte veröffentlichte Version und sonst nichts. Ein
-Security-Fix landet auf `develop` und geht mit dem nächsten
-Release raus; er wird nie auf ein älteres `0.x` zurückportiert.
+Fixes bekommt nur das **letzte veröffentlichte Release**. Es gibt
+**keine Maintenance-Branches**: Ein Bugfix oder ein Security-Fix
+landet auf `develop` und geht mit dem nächsten Release raus; er wird
+nie auf ein älteres `0.x` zurückportiert. Ein Projekt, das auf
+`~0.12.0` gepinnt ist, bekommt also nichts mehr, sobald 0.13.0
+erschienen ist.
+
+Die Konsequenz gehört ausgesprochen: Das nächste Release kann ein
+Minor sein, und ein Minor kann Breaking Changes enthalten — einen Fix
+zu nehmen kann also heißen, einen Breaking Change mitzunehmen. Lies
+die CHANGELOG-Einträge zwischen deiner Version und der neuesten,
+bevor du für einen Fix upgradest.
 
 [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
 ist der Meldekanal und — vor dem Melden noch nützlicher — die
