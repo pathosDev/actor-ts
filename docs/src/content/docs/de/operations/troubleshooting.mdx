@@ -113,11 +113,24 @@ cluster.subscribe((evt) => {
 });
 ```
 
-Mit `logger.level = debug` loggt der Detektor die erste Hälfte selbst:
+Auf dem Standard `logger.level = info` loggt der Knoten beide Kanten
+selbst, einmal pro Wechsel statt einmal pro Detektions-Tick:
 
 ```text title="log"
-FD: <address> → unreachable (heartbeat timeout)
+<address> marked unreachable (failure detector: <reason>)
+<address> marked reachable (failure detector: heard from it again)
 ```
+
+Der Grund lautet `heartbeat timeout`, oder `silent past down-after`,
+wenn der Knoten den Peer erst beurteilt, als er die Entfernungsschwelle
+schon überschritten hat.  Auch die übrigen Mitgliedschaftswechsel, die
+eine Incident-Zeitleiste
+braucht, stehen auf `info`: `<address> parked at unreachable (…) — the
+downing provider decides whether it is removed`, `<address> left the
+cluster (graceful leave; …)`, `leader changed: <old> → <new>` und die
+Auto-Down-Entfernung `FD: <address> → down (…); auto-down removes it
+from membership`.  Gossip pro Runde und Detektor-Einträge pro Tick
+bleiben auf `debug`.
 
 Dieselbe Adresse, die immer wieder unreachable wird und zurückkommt,
 signalisiert Schwellen-Tuning.

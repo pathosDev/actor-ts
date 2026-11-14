@@ -108,11 +108,24 @@ cluster.subscribe((evt) => {
 });
 ```
 
-With `logger.level = debug` the detector logs the first half itself:
+At the default `logger.level = info` the node logs both edges itself,
+once per change rather than once per detection tick:
 
 ```text title="log"
-FD: <address> → unreachable (heartbeat timeout)
+<address> marked unreachable (failure detector: <reason>)
+<address> marked reachable (failure detector: heard from it again)
 ```
+
+The reason reads `heartbeat timeout`, or `silent past down-after`
+when the node first judges the peer only once it is already past the
+removal threshold.  The other membership transitions an incident
+timeline needs are at
+`info` as well: `<address> parked at unreachable (…) — the downing
+provider decides whether it is removed`, `<address> left the cluster
+(graceful leave; …)`, `leader changed: <old> → <new>`, and the
+auto-down removal `FD: <address> → down (…); auto-down removes it from
+membership`.  Per-round gossip and per-tick detector records stay at
+`debug`.
 
 The same address going unreachable and coming back again and again
 signals threshold tuning.

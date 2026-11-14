@@ -515,6 +515,13 @@ export class Cluster {
    */
   private readonly parkedWithoutResolver = new Set<string>();
   /**
+   * The same bookkeeping for peers parked *for* a configured provider, so the
+   * info line saying so is written once per parking too (#994).  Separate from
+   * {@link parkedWithoutResolver} because readiness reads that set as "nothing
+   * will remove these", which is not true of a peer a provider holds.
+   */
+  private readonly parkedForProvider = new Set<string>();
+  /**
    * Peers that answered this node's heartbeat with a `membership-refused` —
    * they hold this run as `removed` — keyed like {@link members} (#940).
    *
@@ -3520,7 +3527,7 @@ export class Cluster {
     }
     const existing = this.members.get(peer.toString());
     if (!existing) return;
-    this.log.debug(`peer ${peer} sent leave — tombstoning (was ${existing.status} v${existing.version})`);
+    this.log.info(`${peer} left the cluster (graceful leave; was ${existing.status} v${existing.version})`);
     const leaving = existing.withStatus('leaving');
     const removed = leaving.withRemoved(Date.now());
     // Tombstone (don't delete) so a stale `up` gossip from a peer that
@@ -3585,7 +3592,10 @@ export class Cluster {
       this.trackReachability(member, decision);
       // Heard from again, so no longer parked: forget the warning, and a
       // second silence is reported in its turn.
-      if (decision !== 'down') this.parkedWithoutResolver.delete(member.address.toString());
+      if (decision !== 'down') {
+        this.parkedWithoutResolver.delete(member.address.toString());
+        this.parkedForProvider.delete(member.address.toString());
+      }
       if (decision === 'unreachable' && member.status === 'up') {
         this.log.debug(`FD: ${member.address} → unreachable (heartbeat timeout)`);
         // Announces `MemberUnreachable` itself — see `emitStatusTransition` (#1428).
@@ -3692,10 +3702,33 @@ export class Cluster {
    */
   private holdForResolver(member: Member): void {
     if (this.downing === null) this.reportParkedWithoutResolver(member);
+    else this.reportParkedForProvider(member);
     if (member.status === 'unreachable') return;
     const holder = this.downing === null ? 'until it is removed (auto-down off)' : 'for the downing provider';
     this.log.debug(`FD: ${member.address} → down (was ${member.status}); holding at unreachable ${holder}`);
     this.updateMember(member.withStatus('unreachable'));
+  }
+
+  /**
+   * Say, once per parking, that the detector has given up on `member` and the
+   * configured provider now decides its fate (#994).
+   *
+   * At info rather than the warn {@link reportParkedWithoutResolver} uses:
+   * here something *will* decide, so there is nothing for the operator to do —
+   * but the moment the detector handed a peer over is the one an incident
+   * timeline needs, and the provider's own verdict may come many seconds later
+   * (a stability window, a lease acquire).  Once per parking, not per tick:
+   * {@link parkedForProvider} is cleared with the same edges as
+   * {@link parkedWithoutResolver}.
+   */
+  private reportParkedForProvider(member: Member): void {
+    const key = member.address.toString();
+    if (this.parkedForProvider.has(key)) return;
+    this.parkedForProvider.add(key);
+    this.log.info(
+      `${member.address} parked at unreachable (failure detector: silent past down-after; was ${member.status}) — `
+      + 'the downing provider decides whether it is removed',
+    );
   }
 
   /**
@@ -3744,6 +3777,18 @@ export class Cluster {
     if (previous === reachable) return;
     this.reachability.set(key, reachable);
     if (previous === undefined && reachable) return;
+    // At info, and here rather than at the status write: this is the edge of
+    // this node's own verdict, so it is logged once per change however many
+    // ticks the silence lasts — while the `unreachable` status can be rewritten
+    // by gossip from a peer that hears the member fine and re-marked here on
+    // the next tick, which would make a status-keyed line repeat at the
+    // heartbeat cadence (#994).
+    if (reachable) {
+      this.log.info(`${member.address} marked reachable (failure detector: heard from it again)`);
+    } else {
+      const reason = decision === 'down' ? 'silent past down-after' : 'heartbeat timeout';
+      this.log.info(`${member.address} marked unreachable (failure detector: ${reason})`);
+    }
     this.emit(new ReachabilityChanged(member.address, reachable));
   }
 
@@ -4623,6 +4668,7 @@ export class Cluster {
     this.reachability.delete(key);
     // Likewise, or the next incarnation's parking would go unreported (#1426).
     this.parkedWithoutResolver.delete(key);
+    this.parkedForProvider.delete(key);
     // Likewise: a refusal belongs to the run that sent it, and the address's
     // next incarnation has refused nothing (#940).
     this.refusedBy.delete(key);
@@ -4721,7 +4767,7 @@ export class Cluster {
       this.currentLeader = newLeader;
       const prevStr = prev.fold(() => 'none', (member) => member.address.toString());
       const nextStr = newLeader.fold(() => 'none', (member) => member.address.toString());
-      this.log.debug(`leader changed: ${prevStr} → ${nextStr}`);
+      this.log.info(`leader changed: ${prevStr} → ${nextStr}`);
       this.emit(new LeaderChanged(newLeader));
     }
   }
