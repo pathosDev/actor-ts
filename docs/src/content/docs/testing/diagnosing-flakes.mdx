@@ -130,6 +130,10 @@ health.  The second family is found by reading:
 If yes, the wait is a proxy that a half-finished step already satisfies —
 wait on the *asserted* state instead.
 
+Reading is no longer the only way in.  Where the ordering is the protocol's
+whole correctness argument, the order can be put under test control instead —
+see [Ordering under test control](#ordering-under-test-control) below.
+
 ### Where the repetition is paid
 
 Three places, each asking a different question.
@@ -199,6 +203,49 @@ survives.
 and its last assertion is the one that matters: it asks fast-check what seed it
 is *actually* running with, so a preload that was registered and never loaded
 fails rather than quietly restoring the random default.
+
+### Ordering under test control
+
+`ManualScheduler` decides *when* a timer fires.  It has no say in *which
+message arrives first*, and repeating a test does not change that either: the
+dispatcher keeps choosing the same order.  fast-check's scheduler takes the
+choice away from the event loop.  `fc.scheduler()` holds every promise handed
+to `s.schedule(...)` and releases them in an order it picks;
+`fc.scheduledModelRun` drives a command sequence through the same scheduler
+against a reference model.  A failure prints the interleaving it found — each
+release, in order, as `task${n}` lines — together with `{ seed, path }`.
+
+`tests/unit/delivery/DeliveryOrderingProperties.test.ts` does this for reliable
+delivery (#1370).  The producer and consumer are the real controllers; the wire
+between them is replaced by hops that deliver only when the scheduler releases
+them, so a delivery, its retransmit and the acknowledgment of either race in
+every order the scheduler explores.  The model checks the protocol's three
+claims: no send is lost, a duplicate never re-runs the handler, and the
+sequence never gaps.  Removing the `above` half of the consumer's duplicate
+check turns it red — a retransmit of a sequence handled above an open gap is
+handled a second time — and existing suites only notice that by timing out.
+
+**To replay a failure**, hand the printed `path` back to `fc.assert`; the seed
+is already the preload's:
+
+```ts
+await fc.assert(
+  fc.asyncProperty(deliveryScheduler(), deliveryScenario(4), async (scheduler, scenario) => {
+    expect(await runScheduledDelivery(scheduler, scenario)).toEqual([]);
+  }),
+  { numRuns: 40, path: '11' },
+);
+```
+
+The same interleaving comes back, release for release.  Then pin it as an
+example test, as for any property: `deliverySchedulerFor([...])` replays the
+`task${n}` ids from the report in that order.
+
+Each case boots an `ActorSystem` and settles it after every release, so the
+per-commit file runs 40 cases, well inside bun's 5 s cap.  The deep exploration
+is `tests/nightly/DeliveryOrderingDeep.nightly.ts`, run by `nightly-flakes.yml`
+by path.  Its name is what keeps `bun test` from collecting it — not an
+environment variable, which `NoEnvironmentGatedSkips.test.ts` forbids.
 
 ## The catalog
 
