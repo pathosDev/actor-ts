@@ -74,6 +74,33 @@ describe('the property seed policy is wired, not just written', () => {
     }
   });
 
+  test('an arbitrary with an upper bound generates up to that bound', () => {
+    // fast-check's default size, `'small'`, caps every generated length at ten
+    // whatever `maxLength` a call site names, so without this option 28 sites
+    // asking for walks of 20 to 300 elements never saw an eleventh (#1774).
+    // The flag alone is the configuration; the sample is the effect, so a
+    // later fast-check that renames or ignores the option still fails here.
+    expect(
+      fc.readConfigureGlobal().defaultSizeToMaxWhenMaxSpecified,
+      'defaultSizeToMaxWhenMaxSpecified is off, so every `maxLength` above ten '
+      + 'without an explicit `size` is silently capped at ten elements (#1774).',
+    ).toBe(true);
+    const longest = Math.max(
+      ...fc.sample(fc.array(fc.integer(), { maxLength: 250 }), PROPERTY_RUNS).map((value) => value.length),
+    );
+    expect(
+      longest,
+      'fc.array({ maxLength: 250 }) never generated more than ten elements under '
+      + 'the preload, so properties test far shorter inputs than they claim (#1774).',
+    ).toBeGreaterThan(100);
+    // Unbounded arbitraries keep the default size: the option is about honouring
+    // a bound a call site states, not about growing every input.
+    const unbounded = Math.max(
+      ...fc.sample(fc.array(fc.integer()), PROPERTY_RUNS).map((value) => value.length),
+    );
+    expect(unbounded).toBeLessThanOrEqual(10);
+  });
+
   test('the global floor is no lower than what the property files used to ask for', () => {
     // The three large property files set `numRuns: 120` themselves and the rest
     // took fast-check's default of 100. A global below either would quietly

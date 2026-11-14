@@ -64,4 +64,13 @@ fc.configureGlobal({
   // The first counterexample is the one being copied into an example test, and
   // a wall of further failures buries it.
   endOnFailure: true,
+  // An arbitrary that names an upper bound (`maxLength`, `maxKeys`,
+  // `maxDepth`) and no `size` generates up to that bound rather than at
+  // fast-check's default size, `'small'`, which caps every length at ten
+  // whatever bound the call site asks for.  Without this, 28 sites asking for
+  // walks of 20 to 300 elements never saw an eleventh (#1774).  Arbitraries
+  // without a bound keep the default size, so unbounded ones do not grow.
+  // A property that cannot afford its full bound says so with an explicit
+  // `size` beside the bound, not by relying on the cap.
+  defaultSizeToMaxWhenMaxSpecified: true,
 });
