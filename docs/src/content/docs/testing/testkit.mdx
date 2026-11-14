@@ -187,6 +187,59 @@ describe('PureBehaviorTests', () => {
 Faster than per-test setup; only safe when tests don't mutate
 shared actors.
 
+## Failing persistence stores
+
+`FaultInjectingJournal` and `FaultInjectingSnapshotStore` wrap any
+`Journal` or `SnapshotStore` and make chosen operations fail on a
+script.  They sit at the interface `PersistentActor` calls, so one
+double covers every backend: wrap an `InMemoryJournal` for an actor
+test, or a real backend to check what it does after a failure.
+
+```ts no-compile — Account stands for the PersistentActor under test
+import { InMemoryJournal, PersistenceExtensionId } from 'actor-ts/persistence';
+import { FaultInjectingJournal, FaultInjectingJournalOptions, TestKit } from 'actor-ts/testkit';
+
+const tk = TestKit.create('append-fails');
+const journalFaults = FaultInjectingJournalOptions.create()
+  .withFailOn('append')
+  .withFailOnce();
+const journal = new FaultInjectingJournal(new InMemoryJournal(), journalFaults);
+tk.system.extension(PersistenceExtensionId).setJournal(journal);
+
+// The first append the actor makes rejects with an InjectedFaultError;
+// supervision restarts it, and the restart recovers from the journal.
+const account = tk.system.spawn(Account, 'account');
+account.tell({ kind: 'deposit', amount: 5 });
+```
+
+The script is deterministic.  There is no probability anywhere,
+because a persistence failure test that fails differently on each
+run cannot tell a fixed defect from a lucky run:
+
+| Builder method | Field | Meaning |
+|---|---|---|
+| `withFailOn(...operations)` | `failOn` | The operations that may fail: `'append'`, `'read'`, `'highestSeq'`, `'delete'` on the journal; `'save'`, `'loadLatest'`, `'loadBefore'`, `'delete'` on the snapshot store. Default: none. |
+| `withFailAfterCalls(n)` | `failAfterCalls` | Let the first `n` calls to those operations through, counted together. Default 0. |
+| `withFailOnce()` | `failOnce` | Fail one call, then pass every later one through — the transient fault. |
+| `withError(factory)` | `error` | Build the error to reject with. Default: an `InjectedFaultError` naming the operation and the call number. |
+| `withFailurePoint(point)` | `failurePoint` | `'before-operation'` (default): the store is never reached. `'after-operation'`: the call is performed and then rejects — a write that landed and whose acknowledgement was lost. |
+| `withGapAfterSeq(n)` | `gapAfterSeq` | Journal only: leave the event at `n + 1` out of every `read`, so 1, 2, 3, 4 reads back as 1, 2, 4. `highestSeq` still reports the true head. |
+
+`failuresInjected` and `callsTo(operation)` let a test assert that the
+failure it scripted really happened, rather than passing against a
+store that never failed.  Optional members of the wrapped store are
+forwarded unchanged, and a member the wrapped store leaves out stays
+out, so wrapping a store never changes what the framework believes it
+can do.
+
+What `PersistentActor` does with each failure today: a failed append
+reaches supervision as an ordinary actor failure, the command's
+`persist` callback does not run, and the restarted actor recovers
+what the journal actually holds — including the events of an append
+whose acknowledgement was lost.  A read that fails during recovery
+goes to `onRecoveryFailure`, and so does a history with a gap, as a
+`JournalIntegrityError`.  `persist` has no failure hook of its own.
+
 ## What TestKit doesn't do
 
 import { Aside } from '@astrojs/starlight/components';
