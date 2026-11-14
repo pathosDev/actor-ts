@@ -166,6 +166,25 @@ describe('a restamped capture inside the skew budget cannot pin the mark (#1262)
     }
     expect(markFor(node.cluster, peer)! - now).toBeLessThanOrEqual(2 * GOSSIP_SEQUENCE_LEAD_MS);
   });
+
+  test('a long silence banks no drift: the bound stays within one lead of the learned offset', async () => {
+    // The learned offset may rise at 1 ms/s, but by no more than one lead in
+    // all.  Without that cap a sender quiet for eight hours would have banked
+    // 28.8 s of allowance, past the lead, and a capture restamped into it would
+    // pin the mark for that long again.
+    setNow(Date.parse('2026-11-14T16:00:00Z'));
+    const node = await startNode('pin-silence', 9_681);
+    const peer = new NodeAddress('pin-silence', PEER_HOST, 9_682, 'peer-run');
+    const recorded = new NodeAddress('pin-silence', SUBJECT_HOST, 9_683);
+    gossipFrom(node.cluster, peer, now, [selfRecord(peer, now)]);
+    const markBefore = markFor(node.cluster, peer);
+
+    setNow(now + 8 * 60 * MINUTE_MS);
+    // Past offset + 2 × lead, inside the eight hours' worth of uncapped drift.
+    gossipFrom(node.cluster, peer, now + 3 * GOSSIP_SEQUENCE_LEAD_MS, [subjectRecord(recorded, now)]);
+    expect(holds(node.cluster, recorded)).toBe(false);
+    expect(markFor(node.cluster, peer)).toBe(markBefore);
+  });
 });
 
 describe('the mark is held per (member, incarnation) (#1262)', () => {
