@@ -3771,9 +3771,14 @@ export class Cluster {
    * No new timer: this method is already called from `failureDetectionTick`,
    * so the clock is `failureDetector.interval` and the window's resolution is
    * one heartbeat cadence (500 ms shipped).  That is invisible at the shipped
-   * 20 s window and worth knowing at a 200 ms one.  `Date.now()` is read once
+   * 20 s window and worth knowing at a 200 ms one.  The time is read once
    * per tick and handed to all three window calls, so one tick cannot be
    * measured against two different instants.
+   *
+   * It is read from `system.clock`, the clock the failure detector beside it
+   * already uses (#1424).  On the wall clock the detector's verdicts arrived in
+   * virtual time under a `ManualScheduler` while the window never opened, so a
+   * spec on a virtual clock could not exercise a downing strategy at all.
    */
   private evaluateDowning(): void {
     if (!this.downing) return;
@@ -3791,9 +3796,8 @@ export class Cluster {
       .sort()
       .join('|');
     this.appliedDecision.observe(fingerprint);
-    const now = Date.now();
-    const settled = this.stabilityWindow.observe(fingerprint, unreachable, now);
-    if (!settled && !this.everyPeerRefuses(allMembers)) {
+    const now = this.system.clock.now();
+    const settled = this.stabilityWindow.observe(fingerprint, unreachable, now);    if (!settled && !this.everyPeerRefuses(allMembers)) {
       // Escalation is asked first: stopping a cluster that cannot converge at
       // all outranks arbitrating one peer inside it, and the ceiling below
       // would otherwise put the provider in front of a switch an operator
