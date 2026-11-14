@@ -175,6 +175,29 @@ die Ziehung verhindert. `tls` trägt Zertifikatsmaterial und
 `logger` ist ein Objekt, also hat auch keines von beiden eine
 HOCON-Schreibweise.
 
+### Was der Client aus einer Antwort baut
+
+Ein Client dekodiert die Frames seiner Contact Points so, wie ein
+Node die eines Peers dekodiert: Nur die `JsonTree`-Tags in
+`actor-ts.serialization.wire.admitted-tags` bauen ihre Klasse —
+standardmäßig die Daten-Tags —, und eine Antwort mit einem anderen
+Tag (`regexp`, `undefined`, `error`, `url`) wird mit einer WARN
+abgelehnt, die ihn nennt; das `ask` wartet also bis zu seinem
+Timeout.  Der Client liest diesen Schlüssel aus derselben Config,
+aus der er `actor-ts.cluster.client` liest, ein Cluster, der seine
+Liste erweitert, erweitert sie also über denselben Schlüssel auch
+für seine Clients; ein explizites `withWireDecode(...)` hat Vorrang.
+Die Grenzen aus `actor-ts.serialization.read-constraints` gelten
+ebenfalls (#1303).
+
+```ts
+const wireDecode = WireDecodeOptions.create()
+  .withAdmittedTags([...DEFAULT_WIRE_ADMITTED_TAGS, 'error']);
+const clientOptions = ClusterClientOptions.create()
+  .withContactPoints(['orders@10.0.0.1:2551'])
+  .withWireDecode(wireDecode);
+```
+
 ## Serverseite — ClusterClientReceptionist
 
 ```ts

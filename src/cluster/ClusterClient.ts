@@ -44,7 +44,14 @@
 
 import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION, wireVersionRefusal } from './WireVersion.js';
 import { getTcpBackend, type TcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
-import type { Config } from '../config/Config.js';
+import { Config } from '../config/Config.js';
+import { readReadConstraintsOptionsFromConfig, type ReadConstraintsOptionsType } from '../serialization/ReadConstraintsOptions.js';
+import {
+  readWireDecodeOptionsFromConfig,
+  WireDecodeOptionsValidator,
+  type WireDecodeOptionsType,
+} from '../serialization/WireDecodeOptions.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { armChainedTimeout, type Cancellable, type HostTimers } from '../Scheduler.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
@@ -228,6 +235,15 @@ export class ClusterClient {
   private hostTimers: HostTimers | undefined = undefined;
 
   private readonly options: ClusterClientOptionsType;
+  /**
+   * What every contact-point decoder is built with (#1303): the wire's tag
+   * allow-list — explicit option over `actor-ts.serialization.wire` — and the
+   * `actor-ts.serialization.read-constraints` ceilings.  Both came from the
+   * built-ins alone before, so a cluster that widened its list could not
+   * widen it for its clients.
+   */
+  private readonly wireDecode: WireDecodeOptionsType;
+  private readonly readConstraints: Partial<ReadConstraintsOptionsType>;
 
   /**
    * @param options  Explicit options — the highest-precedence layer.
@@ -244,10 +260,20 @@ export class ClusterClient {
    *   unit tests do, so a stray file cannot decide whether they pass.
    */
   constructor(options: ClusterClientOptions, config?: Config) {
+    // Loaded once, here: three readers take it, and a second `Config.load`
+    // could see an `application.conf` that changed in between.
+    const resolvedConfig = config ?? Config.load();
     const resolvedOptions = withClusterClientConfigDefaults(
       options as Partial<ClusterClientOptionsType>,
-      config,
+      resolvedConfig,
     );
+    this.wireDecode = mergeOptions<WireDecodeOptionsType>(
+      {},
+      readWireDecodeOptionsFromConfig(resolvedConfig),
+      (resolvedOptions.wireDecode ?? {}) as Partial<WireDecodeOptionsType>,
+    );
+    new WireDecodeOptionsValidator().validate(this.wireDecode);
+    this.readConstraints = readReadConstraintsOptionsFromConfig(resolvedConfig);
     this.options = resolvedOptions;
     new ClusterClientOptionsValidator().validate(resolvedOptions);
     const sysName = resolvedOptions.systemName ?? DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME;
@@ -439,7 +465,7 @@ export class ClusterClient {
       const connection: ContactPointConnection = {
         target,
         dial: new AbortController(),
-        decoder: new FrameDecoder(),
+        decoder: new FrameDecoder(undefined, this.readConstraints, this.wireDecode),
         socket: null,
         peer: null,
         ended: false,
@@ -572,8 +598,8 @@ export class ClusterClient {
       return;
     }
     // A frame using a tag outside the wire's allow-list was refused on its own
-    // and the rest decoded (#1303).  The client keeps the built-in list — it
-    // reads no `read-constraints` either — so the line says which tag it was.
+    // and the rest decoded (#1303); the line says which tag, so the operator
+    // knows what to add to `actor-ts.serialization.wire.admitted-tags`.
     for (const refusal of connection.decoder.lastRefusals()) {
       this.log.warn(`ClusterClient: refusing a frame from a contact point — ${refusal.message}`);
     }

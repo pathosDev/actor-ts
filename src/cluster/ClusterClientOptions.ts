@@ -5,6 +5,7 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import type { WireDecodeOptions } from '../serialization/WireDecodeOptions.js';
 
 /**
  * Synthetic system name a client puts in its `hello` when none is set.
@@ -68,6 +69,14 @@ export type ClusterClientOptionsType = {
   readonly tls?: TlsTransportOptionsType;
   /** Custom logger; default: ConsoleLogger at WARN. */
   readonly logger?: Logger;
+  /**
+   * Which `JsonTree` tags a contact point's frame may use (#1303).  A frame
+   * using any other tag is refused and logged; the connection stays.  Layered
+   * over `actor-ts.serialization.wire.*` — the block a node reads — so a
+   * cluster that widens its list widens it for its clients by the same key.
+   * Default: the data tags (`DEFAULT_WIRE_ADMITTED_TAGS`).
+   */
+  readonly wireDecode?: WireDecodeOptions;
 };
 
 /**
@@ -118,6 +127,11 @@ export class ClusterClientOptionsBuilder extends OptionsBuilder<ClusterClientOpt
   /** Custom logger; default ConsoleLogger at WARN. */
   withLogger(logger: Logger): this {
     return this.set('logger', logger);
+  }
+
+  /** The tags a contact point's frame may use.  Layered over `actor-ts.serialization.wire`. */
+  withWireDecode(wireDecode: WireDecodeOptions): this {
+    return this.set('wireDecode', wireDecode);
   }
 }
 
