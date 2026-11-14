@@ -732,6 +732,11 @@ export {
 // exported so an out-of-tree journal can implement the optional method against
 // the same definition the in-repo backends are checked against.
 export { persistenceIdPage } from './Journal.js';
+// #957 — the lookback window plus deduplication every by-tag consumer reads
+// through, exported for an application that polls `currentEventsByTag` itself.
+export { TagLookbackWindow } from './query/TagLookbackWindow.js';
+export type { DeliveredEventMark, TagCursor } from './query/TagLookbackWindow.js';
+export { DEFAULT_TAG_LOOKBACK_WINDOW_MS } from './Constants.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';
 export { CassandraQuery } from './query/CassandraQuery.js';

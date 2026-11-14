@@ -1,4 +1,4 @@
-import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../Constants.js';
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS, DEFAULT_TAG_LOOKBACK_WINDOW_MS } from '../Constants.js';
 import { persistenceIdPage } from '../Journal.js';
 import type { Journal } from '../Journal.js';
 import type { JournalEventBus } from '../JournalEventBus.js';
@@ -7,7 +7,6 @@ import {
   eventMatchesTagFilter,
   normalizeTagFilter,
   offsetCompare,
-  offsetGreater,
   offsetOfEvent,
   defaultPersistenceIdPageSize,
   resolvePageSize,
@@ -19,6 +18,7 @@ import {
   type TagFilterSpec,
   type TaggedEvent,
 } from './PersistenceQuery.js';
+import { TagLookbackWindow } from './TagLookbackWindow.js';
 
 /** Reads one ascending page of ids after a cursor — see `readPersistenceIdPage`. */
 type PersistenceIdPageReader = (
@@ -102,25 +102,26 @@ export class InMemoryQuery implements PersistenceQuery {
     return out;
   }
 
+  /**
+   * Both paths — push and poll — run their reads through a
+   * {@link TagLookbackWindow}: each read starts `lookbackWindowMs` behind the
+   * newest delivered stamp and drops what was delivered, so an event whose
+   * write committed after the stream passed its stamp still arrives, once
+   * (#957).  Every backend inherits this method, so the window is the same
+   * on all of them; a backend's own `currentEventsByTag` only has to answer
+   * from an earlier offset, which every one does.
+   */
   eventsByTag<E>(
     filter: TagFilter, fromOffset: Offset, options: LiveQueryOptions = {},
   ): AsyncIterable<TaggedEvent<E>> {
     const spec = normalizeTagFilter(filter);
+    const windowMs = options.lookbackWindowMs ?? DEFAULT_TAG_LOOKBACK_WINDOW_MS;
     const bus = this.journal.events;
     if (bus) {
-      return pushStreamByTag<E>(this, spec, fromOffset, bus);
+      return pushStreamByTag<E>(this, spec, fromOffset, windowMs, bus);
     }
     const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS;
-    const self = this;
-    return liveStream<TaggedEvent<E>>(pollIntervalMs, async (lastEmitted) => {
-      const cursor = lastEmitted ? lastEmitted.offset : fromOffset;
-      // Strict ">" here so we don't redeliver the last emitted event;
-      // currentEventsByTag uses ">=" because it's the first call.
-      const all = await self.currentEventsByTag<E>(spec, cursor);
-      return lastEmitted
-        ? all.filter((te) => offsetGreater(te.offset, cursor))
-        : all;
-    });
+    return pollStreamByTag<E>(this, spec, fromOffset, windowMs, pollIntervalMs);
   }
 
   /* ----------------------------- persistenceIds ----------------------------------- */
@@ -253,27 +254,40 @@ function pushStreamByPersistenceId<E>(
 }
 
 /**
- * Push-driven stream by tag-filter.  Same shape as `pushStreamByPersistenceId`
- * but dedup is on the composite `Offset` instead of a single sequence
- * number, and the catch-up scans every persistenceId for events
- * satisfying the filter.
+ * Push-driven stream by tag-filter.  Same subscribe-first shape as
+ * `pushStreamByPersistenceId`, with two differences that both come from #957.
+ *
+ * Dedup goes through a {@link TagLookbackWindow} instead of a "newest emitted
+ * offset" watermark.  The watermark dropped every event whose offset sorted
+ * below one already emitted — which is precisely an event that committed after
+ * a newer one, and the bus publishes in commit order.
+ *
+ * And bus events that arrive while the catch-up read is still running are held
+ * until it finishes.  Emitted on arrival, a newer event would reach the
+ * consumer before the older catch-up events of its own persistence id, and the
+ * window — which keys on each id's highest delivered sequence number — would
+ * then count those older ones as delivered.
  */
 function pushStreamByTag<E>(
-  query: InMemoryQuery, spec: TagFilterSpec, fromOffset: Offset, bus: JournalEventBus,
+  query: InMemoryQuery,
+  spec: TagFilterSpec,
+  fromOffset: Offset,
+  windowMs: number,
+  bus: JournalEventBus,
 ): AsyncIterable<TaggedEvent<E>> {
   return {
     [Symbol.asyncIterator](): AsyncIterator<TaggedEvent<E>> {
       const queue: TaggedEvent<E>[] = [];
       let pendingResolve: ((v: IteratorResult<TaggedEvent<E>>) => void) | null = null;
       let cancelled = false;
-      let lastEmittedOffset: Offset | null = null;
+      const window = TagLookbackWindow.startingAt(fromOffset, windowMs);
+      /** Bus events held back while the catch-up read runs; `null` once it has finished. */
+      let heldDuringCatchUp: TaggedEvent<E>[] | null = [];
 
       const emit = (te: TaggedEvent<E>): void => {
         if (cancelled) return;
-        // Dedup against the catch-up window.
-        if (offsetCompare(te.offset, fromOffset) < 0) return;
-        if (lastEmittedOffset && offsetCompare(te.offset, lastEmittedOffset) <= 0) return;
-        lastEmittedOffset = te.offset;
+        if (window.isDelivered(te.event)) return;
+        window.markDelivered(te.event);
         if (pendingResolve) {
           const resolveNext = pendingResolve;
           pendingResolve = null;
@@ -285,15 +299,24 @@ function pushStreamByTag<E>(
 
       const onPublish = (ev: PersistentEvent<unknown>): void => {
         if (!eventMatchesTagFilter(ev.tags, spec)) return;
-        emit({ event: ev as PersistentEvent<E>, offset: offsetOfEvent(ev) });
+        const te: TaggedEvent<E> = { event: ev as PersistentEvent<E>, offset: offsetOfEvent(ev) };
+        if (heldDuringCatchUp !== null) heldDuringCatchUp.push(te);
+        else emit(te);
       };
       const unsubscribe = bus.subscribe(onPublish);
 
-      void query.currentEventsByTag<E>(spec, fromOffset).then((all) => {
-        for (const te of all) emit(te);
+      const releaseHeld = (): void => {
+        const held = heldDuringCatchUp ?? [];
+        heldDuringCatchUp = null;
+        for (const te of held) emit(te);
+      };
+      void query.currentEventsByTag<E>(spec, window.readFrom()).then((all) => {
+        for (const te of window.admit(all)) emit(te);
+        releaseHeld();
       }).catch((err) => {
         // eslint-disable-next-line no-console
         console.warn('pushStreamByTag: catch-up read failed', err);
+        releaseHeld();
       });
 
       return {
@@ -317,6 +340,32 @@ function pushStreamByTag<E>(
           return Promise.resolve({ value: undefined, done: true });
         },
       };
+    },
+  };
+}
+
+/**
+ * Polling stream by tag-filter, for journals with no event bus.  Every poll
+ * reads from the window's start rather than from the last emitted offset — see
+ * {@link TagLookbackWindow} — and emits only what the window has not delivered.
+ * The window is created per iterator, so two loops over one stream each get
+ * every event.
+ */
+function pollStreamByTag<E>(
+  query: InMemoryQuery,
+  spec: TagFilterSpec,
+  fromOffset: Offset,
+  windowMs: number,
+  pollIntervalMs: number,
+): AsyncIterable<TaggedEvent<E>> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<TaggedEvent<E>> {
+      const window = TagLookbackWindow.startingAt(fromOffset, windowMs);
+      return liveStream<TaggedEvent<E>>(pollIntervalMs, async () => {
+        const fresh = window.admit(await query.currentEventsByTag<E>(spec, window.readFrom()));
+        for (const te of fresh) window.markDelivered(te.event);
+        return fresh;
+      })[Symbol.asyncIterator]();
     },
   };
 }

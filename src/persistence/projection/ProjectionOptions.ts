@@ -250,6 +250,19 @@ export interface ByPersistenceIdProjectionOptionsType<E> extends ProjectionOptio
  */
 export interface ByTagProjectionOptionsType<E> extends ProjectionOptionsType<E> {
   readonly tag: TagFilter;
+  /**
+   * How far behind its newest committed stamp each poll re-reads, in ms
+   * (#957).  An event is stamped before its write commits, so a slow writer's
+   * event can become visible after the projection has passed its stamp; the
+   * window is what still delivers it, and the per-`(persistenceId,
+   * sequenceNr)` deduplication saved with the cursor is what keeps the
+   * re-read from handling anything twice.  An event committed later than
+   * this after its stamp is missed.  `0` reads forward only.
+   *
+   * Default: `actor-ts.projection.lookback-window`, else
+   * `DEFAULT_TAG_LOOKBACK_WINDOW_MS` (30 s) — see there for why.
+   */
+  readonly lookbackWindowMs?: number;
 }
 
 /**
@@ -510,6 +523,16 @@ export class ByTagProjectionOptionsBuilder<E> extends OptionsBuilder<ByTagProjec
   withTag(tag: TagFilter): this {
     return this.set('tag', tag);
   }
+
+  /**
+   * How far behind its newest committed stamp each poll re-reads, in ms, so
+   * an event committed after the projection passed its stamp is still
+   * handled, once.  Default: 30 s.  See
+   * {@link ByTagProjectionOptionsType.lookbackWindowMs}.
+   */
+  withLookbackWindowMs(lookbackWindowMs: number): this {
+    return this.set('lookbackWindowMs', lookbackWindowMs);
+  }
 }
 
 /**
@@ -648,6 +671,15 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
     }
     const refusal = tagFilterRefusal(tag);
     if (refusal !== undefined) this.fail('tag', `is one every poll would refuse — ${refusal}`);
+    // Checked here rather than with the shared bounds, because only a by-tag
+    // projection has a window.  `0` is meaningful — forward-only reads — and
+    // a negative or non-finite window would make every read start ahead of
+    // the cursor, which skips events rather than catching late ones.
+    const lookbackWindowMs = (s as Partial<ByTagProjectionOptionsType<E>>).lookbackWindowMs;
+    if (lookbackWindowMs !== undefined
+      && (typeof lookbackWindowMs !== 'number' || !Number.isFinite(lookbackWindowMs) || lookbackWindowMs < 0)) {
+      this.fail('lookbackWindowMs', 'must be a finite number of milliseconds >= 0', lookbackWindowMs);
+    }
   }
 }
 
@@ -690,6 +722,13 @@ export type ProjectionConfigDefaults = Partial<ProjectionRecoveryOptionsType> & 
    * projection, whose refusal of a size is meant for one its own code wrote.
    */
   readonly groupAfterEnvelopes?: number;
+  /**
+   * The by-tag lookback window, in milliseconds — merged into
+   * {@link ByTagProjectionOptionsType.lookbackWindowMs}.  Read for both
+   * shapes, used by `byTag` only: a by-persistence-id cursor is a sequence
+   * number, which a late commit cannot pass.
+   */
+  readonly lookbackWindowMs?: number;
 };
 
 /**
@@ -742,6 +781,9 @@ export function readProjectionOptionsFromConfig(
   }
   if (handler !== 'handle' && config.hasPath(keys.groupAfterEnvelopes)) {
     out.groupAfterEnvelopes = config.getInt(keys.groupAfterEnvelopes);
+  }
+  if (config.hasPath(keys.lookbackWindow)) {
+    out.lookbackWindowMs = config.getDuration(keys.lookbackWindow);
   }
   return out;
 }
