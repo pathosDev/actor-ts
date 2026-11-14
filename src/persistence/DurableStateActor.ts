@@ -144,8 +144,19 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
     persistence.assertPersistenceOptionsSupported(
       'durable-state-store', store, this.persistenceOptions(),
     );
+    await this.loadRecord();
+  }
+
+  /**
+   * Read the store's record into `_record` — the start-up load, and the
+   * refresh after a lost write (#963).  One implementation so the two cannot
+   * disagree about decoding: a refresh that skipped the state adapter would
+   * hand `onCommand` an envelope where the start-up load hands it the domain
+   * shape.
+   */
+  private async loadRecord(): Promise<void> {
     const adapter = this.stateAdapter();
-    const loaded = await store.load<unknown>(
+    const loaded = await this.store.load<unknown>(
       this.options.persistenceId, this.persistenceOptions(),
     );
     const option = loaded.toNullable();
@@ -167,7 +178,24 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
   /** User handler — invoked once `preStart` has loaded the record. */
   abstract onCommand(command: Command): void | Promise<void>;
 
-  /** Persist the new state atomically; rejects on concurrency conflict. */
+  /**
+   * Persist the new state atomically; rejects on concurrency conflict.
+   *
+   * **A conflict refreshes the actor before it propagates (#963).**  A
+   * `DurableStateConcurrencyError` means another writer moved the record past
+   * the revision this actor holds — a rebalance that started the entity on a
+   * second node, an admin tool, a retried request on a fresh actor.  The
+   * record is re-read, so `state` and `revision` reflect the store, and only
+   * then is the error rethrown: the caller still learns its write lost, which
+   * it must, because `next` was computed from data that was already stale.
+   * The next command then starts from the truth instead of replaying the
+   * same stale revision against the store for the rest of the actor's life.
+   *
+   * A refresh that itself fails leaves the stale record in place, and the
+   * caller still gets the conflict rather than the refresh's error: the
+   * conflict is the fact about this write, and the next conflict retries the
+   * refresh.
+   */
   protected async persist(next: S): Promise<DurableStateRecord<S>> {
     const expected = this.revision;
     const adapter = this.stateAdapter();
@@ -193,10 +221,22 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
       this._record = local;
       return local;
     } catch (err) {
-      if (err instanceof DurableStateConcurrencyError) throw err;
+      if (err instanceof DurableStateConcurrencyError) await this.refreshAfterConflict(err);
       throw err;
     } finally {
       this._persisting = null;
+    }
+  }
+
+  private async refreshAfterConflict(conflict: DurableStateConcurrencyError): Promise<void> {
+    try {
+      await this.loadRecord();
+    } catch (refreshError) {
+      this.log.warn(
+        `[persistence] '${this.options.persistenceId}': could not re-read the record after a `
+        + 'concurrency conflict — keeping the stale revision until the next conflict retries',
+        { conflict, refreshError },
+      );
     }
   }
 
