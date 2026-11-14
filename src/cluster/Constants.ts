@@ -732,3 +732,63 @@ export const ENVELOPE_REFUSAL_REPORT_INTERVAL_MS = 30_000;
  * message it sends would otherwise decide how often this node logs.
  */
 export const OUTBOUND_REFUSAL_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * How far ahead of a sender's established clock a gossip frame's `sequence`
+ * may run once that sender has a high-water mark on the receiver (#1262).
+ *
+ * The sequence is a wall-clock stamp — a node numbers its frames
+ * `max(previous + 1, Date.now())` — so a genuine frame sits at the sender's
+ * clock offset from the receiver, give or take delivery delay.  The receiver
+ * learns that offset from the frames it accepts and admits up to this much
+ * beyond it.  It is also the most a frame admitted at the edge can *pin*: the
+ * real sender, stamping its own clock, is past such a mark again once this
+ * much time has gone by.  Before, the bound was `now + maxVersionSkewMs` (five
+ * minutes, and a day before that), so one restamped capture refused the
+ * sender's own frames for that long.
+ *
+ * Ten seconds covers what moves a genuine frame ahead of the offset the
+ * receiver has learned: an offset learned from a first frame that was itself
+ * delayed (a congested link, a paused receiver), and an NTP slew.  A forward
+ * clock *step* larger than this is what
+ * {@link GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS} recovers from.
+ */
+export const GOSSIP_SEQUENCE_LEAD_MS = 10_000;
+
+/**
+ * How fast the learned clock offset of a gossip sender may rise, in
+ * milliseconds per millisecond — one millisecond per second (#1262).
+ *
+ * The offset only ever rises, so a delayed frame or a paused receiver (both of
+ * which make a frame look *older*) cannot tighten the bound under a healthy
+ * sender.  Rising is rate-limited because every frame admitted at the edge of
+ * {@link GOSSIP_SEQUENCE_LEAD_MS} would otherwise raise the offset by the lead
+ * and the next frame's bound with it — a frame per second walking the mark an
+ * hour ahead in an hour.  A thousand parts per million is twenty times the
+ * drift of an undisciplined quartz clock, so a sender that drifts forward is
+ * followed; one that *steps* forward is not, by design.
+ */
+export const GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS = 0.001;
+
+/**
+ * How long a sender's gossip must have been refused as running too far ahead,
+ * with nothing from it accepted in between, before the receiver forgets the
+ * sender's learned clock and judges its next frame as a first frame — against
+ * `maxVersionSkewMs` again (#1262).
+ *
+ * The escape hatch for a forward clock step larger than
+ * {@link GOSSIP_SEQUENCE_LEAD_MS}: without it the step would be followed only
+ * at {@link GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS}, which for a one-minute step
+ * is most of a day of refusing the sender's own gossip.  It is no shortcut for
+ * an injector: any genuine frame accepted in between restarts the count, so
+ * reaching it means keeping the real sender's frames out for this long, which
+ * an injector able to do that achieves without the hatch.
+ */
+export const GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS = 60_000;
+
+/**
+ * How many too-far-ahead frames, at least, {@link GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS}
+ * has to have seen before it forgets a sender's clock — so a single stray frame
+ * at each end of the window is not a "streak" (#1262).
+ */
+export const GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES = 3;

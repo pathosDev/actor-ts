@@ -12,7 +12,7 @@ er kann cluster-interne Actors per bekannten
 ```ts
 import { ClusterClient, ClusterClientOptions } from 'actor-ts/cluster';
 
-const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/cluster/receptionist']);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['my-app@10.0.0.5:2552']);
 const client = new ClusterClient(
   clusterClientOptions,
 );

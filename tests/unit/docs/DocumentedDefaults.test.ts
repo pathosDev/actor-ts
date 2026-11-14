@@ -83,6 +83,7 @@ import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
+  DEFAULT_UNREACHABLE_GOSSIP_ROUNDS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../../../src/cluster/ClusterOptions.js';
@@ -419,6 +420,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // keeps following a heartbeat-interval tuned anywhere (#1451).
   { key: 'actor-ts.cluster.failure-detector.phi.expected-response-after', kind: 'string', constant: defaultPhiAccrualOptions.expectedResponseAfterMs },
   { key: 'actor-ts.cluster.seed-retry-interval', kind: 'duration', constant: DEFAULT_SEED_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.cluster.unreachable-gossip-rounds', kind: 'int', constant: DEFAULT_UNREACHABLE_GOSSIP_ROUNDS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
   // In the table rather than in FEATURE_SWITCHES, though `1` is the "off"

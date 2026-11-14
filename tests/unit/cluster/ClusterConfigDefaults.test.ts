@@ -13,6 +13,7 @@ import {
   DEFAULT_DOWN_SMALLER_ISLAND,
   DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
+  DEFAULT_UNREACHABLE_GOSSIP_ROUNDS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
   DEFAULT_UNTRUSTED_MODE,
@@ -46,6 +47,7 @@ describe('readClusterOptionsFromConfig', () => {
         cluster {
           gossip-interval     = 250ms
           seed-retry-interval = 1s
+          unreachable-gossip-rounds = 7
           failure-detector {
             heartbeat-interval = 100ms
             unreachable-after  = 400ms
@@ -65,6 +67,7 @@ describe('readClusterOptionsFromConfig', () => {
       maxFrameBytes: 2 * 1024 * 1024,
       gossipIntervalMs: 250,
       seedRetryIntervalMs: 1_000,
+      unreachableGossipRounds: 7,
       failureDetector: {
         heartbeatIntervalMs: 100,
         unreachableAfterMs: 400,
@@ -391,6 +394,9 @@ describe('readClusterOptionsFromConfig', () => {
       maxFrameBytes: DEFAULT_MAX_FRAME_BYTES,
       gossipIntervalMs: DEFAULT_GOSSIP_INTERVAL_MS,
       seedRetryIntervalMs: DEFAULT_SEED_RETRY_INTERVAL_MS,
+      // Ships a leaf, so it always lands; pinned to the constant `Cluster`
+      // falls back to, so a shipped value that differs is reported here (#930).
+      unreachableGossipRounds: DEFAULT_UNREACHABLE_GOSSIP_ROUNDS,
       weaklyUpAfterMs: 0,
       // 0 = arm no stats timer (#842).  Pinned here rather than only in the
       // reference file, because this exact-object shape is what says the leaf

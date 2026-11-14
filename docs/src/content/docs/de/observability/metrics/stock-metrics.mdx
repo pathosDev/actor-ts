@@ -352,7 +352,8 @@ Zum Monitoring der Cluster-Gesundheit:
   plausibler Zeitpunkt ist. `reason="replayed-frame"` ist ein ganzer
   Gossip-Frame, dessen `sequence` den letzten von diesem Peer
   akzeptierten nicht überbietet oder keine endliche Zahl innerhalb von
-  `maxVersionSkewMs` um die Uhr dieses Knotens ist — ein Duplikat,
+  `maxVersionSkewMs` um die Uhr dieses Knotens ist oder mehr als zehn
+  Sekunden über der Uhr liegt, die dieser Peer gezeigt hat — ein Duplikat,
   jemand sendet einen vom Draht mitgeschnittenen Frame erneut, oder
   jemand sendet einen erneut, dessen `sequence` umgeschrieben wurde, um
   die Marke zu überspringen. Der Zähler wird einmal pro Frame um dessen

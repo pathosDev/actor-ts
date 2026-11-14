@@ -1607,6 +1607,11 @@ export const ConfigKeys = {
   cluster: {
     gossipInterval: 'actor-ts.cluster.gossip-interval',
     seedRetryInterval: 'actor-ts.cluster.seed-retry-interval',
+    /**
+     * On every how-many-th gossip round one `unreachable` member also receives
+     * the round's frame, so a healed partition merges (#930).  `0` sends none.
+     */
+    unreachableGossipRounds: 'actor-ts.cluster.unreachable-gossip-rounds',
     /** Auto-promotion `joining` → `weakly-up`; `0` keeps it opt-in (#841). */
     weaklyUpAfter: 'actor-ts.cluster.weakly-up-after',
     /**

@@ -263,34 +263,38 @@ describe('a sequence no clock could have produced is refused, not merged', () =>
     expect(internals(node.cluster).members.get(subject.toString())?.status).toBe('up');
   });
 
-  test('the plausibility bound is the same clock-skew budget versions get', async () => {
-    // Just inside `maxVersionSkewMs` is admitted and adopted, so a skewed peer
-    // is never silenced by its own clock.  Beyond it the frame is dropped whole
-    // — the record it carries does not land — and the mark is left alone.
+  test('a first frame is bounded by the same clock-skew budget versions get', async () => {
+    // A sender's first frame has shown no clock yet, so the skew budget is the
+    // only bound it can meet: just inside `maxVersionSkewMs` is admitted and
+    // adopted, so a skewed peer is never silenced by its own clock.  Beyond it
+    // the frame is dropped whole and leaves no mark.  Once a mark exists the
+    // bound tightens to the sender's learned clock plus a lead, which is what
+    // `GossipSequencePinning.test.ts` pins (#1262); a frame minutes ahead of
+    // that is refused here too, mark untouched.
     const node = await startNode('replay-budget', 9_405);
     nodes.push(node);
-    const peer = new NodeAddress('replay-budget', '10.0.112.2', 9_490);
-    const skewed = new NodeAddress('replay-budget', '10.0.112.3', 9_491);
-    const beyond = new NodeAddress('replay-budget', '10.0.112.4', 9_492);
-
-    // Standing first: a third-party record needs a sender the receiver already
-    // considers active, and `senderStatus` is snapshotted before the merge, so
-    // it cannot be earned by the same frame that uses it (#562).
-    gossipFrom(node.cluster, peer, Date.now(), [selfRecord(peer)]);
+    const skewedPeer = new NodeAddress('replay-budget', '10.0.112.2', 9_490);
+    const beyondPeer = new NodeAddress('replay-budget', '10.0.112.4', 9_492);
+    const later = new NodeAddress('replay-budget', '10.0.112.3', 9_491);
 
     const withinBudget = Date.now() + 4 * MINUTE_MS;
-    gossipFrom(node.cluster, peer, withinBudget, [
-      { address: skewed.toJSON(), status: 'up', version: Date.now(), roles: [] },
-    ]);
-    expect(markFor(node.cluster, peer)).toBe(withinBudget);
-    expect(internals(node.cluster).members.has(skewed.toString())).toBe(true);
+    gossipFrom(node.cluster, skewedPeer, withinBudget, [selfRecord(skewedPeer)]);
+    expect(markFor(node.cluster, skewedPeer)).toBe(withinBudget);
+    expect(internals(node.cluster).members.has(skewedPeer.toString())).toBe(true);
 
     const beyondBudget = Date.now() + 60 * MINUTE_MS;
-    gossipFrom(node.cluster, peer, beyondBudget, [
-      { address: beyond.toJSON(), status: 'up', version: Date.now(), roles: [] },
+    gossipFrom(node.cluster, beyondPeer, beyondBudget, [selfRecord(beyondPeer)]);
+    expect(markFor(node.cluster, beyondPeer)).toBeUndefined();
+    expect(internals(node.cluster).members.has(beyondPeer.toString())).toBe(false);
+
+    // The skewed peer keeps speaking at its own offset, but a frame half a
+    // minute past *that* — still inside the skew budget — is not inside its
+    // lead.
+    gossipFrom(node.cluster, skewedPeer, withinBudget + MINUTE_MS / 2, [
+      { address: later.toJSON(), status: 'up', version: Date.now(), roles: [] },
     ]);
-    expect(markFor(node.cluster, peer)).toBe(withinBudget);
-    expect(internals(node.cluster).members.has(beyond.toString())).toBe(false);
+    expect(markFor(node.cluster, skewedPeer)).toBe(withinBudget);
+    expect(internals(node.cluster).members.has(later.toString())).toBe(false);
   });
 
   test('a NaN sequence is refused rather than adopted as an unbeatable mark', async () => {

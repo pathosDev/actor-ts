@@ -1058,10 +1058,11 @@ What makes it an exploit is an entry the receiver has
 removal — the default with no strategy configured, under
 `failure-detector.auto-down = on` — deletes outright rather than
 leaving a tombstone. That was once justified as letting a healed
-partition re-discover the peer, and deleting buys no such thing:
-neither side heartbeats or gossips a peer it holds unreachable, and
-a deleted one is not in its map to address at all, so after a
-symmetric partition neither side hears from the other again
+partition re-discover the peer, and deleting buys no such thing: a
+deleted peer is not in the map to address at all, so after a
+symmetric partition neither side hears from the other again — where
+a peer parked at `unreachable` keeps being heartbeated and returns
+once the network heals
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 Under the default, both sides of a real partition therefore remove
 each other and run on as two clusters, which is one more reason a
@@ -1085,24 +1086,27 @@ had. Shard placement and singleton hosting follow the roles, so
 the cluster starts routing work to a node it had evicted.
 
 Every gossip frame therefore carries a **sequence** its author
-stamps — seeded from that node's wall clock at startup and
-incremented once per frame — and a receiver remembers the
-highest one it has accepted from each connection peer. A frame
-that does not out-number that mark is dropped whole, before any
-record in it is looked at. The comparison itself needs no knob:
-it is between a peer and *itself*, so no clock-skew budget comes
-into it.
+stamps from its own wall clock — `max(previous + 1, now)`, so it
+still rises strictly while the clock stands still — and a receiver
+remembers the highest one it has accepted from each connection
+peer. A frame that does not out-number that mark is dropped whole,
+before any record in it is looked at. The comparison itself needs
+no knob: it is between a peer and *itself*, so no clock-skew
+budget comes into it.
 
 The mark is written in exactly one place — the gossip path, as it
 accepts a frame — so it exists for a peer this node has accepted a
 frame **from**, and for no other address. That is the bound, and
 the third residual below is what falls outside it.
 
-A sequence must also be **plausible** — a finite number no
-further ahead of the receiver's clock than `maxVersionSkewMs`,
-the same budget a gossiped version gets, because the number is
-stamped from the author's wall clock. A frame outside that budget
-is refused, exactly like a repeat.
+A sequence must also be **plausible**. A sender's first frame —
+and the first from each new incarnation of it — has shown no clock
+yet, so it meets the budget a gossiped version gets: a finite
+number no further ahead of the receiver's clock than
+`maxVersionSkewMs`. After that the bound comes from the sender
+itself: the receiver learns the sender's clock offset from the
+frames it accepts, and admits a frame at most ten seconds past it.
+A frame outside either bound is refused, exactly like a repeat.
 
 That started out as the weaker rule: the frame was merged, and
 only *adopting* its number as the mark was refused, on the
@@ -1115,9 +1119,36 @@ was therefore merged again on every delivery, without limit,
 against a receiver that held a mark for a sender that was still
 alive. Refusing it loses nothing: the mark stays where the last
 plausible frame put it, so the real node's next frame still
-out-numbers it and still lands. Silencing the real node forever —
-the exploit the version cap above exists to prevent — is closed
-from both sides rather than one.
+out-numbers it and still lands.
+
+**Pinning is bounded, not closed.** Until v0.19 the bound on every
+frame was `now + maxVersionSkewMs`, and a capture restamped
+*inside* it — four minutes ahead against the five-minute default —
+was admitted and became the mark, so the real node's own frames,
+numbered from its clock, were refused until the clock caught up
+([issue #1262](https://github.com/pathosDev/actor-ts/issues/1262)).
+Deriving the bound from the sender takes most of that away: a frame
+admitted at the edge pins the mark for at most the ten-second lead;
+repeated injections cannot walk it further ahead, because the
+learned offset rises by at most one millisecond per second; and the
+reading is held per (member, incarnation), so a mark pinned against
+one run never refuses the next. What remains, stated so nobody
+expects more:
+
+- An injector that keeps injecting at the edge keeps the sender's
+  own frames out for as long as it keeps doing so. No bound on a
+  wire without a MAC can stop that; mutual TLS, which binds the
+  handshake identity to a certificate, is what keeps an outsider
+  off the wire in the first place.
+- A sender's first frame, and the first from each new incarnation,
+  meets only `maxVersionSkewMs`, so a capture delivered before any
+  genuine frame can still pin for up to that budget — the
+  empty-mark case of the second residual below.
+- A node whose clock steps forward by more than the lead has its
+  gossip refused until a minute of such frames makes the receiver
+  forget its reading. A node from before v0.19 numbers its frames
+  with a counter rather than its clock, so against it a frame at
+  the edge pins for as long as that counter takes to climb past it.
 
 An address additionally carries an **incarnation**: which
 *process* is answering at that `system@host:port`, minted once

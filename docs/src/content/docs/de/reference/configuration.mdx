@@ -54,6 +54,7 @@ actor-ts {
   cluster {
     gossip-interval     = 1s
     seed-retry-interval = 3s
+    unreachable-gossip-rounds = 3 # 0 = no gossip to unreachable members
     weakly-up-after     = 0s      # 0 = opt-in only
     max-members         = 1000
     max-tombstones      = 10000
@@ -424,6 +425,7 @@ man daraus erneut zustellt.
 | `cluster.roles` | `[]` | Rollen-Tags dieses Nodes.  Shard-Regionen, Singletons, die Schwellen pro Rolle und die rollengefilterten Downing-Strategien platzieren alle **nach** Rolle. |
 | `cluster.app-version` | *(nicht gesetzt)* | Die Anwendungsversion, die dieser Node seinen Peers nennt — ein Label für Betreiber, angezeigt von `/cluster/members` und überall, wo ein Mitglied ausgegeben wird; nichts platziert, routet oder downt danach.  In `reference.conf` nur als Kommentar: nicht gesetzt nennt der Node keine und schickt nichts über die Leitung — siehe unten. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
+| `cluster.unreachable-gossip-rounds` | `3` | In jeder wievielten Gossip-Runde ein `unreachable`-Mitglied den Frame der Runde ebenfalls erhält, damit eine geheilte Partition zusammenwächst.  Heartbeats erreichen unerreichbare Mitglieder unabhängig davon bei jedem Schlag.  `0` schickt ihnen keinen Gossip — siehe [Failure Detector](/de/cluster/failure-detector/). |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | Wie oft dieser Node eine `ClusterStatsPublished`-Momentaufnahme seines Mitgliederbilds auf `system.eventStream` veröffentlicht.  `0` startet keinen Timer — siehe unten. |
 | `cluster.shutdown-after-unsuccessful-join` | `0s` | Wie lange ein Node `joining` oder `weakly-up` bleiben darf, bevor er den Join aufgibt.  Kann ihn zur Frist nichts mehr befördern, protokolliert er eine Warnung, verlässt den Cluster und führt die Coordinated-Shutdown-Pipeline mit `ClusterJoinUnsuccessfulReason` aus; andernfalls fragt er alle `seed-retry-interval` erneut.  `0` setzt keine Frist — siehe [Joining und Seeds](/de/cluster/joining-and-seeds/). |
