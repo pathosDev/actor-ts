@@ -45,7 +45,9 @@ amqp.tell({
 interface AmqpOptionsType extends BrokerCommonOptionsType {
   url:        string;                          // amqp:// or amqps://
   prefetch?:  number;                          // unacked messages per consumer; default 1
-  autoAcknowledge?:      boolean;                         // ack on delivery vs after processing; default true
+  autoAcknowledge?:      boolean;                         // the actor acks (default true) vs your explicit commands
+  acknowledgment?:       'on-reply' | 'on-delivery';      // when the actor acks; default 'on-reply'
+  acknowledgmentTimeoutMs?: number;                       // how long 'on-reply' waits; default 30_000
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // queue ↔ exchange ↔ routingKey ↔ target
   tls?:       TlsTransportOptionsType;         // cert material for an amqps:// dial; code-only
 }
@@ -69,7 +71,9 @@ explicit options and above the built-in defaults:
 actor-ts.io.broker.amqp {
   url              = ${?ACTOR_TS_AMQP_URL}  # amqp://user:password@rabbitmq:5672/vhost, or amqps://
   prefetch         = 10                     # default 1; 0 = unlimited
-  auto-acknowledge = false                  # default true
+  auto-acknowledge = true                   # the default; false = explicit commands
+  acknowledgment   = "on-reply"             # the default; or "on-delivery"
+  acknowledgment-timeout = 30s              # the default; on-reply only
 }
 ```
 
@@ -109,11 +113,55 @@ Most common pattern: **`topic`** exchanges with hierarchical
 routing keys (`orders.placed.priority`, `orders.cancelled`,
 `payments.failed`).
 
-## Ack / nack
+## Acknowledgment
+
+By default the actor acknowledges a delivery **only once its target has
+processed it**: it `ask`s the binding's target with the delivery, and the
+target replies on the delivery's `replyTo`.  That makes the default
+**at-least-once** — and makes `prefetch` a real bound, because a delivery
+stays unacknowledged until it is done.
+
+```ts
+import { acknowledgeDelivery, negativelyAcknowledgeDelivery } from 'actor-ts/io';
+
+class OrderHandler extends Actor<AmqpDelivery> {
+  override async onReceive(delivery: AmqpDelivery): Promise<void> {
+    try {
+      await processOrder(delivery);
+      acknowledgeDelivery(delivery);             // replies { kind: 'acknowledgment' }
+    } catch (err) {
+      negativelyAcknowledgeDelivery(delivery, String(err));
+    }
+  }
+}
+```
+
+| The target… | The actor… |
+| --- | --- |
+| replies `{ kind: 'acknowledgment' }` | acks the delivery |
+| replies `{ kind: 'negativeAcknowledgment', reason? }` | nacks it with requeue — RabbitMQ redelivers it |
+| replies anything else | nacks it with requeue, and logs that the reply was not part of the contract |
+| does not reply within `acknowledgmentTimeoutMs` (30 s) | nacks it with requeue |
+
+A handler that throws simply never replies, so it lands in the last row.
+Handlers must be idempotent: a delivery can come back after it was
+processed, if the reply or the ack is lost.  An ack the broker refuses is
+never swallowed — it is logged at `warn` with the queue and published as a
+`BrokerAcknowledgmentFailed` event, so it can be counted.
+
+**`acknowledgment: 'on-delivery'`** acks each delivery as it is handed to the
+target's mailbox and expects no reply (`replyTo` is absent and both helpers
+do nothing).  That is at-most-once: a delivery lost after the hand-over — a
+crash, a mailbox overflow — is not redelivered, and `prefetch` bounds
+nothing.  An ack that fails is not followed by the hand-over, because
+RabbitMQ redelivers that delivery anyway.
+
+### Explicit commands
 
 Set `autoAcknowledge: false` in settings, then the handler tells the
 result back via `{ kind: 'acknowledgment', delivery }` or `{ kind: 'negativeAcknowledgment',
-delivery, requeue }` on the AMQP actor's ref.
+delivery, requeue }` on the AMQP actor's ref.  `acknowledgment` does not
+apply in this mode.
 
 ```ts
 class OrderHandler extends Actor<AmqpDelivery> {
@@ -148,7 +196,9 @@ prefetch: 10   // consume up to 10 unacked at once per consumer
 ```
 
 The framework default is **1** — a single unacked message per
-consumer at a time.  (The raw AMQP protocol default is 0 =
+consumer at a time.  It bounds anything only while deliveries stay
+unacknowledged until processed — under the default `'on-reply'` and with
+explicit commands, not under `'on-delivery'`.  (The raw AMQP protocol default is 0 =
 unlimited, but the actor sets `prefetch` to 1 unless you override
 it.)  Raise it to a sensible batch size (10-50) to keep the
 consumer busy without overwhelming it.

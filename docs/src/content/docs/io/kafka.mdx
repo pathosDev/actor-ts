@@ -1,6 +1,6 @@
 ---
 title: Kafka
-description: Apache Kafka broker actor — publishes records to a topic, consumes a topic via a consumer group. SASL + TLS supported; auto- or manual-commit semantics. Wraps `kafkajs` under the hood.
+description: Apache Kafka broker actor — publishes records to a topic, consumes a topic via a consumer group. SASL + TLS supported; at-least-once by default (commit on the target's reply) or manual commit. Wraps `kafkajs` under the hood.
 ---
 
 `KafkaActor` integrates with Apache Kafka.  Wraps `kafkajs`
@@ -58,6 +58,8 @@ interface KafkaOptionsType extends BrokerCommonOptionsType {
   };
   target?:  ActorRef<KafkaRecord>;     // consumer-actor for inbound records
   topics?:  ReadonlyArray<string>;
+  acknowledgment?:          'on-reply' | 'on-delivery';  // when an auto-commit record may commit; default 'on-reply'
+  acknowledgmentTimeoutMs?: number;                      // how long 'on-reply' waits; default 30_000
 }
 ```
 
@@ -86,12 +88,19 @@ actor-ts.io.broker.kafka {
     commit-timeout = 30s                         # the default; manual mode only
   }
   topics = ["orders", "payments"]
+  acknowledgment         = "on-reply"            # the default; or "on-delivery"
+  acknowledgment-timeout = 30s                   # the default; on-reply only
 }
 ```
 
-`brokers` and `topics` are lists, and `commit-timeout` is a duration, so `30s`
-and `30000` mean the same.  Leaving `group-id` unset leaves the actor a
-producer only.
+`brokers` and `topics` are lists, and `commit-timeout` and
+`acknowledgment-timeout` are durations, so `30s` and `30000` mean the same.
+Leaving `group-id` unset leaves the actor a producer only.
+
+The `consumer` block is merged **leaf by leaf** with `withConsumer({ … })`:
+a block set in code keeps every leaf it does not name from the file, so
+`withConsumer({ groupId: 'orders' })` over a HOCON `commit-mode = "manual"`
+stays manual.
 
 ### The producer block, from HOCON
 
@@ -107,13 +116,13 @@ actor-ts.io.broker.kafka {
 }
 ```
 
-Naming only one of the two keeps the built-in default for the other — the
-reader rebuilds the block rather than handing back a partial one, so a HOCON
-`producer { idempotent = true }` cannot blank `allowAutoTopicCreation` out.
+Naming only one of the two keeps the built-in default for the other, so a
+HOCON `producer { idempotent = true }` cannot blank `allowAutoTopicCreation`
+out.
 
-`withProducer({ … })` in code still replaces the configured block whole: that
-is the ordinary precedence (constructor > HOCON > defaults) applied at the
-field this object *is*.
+`withProducer({ … })` in code is layered the same way: the leaves it names
+win (constructor > HOCON > defaults), and the leaves it leaves out keep their
+HOCON or built-in value.
 
 `target` has no config key — it is an `ActorRef`, which names a live actor in
 this process and has no config-file spelling.  Neither does the certificate
@@ -152,6 +161,7 @@ class OrderHandler extends Actor<KafkaRecord> {
     // record.topic / partition / offset / key / value / timestamp / headers
     const order = JSON.parse(new TextDecoder().decode(record.value!));
     this.process(order);
+    acknowledgeDelivery(record);   // lets the offset commit — see below
   }
 }
 ```
@@ -177,13 +187,31 @@ running consumer.  Stop the actor (or spawn a second one with a different
 ## Commit modes
 
 ```ts
-consumer: { commitMode: 'auto' }    // at-least-once
+consumer: { commitMode: 'auto' }    // at-least-once (with the default acknowledgment)
 consumer: { commitMode: 'manual' }  // exactly-once-with-processing
 ```
 
-**`auto`** (default): kafkajs commits after the handler returns.
-Crash between handler and commit → re-delivery on next start.
-At-least-once.  Handlers must be idempotent.
+**`auto`** (default): kafkajs commits a record's offset once the actor lets
+it, and when that is depends on `acknowledgment`:
+
+- **`'on-reply'`** (default) — the actor `ask`s the target with each record
+  and lets kafkajs commit only once the target replied
+  `{ kind: 'acknowledgment' }` on the record's `replyTo`, which is what
+  `acknowledgeDelivery(record)` sends.  A `{ kind: 'negativeAcknowledgment',
+  reason? }` reply, any other reply, or no reply within
+  `acknowledgmentTimeoutMs` (30 s) leaves the offset uncommitted, and kafkajs
+  reads the record again.  **At-least-once** — handlers must be idempotent.
+  A record whose processing throws never gets its reply, so it times out
+  and comes back.
+- **`'on-delivery'`** — the actor lets kafkajs commit as soon as the record
+  is in the target's mailbox; no reply is expected (`replyTo` is absent and
+  the helpers do nothing).  **At-most-once**: a record lost from the mailbox
+  — a crash, an overflow — is never read again.
+
+Kafka processes one record per partition at a time, so under `'on-reply'` a
+slow target slows its partitions down instead of piling records up in its
+mailbox.  The consumer start is logged at `info` with the effective commit
+mode and acknowledgment, so what the actor guarantees is visible in the log.
 
 **`manual`**: the consumer pauses on each record and waits for an
 explicit commit message:

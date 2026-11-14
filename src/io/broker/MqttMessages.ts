@@ -5,9 +5,27 @@
  * cycle with the actor class.
  */
 import type { ActorRef } from '../../ActorRef.js';
+import type { BrokerDeliveryReply } from './BrokerAcknowledgment.js';
 import { MqttDecodeError, type MqttCodec } from './MqttCodec.js';
 
-/** MQTT QoS levels.  0 = at-most-once, 1 = at-least-once, 2 = exactly-once. */
+/**
+ * MQTT QoS levels, and what each one means end to end through an
+ * {@link MqttActor} under the default `acknowledgment: 'on-reply'` (#977):
+ *
+ *   - `0` — at-most-once.  The broker expects no acknowledgment.
+ *   - `1` — at-least-once.  The PUBACK goes out only once the message was
+ *     processed — `onMessage` returned and every fan-out target replied —
+ *     and a delivery that fails or times out drops the connection without
+ *     one, so the broker redelivers it.  Redelivery needs a persistent
+ *     session (`cleanSession: false`): with a clean session the broker
+ *     discards the unacknowledged message on reconnect.
+ *   - `2` — exactly-once on the wire.  mqtt.js sends the PUBREC itself on
+ *     receipt; the actor holds back only the PUBCOMP.  A delivery that fails
+ *     is therefore not redelivered — use QoS 1 for at-least-once processing.
+ *
+ * Under `'on-delivery'` mqtt.js acknowledges as the message enters the
+ * actor's mailbox, so every level is at-most-once end to end.
+ */
 export type MqttQos = 0 | 1 | 2;
 
 /**
@@ -116,6 +134,14 @@ export type MqttMessage<T = unknown> = {
    * the broker emitted one.  `undefined` for MQTT 3.1.1.
    */
   readonly reasonCode?: number;
+  /**
+   * Where a fan-out **target** replies `{ kind: 'acknowledgment' }` once it
+   * has processed the message — present only on a target's copy under the
+   * default `acknowledgment: 'on-reply'`.  The actor's own `onMessage` never
+   * sees one: returning is its acknowledgment, throwing its refusal.  See
+   * `acknowledgeDelivery`.
+   */
+  readonly replyTo?: ActorRef<BrokerDeliveryReply>;
 };
 
 /** Outbound publish envelope. */
@@ -237,6 +263,27 @@ const MQTT_SIGNAL = Symbol('MqttActor.signal');
 /** A signal as the constructors below build it. */
 type MarkedSignal = { readonly [MQTT_SIGNAL]: true };
 
+/**
+ * Where an inbound signal carries the acknowledgment the actor settles once
+ * the message was processed — under a symbol key for the reason
+ * {@link MQTT_SIGNAL} is one: the message-boundary check skips it, and no
+ * decoded body can supply one.
+ */
+const MQTT_INBOUND_ACKNOWLEDGMENT = Symbol('MqttActor.inboundAcknowledgment');
+
+/**
+ * @internal The acknowledgment of one inbound message under
+ * `acknowledgment: 'on-reply'` (#977): settled once by whoever finishes with
+ * the message, and turned into the PUBACK — or into a dropped connection the
+ * broker redelivers on — by the actor.
+ */
+export interface MqttInboundAcknowledgment {
+  /** The message was processed: let mqtt.js acknowledge it. */
+  acknowledge(): void;
+  /** The message was not processed: withhold the acknowledgment. */
+  fail(cause: Error): void;
+}
+
 /** A message arrived on a subscribed topic. */
 export type MqttInboundSignal<T = unknown> = {
   readonly kind: 'mqtt-inbound';
@@ -259,10 +306,24 @@ export type MqttSignal<T = unknown> =
   | MqttConnectedSignal
   | MqttDisconnectedSignal;
 
-/** @internal Construct the inbound signal (delivered to the actor's own mailbox). */
-export function mqttInboundSignal<T = unknown>(message: MqttMessage<T>): MqttInboundSignal<T> {
-  const signal: MqttInboundSignal<T> & MarkedSignal = { kind: 'mqtt-inbound', message, [MQTT_SIGNAL]: true };
+/**
+ * @internal Construct the inbound signal (delivered to the actor's own
+ * mailbox), carrying the message's acknowledgment when one is awaited.
+ */
+export function mqttInboundSignal<T = unknown>(
+  message: MqttMessage<T>,
+  acknowledgment?: MqttInboundAcknowledgment,
+): MqttInboundSignal<T> {
+  const signal: MqttInboundSignal<T> & MarkedSignal & { [MQTT_INBOUND_ACKNOWLEDGMENT]?: MqttInboundAcknowledgment } = {
+    kind: 'mqtt-inbound', message, [MQTT_SIGNAL]: true,
+  };
+  if (acknowledgment !== undefined) signal[MQTT_INBOUND_ACKNOWLEDGMENT] = acknowledgment;
   return signal;
+}
+
+/** @internal The acknowledgment an inbound signal carries, if one is awaited. */
+export function inboundAcknowledgmentOf(signal: MqttInboundSignal<unknown>): MqttInboundAcknowledgment | undefined {
+  return (signal as { [MQTT_INBOUND_ACKNOWLEDGMENT]?: MqttInboundAcknowledgment })[MQTT_INBOUND_ACKNOWLEDGMENT];
 }
 /** @internal Construct the connected signal. */
 export function mqttConnectedSignal(): MqttConnectedSignal {

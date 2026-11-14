@@ -74,6 +74,31 @@ describe('BrokerOptionsValidator — common broker fields (via Kafka)', () => {
   });
 });
 
+describe('acknowledgment fields (#975–#977), on all three consuming brokers', () => {
+  const validators = [
+    ['Kafka', (s: object): void => new KafkaOptionsValidator().validate(s as Partial<KafkaOptionsType>)],
+    ['AMQP', (s: object): void => new AmqpOptionsValidator().validate(s as Partial<AmqpOptionsType>)],
+    ['MQTT', (s: object): void => new MqttOptionsValidator().validate(s as Partial<MqttOptionsType>)],
+  ] as const;
+
+  for (const [name, check] of validators) {
+    test(`${name}: accepts both modes and a positive timeout`, () => {
+      expect(() => check({ acknowledgment: 'on-reply', acknowledgmentTimeoutMs: 1 })).not.toThrow();
+      expect(() => check({ acknowledgment: 'on-delivery' })).not.toThrow();
+    });
+
+    test(`${name}: refuses a word that is no mode`, () => {
+      expect(() => check({ acknowledgment: 'on-commit' })).toThrow(OptionsError);
+      expect(() => check({ acknowledgment: 'on-commit' })).toThrow("'on-reply', 'on-delivery'");
+    });
+
+    test(`${name}: refuses a timeout that is not positive`, () => {
+      expect(() => check({ acknowledgmentTimeoutMs: 0 })).toThrow(OptionsError);
+      expect(() => check({ acknowledgmentTimeoutMs: -5 })).toThrow(OptionsError);
+    });
+  }
+});
+
 describe('KafkaOptionsValidator', () => {
   const check = (s: Partial<KafkaOptionsType>): void => new KafkaOptionsValidator().validate(s);
 

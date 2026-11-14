@@ -5,6 +5,7 @@
  * returns — which is all the backpressure path needs.
  */
 import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../../../../src/Actor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { ActorSystem } from '../../../../../src/ActorSystem.js';
 import {
@@ -12,12 +13,22 @@ import {
   type AmqpChannelLike,
   type AmqpCommand,
   type AmqpConnectionLike,
+  type AmqpDelivery,
   type AmqpModuleLike,
   type AmqpRawMessage,
 } from '../../../../../src/io/broker/AmqpActor.js';
-import { AmqpOptions } from '../../../../../src/io/broker/AmqpOptions.js';
+import { AmqpOptions, type AmqpOptionsBuilder } from '../../../../../src/io/broker/AmqpOptions.js';
+import { acknowledgeDelivery, negativelyAcknowledgeDelivery } from '../../../../../src/io/broker/BrokerAcknowledgment.js';
+import { BrokerAcknowledgmentFailed } from '../../../../../src/io/broker/BrokerEvents.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+
+/**
+ * The window in which an ack that should not happen would show up: a poll can
+ * confirm that something arrived, never that it did not, so the "nothing yet"
+ * claims hold still this long first.
+ */
+const SETTLE_MS = 20;
 
 /* ------------------------------- Fakes --------------------------------- */
 
@@ -114,10 +125,12 @@ class FakeAmqpActor extends AmqpActor {
   protected override amqpModule(): Promise<AmqpModuleLike> { return Promise.resolve(this.module); }
   protected override drainTimeoutMs(): number { return FakeAmqpActor.drainTimeout; }
   publicConnectionState(): string { return this.connectionState; }
+  /** amqplib surfaces a drop through the connection's `close`. */
+  publicSimulateLoss(): void { this.handleConnectionLost(new Error('simulated broker loss')); }
 }
 
 async function bootAmqp(
-  system: ActorSystem, options: AmqpOptions,
+  system: ActorSystem, options: AmqpOptionsBuilder,
 ): Promise<{ actor: ActorRef<AmqpCommand>; instance: FakeAmqpActor }> {
   const reference = { current: null as FakeAmqpActor | null };
   const actor = system.spawn(() => {
@@ -132,7 +145,185 @@ async function bootAmqp(
   return { actor: actor as ActorRef<AmqpCommand>, instance: reference.current! };
 }
 
+/** How a binding's target answers a delivery that arrives with a `replyTo`. */
+type TargetReply = 'acknowledge' | 'negative' | 'hold';
+
+class DeliveryTarget extends Actor<AmqpDelivery> {
+  readonly received: AmqpDelivery[] = [];
+  constructor(private readonly reply: TargetReply) { super(); }
+  override onReceive(delivery: AmqpDelivery): void {
+    this.received.push(delivery);
+    if (this.reply === 'acknowledge') acknowledgeDelivery(delivery);
+    else if (this.reply === 'negative') negativelyAcknowledgeDelivery(delivery, 'cannot store it');
+  }
+}
+
+/** Subscribes to every `BrokerAcknowledgmentFailed` on the system's event stream. */
+function collectAcknowledgmentFailures(system: ActorSystem): BrokerAcknowledgmentFailed[] {
+  const seen: BrokerAcknowledgmentFailed[] = [];
+  system.eventStream.subscribe(
+    system.spawnAnonymous(() => new (class extends Actor<BrokerAcknowledgmentFailed> {
+      override onReceive(event: BrokerAcknowledgmentFailed): void { seen.push(event); }
+    })()),
+    BrokerAcknowledgmentFailed,
+  );
+  return seen;
+}
+
+/** Boot an actor consuming `orders` into a fresh target that answers as `reply` says. */
+async function bootConsuming(
+  system: ActorSystem, reply: TargetReply, configure: (options: AmqpOptionsBuilder) => AmqpOptionsBuilder = (o) => o,
+): Promise<{ actor: ActorRef<AmqpCommand>; instance: FakeAmqpActor; target: DeliveryTarget; channel: FakeAmqpChannel }> {
+  const target = new DeliveryTarget(reply);
+  const targetRef = system.spawn(() => target, 'orders-target');
+  const amqpOptions = configure(AmqpOptions.create()
+    .withUrl('amqp://fake:5672')
+    .withReconnect({ initialDelayMs: 60_000, randomFactor: 0 })
+    .withBindings([{ queue: 'orders', target: targetRef }]));
+  const { actor, instance } = await bootAmqp(system, amqpOptions);
+  return { actor, instance, target, channel: instance.module.channel };
+}
+
 /* ------------------------------- Tests --------------------------------- */
+
+describe('AmqpActor — acknowledges on the target\'s reply (#976)', () => {
+  test('the default leaves a delivery unacknowledged until the target acknowledges it', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-reply' });
+    try {
+      const { target, channel } = await bootConsuming(system, 'hold');
+      const message = channel.deliver('order-1');
+      await awaitCondition(() => target.received.length === 1, { timeoutMs: 4_000, label: 'the delivery reached the target' });
+      // Still unacknowledged, so it still occupies the prefetch window: a
+      // `prefetch: 1` consumer gets nothing else until the target is done.
+      await sleep(SETTLE_MS);  // the claim is "no ack yet"; see SETTLE_MS
+      expect(channel.acked).toEqual([]);
+      expect(target.received[0]!.replyTo).toBeDefined();
+
+      acknowledgeDelivery(target.received[0]!);
+      await awaitCondition(() => channel.acked.length === 1, { timeoutMs: 4_000, label: 'the reply acked the delivery' });
+      expect(channel.acked[0]).toBe(message);
+      expect(channel.nacked).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a negative reply nacks with requeue, so RabbitMQ redelivers', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-reply-negative' });
+    try {
+      const { channel } = await bootConsuming(system, 'negative');
+      const message = channel.deliver('order-1');
+      await awaitCondition(() => channel.nacked.length === 1, { timeoutMs: 4_000, label: 'the negative reply nacked' });
+      expect(channel.nacked[0]).toEqual({ message, requeue: true });
+      expect(channel.acked).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('no reply within acknowledgmentTimeoutMs nacks with requeue', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-reply-timeout' });
+    try {
+      const { channel } = await bootConsuming(system, 'hold', (o) => o.withAcknowledgmentTimeoutMs(50));
+      channel.deliver('order-1');
+      await awaitCondition(() => channel.nacked.length === 1, { timeoutMs: 4_000, label: 'the timeout nacked' });
+      expect(channel.acked).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a reply that arrives after the channel was replaced acks nothing on the new channel', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-reply-stale' });
+    try {
+      const { instance, target, channel } = await bootConsuming(system, 'hold', (o) => o.withReconnect({ initialDelayMs: 5, randomFactor: 0 }));
+      channel.deliver('order-1');
+      await awaitCondition(() => target.received.length === 1, { timeoutMs: 4_000, label: 'the delivery reached the target' });
+      instance.publicSimulateLoss();
+      await awaitCondition(
+        () => instance.module.channels.length === 2 && instance.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh channel' },
+      );
+      acknowledgeDelivery(target.received[0]!);
+      await sleep(SETTLE_MS);  // the claim is "nothing acked"; see SETTLE_MS
+      expect(channel.acked).toEqual([]);
+      expect(instance.module.channel.acked).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a broker that refuses the ack is reported with the queue, not swallowed', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-reply-ack-fails' });
+    try {
+      const failures = collectAcknowledgmentFailures(system);
+      const { channel } = await bootConsuming(system, 'acknowledge');
+      channel.ackError = new Error('channel closing');
+      channel.deliver('order-1');
+      await awaitCondition(() => failures.length === 1, { timeoutMs: 4_000, label: 'the refused ack was published' });
+      expect(failures[0]!.source).toBe('orders');
+      expect(failures[0]!.cause.message).toBe('channel closing');
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+describe('AmqpActor — acknowledgment = on-delivery', () => {
+  test('acks on hand-over and expects no reply', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-delivery' });
+    try {
+      const { target, channel } = await bootConsuming(system, 'hold', (o) => o.withAcknowledgment('on-delivery'));
+      const message = channel.deliver('order-1');
+      expect(channel.acked).toEqual([message]);
+      await awaitCondition(() => target.received.length === 1, { timeoutMs: 4_000, label: 'the delivery reached the target' });
+      expect(target.received[0]!.replyTo).toBeUndefined();
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('an ack that throws is reported and the delivery is not also handed over', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-delivery-ack-fails' });
+    try {
+      const failures = collectAcknowledgmentFailures(system);
+      const { target, channel } = await bootConsuming(system, 'hold', (o) => o.withAcknowledgment('on-delivery'));
+      channel.ackError = new Error('stale delivery tag');
+      channel.deliver('order-1');
+      await awaitCondition(() => failures.length === 1, { timeoutMs: 4_000, label: 'the refused ack was published' });
+      await sleep(SETTLE_MS);  // the claim is "never handed over"; see SETTLE_MS
+      // RabbitMQ never saw the ack and will redeliver: handing this copy over
+      // too would process it twice.
+      expect(target.received).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+describe('AmqpActor — autoAcknowledge = false', () => {
+  test('the target settles with commands, and a refused ack is reported', async () => {
+    const system = createTestActorSystem({ name: 'amqp-manual' });
+    try {
+      const failures = collectAcknowledgmentFailures(system);
+      const { actor, target, channel } = await bootConsuming(system, 'hold', (o) => o.withAutoAcknowledge(false));
+      const first = channel.deliver('order-1');
+      await awaitCondition(() => target.received.length === 1, { timeoutMs: 4_000, label: 'the delivery reached the target' });
+      expect(target.received[0]!.replyTo).toBeUndefined();
+      actor.tell({ kind: 'acknowledgment', delivery: target.received[0]! });
+      await awaitCondition(() => channel.acked.length === 1, { timeoutMs: 4_000, label: 'the command acked' });
+      expect(channel.acked[0]).toBe(first);
+
+      channel.ackError = new Error('channel closing');
+      channel.deliver('order-2');
+      await awaitCondition(() => target.received.length === 2, { timeoutMs: 4_000, label: 'the second delivery arrived' });
+      actor.tell({ kind: 'acknowledgment', delivery: target.received[1]! });
+      await awaitCondition(() => failures.length === 1, { timeoutMs: 4_000, label: 'the refused ack was published' });
+    } finally {
+      await system.terminate();
+    }
+  });
+});
 
 describe('AmqpActor — channel backpressure is bounded (#981)', () => {
   test('a channel that closes during a drain wait rejects it and the actor leaves connected', async () => {

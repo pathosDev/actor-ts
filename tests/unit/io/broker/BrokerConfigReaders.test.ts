@@ -13,6 +13,7 @@ import { BrokerActor, type OutboundEnvelope } from '../../../../src/io/broker/Br
 import * as BrokerActorModule from '../../../../src/io/broker/BrokerActor.js';
 import {
   brokerCommonKeysUnder,
+  readBrokerAcknowledgmentOptionsFromConfig,
   readBrokerCommonOptionsFromConfig,
   RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES,
   RETIRED_BROKER_COMMON_LEAVES,
@@ -141,6 +142,32 @@ ${ROOT} {
   outbound-buffer = 42
 }
 `;
+
+describe('readBrokerAcknowledgmentOptionsFromConfig', () => {
+  const keys = ConfigKeys.io.broker.kafka;
+
+  test('both leaves read into their fields, and into nothing else', () => {
+    const config = Config.parseString(`${keys.root} {\n  acknowledgment = "on-delivery"\n  acknowledgment-timeout = 45s\n}`);
+    expectExactOptions(readBrokerAcknowledgmentOptionsFromConfig(config, keys), {
+      acknowledgment: 'on-delivery',
+      acknowledgmentTimeoutMs: 45_000,
+    });
+  });
+
+  test('an unset leaf is omitted, and the other leaves of the block are not this reader\'s', () => {
+    const config = Config.parseString(`${keys.root} {\n  acknowledgment-timeout = 2s\n  client-id = "x"\n}`);
+    expectExactOptions(readBrokerAcknowledgmentOptionsFromConfig(config, keys), { acknowledgmentTimeoutMs: 2_000 });
+  });
+
+  test('a word that is no mode is read as written and left to the validator', () => {
+    // Refusing here would refuse only the HOCON door; the validator refuses
+    // it on the merged options whichever door it came through.
+    const config = Config.parseString(`${keys.root}.acknowledgment = "on-commit"`);
+    expectExactOptions(readBrokerAcknowledgmentOptionsFromConfig(config, keys), {
+      acknowledgment: 'on-commit' as never,
+    });
+  });
+});
 
 describe('readBrokerCommonOptionsFromConfig', () => {
   test('a full kebab block reads into every field, and into nothing else', () => {
@@ -1241,11 +1268,15 @@ describe('readAmqpOptionsFromConfig', () => {
       url              = "amqp://user@mq.local:5672/orders"
       prefetch         = 16
       auto-acknowledge = false
+      acknowledgment   = "on-delivery"
+      acknowledgment-timeout = 12s
     }`);
     expectExactOptions(readAmqpOptionsFromConfig(config), {
       url: 'amqp://user@mq.local:5672/orders',
       prefetch: 16,
       autoAcknowledge: false,
+      acknowledgment: 'on-delivery',
+      acknowledgmentTimeoutMs: 12_000,
     });
   });
 
@@ -1705,6 +1736,8 @@ describe('readKafkaOptionsFromConfig', () => {
         commit-timeout = 45s
       }
       topics = ["orders", "payments"]
+      acknowledgment = "on-delivery"
+      acknowledgment-timeout = 12s
     }`);
     expectExactOptions(readKafkaOptionsFromConfig(config), {
       brokers: ['kafka-1:9092', 'kafka-2:9092'],
@@ -1714,6 +1747,8 @@ describe('readKafkaOptionsFromConfig', () => {
       producer: { idempotent: true, allowAutoTopicCreation: true },
       consumer: { groupId: 'orders', fromBeginning: true, commitMode: 'manual', commitTimeoutMs: 45_000 },
       topics: ['orders', 'payments'],
+      acknowledgment: 'on-delivery',
+      acknowledgmentTimeoutMs: 12_000,
     });
   });
 
@@ -1755,6 +1790,8 @@ describe('readMqttOptionsFromConfig', () => {
       clean-session    = false
       keep-alive       = 45s
       protocol-version = 5
+      acknowledgment   = "on-delivery"
+      acknowledgment-timeout = 12s
     }`);
     expectExactOptions(readMqttOptionsFromConfig(config), {
       brokerUrl: 'mqtts://broker.local:8883',
@@ -1765,6 +1802,8 @@ describe('readMqttOptionsFromConfig', () => {
       cleanSession: false,
       keepAlive: 45,
       protocolVersion: 5,
+      acknowledgment: 'on-delivery',
+      acknowledgmentTimeoutMs: 12_000,
     });
   });
 
