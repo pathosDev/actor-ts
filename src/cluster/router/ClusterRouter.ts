@@ -173,7 +173,13 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
    * envelope per routee for nothing.  The union holds the events that
    * announce a status entering or leaving `up` (`MemberLeft` alone is what a
    * `leaving` status learned through gossip emits), plus the configuration
-   * mismatch that bars a peer while enforcement is on.  One `P.union` arm
+   * mismatch that bars a peer while enforcement is on — it is stored on the
+   * member record before it is announced, and no status event accompanies a
+   * divergence adopted at run time.  `MemberDown` is redundant on this node's
+   * own downing routes, which emit `MemberRemoved` in the same call, but not
+   * on the gossip merge, which announces an accepted `down` record with
+   * `MemberDown` alone; an extra idempotent rebuild is the cheaper side of
+   * that trade.  One `P.union` arm
    * because the member events share a `{ member }` shape, and consecutive
    * `P.instanceOf` arms would narrow structurally rather than by class.
    * Replay-on-subscribe lands here too; the rebuild is idempotent.

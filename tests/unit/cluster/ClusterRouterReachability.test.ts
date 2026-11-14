@@ -23,6 +23,8 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import type { Cluster } from '../../../src/cluster/Cluster.js';
 import {
   type ClusterEvent,
+  MemberConfigurationMismatch,
+  MemberDown,
   MemberLeft,
   MemberReachable,
   MemberUnreachable,
@@ -59,6 +61,21 @@ class StandInCluster {
     for (const listener of [...this.listeners]) listener(event(member));
   }
 
+  /**
+   * Bar an `up` member the way enforcement does: its record keeps status `up`
+   * (the real cluster has already stored the diverging facts when it emits),
+   * it drops out of the candidate set, and the only announcement is
+   * `MemberConfigurationMismatch` — no status event accompanies it.
+   */
+  bar(address: NodeAddress): void {
+    this.barred.add(address.toString());
+    const member = this.members.get(address.toString())!;
+    const event = new MemberConfigurationMismatch(member, 'remote.maximum-frame-size', '1MiB', '4MiB', true);
+    for (const listener of [...this.listeners]) listener(event);
+  }
+
+  private readonly barred = new Set<string>();
+
   subscribe(listener: (event: ClusterEvent) => void): () => void {
     this.listeners.push(listener);
     return () => {
@@ -69,7 +86,7 @@ class StandInCluster {
 
   placementCandidates(): Member[] {
     return [...this.members.values()]
-      .filter((member) => member.status === 'up')
+      .filter((member) => member.status === 'up' && !this.barred.has(member.address.toString()))
       .sort((a, b) => a.address.compareTo(b.address));
   }
 
@@ -174,6 +191,25 @@ describe('ClusterRouter — routee set follows reachability (#942)', () => {
     });
     expect(letters[0]!.message).toEqual({ kind: 'work', id: 99 });
     expect(cluster.sentTo).toEqual([]);
+  });
+
+  test('a member downed while still reachable (MemberDown, no MemberUnreachable before it) drops out', async () => {
+    // `Cluster.down(address)` on a healthy peer goes `up → down` directly, and
+    // `statusEventsOf('down')` emits MemberDown alone; MemberRemoved follows
+    // only once the leader prunes it.
+    const { cluster, tellBatch } = await setUp();
+    cluster.transition(PEER, 'down', (member) => new MemberDown(member));
+    await tellBatch(0, 6);
+    expect(cluster.countTo(PEER)).toBe(0);
+    expect(cluster.countTo(SELF)).toBe(6);
+  });
+
+  test('a member barred by a configuration mismatch drops out on MemberConfigurationMismatch alone', async () => {
+    const { cluster, tellBatch } = await setUp();
+    cluster.bar(PEER);
+    await tellBatch(0, 6);
+    expect(cluster.countTo(PEER)).toBe(0);
+    expect(cluster.countTo(SELF)).toBe(6);
   });
 
   test('a fresh MemberUp still rebuilds (the original trigger is kept)', async () => {
