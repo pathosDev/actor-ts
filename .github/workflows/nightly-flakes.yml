@@ -271,6 +271,33 @@ jobs:
       - name: Explore delivery orderings
         run: bun test ./tests/nightly/DeliveryOrderingDeep.nightly.ts
 
+  # The deep half of the byte-level decoder properties (#1369): the CBOR,
+  # cluster-frame, WebSocket, HOCON and JSON-tree fuzz files and the codec
+  # differential, imported unchanged and run with 10 000 cases each instead of
+  # 120.  Same shape as the job above — a `.nightly.ts` name keeps it out of
+  # the per-commit run, and the pinned seed makes a red night replay exactly.
+  # The file raises its own per-test cap for the tests it imports, since at
+  # this count the slowest property runs well past bun's 5 s default.
+  decoder-inputs:
+    name: decoder inputs nobody chose, deep
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Fuzz the decoders
+        run: bun test ./tests/nightly/DecoderFuzzDeep.nightly.ts
+
   stress:
     name: whole suite, repeated
     runs-on: ubuntu-latest

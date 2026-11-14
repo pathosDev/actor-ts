@@ -29,8 +29,12 @@
  * `include` is a different case from those: it is not merely unimplemented
  * but deliberately refused, and it says so — see `includeNotSupported`.  Compose
  * several sources in code instead, with `Config.parseFile(…).merge(…)`.
+ *
+ * Nesting is bounded by `MAX_HOCON_NESTING_DEPTH` and refused past it with a
+ * parse error, never left to the engine's stack — see `HoconParser.nested`.
  */
 import { match } from 'ts-pattern';
+import { MAX_HOCON_NESTING_DEPTH } from './Constants.js';
 
 export type ConfigPrimitive = string | number | boolean | null;
 export type ConfigValue = ConfigPrimitive | ConfigValue[] | ConfigObject | Substitution | Concatenation;
@@ -121,6 +125,13 @@ export function parseHocon(source: string): ConfigObject {
 class HoconParser {
   private pos = 0;
   private readonly src: string;
+  /**
+   * Levels the value being parsed sits below the root — see {@link nested}.
+   * Held to {@link MAX_HOCON_NESTING_DEPTH}, so that a hostile or broken
+   * document ends in a parse error naming its line rather than in the
+   * engine's `RangeError` (#1369).
+   */
+  private depth = 0;
 
   constructor(src: string) { this.src = src; }
 
@@ -168,10 +179,10 @@ class HoconParser {
           continue;
         }
         this.skipInsignificant();
-        value = this.parseValue();
+        value = this.nested(keyPath.length, () => this.parseValue());
       } else if (char === '{') {
         // Key followed directly by an object literal — HOCON shorthand.
-        value = this.parseValue();
+        value = this.nested(keyPath.length, () => this.parseValue());
       } else if (keyPath.length === 1 && keyPath[0] === 'include') {
         // Reaching here means `include` was followed by neither `=`/`:` nor `{`,
         // which is exactly the directive position — and only that position, so
@@ -311,7 +322,7 @@ class HoconParser {
     while (true) {
       this.skipInsignificant();
       if (this.peekChar() === ']') { this.pos++; return out; }
-      out.push(this.parseValue());
+      out.push(this.nested(1, () => this.parseValue()));
       this.skipSeparator();
       this.skipInsignificant();
       if (this.peekChar() === ']') { this.pos++; return out; }
@@ -460,6 +471,27 @@ class HoconParser {
   }
 
   /* -------------------------------- Helpers ------------------------------- */
+
+  /**
+   * Run `parse` `levels` deeper: one per key of the path a value is assigned
+   * to — `a.b.c = …` puts it three objects down, `a { … }` one — and one for
+   * each list it is an element of.
+   *
+   * Counted at the assignment rather than at the brace, because a path
+   * expression nests as deep as braces do without writing one, and it is the
+   * tree's depth that every later walk recurses over.
+   */
+  private nested<T>(levels: number, parse: () => T): T {
+    if (this.depth + levels > MAX_HOCON_NESTING_DEPTH) {
+      throw this.error(`Nesting deeper than ${MAX_HOCON_NESTING_DEPTH} levels is not supported`);
+    }
+    this.depth += levels;
+    try {
+      return parse();
+    } finally {
+      this.depth -= levels;
+    }
+  }
 
   /**
    * Writes `value` at `path`, creating intermediate objects as it descends.

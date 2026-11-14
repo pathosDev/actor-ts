@@ -247,6 +247,23 @@ is `tests/nightly/DeliveryOrderingDeep.nightly.ts`, run by `nightly-flakes.yml`
 by path.  Its name is what keeps `bun test` from collecting it — not an
 environment variable, which `NoEnvironmentGatedSkips.test.ts` forbids.
 
+### Inputs nobody chose
+
+Every decoder that reads bytes from outside is also fed bytes no encoder wrote
+(#1369): `CborDecoder`, the cluster wire's `FrameDecoder`, the WebSocket
+inbound path, `parseHocon` and the JSON-tree walker, plus a differential
+property holding CBOR and the JSON tree against each other.  The inputs are
+uniform noise and almost-valid bytes — a real encoding with bytes replaced, cut
+at every offset, a length field claiming up to 2^64 - 1, nesting past any
+ceiling.  The law is the same everywhere: a value or the decoder's own error,
+never another exception; what it builds stays inside its allow-list; and it is
+no larger than the input that paid for it.  The shared vocabulary lives in
+`tests/util/DecoderFuzz.ts`.
+
+The deep variant is `tests/nightly/DecoderFuzzDeep.nightly.ts`.  It imports the
+per-commit files unchanged and only raises the case count from 120 to 10 000,
+so the two cannot drift apart; the seed stays the preload's.
+
 ## The catalog
 
 Causes this suite has actually had, with how each was settled.
