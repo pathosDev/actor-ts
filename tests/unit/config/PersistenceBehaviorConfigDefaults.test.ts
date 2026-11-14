@@ -3,6 +3,7 @@ import { Config } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
   DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
+  DEFAULT_ALLOW_NON_ATOMIC_BATCH_APPEND,
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
   DEFAULT_PERSISTENCE_AUTO_START,
@@ -49,6 +50,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
         recovery-timeout          = 2500ms
         snapshot-is-optional      = true
         allow-fully-compacted-recovery = true
+        allow-non-atomic-batch-append  = true
         journal-breaker           = "jrnl"
         snapshot-breaker          = "snap"
         auto-start                = off
@@ -60,6 +62,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       recoveryTimeoutMs: 2_500,
       snapshotIsOptional: true,
       allowFullyCompactedRecovery: true,
+      allowNonAtomicBatchAppend: true,
       journalBreaker: 'jrnl',
       snapshotBreaker: 'snap',
       autoStart: false,
@@ -127,6 +130,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       recoveryTimeoutMs: DEFAULT_RECOVERY_TIMEOUT_MS,
       snapshotIsOptional: DEFAULT_SNAPSHOT_IS_OPTIONAL,
       allowFullyCompactedRecovery: DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
+      allowNonAtomicBatchAppend: DEFAULT_ALLOW_NON_ATOMIC_BATCH_APPEND,
       journalBreaker: DEFAULT_JOURNAL_BREAKER_ID,
       snapshotBreaker: DEFAULT_SNAPSHOT_BREAKER_ID,
       autoStart: DEFAULT_PERSISTENCE_AUTO_START,
@@ -168,6 +172,7 @@ describe('PersistenceBehaviorOptionsBuilder', () => {
       .withRecoveryTimeoutMs(1_500)
       .withSnapshotIsOptional(true)
       .withAllowFullyCompactedRecovery(true)
+      .withAllowNonAtomicBatchAppend(true)
       .withJournalBreaker('shared-database')
       .withSnapshotBreaker('')
       .withAutoStart(false);
@@ -177,6 +182,7 @@ describe('PersistenceBehaviorOptionsBuilder', () => {
       recoveryTimeoutMs: 1_500,
       snapshotIsOptional: true,
       allowFullyCompactedRecovery: true,
+      allowNonAtomicBatchAppend: true,
       journalBreaker: 'shared-database',
       snapshotBreaker: '',
       autoStart: false,

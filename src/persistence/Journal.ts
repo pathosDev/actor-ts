@@ -15,10 +15,20 @@ export interface Journal {
    * or the call throws `JournalConcurrencyError`.  Returns the written events
    * with their assigned sequence numbers.
    *
-   * **Tags are per entry, not per batch** ({@link JournalEntry}).  A batch is
-   * still one atomic append — splitting it by tag set is explicitly not the
-   * contract (#959) — but each event carries only the tags it was given, and
-   * the per-event tag cap is enforced per event rather than per call (#631).
+   * **Tags are per entry, not per batch** ({@link JournalEntry}).  Splitting a
+   * batch by tag set is not the contract — each event carries only the tags it
+   * was given, and the per-event tag cap is enforced per event rather than per
+   * call (#631).
+   *
+   * **Atomicity is what {@link atomicBatchAppend} declares (#959).**  A
+   * single-entry append is atomic on every backend.  A multi-entry append is
+   * all-or-nothing only on a journal that declares `atomicBatchAppend: true`;
+   * on one that declares `false`, a failure partway through can leave a
+   * committed *prefix* behind, so a rejection does not mean "nothing was
+   * written".  The stream stays contiguous either way — the next append
+   * continues from the new head.  A conflict (`JournalConcurrencyError`)
+   * writes nothing on every backend: two writers that agree on the head both
+   * try the same first sequence number.
    */
   append<E = unknown>(
     persistenceId: string,
@@ -178,6 +188,27 @@ export interface Journal {
    * shared across in-process systems genuinely is `'shared'`.
    */
   readonly storageLocality?: StorageLocality;
+
+  /**
+   * Whether {@link append} commits a multi-entry batch as one unit — all of it
+   * or none of it — even when the backend fails partway through (#959).
+   *
+   * `false` is an honest answer, not a defect: D1 runs one statement per
+   * request and has no transaction, MongoDB skips one so a standalone
+   * `mongod` works, and Cassandra writes an unlogged batch per partition.  On
+   * such a journal a dropped connection after the second of five events
+   * leaves two committed, while the caller is told the batch failed.
+   * `PersistentActor.persistAll` reads this flag and refuses a multi-event
+   * batch on a journal that declares `false`, unless
+   * `actor-ts.persistence.allow-non-atomic-batch-append` accepts that risk.
+   *
+   * Optional, and absence is meaningful, in the same family as
+   * {@link storageLocality} and a store's `persistenceOptionSupport`: an
+   * undeclared journal is *unknown*, and unknown is never refused — a
+   * third-party journal must not start failing on upgrade for a declaration
+   * it never made.  Every in-tree journal declares it.
+   */
+  readonly atomicBatchAppend?: boolean;
 
   /**
    * The identity of the database behind this journal — a random value minted

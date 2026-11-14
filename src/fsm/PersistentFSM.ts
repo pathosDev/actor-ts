@@ -104,7 +104,10 @@ export type FsmTransition<
    *     atomically as one journal entry.
    *   - **Array** — `[evtA, evtB]`: multiple events persisted in
    *     one `persistAll` call (#66) so they share a logical
-   *     transaction; `applyEvent` runs once per event and the
+   *     transaction — refused on a journal that declares
+   *     `atomicBatchAppend: false` unless
+   *     `actor-ts.persistence.allow-non-atomic-batch-append` is on
+   *     (#959); `applyEvent` runs once per event and the
    *     post-apply final state is checked against `next`.  An
    *     empty array is treated as a no-op transition (no events
    *     persisted, no state change) — use a `guard` instead if

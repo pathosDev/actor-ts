@@ -88,6 +88,8 @@ const META_SEQ = 0;
  * docs for what that would take.
  */
 export class DynamoDbJournal extends DynamoDbStore implements Journal {
+  /** One `TransactWriteItems` per append — atomic across every item (#959). */
+  readonly atomicBatchAppend: boolean = true;
   private readonly tableName: string;
 
   private readonly serializer?: Serializer;

@@ -2086,6 +2086,15 @@ actor-ts {
     #   command from a state that never existed.  Turn it on only where losing
     #   the state is intended.
     allow-fully-compacted-recovery = false
+    # Let persistAll hand more than one event to a journal that cannot append
+    #   a batch atomically -- D1, MongoDB and Cassandra, whose journals say
+    #   so.  off refuses such a batch with
+    #   NonAtomicBatchAppendError before anything is written.  on writes it,
+    #   and a failure partway through can commit a prefix: persistAll rejects,
+    #   its callback does not run, the actor's state stays behind the journal,
+    #   and the next recovery adopts the prefix.  A single-event persist is
+    #   atomic everywhere and never refused.
+    allow-non-atomic-batch-append = false
 
     # The circuit-breaker each store is called through, BY ID -- the numbers
     #   live under actor-ts.circuit-breaker.<id>, layered over

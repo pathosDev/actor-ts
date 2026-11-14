@@ -79,6 +79,8 @@ type MetaDocument = {
  * see `MongoQuery`.
  */
 export class MongoJournal extends MongoStore implements Journal {
+  /** No transaction, deliberately — see the class docblock (#959). */
+  readonly atomicBatchAppend: boolean = false;
   private readonly eventsName: string;
   private readonly metaName: string;
 

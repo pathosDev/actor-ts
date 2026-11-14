@@ -26,6 +26,8 @@ import type { StorageLocality } from '../StorageLocality.js';
  * sub-poll-interval push delivery (see #42).
  */
 export class InMemoryJournal implements Journal {
+  /** A batch is encoded whole before the stream is touched, then applied in one step (#959). */
+  readonly atomicBatchAppend: boolean = true;
   private readonly streams = new Map<string, PersistentEvent<unknown>[]>();
   /**
    * Highest sequence number ever assigned per persistenceId — the "high

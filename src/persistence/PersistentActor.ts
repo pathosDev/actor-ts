@@ -5,6 +5,7 @@ import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import type { Journal } from './Journal.js';
 import { JournalConcurrencyError } from './JournalTypes.js';
 import type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
+import { NonAtomicBatchAppendError } from './PersistenceCapabilities.js';
 import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
 import type {
   CompressionConfig,
@@ -653,12 +654,33 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     await this.persistAll([event], afterPersist);
   }
 
-  /** Persist several events atomically.  Must also be awaited in onCommand. */
+  /**
+   * Persist several events as one journal append.  Must also be awaited in
+   * onCommand.
+   *
+   * **Atomic only where the journal says so (#959).**  On a journal that
+   * declares `atomicBatchAppend: true` the batch commits whole or not at all.
+   * On one that declares `false` — D1, MongoDB, Cassandra — a failure partway
+   * through can commit a prefix, so a batch of more than one event is
+   * refused with `NonAtomicBatchAppendError` before anything is written,
+   * unless `actor-ts.persistence.allow-non-atomic-batch-append` is on.  With
+   * that on, a rejected batch may still have committed a prefix:
+   * `afterPersist` does not run, `state` and `lastSequenceNr` stay *behind*
+   * the journal, and the next recovery adopts the prefix as history.  A
+   * journal that declares nothing is unknown and never refused.
+   */
   protected async persistAll(
     events: ReadonlyArray<Event>,
     afterPersist?: (state: State) => void | Promise<void>,
   ): Promise<void> {
     if (events.length === 0) { await afterPersist?.(this._state); return; }
+    if (
+      events.length > 1
+      && this._journal.atomicBatchAppend === false
+      && !this._persistence.behavior.allowNonAtomicBatchAppend
+    ) {
+      throw new NonAtomicBatchAppendError(this._journal.constructor.name, this.persistenceId, events.length);
+    }
     // Refuse before writing rather than after: the whole point of the lease is
     // that a non-owner never becomes a writer, so its side effects never fire
     // a second time (#1166).

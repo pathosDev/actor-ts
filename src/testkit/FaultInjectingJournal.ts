@@ -89,6 +89,13 @@ export class FaultInjectingJournal implements Journal {
    */
   get storageLocality(): StorageLocality | undefined { return this.inner.storageLocality; }
 
+  /**
+   * The wrapped journal's declaration, read through — so an actor over the
+   * decorator refuses or allows a multi-event `persistAll` exactly as it would
+   * over the journal itself, and an undeclared one stays undeclared (#959).
+   */
+  get atomicBatchAppend(): boolean | undefined { return this.inner.atomicBatchAppend; }
+
   /** The wrapped journal's event bus, so push-based queries keep working. */
   get events(): JournalEventBus | undefined { return this.inner.events; }
 

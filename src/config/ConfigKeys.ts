@@ -841,6 +841,12 @@ export const ConfigKeys = {
      */
     allowFullyCompactedRecovery: 'actor-ts.persistence.allow-fully-compacted-recovery',
     /**
+     * Allow a multi-event `persistAll` on a journal that declares
+     * `atomicBatchAppend: false`, accepting that a failure can commit a
+     * prefix (#959).
+     */
+    allowNonAtomicBatchAppend: 'actor-ts.persistence.allow-non-atomic-batch-append',
+    /**
      * The `CircuitBreakerExtension` id each store is called through — a name,
      * not a block of numbers.  The numbers live under
      * `actor-ts.circuit-breaker.<id>`, which #864 made the single home for
