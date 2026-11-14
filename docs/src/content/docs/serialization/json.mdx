@@ -102,6 +102,36 @@ Rough numbers per serialize/deserialize pair:
 `JSON.parse` / `JSON.stringify` are native code in V8/JSC —
 fast enough that JSON serialization is rarely the bottleneck.
 
+## Which tags a decode honours
+
+A tag is an instruction to build a class, and an instruction is only
+worth following from a writer you trust.  So the decoder takes an
+allow-list — `tags`, by name: `date`, `bytes`, `map`, `set`,
+`bidirectional-map`, `bidirectional-multi-map`, `bigint`, `number`,
+`undefined`, `regexp`, `url`, `error`, `typed-array` — and each
+reader passes the one that fits whose bytes it reads (#967):
+
+| Reader | Tags it honours |
+| --- | --- |
+| Persistence `PayloadCodec`, `new JsonSerializer()` | All of them — these are bytes the framework wrote itself, and stored rows must keep decoding. |
+| `entity()` on an HTTP request | None: the body is plain JSON unless the route opts in with `EntityOptions.withTags([...])` — see [marshalling](/http/marshalling/#json-bodies-are-plain-json). |
+
+```ts
+import { JsonSerializer } from 'actor-ts/serialization';
+
+const plain = new JsonSerializer({}, { tags: [] });          // plain JSON
+const dated = new JsonSerializer({}, { tags: ['date'] });    // only __date__ builds a class
+```
+
+`tags: []` is plain JSON: no key is special, `__literal__` included.
+A non-empty list is the tagged format restricted to those names —
+listed tags build their class, `__literal__` unwraps, and any other
+tag throws `RefusedTagError` (a `SerializationError`) before its
+content is read, so a refused `__regexp__` is never compiled.  A
+refused tag is never handed on as a plain object: the writer meant a
+`RegExp`, and delivering something else without saying so would be a
+silent change of class.
+
 ## What the decoder refuses
 
 `fromBinary` refuses a document that is not JSON at all with a

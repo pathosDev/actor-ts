@@ -47,6 +47,42 @@ If the body is missing or malformed, `entity` throws an
 `HttpError(400, ...)` — the framework catches it and produces a
 400 response with the error message.
 
+### JSON bodies are plain JSON
+
+A JSON body decodes to exactly what `JSON.parse` produces.  A key
+such as `__date__` or `__regexp__` is an ordinary property name: a
+client that posts `{"pattern":{"__regexp__":{"source":"(a+)+$","flags":"g"}}}`
+hands the handler a plain object, not a `RegExp` it wrote, and
+`{"amount":{"__bigint__":"1"}}` stays an object that fails
+`amount > 0`.
+
+Those keys are the tags of the [tagged JSON tree](/serialization/json/)
+the framework writes for its own persisted rows.  Up to v0.18
+`entity()` honoured every one of them, so the client chose the
+runtime class of any value in the body.  A route that wants some of
+those values back opts in, tag by tag:
+
+```ts
+import { entity, EntityOptions } from 'actor-ts/http';
+
+const entityOptions = EntityOptions.create().withTags(['date', 'bytes']);
+
+post(async (req) => {
+  const upload = entity<{ takenAt: Date; data: Uint8Array }>(req, entityOptions);
+  // {"takenAt":{"__date__":"2026-11-14T00:00:00.000Z"}} → a Date
+  // any other tag in the body             → HTTP 400 naming it
+  // ...
+});
+```
+
+With a list, the body is the tagged format restricted to those
+names: each listed tag builds its class, the `__literal__` escape
+unwraps, and any other tag is refused with a 400 rather than handed
+on as an object of another class.  The plain options object
+`{ tags: ['date'] }` works too.  An unknown name is the route's own
+bug, so it throws `OptionsError` (a 500), not the client's 400.  The
+opt-in applies to JSON bodies only; CBOR and form bodies ignore it.
+
 ### Unsupported media types
 
 A Content-Type nothing decodes — `text/xml`, `application/pdf`,

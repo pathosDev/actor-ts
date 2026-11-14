@@ -2,12 +2,15 @@ export type { Serializer, SerializedValue } from './Serializer.js';
 export { SerializationError } from './Serializer.js';
 export { RESERVED_SERIALIZER_IDS_BELOW } from './Constants.js';
 export { JsonSerializer } from './JsonSerializer.js';
-export { encodeJsonTree, decodeJsonTree } from './JsonTree.js';
+export { encodeJsonTree, decodeJsonTree, RefusedTagError } from './JsonTree.js';
 export type {
   JsonTreeDecodeOptions,
   JsonTreeEncodeOptions,
+  JsonTreeTagOptions,
   UndefinedValueHandling,
 } from './JsonTree.js';
+export { JSON_TREE_TAG_NAMES } from './Constants.js';
+export type { JsonTreeTagName } from './Constants.js';
 export {
   DEFAULT_MAX_DOCUMENT_BYTES,
   DEFAULT_MAX_NESTING_DEPTH,

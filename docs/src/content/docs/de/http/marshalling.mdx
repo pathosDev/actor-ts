@@ -48,6 +48,45 @@ Wenn der Body fehlt oder malformed ist, wirft `entity` einen
 `HttpError(400, ...)` — das Framework fängt ihn und produziert
 eine 400-Response mit der Fehlermeldung.
 
+### JSON-Bodies sind reines JSON
+
+Ein JSON-Body dekodiert genau zu dem, was `JSON.parse` liefert.
+Ein Schlüssel wie `__date__` oder `__regexp__` ist ein gewöhnlicher
+Property-Name: Ein Client, der
+`{"pattern":{"__regexp__":{"source":"(a+)+$","flags":"g"}}}` sendet,
+gibt dem Handler ein einfaches Objekt, keine von ihm geschriebene
+`RegExp`, und `{"amount":{"__bigint__":"1"}}` bleibt ein Objekt, das
+an `amount > 0` scheitert.
+
+Diese Schlüssel sind die Tags des [getaggten JSON-Baums](/de/serialization/json/),
+den das Framework für seine eigenen persistierten Zeilen schreibt.
+Bis v0.18 hat `entity()` jeden davon befolgt, also wählte der Client
+die Laufzeitklasse jedes Werts im Body.  Eine Route, die einige
+dieser Werte zurückhaben will, schaltet sie Tag für Tag frei:
+
+```ts
+import { entity, EntityOptions } from 'actor-ts/http';
+
+const entityOptions = EntityOptions.create().withTags(['date', 'bytes']);
+
+post(async (req) => {
+  const upload = entity<{ takenAt: Date; data: Uint8Array }>(req, entityOptions);
+  // {"takenAt":{"__date__":"2026-11-14T00:00:00.000Z"}} → ein Date
+  // jeder andere Tag im Body               → HTTP 400, der ihn nennt
+  // ...
+});
+```
+
+Mit einer Liste ist der Body das getaggte Format, beschränkt auf
+diese Namen: Jeder gelistete Tag baut seine Klasse, das
+`__literal__`-Escape wird ausgepackt, und jeder andere Tag wird mit
+einem 400 abgelehnt, statt als Objekt einer anderen Klasse
+weitergereicht zu werden.  Das einfache Options-Objekt
+`{ tags: ['date'] }` funktioniert ebenso.  Ein unbekannter Name ist
+ein Fehler der Route selbst, also wirft er `OptionsError` (ein 500),
+nicht den 400 des Clients.  Die Freischaltung gilt nur für
+JSON-Bodies; CBOR- und Form-Bodies ignorieren sie.
+
 ### Nicht unterstützte Media-Types
 
 Ein Content-Type, den nichts dekodiert — `text/xml`,

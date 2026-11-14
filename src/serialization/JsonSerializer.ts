@@ -1,5 +1,5 @@
 import { SerializationError, type Serializer } from './Serializer.js';
-import { decodeJsonTree, encodeJsonTree } from './JsonTree.js';
+import { decodeJsonTree, encodeJsonTree, type JsonTreeTagOptions } from './JsonTree.js';
 import {
   defaultReadConstraintsOptions,
   ReadConstraintsOptionsValidator,
@@ -26,18 +26,28 @@ export class JsonSerializer implements Serializer<unknown> {
   readonly includesManifest = false;
   /** Ceilings applied to {@link fromBinary} — see `ReadConstraintsOptions`. */
   private readonly constraints: Required<ReadConstraintsOptionsType>;
+  /** Which tags {@link fromBinary} constructs — see `JsonTreeTagOptions`. */
+  private readonly tagOptions: JsonTreeTagOptions;
 
   /**
    * Read constraints are optional and default to the built-ins, so every
    * `new JsonSerializer()` in the tree keeps working; `SerializationExtension`
    * is what hands over what config resolved to.
+   *
+   * `tagOptions` left out decodes every tag, because this serializer's own
+   * round trip is what it is for: `toBinary` writes the tags, so `fromBinary`
+   * reading all of them back is the symmetric default, and the persistence
+   * migration codec and `SerializationExtension` depend on it.  A caller that
+   * decodes bytes somebody else wrote passes an allow-list instead — `entity()`
+   * passes `{ tags: [] }`, plain JSON, unless its route opts in (#967).
    */
-  constructor(readConstraints: ReadConstraintsOptions = {}) {
+  constructor(readConstraints: ReadConstraintsOptions = {}, tagOptions: JsonTreeTagOptions = {}) {
     this.constraints = {
       ...defaultReadConstraintsOptions,
       ...(readConstraints as Partial<ReadConstraintsOptionsType>),
     };
     new ReadConstraintsOptionsValidator().validate(this.constraints);
+    this.tagOptions = tagOptions;
   }
 
   manifest(_obj: unknown): string { return ''; }
@@ -77,6 +87,9 @@ export class JsonSerializer implements Serializer<unknown> {
         { cause },
       );
     }
-    return decodeJsonTree(parsed, { maxNestingDepth: this.constraints.maxNestingDepth });
+    return decodeJsonTree(parsed, {
+      maxNestingDepth: this.constraints.maxNestingDepth,
+      tags: this.tagOptions.tags,
+    });
   }
 }
