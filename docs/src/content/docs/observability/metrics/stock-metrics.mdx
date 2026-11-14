@@ -349,15 +349,17 @@ For monitoring cluster health:
   rather than through the handler that actor registered.  A rolling
   upgrade past the release that closed that route is the one benign
   cause; anything else is worth looking at.
+  `reason="guardian-path"` is the same signal one level up: a peer
+  named the bare `/user` guardian, which no application addresses.
   `reason="not-allow-listed"` only ever moves with
   `actor-ts.remote.untrusted-mode` on, and on the day you turn it on
   it is the metric to watch — every entry your
   `trusted-selection-paths` is missing shows up here as refused
   traffic.  Both labels are closed sets drawn from code: `reason` has
-  those two values, `frame` is `envelope`,
+  those three values, `frame` is `envelope`,
   `cluster-client-envelope`, `watch` or `ref` — the last an actor-ref
   marker inside an envelope's body that names this node — so the
-  family is eight series whatever arrives.  The requested path is deliberately *not* a label, for the
+  family is twelve series whatever arrives.  The requested path is deliberately *not* a label, for the
   same reason the claimed address above is not one — and it is not in
   the log line either, since it is an unvalidated string from the
   payload.

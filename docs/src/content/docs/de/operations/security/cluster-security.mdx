@@ -853,7 +853,11 @@ Cluster-Verbindung und dem `ClusterClientReceptionist`.
 Framework-Aktoren bleiben über ihre registrierten Handler
 erreichbar, also über die Tür, die weiß, auf welcher Verbindung
 ein Frame ankam. Nichts, was ein Betreiber konfigurieren kann,
-öffnet den alten Weg wieder.
+öffnet den alten Weg wieder. Dasselbe gilt für den nackten
+`/user`-Guardian, `actor-ts://<system>/user`: Ein Guardian ist nie
+ein Anwendungs-Endpunkt, er wird also auch dann abgelehnt, wenn ein
+Allow-List-Eintrag `/user/*` dessen Wurzel sonst zulassen würde
+(`reason="guardian-path"`).
 
 Die `/user`-Hälfte ist die Entscheidung des Deployments, denn
 dass ein Peer einen Anwendungsaktor benennt, ist genau die Art,

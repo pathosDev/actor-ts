@@ -783,7 +783,10 @@ configuration and at both seams — the cluster wire and the
 `ClusterClientReceptionist`. Framework actors stay reachable
 through their registered handlers, which is the door that knows
 which connection a frame came in on. Nothing an operator can
-configure opens the old route back up.
+configure opens the old route back up. The same holds for the bare
+`/user` guardian, `actor-ts://<system>/user`: a guardian is never an
+application endpoint, so it is refused even when an allow-list entry
+`/user/*` would otherwise admit its root (`reason="guardian-path"`).
 
 The `/user` half is a deployment's own decision, because a peer
 naming an application actor is how an `ActorRef` works across

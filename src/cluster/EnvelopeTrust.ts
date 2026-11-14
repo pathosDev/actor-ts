@@ -40,8 +40,14 @@ const SYSTEM_GUARDIAN_SEGMENT = 'system';
 /** The suffix that turns an allow-list entry into a whole subtree. */
 const SUBTREE_SUFFIX = '/*';
 
-/** Why an inbound envelope's target path was refused. */
-export type EnvelopeRefusalReason = 'system-path' | 'not-allow-listed';
+/**
+ * Why an inbound envelope's target path was refused.
+ *
+ * `guardian-path` is a path of exactly one segment: a guardian itself rather
+ * than anything under it.  `/system` alone keeps the older `system-path`
+ * reason; in practice `guardian-path` is the bare `/user` guardian.
+ */
+export type EnvelopeRefusalReason = 'system-path' | 'guardian-path' | 'not-allow-listed';
 
 /**
  * Which wire seam refused it.  Drawn from code and never from a payload, the
@@ -123,10 +129,10 @@ export class EnvelopeTrust {
   private readonly trustedSelectionPaths: readonly string[];
   /** Refusals counted since each reason last reached the log. */
   private readonly suppressed: Record<EnvelopeRefusalReason, number> =
-    { 'system-path': 0, 'not-allow-listed': 0 };
+    { 'system-path': 0, 'guardian-path': 0, 'not-allow-listed': 0 };
   /** When each reason last reached the log — `0` so the first one always does. */
   private readonly lastReportedAt: Record<EnvelopeRefusalReason, number> =
-    { 'system-path': 0, 'not-allow-listed': 0 };
+    { 'system-path': 0, 'guardian-path': 0, 'not-allow-listed': 0 };
 
   constructor(
     private readonly system: ActorSystem,
@@ -156,6 +162,12 @@ export class EnvelopeTrust {
    */
   refusalFor(segments: readonly string[]): EnvelopeRefusalReason | null {
     if (segments[0] === SYSTEM_GUARDIAN_SEGMENT) return 'system-path';
+    // A guardian is a supervisor, never an application endpoint, and a lone
+    // segment names one: `actor-ts://<system>/user` resolved to the user
+    // guardian itself, and a subtree entry `/user/*` admits its own root, so
+    // the allow-list would have let it through too.  Ahead of that check for
+    // the same reason `/system` is.
+    if (segments.length === 1) return 'guardian-path';
     if (!this.untrustedMode) return null;
     const path = guardianRootedPath(segments);
     return this.trustedSelectionPaths.some((entry) => admits(entry, path))
@@ -213,11 +225,15 @@ export class EnvelopeTrust {
     // Inline arms on purpose: this computes a string rather than dispatching an
     // incoming message, which is the exemption the delegation rule carves out —
     // and it is the same shape as `Cluster.refusalDetail` one seam over.
-    return reason === 'system-path'
-      ? 'the target path is under /system, which is reachable only through the '
-        + 'handler its owner registered, never by name'
-      : `untrusted-mode is on and the target path is not in trusted-selection-paths `
-        + `(${this.trustedSelectionPaths.length} entr`
-        + `${this.trustedSelectionPaths.length === 1 ? 'y' : 'ies'})`;
+    if (reason === 'system-path') {
+      return 'the target path is under /system, which is reachable only through the '
+        + 'handler its owner registered, never by name';
+    }
+    if (reason === 'guardian-path') {
+      return 'the target path is a guardian itself (such as /user), which is never addressable by name';
+    }
+    return `untrusted-mode is on and the target path is not in trusted-selection-paths `
+      + `(${this.trustedSelectionPaths.length} entr`
+      + `${this.trustedSelectionPaths.length === 1 ? 'y' : 'ies'})`;
   }
 }

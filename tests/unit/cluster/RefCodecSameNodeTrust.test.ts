@@ -24,6 +24,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
+import { EnvelopeTrust, type EnvelopeRefusalReason } from '../../../src/cluster/EnvelopeTrust.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { decodeRefs, type WireActorRef } from '../../../src/cluster/RefCodec.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
@@ -93,8 +94,8 @@ const marker = (node: Node, path: string): WireActorRef => ({
   system: node.address.systemName,
 });
 
-const refusals = (node: Node, reason: 'system-path' | 'not-allow-listed'): number =>
-  metricsOf(node.system).counter('cluster_envelope_refusals_total', { reason, frame: 'ref' }).value;
+const refusals = (node: Node, reason: EnvelopeRefusalReason, frame = 'ref'): number =>
+  metricsOf(node.system).counter('cluster_envelope_refusals_total', { reason, frame }).value;
 
 describe('decodeRefs — a same-node marker is checked before it is resolved (#1572)', () => {
   test('a bare, garbage or empty path decodes to Nobody, never to the root guardian', async () => {
@@ -156,5 +157,60 @@ describe('a peer cannot hand the application a framework ref inside a body (#157
     expect(body.replyTo).toBe(Nobody);
     expect(body.root).toBe(Nobody);
     expect(refusals(node, 'system-path')).toBe(1);
+  });
+});
+
+/**
+ * A path of exactly one segment names a guardian — `/user` is the only one the
+ * `system-path` rule did not already cover — and a guardian is never an
+ * application endpoint.  `actor-ts://<system>/user` used to resolve to the user
+ * guardian itself, both as an envelope's `to` and as a body marker, and an
+ * `untrusted-mode` entry `/user/*` admitted it too, because a subtree entry
+ * admits its own root.
+ */
+describe('the bare /user guardian is not addressable by name (#1572)', () => {
+  const trustFor = (untrustedMode: boolean, entries: readonly string[]): EnvelopeTrust => {
+    const systemOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create(`guardian-trust-${untrustedMode}-${entries.length}`, systemOptions);
+    systems.push(system);
+    return new EnvelopeTrust(system, new NoopLogger(), untrustedMode, entries);
+  };
+
+  test('refusalFor refuses ["user"] in every mode, an allow-listed subtree root included', () => {
+    expect(trustFor(false, []).refusalFor(['user'])).toBe('guardian-path');
+    expect(trustFor(true, ['/user/*']).refusalFor(['user'])).toBe('guardian-path');
+    expect(trustFor(true, ['/user']).refusalFor(['user'])).toBe('guardian-path');
+    // Its children are unaffected.
+    expect(trustFor(false, []).refusalFor(['user', 'orders'])).toBeNull();
+    expect(trustFor(true, ['/user/*']).refusalFor(['user', 'orders'])).toBeNull();
+    // /system keeps its own, older reason.
+    expect(trustFor(false, []).refusalFor(['system'])).toBe('system-path');
+  });
+
+  test('a same-node marker naming the guardian decodes to Nobody and is reported', async () => {
+    const node = await startNode('guardian-marker', 49_621);
+    const guardianPath = `actor-ts://${node.address.systemName}/user`;
+    expect(decodeRefs(marker(node, guardianPath), node.cluster, PEER)).toBe(Nobody);
+    expect(refusals(node, 'guardian-path')).toBe(1);
+  });
+
+  test('an envelope addressed to the guardian is refused before resolution, not delivered', async () => {
+    const node = await startNode('guardian-envelope', 49_623);
+    const peer = new InMemoryTransport(PEER);
+    peer.setHandler(() => {});
+    await peer.start();
+    transports.push(peer);
+
+    peer.send(node.address, {
+      kind: 'envelope', to: `actor-ts://${node.address.systemName}/user`, from: null, body: 'to-the-guardian',
+    });
+    // A second envelope on the same connection, to a real actor, orders the
+    // check: once it has arrived the first one has been dispatched.
+    peer.send(node.address, { kind: 'envelope', to: node.userPath, from: null, body: 'to-orders' });
+    await awaitCondition(() => node.received.length === 1, {
+      timeoutMs: 4_000, label: 'the follow-up envelope reached /user/orders',
+    });
+    expect(node.received).toEqual(['to-orders']);
+    expect(refusals(node, 'guardian-path', 'envelope')).toBe(1);
   });
 });
