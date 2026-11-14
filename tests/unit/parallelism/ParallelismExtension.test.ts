@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions, type ActorSystemOptionsType } from '../../../src/ActorSystemOptions.js';
@@ -18,6 +18,7 @@ import { DeadLetter } from '../../../src/SystemMessages.js';
 import { TestProbe } from '../../../src/testkit/TestProbe.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { runWorkerMeshNode, type ModuleImporter, type WorkerMeshInitData } from '../../../src/worker/WorkerMeshBootstrap.js';
+import { WorkerMesh } from '../../../src/worker/WorkerMesh.js';
 import type { WorkerNodeContext } from '../../../src/worker/WorkerNode.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { FakeWorkerBackend, hostMeshNode } from '../worker/__fixtures__/InMemoryWorkerThread.js';
@@ -416,6 +417,56 @@ describe('ParallelismExtension — actors on workers from config alone (#1563)',
       }
     }, 20_000);
   }
+
+  /**
+   * The orderly shutdown is run once and shared between its two doors.  That
+   * only shows once a phase budget abandons the pipeline task: the prelude in
+   * the last phase then calls it a second time while the first run is still
+   * waiting on its acknowledgments.  Joining that run, the teardown waits for
+   * its end — the hand-off to `mesh.terminate()` — and `run()` resolves after
+   * it, on a system not yet terminated when it happens.  A second, fresh run
+   * finds the mesh already taken and returns at once, so the teardown races
+   * ahead and the first run's hand-off lands after `run()` has resolved.
+   *
+   * The acknowledgments are withheld so the first run is still in flight by
+   * then whatever the machine's speed; its own budget is the drain timeout
+   * plus a second, so the drain is shortened to keep the case quick.
+   */
+  test('a pipeline task its phase budget abandons is joined by the prelude, not started a second time (#1754)', async () => {
+    const r = rig({
+      hardStop: true,
+      name: 'para-abandoned',
+      config: {
+        system: { 'shutdown-drain-timeout': '100ms' },
+        'coordinated-shutdown': { phases: { 'before-cluster-shutdown': { timeout: '20ms' } } },
+      },
+    });
+    const handOffs: boolean[] = [];
+    const realTerminate = WorkerMesh.prototype.terminate;
+    const terminateSpy = spyOn(WorkerMesh.prototype, 'terminate').mockImplementation(function (this: WorkerMesh) {
+      handOffs.push(r.system.isTerminated);
+      return realTerminate.call(this);
+    });
+    try {
+      const ref = r.system.spawn(Lifecycle, 'lifecycle');
+      const extension = r.system.extension(ParallelismExtensionId);
+      await extension.whenReady();
+      await awaitCondition(() => (ref as PendingRemoteActorRef).isResolved, { timeoutMs: 12_000, label: 'spawn acknowledged' });
+      // No worker's acknowledgment lands, so the first run waits out its budget.
+      (extension as unknown as { onWorkerTerminated: () => void }).onWorkerTerminated = () => {};
+
+      await r.system.extension(CoordinatedShutdownId).run();
+
+      expect(handOffs).toEqual([false]);
+    } finally {
+      terminateSpy.mockRestore();
+      await r.system.terminate();
+      for (const hosted of r.hosted) {
+        const node = await hosted.catch(() => null);
+        if (node !== null) await node.system.terminate();
+      }
+    }
+  }, 20_000);
 
   test('terminate() before the mesh is up still tears the workers down and fails what was waiting', async () => {
     const r = rig();
