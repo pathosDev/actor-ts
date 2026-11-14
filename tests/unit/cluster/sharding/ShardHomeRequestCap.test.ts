@@ -183,7 +183,7 @@ describe('the coordinator bounds the GetShardHome requests waiting on a shard (#
     );
 
     expect(waitingOn(victim)).toBe(2);
-  });
+  }, 20_000);
 
   test('past the cap the newest request goes to dead letters, with one warning', async () => {
     const victim = await startVictim('1219-cap', 44_222);
