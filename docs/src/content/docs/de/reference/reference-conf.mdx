@@ -1554,6 +1554,20 @@ actor-ts {
       # effective ceiling and this one never binds.
       max-string-length = 20M
     }
+
+    # What the cluster wire builds out of a peer's frame.  A frame is a tagged
+    # JSON tree, so a tag in a body asks the receiver to construct a class;
+    # only the tags listed here are honoured.  A frame using any other tag is
+    # refused -- skipped and logged with the tag's name; the connection stays
+    # up -- never delivered with its value turned into a plain object.  The
+    # default is the data tags.  regexp, undefined, error and url are left
+    # out: a node that sends one across lists it here, on every node that
+    # receives it.  [] decodes frames as plain JSON.  Names: date, bytes,
+    # typed-array, map, set, bigint, bidirectional-map,
+    # bidirectional-multi-map, number, undefined, regexp, url, error.
+    wire {
+      admitted-tags = [date, bytes, typed-array, map, set, bigint, bidirectional-map, bidirectional-multi-map, number]
+    }
   }
 
   http {

@@ -17,16 +17,18 @@ production — old nodes can't read new schemas or vice versa.
 
 A rolling deployment assumes the mixed-version window is survivable — for a
 few minutes, old and new nodes talk to each other.  That assumption is a
-property of the **release**, not of your code, and **two consecutive
-releases break it**.  Neither is a schema change in the sense this page uses
-the word — your events, state and config are untouched — so neither is
-caught by the additive patterns below.
+property of the **release**, not of your code, and **every release in the
+table below breaks it** — four in a row, v0.16.0 through v0.19.0.  None of
+them is a schema change in the sense this page uses the word — your events,
+state and config are untouched — so none is caught by the additive patterns
+below.
 
 | Upgrade | Mixed-version window | What it looks like when it fails |
 | --- | --- | --- |
 | **v0.15.x → v0.16.0** | **Not safe** (#112) | Every gossip frame carries a `sequence`, and `GossipMessage` gains a required field.  An upgraded peer refuses an old node's frames; an old node ignores an upgraded peer's.  Nothing errors — **membership silently never converges** while both versions run, so the cluster never agrees on who is in it. |
 | **v0.16.0 → v0.17.0** | **Not safe** (#450) | Frames are a tagged JSON tree instead of bare `JSON.stringify` output.  Most legacy traffic decodes unchanged; a legacy body that already had a reserved tag's shape does not.  `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`, `__number__` and `__error__` **throw at any depth**, and a decoder throw costs the **whole connection** along with every frame batched into the same chunk.  Two fail silently instead: `__bytes__` decodes to a `Uint8Array`, `__date__` to an Invalid Date.  The other direction is plainly lossy — an older node reads the tag wrapper as ordinary data. |
 | **v0.17.x → v0.18.0** | **Not safe** (#823) | The cluster wire gains a version, announced in every handshake, and version 2 requires every node address on a frame to name its incarnation.  Unlike the two rows above this one **fails loudly**: a v0.18.0 node refuses an older node's `hello` with a `hello-refused` and a WARN on its own side naming both versions, and an older node logs that frame as unclaimed with the reason in it.  The two never form one cluster. |
+| **v0.18.x → v0.19.0** | **Not safe** (#1303) | The receiver decides which `JsonTree` tags it builds, and v0.19.0 builds only the data tags by default (`actor-ts.serialization.wire.admitted-tags`), where a v0.18 node writes `RegExp`, `URL`, `Error` and value-position `undefined` tags unasked.  So the cluster wire moves to **version 3**, and like the row above this one **fails loudly**: a v0.19.0 node refuses a v0.18 node's `hello` with a `hello-refused` naming both versions (`v2..v2` and `v3..v3`) and a WARN on its own side, and the two never form one cluster.  Widening `admitted-tags` does not change that — the version is the release's, not the list's. |
 
 **Upgrade the cluster in one step.** Stop every node, then start every node
 on the new version.  No intermediate version makes any of these legs
@@ -40,7 +42,8 @@ that share none refuse each other at the handshake — a `hello-refused` with
 the reason, and a WARN on both sides — instead of half-working.  A future
 release that changes the wire can then speak a range of versions and keep a
 rolling upgrade possible; one that raises the minimum is a stop-and-start
-upgrade again, and this table will say which.
+upgrade again, and this table will say which.  v0.19.0 is the first that
+does: it speaks version 3 only.
 
 ## Code-only upgrades
 

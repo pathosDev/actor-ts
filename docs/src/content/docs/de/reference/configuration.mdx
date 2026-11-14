@@ -2089,6 +2089,7 @@ für jedes Fenster, das ein Aufrufer plausibel konfigurieren würde.
 | `serialization.read-constraints.max-nesting-depth` | `256` | Container-Ebenen, in die ein Decoder absteigt, bevor er das Payload ablehnt.  Nie über die eigene Obergrenze des Encoders hinaus. |
 | `serialization.read-constraints.max-document-bytes` | `0` | Obergrenze für ein Dokument vor dem Parsen — geprüft in `JsonSerializer` / `CborSerializer` und auf dem Cluster-Wire gegen das Längen-Präfix des Frames.  `0` = keine eigene Obergrenze. |
 | `serialization.read-constraints.max-string-length` | `20M` | Obergrenze für einen CBOR-Byte-String, Text-String oder Map-Key, geprüft am Längen-Präfix, bevor die Bytes alloziert werden.  `0` hebt sie auf. |
+| `serialization.wire.admitted-tags` | `[date, bytes, typed-array, map, set, bigint, bidirectional-map, bidirectional-multi-map, number]` | Die `JsonTree`-Tags, die ein Cluster-Frame eines Peers verwenden darf.  Ein Frame mit einem anderen Tag wird abgelehnt und geloggt; die Verbindung bleibt bestehen.  `regexp`, `undefined`, `error` und `url` sind standardmäßig ausgeschlossen.  `[]` dekodiert Frames als reines JSON (#1303). |
 
 Diese Grenzen binden, was dieser Knoten **liest**, nie was er schreibt.  Ein
 Peer, der den Handshake abschließt, oder jeder Client, dessen Body einen

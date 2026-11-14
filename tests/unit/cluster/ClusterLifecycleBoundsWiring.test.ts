@@ -38,6 +38,7 @@ import { TcpTransport } from '../../../src/cluster/Transport.js';
 import { getTcpBackend } from '../../../src/runtime/tcp/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 /** Collects the transport's WARNs — the only place a guard names its bound. */
 class CapturingLogger implements Logger {
@@ -216,8 +217,8 @@ describe('the association-lifecycle bounds reach the transport Cluster builds (#
     // three synchronous buffer writes below.
     const peer = new NodeAddress('unreachable-peer', '127.0.0.1', await freePort());
 
-    cluster.transport.send(peer, { kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() });
-    cluster.transport.send(peer, { kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() });
+    cluster.transport.send(peer, { kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peer.toJSON() });
+    cluster.transport.send(peer, { kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: peer.toJSON() });
     cluster.transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
 
     expect(internals(cluster).byPeer.get(peer.toString())?.pending).toHaveLength(2);

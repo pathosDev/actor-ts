@@ -1947,6 +1947,7 @@ for any window a caller would plausibly configure.
 | `serialization.read-constraints.max-nesting-depth` | `256` | Container levels a decoder will descend before refusing the payload.  Never raised past the encoder's own ceiling. |
 | `serialization.read-constraints.max-document-bytes` | `0` | Ceiling on one document before it is parsed — checked in `JsonSerializer` / `CborSerializer`, and on the cluster wire against the frame's length prefix.  `0` = no ceiling of our own. |
 | `serialization.read-constraints.max-string-length` | `20M` | Ceiling on one CBOR byte string, text string or map key, checked against the length prefix before the bytes are allocated.  `0` removes it. |
+| `serialization.wire.admitted-tags` | `[date, bytes, typed-array, map, set, bigint, bidirectional-map, bidirectional-multi-map, number]` | The `JsonTree` tags a cluster frame from a peer may use.  A frame using any other tag is refused and logged; the connection stays up.  `regexp`, `undefined`, `error` and `url` are out by default.  `[]` decodes frames as plain JSON (#1303). |
 
 These bound what this node **reads**, never what it writes.  A peer that
 completes the handshake, or any client whose body reaches a serializer, chooses

@@ -2,6 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { ReadConstraintsOptions } from '../serialization/ReadConstraintsOptions.js';
+import type { WireDecodeOptions } from '../serialization/WireDecodeOptions.js';
 import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS } from './Constants.js';
 
 /**
@@ -57,6 +58,13 @@ export type TcpTransportOptionsType = {
    * per connection, inbound and outbound alike (#880).
    */
   readonly readConstraints?: ReadConstraintsOptions;
+  /**
+   * Which `JsonTree` tags a peer's frame may use, handed to every
+   * `FrameDecoder` this transport builds (#1303).  A frame using any other
+   * tag is refused and logged; the connection stays.  Default: the data tags
+   * (`DEFAULT_WIRE_ADMITTED_TAGS`).
+   */
+  readonly wireDecode?: WireDecodeOptions;
   /**
    * How long a connection may sit without its half of the handshake before it
    * is torn down, in milliseconds (#846).  Default: 5 s
@@ -311,6 +319,11 @@ export class TcpTransportOptionsBuilder extends OptionsBuilder<TcpTransportOptio
   /** Decode ceilings for every frame decoder this transport builds. */
   withReadConstraints(readConstraints: ReadConstraintsOptions): this {
     return this.set('readConstraints', readConstraints);
+  }
+
+  /** The tags a peer's frame may use, for every frame decoder this transport builds. */
+  withWireDecode(wireDecode: WireDecodeOptions): this {
+    return this.set('wireDecode', wireDecode);
   }
 
   /** Handshake deadline, both directions, in ms.  Default: 5000. */

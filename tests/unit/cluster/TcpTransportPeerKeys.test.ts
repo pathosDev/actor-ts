@@ -28,6 +28,7 @@ import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import type { TcpSocketHandlers, TcpSocketLike } from '../../../src/runtime/tcp/TcpBackend.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 /** A socket that records what was written to it and how it was closed. */
 type RecordingSocket = TcpSocketLike & {
@@ -108,7 +109,7 @@ function startTransport(): { transport: TcpTransport; dials: Dial[]; log: Record
 }
 
 function handshake(kind: 'hello' | 'hello-ack', address: NodeAddress): Uint8Array {
-  return encodeFrame({ kind, wireVersion: 2, minWireVersion: 2, self: address.toJSON() });
+  return encodeFrame({ kind, wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: address.toJSON() });
 }
 
 /** An accepted socket that has announced `identity`. */

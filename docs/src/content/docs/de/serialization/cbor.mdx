@@ -156,6 +156,22 @@ $ cat events.cbor | cbor-diag
 Zum Debuggen willst du eventuell **kurz auf JSON umschalten**,
 um einen Bug zu jagen, und dann wieder zurück.
 
+## Einschränken, was ein Decode baut
+
+`new CborSerializer(readConstraints, { tags: [...] })` und
+`new CborDecoder(readConstraints, { tags: [...] })` nehmen die
+Allow-List des JSON-Baums, in denselben Namen (`date`, `bytes`,
+`map`, `set`, `bigint`, `number`, `undefined`, `regexp`, `url`,
+`error`, `typed-array`, die beiden bidirektionalen Maps).  Ohne sie
+wird alles gebaut — der eigene Round-Trip des Serializers.  Mit einer
+Liste akzeptiert der Decode das JSON-Datenmodell plus die gelisteten
+Typen und wirft für alles andere `RefusedTagError`, bevor es gebaut
+wird.  `entity()` übergibt für einen CBOR-Request-Body `[]`, außer
+die Route schaltet Tags frei (#967).  Die Struktur, aus der eine
+freigeschaltete Framework-Collection besteht — die Map in einer
+`BidirectionalMap` —, braucht keinen eigenen Namen; ein darin
+gespeicherter Wert schon.
+
 ## Was der Decoder ablehnt
 
 Ein Binärformat wird über ein Längen-Präfix gelesen, was ein feindliches Payload

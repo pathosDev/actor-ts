@@ -36,6 +36,7 @@ import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 import { healthChecksOf } from '../management/HealthCheckExtension.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { readReadConstraintsOptionsFromConfig } from '../serialization/ReadConstraintsOptions.js';
+import { readWireDecodeOptionsFromConfig } from '../serialization/WireDecodeOptions.js';
 import {
   ADVERTISED_HOST_ENV_VARS,
   ClusterOptionsValidator,
@@ -652,7 +653,9 @@ export class Cluster {
     // descend is a serialization concern that every codec in the process shares
     // (#880), not a per-cluster tunable, and threading it through the cluster
     // options type would put it in `ClusterConfigDefaults` — a shape whose test
-    // asserts the exact object — for the sake of one call site.
+    // asserts the exact object — for the sake of one call site.  The wire's tag
+    // allow-list (#1303) comes the same way, from its own
+    // `actor-ts.serialization.wire` block, for the same reason.
     // The association-lifecycle bounds ride along the same way (#846), and so
     // does the dial's connect deadline (#1475): they are `ClusterOptionsType`
     // fields so `actor-ts.remote.*` can reach them, and they reach the
@@ -666,6 +669,7 @@ export class Cluster {
         bindHost: options.host,
         bindPort: options.port,
         readConstraints: readReadConstraintsOptionsFromConfig(system.config),
+        wireDecode: readWireDecodeOptionsFromConfig(system.config),
         handshakeTimeoutMs: options.handshakeTimeoutMs,
         connectTimeoutMs: options.connectTimeoutMs,
         outboundQueueSize: options.outboundQueueSize,

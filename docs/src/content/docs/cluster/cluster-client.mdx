@@ -165,6 +165,27 @@ address, which is precisely what the draw prevents.  `tls`
 carries certificate material and `logger` is an object, so
 neither has a HOCON spelling either.
 
+### What the client builds out of a reply
+
+A client decodes its contact points' frames the way a node decodes
+a peer's: only the `JsonTree` tags in
+`actor-ts.serialization.wire.admitted-tags` build their class — the
+data tags by default — and a reply using any other tag (`regexp`,
+`undefined`, `error`, `url`) is refused with a WARN naming it, so
+the `ask` waits for its timeout.  The client reads that key from the
+same config it reads `actor-ts.cluster.client` from, so a cluster
+that widens its list widens it for its clients by the same key; an
+explicit `withWireDecode(...)` takes precedence over it.  The
+`actor-ts.serialization.read-constraints` ceilings apply too (#1303).
+
+```ts
+const wireDecode = WireDecodeOptions.create()
+  .withAdmittedTags([...DEFAULT_WIRE_ADMITTED_TAGS, 'error']);
+const clientOptions = ClusterClientOptions.create()
+  .withContactPoints(['orders@10.0.0.1:2551'])
+  .withWireDecode(wireDecode);
+```
+
 ## Server side — ClusterClientReceptionist
 
 ```ts

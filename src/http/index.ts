@@ -117,6 +117,8 @@ export type {
 } from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
+export { EntityOptions, EntityOptionsBuilder, EntityOptionsValidator } from './EntityOptions.js';
+export type { EntityOptionsType } from './EntityOptions.js';
 
 // HTML form bodies — `application/x-www-form-urlencoded`, the one request
 // media type that is not also a cluster-wire codec, hence its home here.
