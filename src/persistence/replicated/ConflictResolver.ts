@@ -48,7 +48,10 @@ export type ConflictCandidate<E> = {
 /**
  * Last-writer-wins on `(timestamp, replicaId)`.  Higher timestamp
  * wins; on ties the higher (lexicographic) replicaId wins so every
- * replica converges deterministically.
+ * replica converges deterministically.  A tie on both — one replica
+ * stamping two events in one millisecond — goes to the event whose JSON
+ * rendering ranks higher, so the winner never depends on which candidate
+ * is `a` (the same last key `LWWRegister` uses since #950).
  *
  * Caveat: relies on wall-clock timestamps being roughly comparable
  * across replicas.  Same trade-off as `LWWRegister`.
@@ -58,7 +61,31 @@ export class LastWriterWinsResolver<E> implements ConflictResolver<E> {
     if (a.timestamp > b.timestamp) return a.event;
     if (b.timestamp > a.timestamp) return b.event;
     // Tie on timestamp — break by replica id.
-    return a.replica > b.replica ? a.event : b.event;
+    if (a.replica > b.replica) return a.event;
+    if (b.replica > a.replica) return b.event;
+    // A full tie.  Falling through to `b.event` made the answer the second
+    // argument, so two replicas meeting the pair in opposite orders kept
+    // different events.  The payload is the last key of the order: any
+    // deterministic rank works, as long as it never depends on argument order.
+    return tieBreakKey(b.event) > tieBreakKey(a.event) ? b.event : a.event;
+  }
+}
+
+/**
+ * An event's rank in a full `(timestamp, replica)` tie — its JSON rendering,
+ * which is what the journal and the wire carry, so two events that render
+ * alike are the same event to every replica and it does not matter which one
+ * wins.  Total: a `bigint` renders as its decimal form with an `n`, and
+ * anything `JSON.stringify` cannot render ranks as the empty key rather than
+ * throwing inside a fold.  A private copy of `LWWRegister`'s helper rather
+ * than an import, so the persistence layer takes no dependency on the CRDT
+ * module for four lines.
+ */
+function tieBreakKey(value: unknown): string {
+  try {
+    return JSON.stringify(value, (_key, inner: unknown) => (typeof inner === 'bigint' ? `${inner}n` : inner)) ?? '';
+  } catch {
+    return '';
   }
 }
 

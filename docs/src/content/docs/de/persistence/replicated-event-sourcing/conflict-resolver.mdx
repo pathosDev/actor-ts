@@ -76,7 +76,11 @@ protected override resolver(): ConflictResolver<Event> {
 ```
 
 Höherer `timestamp` gewinnt; bei Gleichstand gewinnt die höhere
-(lexikografische) `replica`-ID, sodass jede Replica konvergiert.
+(lexikografische) `replica`-ID, und ein Gleichstand in beidem —
+eine Replica stempelt zwei Events in derselben Millisekunde — geht
+an das Event, dessen JSON-Darstellung höher sortiert.  So hängt der
+Gewinner nie von der Argumentreihenfolge ab, und jede Replica
+konvergiert.
 Einfach und oft „gut genug".  Vorbehalt: setzt grob vergleichbare
 Wall-Clocks über Replicas voraus — derselbe Trade-off wie
 `LWWRegister`.
@@ -138,8 +142,11 @@ class OrderedWins implements ConflictResolver<Event> {
 }
 ```
 
-Genau das macht `LastWriterWinsResolver` — hier als Vorlage für
-dein eigenes Tie-Breaking gezeigt.
+Das ist die Reihenfolge, die `LastWriterWinsResolver` verwendet —
+hier als Vorlage für dein eigenes Tie-Breaking gezeigt.  Kommutativ
+ist sie nur, solange zwei Kandidaten nie `timestamp` und
+`replica` zugleich teilen; der eingebaute Resolver entscheidet
+diesen letzten Gleichstand zusätzlich über die Payload.
 
 ## Wann ein Merge die falsche Abstraktion ist
 

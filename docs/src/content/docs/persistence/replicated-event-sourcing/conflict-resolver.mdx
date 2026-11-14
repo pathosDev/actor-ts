@@ -72,7 +72,10 @@ protected override resolver(): ConflictResolver<Event> {
 ```
 
 Higher `timestamp` wins; on a tie the higher (lexicographic)
-`replica` id wins, so every replica converges.  Simple and often
+`replica` id wins, and a tie on both — one replica stamping two
+events in one millisecond — goes to the event whose JSON rendering
+ranks higher, so the winner never depends on argument order and
+every replica converges.  Simple and often
 "good enough."  Caveat: relies on roughly comparable wall clocks
 across replicas — the same trade-off as `LWWRegister`.
 
@@ -132,8 +135,10 @@ class OrderedWins implements ConflictResolver<Event> {
 }
 ```
 
-This is exactly what `LastWriterWinsResolver` does — shown as the
-template for your own tie-breaking.
+This is the order `LastWriterWinsResolver` uses — shown as the
+template for your own tie-breaking.  It is commutative only while
+two candidates never share both `timestamp` and `replica`; the
+built-in breaks that last tie on the payload as well.
 
 ## When a merge is the wrong abstraction
 
