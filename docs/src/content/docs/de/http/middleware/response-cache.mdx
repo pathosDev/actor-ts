@@ -128,6 +128,7 @@ die Response eines Aufrufers einen anderen erreichen könnte:
 | `Cache-Control: no-store`, `no-cache` oder `private` auf der Response unterdrückt das Speichern. | Der Handler hat gesagt, dass die Response nicht in einen geteilten Cache gehört. |
 | Eine Response mit `Vary` wird zusammen mit einem SHA-256-Digest der Werte der genannten Request-Header gespeichert und nur an einen Request ausgeliefert, dessen Werte denselben Digest ergeben; `Vary: *` wird nicht gespeichert. | Der Handler hat gesagt, dass die Response von diesen Headern abhängt.  Geschrieben werden nur die Digests, eine `Vary: Authorization`-Response legt also nie ein Bearer-Token oder Cookie im zugrunde liegenden Cache ab.  Der Digest ist ungesalzen, damit jeder Prozess am selben Backend denselben berechnet — aus einem Token mit hoher Entropie lässt er sich nicht zurückgewinnen, ein schwaches Passwort in `Basic`-Credentials bleibt für jeden, der das Backend lesen kann, aber offline erratbar. |
 | Ein streamender Body wird nicht gespeichert. | Ein Stream ist einmalig lesbar. |
+| `x-ratelimit-*`-Header werden aus dem Gespeicherten entfernt; der Rest der Response bleibt erhalten. | Sie beschreiben das Budget eines Aufrufers zu einem Zeitpunkt.  Liegt der Limiter außen — `rateLimit(cached(handler))` —, fügt er jeder Antwort frische Zähler hinzu, Treffer oder nicht; liegt er innen, läuft er bei einem Treffer gar nicht. |
 
 Diese Regeln betreffen das *Teilen*, sie sind keine vollständige
 `Cache-Control`-Implementierung: Frische-Direktiven wie `max-age=0`

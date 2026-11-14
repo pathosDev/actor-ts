@@ -213,6 +213,7 @@ export {
   RateLimitOptions,
   RateLimitOptionsBuilder,
   RateLimitOptionsValidator,
+  DEFAULT_RATE_LIMIT_FAILURE_MODE,
   idempotent,
   DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
   DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH,
@@ -224,6 +225,8 @@ export {
 export type {
   RateLimitOptionsType,
   RateLimitContext,
+  RateLimitBackendErrorContext,
+  RateLimitFailureMode,
   IdempotencyOptionsType,
   ResponseCacheOptions,
 } from './cache/index.js';

@@ -127,6 +127,7 @@ caller's response could reach another:
 | `Cache-Control: no-store`, `no-cache` or `private` on the response suppresses storing. | The handler said the response is not for a shared cache. |
 | A response carrying `Vary` is stored with a SHA-256 digest of the request's values of the named headers and served only to a request whose values digest the same; `Vary: *` is not stored. | The handler said the response depends on those headers.  Only the digests are written, so a `Vary: Authorization` response never puts a bearer token or cookie into the backing cache.  The digest is unsalted, so every process sharing the backend computes the same one — a high-entropy token cannot be recovered from it, but a weak password inside `Basic` credentials stays guessable offline by whoever can read the backend. |
 | A streaming body is not stored. | A stream is one-shot. |
+| `x-ratelimit-*` headers are dropped from what is stored; the rest of the response is kept. | They describe one caller's budget at one moment.  Nest the limiter outside — `rateLimit(cached(handler))` — and it adds fresh counters to every answer, hit or miss; nested inside, it never runs on a hit at all. |
 
 These rules are about *sharing*, not a full `Cache-Control`
 implementation: freshness directives such as `max-age=0` or

@@ -69,6 +69,10 @@ type RateLimitOptions = {
   key:         (request: HttpRequest) => string | Promise<string>;
   keyPrefix?:  string;                    // default 'rl:'
   onLimit?:    (context: RateLimitContext) => HttpResponse;
+  failureMode?:    'open' | 'closed';     // default 'open'
+  onBackendError?: (error: unknown, context: RateLimitBackendErrorContext) => void;
+  logger?:         Logger;                // default: console, at warn
+  metrics?:        MetricsRegistry;       // unset: no metric
 };
 
 type RateLimitContext = {
@@ -88,6 +92,50 @@ type RateLimitContext = {
 | `key(request)` | Derive the rate-limit key — typically client IP, user ID, or API key. **Required.** |
 | `keyPrefix` | Cache-key namespace.  Default `'rl:'` so multiple limiters in the same Redis don't collide. |
 | `onLimit(context)` | Override the 429 response — full control over status / body / headers. |
+| `failureMode` | What happens when the cache cannot count a request: `'open'` passes it, `'closed'` answers 503.  See [when the cache fails](#when-the-cache-fails). |
+| `onBackendError(error, context)` | Called on every cache failure with the user `key`, the `failureMode` and whether the failure is `permanent`. |
+| `logger` | Where cache failures are logged — one line per `windowMs` while they continue. |
+| `metrics` | Registry for `http_rate_limit_backend_errors_total`. |
+
+## When the cache fails
+
+A limiter whose cache is down cannot count, and something has to happen
+to the request.  `failureMode` says what:
+
+- **`'open'` (default)** — the request passes.  A limiter is abuse
+  protection; turning a Redis blip into an outage of the whole API is
+  usually the worse trade.
+- **`'closed'`** — the request is answered **503** and the handler does
+  not run.  The choice for a limiter in front of something expensive or
+  abusable — login, password reset, a paid upstream — where an
+  unlimited window is worse than a refused request.  503 and not 429,
+  because the client has exceeded nothing.
+
+Either way the failure is visible.  It is logged at warn — one line per
+`windowMs` while failures continue, with the count of the suppressed
+ones — counted on `http_rate_limit_backend_errors_total{prefix}` when
+`metrics` is set, and handed to `onBackendError`:
+
+```ts
+import { MetricsExtensionId } from 'actor-ts/metrics';
+
+const metrics = system.extension(MetricsExtensionId).enable();
+const loginLimited = rateLimit({
+  cache,
+  windowMs:    60_000,
+  max:         10,
+  key:         (request) => `login:${request.remoteAddress ?? 'unknown'}`,
+  failureMode: 'closed',
+  metrics,
+});
+```
+
+A cache that rejects every call with the **identical** error is
+reported once, at error, as a permanent condition — that is what a
+`RedisCache` whose `ioredis` peer never loaded looks like, because the
+failed import is memoised and every later call rejects with it.  Under
+`'open'` that limiter is off until someone installs the package, so the
+log line says so instead of repeating every minute.
 
 ## Custom keying
 
@@ -137,6 +185,16 @@ Retry-After:           23           ← (on 429 only) seconds until reset
 ```
 
 Clients use these to back off without retrying randomly.
+
+## Combining with `cached()`
+
+**Nest the limiter outside: `rateLimit(cached(handler))`.**  A cache
+hit returns before anything inside `cached(...)` runs, so
+`cached(rateLimit(handler))` leaves every cached route unlimited.  The
+outside nesting counts every request, hit or miss, and adds fresh
+`X-RateLimit-*` headers to each answer.  `cached()` never stores those
+headers, so the wrong nesting at least does not replay one caller's
+counters to everyone else.
 
 ## Cluster-aware rate limiting
 

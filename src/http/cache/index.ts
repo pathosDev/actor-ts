@@ -1,6 +1,16 @@
 export { rateLimit } from './RateLimit.js';
-export { RateLimitOptions, RateLimitOptionsBuilder, RateLimitOptionsValidator } from './RateLimitOptions.js';
-export type { RateLimitOptionsType, RateLimitContext } from './RateLimitOptions.js';
+export {
+  DEFAULT_RATE_LIMIT_FAILURE_MODE,
+  RateLimitOptions,
+  RateLimitOptionsBuilder,
+  RateLimitOptionsValidator,
+} from './RateLimitOptions.js';
+export type {
+  RateLimitBackendErrorContext,
+  RateLimitContext,
+  RateLimitFailureMode,
+  RateLimitOptionsType,
+} from './RateLimitOptions.js';
 export { idempotent } from './IdempotencyKey.js';
 export {
   DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,

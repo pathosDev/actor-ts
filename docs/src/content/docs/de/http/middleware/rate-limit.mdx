@@ -72,6 +72,10 @@ type RateLimitOptions = {
   key:         (request: HttpRequest) => string | Promise<string>;
   keyPrefix?:  string;                    // Default 'rl:'
   onLimit?:    (context: RateLimitContext) => HttpResponse;
+  failureMode?:    'open' | 'closed';     // Default 'open'
+  onBackendError?: (error: unknown, context: RateLimitBackendErrorContext) => void;
+  logger?:         Logger;                // Default: Konsole, ab warn
+  metrics?:        MetricsRegistry;       // nicht gesetzt: keine Metrik
 };
 
 type RateLimitContext = {
@@ -91,6 +95,52 @@ type RateLimitContext = {
 | `key(request)` | Leitet den Rate-Limit-Key her — typischerweise Client-IP, User-ID oder API-Key. **Erforderlich.** |
 | `keyPrefix` | Cache-Key-Namespace.  Default `'rl:'`, damit mehrere Limiter im selben Redis nicht kollidieren. |
 | `onLimit(context)` | Überschreibt die 429-Response — volle Kontrolle über Status / Body / Header. |
+| `failureMode` | Was passiert, wenn der Cache einen Request nicht zählen kann: `'open'` lässt ihn durch, `'closed'` antwortet 503.  Siehe [wenn der Cache ausfällt](#wenn-der-cache-ausfällt). |
+| `onBackendError(error, context)` | Wird bei jedem Cache-Fehler aufgerufen, mit dem User-`key`, dem `failureMode` und der Angabe, ob der Fehler `permanent` ist. |
+| `logger` | Wohin Cache-Fehler geloggt werden — eine Zeile pro `windowMs`, solange sie anhalten. |
+| `metrics` | Registry für `http_rate_limit_backend_errors_total`. |
+
+## Wenn der Cache ausfällt
+
+Ein Limiter, dessen Cache ausgefallen ist, kann nicht zählen, und mit dem
+Request muss trotzdem etwas geschehen.  `failureMode` sagt, was:
+
+- **`'open'` (Default)** — der Request geht durch.  Ein Limiter ist
+  Missbrauchsschutz; aus einem Redis-Aussetzer einen Ausfall der ganzen
+  API zu machen, ist meist der schlechtere Tausch.
+- **`'closed'`** — der Request bekommt **503**, und der Handler läuft
+  nicht.  Die Wahl für einen Limiter vor etwas Teurem oder
+  Missbrauchbarem — Login, Passwort-Reset, ein kostenpflichtiger
+  Upstream —, wo ein unbegrenztes Fenster schlimmer ist als ein
+  abgelehnter Request.  503 und nicht 429, weil der Client nichts
+  überschritten hat.
+
+So oder so ist der Fehler sichtbar.  Er wird mit warn geloggt — eine
+Zeile pro `windowMs`, solange die Fehler anhalten, mit der Zahl der
+unterdrückten —, auf `http_rate_limit_backend_errors_total{prefix}`
+gezählt, wenn `metrics` gesetzt ist, und an `onBackendError` übergeben:
+
+```ts
+import { MetricsExtensionId } from 'actor-ts/metrics';
+
+const metrics = system.extension(MetricsExtensionId).enable();
+const loginLimited = rateLimit({
+  cache,
+  windowMs:    60_000,
+  max:         10,
+  key:         (request) => `login:${request.remoteAddress ?? 'unknown'}`,
+  failureMode: 'closed',
+  metrics,
+});
+```
+
+Ein Cache, der jeden Aufruf mit dem **identischen** Fehler ablehnt, wird
+einmal mit error als dauerhafter Zustand gemeldet — so sieht ein
+`RedisCache` aus, dessen `ioredis`-Peer nie geladen wurde, denn der
+fehlgeschlagene Import wird gememoisiert und jeder spätere Aufruf
+scheitert mit ihm.  Unter `'open'` ist dieser Limiter aus, bis jemand das
+Paket installiert, und die Logzeile sagt das, statt sich jede Minute zu
+wiederholen.
 
 ## Eigenes Keying
 
@@ -141,6 +191,17 @@ Retry-After:           23           ← (nur bei 429) Sekunden bis zum Reset
 ```
 
 Clients nutzen die, um zu backoffen, statt zufällig zu retrien.
+
+## Kombination mit `cached()`
+
+**Leg den Limiter außen herum: `rateLimit(cached(handler))`.**  Ein
+Cache-Treffer kehrt zurück, bevor irgendetwas innerhalb von
+`cached(...)` läuft, `cached(rateLimit(handler))` lässt also jede
+gecachte Route unbegrenzt.  Die äußere Schachtelung zählt jeden Request,
+Treffer oder nicht, und fügt jeder Antwort frische
+`X-RateLimit-*`-Header hinzu.  `cached()` speichert diese Header nie,
+die falsche Schachtelung spielt die Zähler eines Aufrufers also
+zumindest nicht allen anderen vor.
 
 ## Cluster-fähiges Rate-Limiting
 

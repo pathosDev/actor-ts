@@ -454,6 +454,7 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   persistence_breaker_state: ['breaker'],
   router_scatter_gather_resolved_total: ['outcome'],
   router_scatter_gather_latency_seconds: [],
+  http_rate_limit_backend_errors_total: ['prefix'],
   websocket_client_inbound_paused_seconds_total: [],
   worker_mesh_snapshot_age_seconds: ['worker'],
 };
@@ -501,6 +502,10 @@ const PER_INSTANCE_LABELS: Readonly<Record<string, string>> = {
     + 'bounded by worker-mesh.workers, and the label the metric exists to carry, since '
     + 'which worker went silent is the whole of the alert; the series is removed when '
     + 'the slot leaves the mesh (#1570)',
+  'http_rate_limit_backend_errors_total.prefix': 'the keyPrefix of a rateLimit the '
+    + 'application constructs in code — never the per-request key, which is client-derived — '
+    + 'so bounded by the limiters the deployment declares, and the label that tells which '
+    + 'limiter has stopped counting (#983)',
 };
 
 /**
