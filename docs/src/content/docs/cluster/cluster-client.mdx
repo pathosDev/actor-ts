@@ -82,6 +82,13 @@ them in order; on failure, it falls back to the next.
 `connectTimeoutMs` bounds how long **one** of them gets to answer
 the `hello` handshake before the client moves on.
 
+`tls` follows the cluster's settings.  `ca` alone is one-way TLS:
+the client checks the server's certificate and presents none.
+For mutual TLS set both `cert` and `key`; a client given only one
+of them is refused at construction, because the half would
+otherwise be dropped on the dial and the connection would quietly
+fall back to one-way TLS.
+
 For **stable contact addresses**, the cluster side typically
 runs a `ClusterClientReceptionist` on a fixed set of nodes,
 whose addresses become the client's contact points.

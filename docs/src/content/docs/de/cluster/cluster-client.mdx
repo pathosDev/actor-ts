@@ -87,6 +87,14 @@ nächsten zurück. `connectTimeoutMs` begrenzt, wie lange **einer**
 von ihnen Zeit hat, den `hello`-Handshake zu beantworten, bevor
 der Client weiterzieht.
 
+`tls` folgt den Einstellungen des Clusters.  `ca` allein ist
+einseitiges TLS: Der Client prüft das Zertifikat des Servers und
+legt selbst keines vor.  Für gegenseitiges TLS setzt man `cert`
+und `key`; ein Client mit nur einem der beiden wird schon beim
+Konstruieren abgewiesen, weil die Hälfte sonst beim Verbindungsaufbau
+verworfen würde und die Verbindung stillschweigend auf einseitiges
+TLS zurückfiele.
+
 Für **stabile Kontaktadressen** betreibt die Cluster-Seite typisch
 einen `ClusterClientReceptionist` auf einem festen Satz von Nodes,
 deren Adressen zu den Kontaktpunkten des Clients werden.
