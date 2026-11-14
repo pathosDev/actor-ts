@@ -724,40 +724,69 @@ export function parseArguments(argv) {
     writeBaseline: false, timeoutFactor: DEFAULT_TIMEOUT_FACTOR,
     timeoutMs: undefined, budgetMinutes: undefined, maximumMutantsPerFile: undefined, mutantIds: undefined, dryRun: false, recoverOnly: false,
   };
-  for (const argument of argv) {
-    const match = /^--([a-z-]+)(?:=(.*))?$/.exec(argument);
+  const number = (name, value) => {
+    const parsed = Number(value);
+    if (value.trim() === '' || !Number.isFinite(parsed)) throw new UsageError(`--${name} needs a number, got "${value}"`);
+    return parsed;
+  };
+  const numbers = (name, value) => value.split(',').map((part) => number(name, part));
+  // Each value-taking flag, applied to its value.  Both spellings reach it:
+  // `--files=src/a.ts` and `--files src/a.ts`.
+  const valued = {
+    files: (value) => options.globs.push(value),
+    since: (value) => { options.since = value; },
+    set: (value) => { options.set = value; },
+    tests: (value) => options.tests.push(...value.split(',')),
+    operators: (value) => { options.operators = value.split(','); },
+    'report-dir': (value) => { options.reportDirectory = value; },
+    config: (value) => { options.configPath = value; },
+    baseline: (value) => { options.baselinePath = value; },
+    'timeout-factor': (value) => { options.timeoutFactor = number('timeout-factor', value); },
+    timeout: (value) => { options.timeoutMs = number('timeout', value); },
+    'budget-minutes': (value) => { options.budgetMinutes = number('budget-minutes', value); },
+    'max-mutants': (value) => { options.maximumMutantsPerFile = number('max-mutants', value); },
+    // Re-check named mutants only — the survivors of an earlier run, say, against a wider --tests.
+    mutants: (value) => { options.mutantIds = numbers('mutants', value); },
+  };
+  const switches = {
+    'write-baseline': () => { options.writeBaseline = true; },
+    'dry-run': () => { options.dryRun = true; },
+    recover: () => { options.recoverOnly = true; },
+  };
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    const match = /^--([a-z-]+)(?:=([\s\S]*))?$/.exec(argument);
     if (!match) { options.files.push(argument); continue; }
-    const [, name, value] = match;
-    switch (name) {
-      case 'files': options.globs.push(value); break;
-      case 'since': options.since = value; break;
-      case 'set': options.set = value; break;
-      case 'tests': options.tests.push(...value.split(',')); break;
-      case 'operators': options.operators = value.split(','); break;
-      case 'report-dir': options.reportDirectory = value; break;
-      case 'config': options.configPath = value; break;
-      case 'baseline': options.baselinePath = value; break;
-      case 'write-baseline': options.writeBaseline = true; break;
-      case 'timeout-factor': options.timeoutFactor = Number(value); break;
-      case 'timeout': options.timeoutMs = Number(value); break;
-      case 'budget-minutes': options.budgetMinutes = Number(value); break;
-      case 'max-mutants': options.maximumMutantsPerFile = Number(value); break;
-      // Re-check named mutants only — the survivors of an earlier run, say, against a wider --tests.
-      case 'mutants': options.mutantIds = value.split(',').map(Number); break;
-      case 'dry-run': options.dryRun = true; break;
-      case 'recover': options.recoverOnly = true; break;
-      default: throw new Error(`mutation-run: unknown option "${argument}"`);
+    const [, name, inlineValue] = match;
+    if (Object.hasOwn(switches, name)) {
+      if (inlineValue !== undefined) throw new UsageError(`--${name} takes no value`);
+      switches[name]();
+      continue;
     }
-  }
-  // An empty report directory would resolve to the repository root, and the
-  // run removes its coverage directory under it.
-  if (options.reportDirectory === '' || options.reportDirectory === undefined) {
-    throw new Error('mutation-run: --report-dir needs a non-empty path');
+    if (!Object.hasOwn(valued, name)) throw new UsageError(`unknown option "${argument}"`);
+    let value = inlineValue;
+    if (value === undefined) {
+      const next = argv[index + 1];
+      // A following flag is not a value: `--files --dry-run` is a forgotten glob.
+      if (next === undefined || next.startsWith('--')) throw new UsageError(`--${name} needs a value`);
+      value = next;
+      index += 1;
+    }
+    if (value === '') throw new UsageError(`--${name} needs a non-empty value`);
+    valued[name](value);
   }
   for (const operator of options.operators) {
-    if (!OPERATORS.includes(operator)) throw new Error(`mutation-run: unknown operator "${operator}" (known: ${OPERATORS.join(', ')})`);
+    if (!OPERATORS.includes(operator)) throw new UsageError(`unknown operator "${operator}" (known: ${OPERATORS.join(', ')})`);
   }
   return options;
+}
+
+/** A mistake on the command line: reported in one line with exit status 2, never as a stack trace. */
+export class UsageError extends Error {
+  constructor(message) {
+    super(`mutation-run: ${message}`);
+    this.name = 'UsageError';
+  }
 }
 
 /** Source files a mutation run may touch: TypeScript under `src/`, no declarations, nothing generated. */
@@ -875,7 +904,14 @@ async function mutateFile(path, { options, config, guard, deadline, activeChild,
 }
 
 async function main() {
-  const options = parseArguments(process.argv.slice(2));
+  let options;
+  try {
+    options = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    if (!(error instanceof UsageError)) throw error;
+    console.error(error.message);
+    process.exit(2);
+  }
   const reportDirectory = resolve(options.reportDirectory);
   options.reportDirectory = reportDirectory;
   const guard = createFileGuard({ journalDirectory: join(reportDirectory, 'journal') });

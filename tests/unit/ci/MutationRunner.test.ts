@@ -20,6 +20,7 @@ import {
   runWithTimeout,
   testsFor,
   timeoutFor,
+  UsageError,
   type Mutant,
   type Operator,
 } from '../../../scripts/mutation-run.mjs';
@@ -342,5 +343,78 @@ describe('the watchdog', () => {
     expect(classifyRun(red)).toBe('killed');
     expect(classifyRun(green)).toBe('survived');
     expect(green.output).toContain('ok');
+  });
+});
+
+describe('the command line', () => {
+  /**
+   * Every value-taking flag, with a value it accepts and where that value must
+   * land.  `--files src/x.ts` — the space-separated spelling most people type —
+   * used to reach `new Bun.Glob(undefined)` and die with a stack trace.
+   */
+  type Parsed = ReturnType<typeof parseArguments>;
+  const valued: ReadonlyArray<readonly [string, string, (options: Parsed) => unknown, unknown]> = [
+    ['files', 'src/util/*.ts', (o) => o.globs, ['src/util/*.ts']],
+    ['since', 'origin/develop', (o) => o.since, 'origin/develop'],
+    ['set', 'nightly', (o) => o.set, 'nightly'],
+    ['tests', 'a.test.ts,b.test.ts', (o) => o.tests, ['a.test.ts', 'b.test.ts']],
+    ['operators', 'equality,logical', (o) => o.operators, ['equality', 'logical']],
+    ['report-dir', '.mutation-x', (o) => o.reportDirectory, '.mutation-x'],
+    ['config', 'c.json', (o) => o.configPath, 'c.json'],
+    ['baseline', 'b.json', (o) => o.baselinePath, 'b.json'],
+    ['timeout-factor', '4', (o) => o.timeoutFactor, 4],
+    ['timeout', '9000', (o) => o.timeoutMs, 9000],
+    ['budget-minutes', '30', (o) => o.budgetMinutes, 30],
+    ['max-mutants', '5', (o) => o.maximumMutantsPerFile, 5],
+    ['mutants', '1,7,28', (o) => o.mutantIds, [1, 7, 28]],
+  ];
+
+  test.each(valued)('--%s takes its value with = and as the next argument', (name, value, read, expected) => {
+    expect(read(parseArguments([`--${name}=${value}`]))).toEqual(expected);
+    const spaced = parseArguments([`--${name}`, value, 'src/Supervision.ts']);
+    expect(read(spaced)).toEqual(expected);
+    // The value is consumed, not mistaken for a path; the path after it is not.
+    expect(spaced.files).toEqual(['src/Supervision.ts']);
+  });
+
+  test.each(valued)('--%s without a value is a usage error, at the end and before another flag', (name) => {
+    expect(() => parseArguments([`--${name}`])).toThrow(UsageError);
+    expect(() => parseArguments([`--${name}`])).toThrow(`--${name} needs a value`);
+    expect(() => parseArguments([`--${name}`, '--dry-run'])).toThrow(`--${name} needs a value`);
+    expect(() => parseArguments([`--${name}=`])).toThrow(UsageError);
+  });
+
+  test('a switch takes no value, and a number flag refuses a word', () => {
+    const parsed = parseArguments(['--dry-run', 'src/a.ts']);
+    expect(parsed.dryRun).toBe(true);
+    expect(parsed.files).toEqual(['src/a.ts']);
+    expect(() => parseArguments(['--dry-run=yes'])).toThrow(UsageError);
+    expect(() => parseArguments(['--budget-minutes', 'soon'])).toThrow('--budget-minutes needs a number');
+    expect(() => parseArguments(['--mutants', '1,x'])).toThrow(UsageError);
+    expect(() => parseArguments(['--nonsense'])).toThrow(UsageError);
+  });
+
+  test('the script exits 2 with one line for a missing value, and runs with the spaced form', () => {
+    const repositoryRoot = join(import.meta.dir, '..', '..', '..');
+    const script = join(repositoryRoot, 'scripts', 'mutation-run.mjs');
+    const missing = Bun.spawnSync([process.execPath, script, '--files'], { cwd: repositoryRoot });
+    expect(missing.exitCode).toBe(2);
+    const stderr = missing.stderr.toString();
+    expect(stderr).toContain('--files needs a value');
+    expect(stderr).not.toContain(' at ');
+
+    const reportDirectory = mkdtempSync(join(tmpdir(), 'mutation-cli-'));
+    try {
+      // A dry run reads the file and lists its mutants; it never writes to src/.
+      const spaced = Bun.spawnSync(
+        [process.execPath, script, '--files', 'src/util/OptionsMerge.ts', '--report-dir', reportDirectory, '--dry-run'],
+        { cwd: repositoryRoot },
+      );
+      expect(spaced.stderr.toString()).toBe('');
+      expect(spaced.exitCode).toBe(0);
+      expect(spaced.stdout.toString()).toContain('src/util/OptionsMerge.ts: 2 mutant(s)');
+    } finally {
+      rmSync(reportDirectory, { recursive: true, force: true });
+    }
   });
 });

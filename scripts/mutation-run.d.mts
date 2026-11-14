@@ -152,4 +152,5 @@ export function runWithTimeout(
   options: { timeoutMs: number; cwd?: string; environment?: NodeJS.ProcessEnv },
 ): Promise<RunResult>;
 export function parseArguments(argv: readonly string[]): ParsedArguments;
+export class UsageError extends Error {}
 export function isMutableSource(path: string): boolean;
