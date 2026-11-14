@@ -22,6 +22,25 @@ export type {
   FaultyTransportOptionsType,
   TransportFaultProfileType,
 } from './FaultyTransportOptions.js';
+export { FaultInjectingJournal } from './FaultInjectingJournal.js';
+export {
+  FaultInjectingJournalOptions,
+  FaultInjectingJournalOptionsBuilder,
+  FaultInjectingJournalOptionsValidator,
+} from './FaultInjectingJournalOptions.js';
+export type { FaultInjectingJournalOptionsType, JournalOperation } from './FaultInjectingJournalOptions.js';
+export { FaultInjectingSnapshotStore } from './FaultInjectingSnapshotStore.js';
+export {
+  FaultInjectingSnapshotStoreOptions,
+  FaultInjectingSnapshotStoreOptionsBuilder,
+  FaultInjectingSnapshotStoreOptionsValidator,
+} from './FaultInjectingSnapshotStoreOptions.js';
+export type {
+  FaultInjectingSnapshotStoreOptionsType,
+  SnapshotStoreOperation,
+} from './FaultInjectingSnapshotStoreOptions.js';
+export { InjectedFaultError } from './internal/FaultScript.js';
+export type { FaultPoint } from './internal/FaultScript.js';
 export { MultiNodeSpec } from './MultiNodeSpec.js';
 export { MultiNodeSpecOptions, MultiNodeSpecOptionsBuilder } from './MultiNodeSpecOptions.js';
 export type { MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';
