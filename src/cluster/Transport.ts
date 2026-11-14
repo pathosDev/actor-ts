@@ -27,7 +27,11 @@ import {
   type WireMessage,
 } from './Protocol.js';
 import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION, wireVersionRefusal } from './WireVersion.js';
-import { validateWireFrame } from './WireValidation.js';
+import {
+  sanitizeNodeAddressForLog,
+  sanitizePeerTextForLog,
+  validateWireFrame,
+} from './WireValidation.js';
 
 export type WireHandler = (from: NodeAddress, message: WireMessage) => void;
 export type { TlsTransportOptionsType };
@@ -403,7 +407,7 @@ export class TcpTransport implements Transport {
         if (!connection.pendingOverflowed) {
           connection.pendingOverflowed = true;
           this.log.warn(
-            `handshake buffer for ${to} hit ${this.outboundQueueSize} frames; dropping oldest`,
+            `handshake buffer for ${sanitizeNodeAddressForLog(to)} hit ${this.outboundQueueSize} frames; dropping oldest`,
           );
         }
       }
@@ -463,7 +467,7 @@ export class TcpTransport implements Transport {
       frame = encodeFrame(message);
     } catch (err) {
       this.log.error(
-        `dropping a '${message.kind}' frame for ${connection.peer ?? connection.targetKey ?? '<unknown peer>'}: `
+        `dropping a '${message.kind}' frame for ${this.peerForLog(connection)}: `
         + `its payload cannot be serialised`,
         err as Error,
       );
@@ -605,7 +609,7 @@ export class TcpTransport implements Transport {
             // would reach `acceptInbound` as a stranger's first bytes (#1476).
             onData: (s, chunk) => this.onData(s, chunk, connection),
             onClose: (s) => this.onClose(s, connection),
-            onError: (_s, err) => this.log.warn(`outbound error -> ${to}`, err),
+            onError: (_s, err) => this.log.warn(`outbound error -> ${sanitizeNodeAddressForLog(to)}`, err),
           },
         });
         // The dial may have been given up while `connect` was pending and
@@ -664,7 +668,7 @@ export class TcpTransport implements Transport {
       // Frame-decoder rejected the input (oversized length-prefix,
       // malformed JSON).  Drop the connection rather than letting the
       // error propagate up the runtime's socket-data callback.
-      this.log.warn(`frame-decoder error from ${connection.peer ?? '<unknown peer>'}; closing`, err as Error);
+      this.log.warn(`frame-decoder error from ${this.peerForLog(connection)}; closing`, err as Error);
       this.dropConnection(connection);
       return;
     }
@@ -680,7 +684,7 @@ export class TcpTransport implements Transport {
       const checked = validateWireFrame(frame);
       if ('problem' in checked) {
         this.log.warn(
-          `rejecting malformed frame from ${connection.peer ?? '<unknown peer>'}: ${checked.problem}`,
+          `rejecting malformed frame from ${this.peerForLog(connection)}: ${checked.problem}`,
         );
         continue;
       }
@@ -688,7 +692,7 @@ export class TcpTransport implements Transport {
         this.onMessage(connection, checked.message);
       } catch (err) {
         this.log.warn(
-          `wire handler threw on a frame from ${connection.peer ?? '<unknown peer>'}; closing`,
+          `wire handler threw on a frame from ${this.peerForLog(connection)}; closing`,
           err as Error,
         );
         this.dropConnection(connection);
@@ -741,10 +745,10 @@ export class TcpTransport implements Transport {
           // and under mTLS `certificateAdmits` has already established that
           // the hello really is that peer's.
           if (this.isUnfinishedDial(existing)) {
-            this.log.debug(`crossing dial with ${peerKey}: keeping our outbound, refusing theirs`);
+            this.log.debug(`crossing dial with ${sanitizeNodeAddressForLog(peer)}: keeping our outbound, refusing theirs`);
           } else {
             this.log.warn(
-              `hello hijack rejected: peer ${peerKey} already has an active connection; ` +
+              `hello hijack rejected: peer ${sanitizeNodeAddressForLog(peer)} already has an active connection; ` +
               `closing the new socket`,
             );
           }
@@ -752,7 +756,7 @@ export class TcpTransport implements Transport {
           return;
         }
         this.log.debug(
-          `crossing dial with ${peerKey}: retiring our outbound, keeping theirs`,
+          `crossing dial with ${sanitizeNodeAddressForLog(peer)}: retiring our outbound, keeping theirs`,
         );
         this.dropConnection(existing);
       }
@@ -779,7 +783,7 @@ export class TcpTransport implements Transport {
       // acknowledges with none, and this side refuses the pair just the same.
       const refusal = wireVersionRefusal({ wireVersion: message.wireVersion }, message.self);
       if (refusal !== null) {
-        this.log.warn(`cluster handshake with ${peer} refused: ${refusal}`);
+        this.log.warn(`cluster handshake with ${sanitizeNodeAddressForLog(peer)} refused: ${refusal}`);
         this.dropConnection(connection);
         return;
       }
@@ -790,7 +794,7 @@ export class TcpTransport implements Transport {
         // already owns this peer-key, we don't take it over from
         // them.
         this.log.warn(
-          `hello-ack hijack rejected: peer ${peerKey} already mapped to a different connection`,
+          `hello-ack hijack rejected: peer ${sanitizeNodeAddressForLog(peer)} already mapped to a different connection`,
         );
         this.dropConnection(connection);
         return;
@@ -814,7 +818,7 @@ export class TcpTransport implements Transport {
    * connection closes, and saying so here (#823).
    */
   private refuseHello(connection: Connection, peer: NodeAddress, reason: string): void {
-    this.log.warn(`cluster handshake from ${peer} refused: ${reason}`);
+    this.log.warn(`cluster handshake from ${sanitizeNodeAddressForLog(peer)} refused: ${reason}`);
     const refused: HelloRefusedMessage = {
       kind: 'hello-refused',
       self: this.self.toJSON(),
@@ -836,8 +840,8 @@ export class TcpTransport implements Transport {
   private onHelloRefused(connection: Connection, message: HelloRefusedMessage): void {
     const peer = NodeAddress.fromJSON(message.self);
     this.log.warn(
-      `cluster handshake with ${peer} refused by the peer (it speaks cluster wire `
-      + `v${message.minWireVersion}..v${message.wireVersion}): ${message.reason}`,
+      `cluster handshake with ${sanitizeNodeAddressForLog(peer)} refused by the peer (it speaks cluster wire `
+      + `v${message.minWireVersion}..v${message.wireVersion}): ${sanitizePeerTextForLog(message.reason)}`,
     );
     this.dropConnection(connection);
   }
@@ -901,8 +905,8 @@ export class TcpTransport implements Transport {
       ...certificate.subjectAlternativeNames,
     ].join(', ');
     this.log.warn(
-      `${frame} rejected: peer claims ${claimed.toString()} but its certificate names `
-      + `${vouchedFor.length === 0 ? '(nothing)' : vouchedFor} — closing the connection`,
+      `${frame} rejected: peer claims ${sanitizeNodeAddressForLog(claimed)} but its certificate names `
+      + `${vouchedFor.length === 0 ? '(nothing)' : sanitizePeerTextForLog(vouchedFor)} — closing the connection`,
     );
     this.dropConnection(connection);
     return false;
@@ -1102,7 +1106,7 @@ export class TcpTransport implements Transport {
     const pending = connection.decoder.pendingBytes();
     if (pending === 0) return;
     this.log.warn(
-      `no data from ${connection.peer ?? '<unknown peer>'} for ${this.incompleteFrameIdleMs} ms `
+      `no data from ${this.peerForLog(connection)} for ${this.incompleteFrameIdleMs} ms `
       + `while ${pending} byte(s) of an incomplete frame are buffered; closing the connection`,
     );
     this.dropConnection(connection);
@@ -1205,6 +1209,22 @@ export class TcpTransport implements Transport {
   }
 
   /**
+   * The peer a log line names, made safe to name (#1629): the identity it
+   * announced, else the address a dial was opened to, else a placeholder.
+   *
+   * Both may be a peer's choice.  The identity comes out of the peer's own
+   * `hello`, whose wire check asks only for non-empty strings, and a dial's
+   * target may come out of gossip or a message body — so either, rendered raw,
+   * lets a line break in a host end the record and forge the next one.  Escaped
+   * rather than left out, because which peer it was is the diagnostic.
+   */
+  private peerForLog(connection: Connection): string {
+    if (connection.peer !== null) return sanitizeNodeAddressForLog(connection.peer);
+    if (connection.targetKey !== null) return sanitizePeerTextForLog(connection.targetKey);
+    return '<unknown peer>';
+  }
+
+  /**
    * The line for a dial that never got a connection — its connect deadline
    * passed first, or its connect failed first.  Either way it names the
    * connect deadline, the bound a dial that never opened ran against.
@@ -1217,7 +1237,7 @@ export class TcpTransport implements Transport {
    * same way, by rejecting `connect` (#1475).
    */
   private couldNotConnect(connection: Connection): string {
-    return `could not connect to ${connection.targetKey} within ${this.connectTimeoutMs} ms; `
+    return `could not connect to ${this.peerForLog(connection)} within ${this.connectTimeoutMs} ms; `
       + `dropping the connection and ${connection.pending.length} buffered frame(s)`;
   }
 
@@ -1242,7 +1262,7 @@ export class TcpTransport implements Transport {
       // A `byPeer` slot already taken over by a replacement dial is not ours.
       if (this.byPeer.get(connection.targetKey ?? '') !== connection) return;
       this.log.warn(
-        `connected to ${connection.targetKey}, but no hello-ack came within `
+        `connected to ${this.peerForLog(connection)}, but no hello-ack came within `
         + `${this.handshakeTimeoutMs} ms; dropping the connection and `
         + `${connection.pending.length} buffered frame(s)`,
       );

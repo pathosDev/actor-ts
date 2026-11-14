@@ -282,6 +282,19 @@ export function sanitizeWireKindForLog(kind: string): string {
 }
 
 /**
+ * Make free text a peer wrote safe to put in a log line (#1629) — the `reason`
+ * of a `hello-refused`, or an address that only survives as its rendered key.
+ *
+ * The escaping of {@link sanitizeWireKindForLog}, clipped at the bound the
+ * wire check already holds a refusal's reason to: a reason is the diagnostic
+ * an operator reads, so clipping it to a frame kind's length would cut off
+ * exactly the part that says why the handshake failed.
+ */
+export function sanitizePeerTextForLog(text: string): string {
+  return escapeForLog(text, MAX_HELLO_REFUSAL_REASON_LENGTH);
+}
+
+/**
  * Make a node address that may be a peer's choice safe to put in a log line
  * (#936) — a ref marker in a message body names one, and so does gossip.
  *
