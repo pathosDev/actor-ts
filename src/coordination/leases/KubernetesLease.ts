@@ -128,11 +128,14 @@ function isCredentialRejection(error: unknown): boolean {
  *      given up (#761), so only a *foreign* holder, a deleted object or
  *      an unanswerable API server fires `onLost(reason)`.
  *
- *   3. **release()** — DELETE the lease (404 is treated as success).
- *      Cancels the renewal timer first, and rejects if the DELETE
- *      itself fails — the record is then still claimed on the server
- *      while this process has dropped it, which callers must be able
- *      to see.
+ *   3. **release()** — DELETE the lease, conditional on the
+ *      `resourceVersion` this holder last wrote, and only while the TTL
+ *      has not run out (#1659): a record another pod took is never
+ *      deleted, and a refused precondition is a clean release, not an
+ *      error.  404 is treated as success.  Cancels the renewal timer
+ *      first, and rejects if the DELETE itself fails — the record is then
+ *      still claimed on the server while this process has dropped it,
+ *      which callers must be able to see.
  *
  * Credentials are resolved per interaction and their lifetime depends on
  * where they came from (#760): an explicitly supplied triple is static, the
@@ -599,14 +602,54 @@ export class KubernetesLease implements Lease {
    * already on the wire; {@link renewalInFlight} is deliberately left set
    * until that request settles, so a re-`acquire()` on this instance
    * cannot start a second one alongside it (#761).
+   *
+   * Only a record this holder still holds is deleted (#1659).  `held` is no
+   * evidence of that: it is cleared by a renewal that notices the loss, and a
+   * stalled event loop keeps that renewal from running while another pod
+   * legitimately takes the lapsed record.  So:
+   *
+   *   - past the TTL nothing is sent at all — the record may be someone
+   *     else's by now, and one still ours runs out within a TTL anyway;
+   *   - otherwise the DELETE is conditional on the `resourceVersion` of the
+   *     last record this holder wrote, and see {@link deleteIfStillHeld} for
+   *     what a refused precondition means.
    */
   async release(): Promise<void> {
     if (!this.held) return;
+    const lease = this.currentLease;
+    const withinTtl = !this.hasExpired(instantNow());
     this.held = false;
     this.stopRenewalLoop();
     this.currentLease = null;
-    await this.withFreshCredentials((credentials) =>
-      deleteLease(credentials, this.namespaceOf(credentials), this.leaseName, this.callOptions));
+    if (!withinTtl || lease === null) return;
+    await this.withFreshCredentials((credentials) => this.deleteIfStillHeld(credentials, lease));
+  }
+
+  /**
+   * The conditional DELETE behind {@link release}, against the snapshot taken
+   * before local state was dropped.
+   *
+   * A refused precondition says only that the record moved, not who moved it —
+   * the same ambiguity a rejected renewal has (#761).  So it is re-read once,
+   * and only `holderIdentity` on the server decides: a record naming another
+   * holder, or none, is left alone and the release is clean ("no longer
+   * ours"); one still naming this owner — this holder's own renewal landed
+   * after the snapshot, or a label was added — is deleted at the version just
+   * read.  A second refusal is not chased further: the record then runs out
+   * at its TTL, which is the bound a release that cannot be made costs.
+   */
+  private async deleteIfStillHeld(credentials: K8sCredentials, lease: K8sLeaseObject): Promise<void> {
+    const namespace = this.namespaceOf(credentials);
+    const resourceVersion = lease.metadata.resourceVersion;
+    if (resourceVersion !== undefined) {
+      const outcome = await deleteLease(credentials, namespace, this.leaseName, resourceVersion, this.callOptions);
+      if (outcome !== 'conflict') return;
+    }
+    const current = await getLease(credentials, namespace, this.leaseName, this.callOptions);
+    if (current === null || current.spec.holderIdentity !== this.options.owner) return;
+    const currentVersion = current.metadata.resourceVersion;
+    if (currentVersion === undefined) return;
+    await deleteLease(credentials, namespace, this.leaseName, currentVersion, this.callOptions);
   }
 
   /**
