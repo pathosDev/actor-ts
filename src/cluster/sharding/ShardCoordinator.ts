@@ -7,8 +7,12 @@ import {
   CONFLICT_RELEASE_MAX_ATTEMPTS,
   CONFLICT_RELEASE_RETRY_INTERVAL_MS,
   COORDINATOR_REGISTRATION_GOSSIP_ROUNDS,
+  MAX_PENDING_SHARD_HOME_REQUESTS,
+  MAX_REMEMBERED_ENTITIES_PER_SHARD,
+  MAX_REMEMBERED_ENTITY_ID_LENGTH,
   SHARD_MAP_PUBLISH_DELAY_MS,
 } from '../Constants.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import { DEFAULT_REGISTER_RETRY_INTERVAL_MS } from './ShardingOptions.js';
 import {
   DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
@@ -25,6 +29,11 @@ import type { Member } from '../Member.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
+import {
+  sanitizeNodeAddressForLog,
+  sanitizeWireKindForLog,
+  sanitizeWireTextForLog,
+} from '../WireValidation.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import type {
   CoordinatorStateData,
@@ -55,18 +64,41 @@ import type {
 
 /* ----------------------- internal mailbox events ----------------------- */
 /**
+ * The coordinator's commands to itself.
+ *
  * The lease-aware path uses internal events instead of inline awaits so
  * cluster-event triggers can't interleave their `reconcile` calls with
  * an in-flight `lease.acquire()`.  Mirrors the same pattern used in
  * `ClusterSingletonManager` (#38).
+ *
+ * Classes, every one of them, matched by `instanceof` (#1267).  They were
+ * plain `{ kind }` objects matched by their string, so anything that reached
+ * the mailbox unattributed and spelled one — a frame delivered through generic
+ * path resolution, with only the envelope trust policy's `/system` refusal in
+ * front of it — was obeyed: `coordinator-state-loaded` rewrote the shard map,
+ * `request-registrations` made the coordinator dial addresses of the sender's
+ * choosing.  An instance can only be minted inside this module.  The `kind`
+ * field stays, for logs and debuggers; nothing dispatches on it.
  */
-type ReconcileEvent = { readonly kind: 'reconcile' };
+abstract class CoordinatorEventBase {}
 
-type LeaseAcquireResultEvent = { readonly kind: 'lease-acquire-result'; readonly got: boolean; readonly error?: Error };
+class ReconcileEvent extends CoordinatorEventBase {
+  readonly kind = 'reconcile' as const;
+}
 
-type LeaseLostEvent = { readonly kind: 'lease-lost'; readonly reason: string };
+class LeaseAcquireResultEvent extends CoordinatorEventBase {
+  readonly kind = 'lease-acquire-result' as const;
+  constructor(readonly got: boolean, readonly error?: Error) { super(); }
+}
 
-type AcquireRetryEvent = { readonly kind: 'acquire-retry' };
+class LeaseLostEvent extends CoordinatorEventBase {
+  readonly kind = 'lease-lost' as const;
+  constructor(readonly reason: string) { super(); }
+}
+
+class AcquireRetryEvent extends CoordinatorEventBase {
+  readonly kind = 'acquire-retry' as const;
+}
 
 /** Where one region lives — all a {@link RegistrationRequest} needs to reach it. */
 type RegionAddress = { readonly path: string; readonly node: NodeAddressData };
@@ -75,29 +107,38 @@ type RegionAddress = { readonly path: string; readonly node: NodeAddressData };
  * The regions an instance about to be replaced knew, told to its replacement
  * through the mailbox the two share — see {@link ShardCoordinator.preRestart}.
  */
-type RequestRegistrationsEvent = {
-  readonly kind: 'request-registrations';
-  readonly regions: ReadonlyArray<RegionAddress>;
-};
+class RequestRegistrationsEvent extends CoordinatorEventBase {
+  readonly kind = 'request-registrations' as const;
+  constructor(readonly regions: ReadonlyArray<RegionAddress>) { super(); }
+}
 
 /** The registration barrier ran out — see `ShardCoordinator.beginRegistrationBarrier`. */
-type RegistrationBarrierTimeoutEvent = { readonly kind: 'registration-barrier-timeout' };
+class RegistrationBarrierTimeoutEvent extends CoordinatorEventBase {
+  readonly kind = 'registration-barrier-timeout' as const;
+}
 
 /** Time to repeat a conflict release — see `ShardCoordinator.trackConflictRelease`. */
-type ConflictReleaseRetryEvent = { readonly kind: 'conflict-release-retry'; readonly shardId: number };
+class ConflictReleaseRetryEvent extends CoordinatorEventBase {
+  readonly kind = 'conflict-release-retry' as const;
+  constructor(readonly shardId: number) { super(); }
+}
 
 /** The cluster's leader moved — handled in the mailbox, not in the cluster's callback (#952). */
-type LeaderChangedEvent = { readonly kind: 'leader-changed' };
+class LeaderChangedEvent extends CoordinatorEventBase {
+  readonly kind = 'leader-changed' as const;
+}
 
 /** The coordinator-state load of leader term `term` finished — see `ShardCoordinator.startCoordinatorStateLoad`. */
-type CoordinatorStateLoadedEvent = {
-  readonly kind: 'coordinator-state-loaded';
-  readonly term: number;
-  readonly data: CoordinatorStateData | null;
-};
+class CoordinatorStateLoadedEvent extends CoordinatorEventBase {
+  readonly kind = 'coordinator-state-loaded' as const;
+  constructor(readonly term: number, readonly data: CoordinatorStateData | null) { super(); }
+}
 
 /** The coordinator-state load of leader term `term` took longer than `coordinatorStateLoadTimeoutMs`. */
-type CoordinatorStateLoadTimeoutEvent = { readonly kind: 'coordinator-state-load-timeout'; readonly term: number };
+class CoordinatorStateLoadTimeoutEvent extends CoordinatorEventBase {
+  readonly kind = 'coordinator-state-load-timeout' as const;
+  constructor(readonly term: number) { super(); }
+}
 
 type CoordinatorEvent =
   | ReconcileEvent
@@ -111,7 +152,70 @@ type CoordinatorEvent =
   | CoordinatorStateLoadedEvent
   | CoordinatorStateLoadTimeoutEvent;
 
-type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent;
+/** A hand-off in flight: the region asked to give the shard up, and the timer that forces it. */
+type InFlightHandOff = { readonly from: string; readonly timer: Cancellable };
+
+/**
+ * "Run the rebalance tick" — the coordinator telling itself, on a timer
+ * (#1750).
+ *
+ * The tick used to run in the scheduler's callback, beside the mailbox: the
+ * stale-region sweep and `beginHandOff` decided while a `RegionHeartbeat`, a
+ * `Register` or a `HandOffComplete` that changes their answer could still be
+ * queued.  The timer only sends this now.  A class, like the region's ticks,
+ * so nothing off the wire can be one — unlike a plain `{ kind }` event, which
+ * a frame delivered through generic path resolution could spell.
+ */
+class RebalanceTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const REBALANCE_TICK = new RebalanceTick();
+
+/**
+ * "A hand-off has run out of time" (#1750).  Carries the hand-off that armed
+ * it: a timer that has fired cannot take back its tick, so a hand-off that
+ * completed — or was replaced by a new one for the same shard — in between is
+ * recognised as such and left alone.
+ */
+class HandOffTimeoutTick {
+  constructor(
+    readonly shardId: number,
+    readonly handOff: InFlightHandOff,
+  ) {}
+}
+
+/** "A statistics query's deadline is up" (#1750) — with the query it is for, for the same reason. */
+class StatsQueryTimeoutTick {
+  constructor(
+    readonly queryId: number,
+    readonly query: StatsQuery,
+  ) {}
+}
+
+/** "Publish the coalesced shard map now" (#1750). */
+class ShardMapPublishTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const SHARD_MAP_PUBLISH_TICK = new ShardMapPublishTick();
+
+/**
+ * A member left the cluster — handed to the coordinator by its own
+ * `cluster.subscribe` callback, which `Cluster.emit` calls synchronously
+ * (#1750).  Handling it there re-homed the departed regions' shards ahead of
+ * whatever frame was already queued.
+ */
+class MemberRemovedReceived {
+  constructor(readonly address: NodeAddress) {}
+}
+
+type CoordinatorTick =
+  | RebalanceTick
+  | HandOffTimeoutTick
+  | StatsQueryTimeoutTick
+  | ShardMapPublishTick
+  | MemberRemovedReceived;
+
+type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent | CoordinatorTick;
 
 /**
  * What a coordinator that has just become leader is still waiting for before
@@ -130,14 +234,9 @@ type RegistrationBarrier = {
   loadTimer: Cancellable | null;
 };
 
+/** One of the coordinator's own commands — an instance minted in this module, never a look-alike (#1267). */
 function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEvent {
-  if (!message || typeof message !== 'object') return false;
-  const discriminator = (message as { kind?: unknown }).kind;
-  return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
-    || discriminator === 'lease-lost' || discriminator === 'acquire-retry'
-    || discriminator === 'request-registrations' || discriminator === 'registration-barrier-timeout'
-    || discriminator === 'conflict-release-retry' || discriminator === 'leader-changed'
-    || discriminator === 'coordinator-state-loaded' || discriminator === 'coordinator-state-load-timeout';
+  return message instanceof CoordinatorEventBase;
 }
 
 /**
@@ -181,6 +280,14 @@ function namesPeer(claimed: NodeAddressData, peer: NodeAddress): boolean {
   return claimed.systemName === peer.systemName
     && claimed.host === peer.host
     && claimed.port === peer.port;
+}
+
+/**
+ * Whether two payload addresses name the same node — both already passed the
+ * authority gate, so the comparison is {@link namesPeer}'s, field by field.
+ */
+function namesSameNode(left: NodeAddressData, right: NodeAddressData): boolean {
+  return left.systemName === right.systemName && left.host === right.host && left.port === right.port;
 }
 
 type RegionInfo = {
@@ -350,7 +457,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly regions = new Map<string, RegionInfo>();
   private readonly shardHome = new Map<number, string>(); // shardId → regionPath
   private readonly pending = new Map<number, Array<GetShardHome>>(); // waiting queries
-  private readonly rebalanceInProgress = new Map<number, { from: string; timer: Cancellable }>();
+  /** Shards whose full {@link pending} queue has been warned about this episode (#1219). */
+  private readonly pendingOverflowWarned = new Set<number>();
+  /** Shards whose remembered-entity cap has been warned about this episode (#1267). */
+  private readonly rememberedCapWarned = new Set<number>();
+  private readonly rebalanceInProgress = new Map<number, InFlightHandOff>();
   private readonly entitiesPerShard = new Map<number, Set<string>>();
   private readonly statsQueries = new Map<number, StatsQuery>();
   private nextStatsQuery = 0;
@@ -388,7 +499,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *
    * Capped to avoid unbounded growth if the lease never resolves.
    */
-  private acquireBuffer: ShardingMessage[] = [];
+  private acquireBuffer: Array<{ readonly message: ShardingMessage; readonly peer: NodeAddress }> = [];
   private static readonly ACQUIRE_BUFFER_CAP = 1_000;
 
   /**
@@ -521,25 +632,28 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
     this.unsubscribeCluster = this.options.cluster.subscribe(evt =>
       match(evt)
-        .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e.member.address))
+        // Through the mailbox too (#1750): re-homing the departed regions'
+        // shards must not run ahead of a frame already queued.
+        .with(P.instanceOf(MemberRemoved), (e) => this.self.tell(new MemberRemovedReceived(e.member.address)))
         // Through the mailbox (#952): the handler clears and seeds the maps
         // every other handler reads, so it must not interleave with them.
-        .with(P.instanceOf(LeaderChanged), () => this.self.tell({ kind: 'leader-changed' } satisfies CoordinatorEvent))
+        .with(P.instanceOf(LeaderChanged), () => this.self.tell(new LeaderChangedEvent()))
         .otherwise(() => this.onOtherClusterEvent()),
     );
     if (this.options.lease) {
       this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
-        this.self.tell({ kind: 'lease-lost', reason } satisfies CoordinatorEvent);
+        this.self.tell(new LeaseLostEvent(reason));
       });
       // Kick the initial reconcile through the mailbox so the lease
       // path serialises with subsequent cluster events.
-      this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
+      this.self.tell(new ReconcileEvent());
     }
     const rebalanceIntervalMs = this.options.rebalanceIntervalMs ?? DEFAULT_REBALANCE_INTERVAL_MS;
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       rebalanceIntervalMs,
       rebalanceIntervalMs,
-      () => { if (this.isActive() && this.registrationBarrier === null) this.rebalanceTick(); },
+      // Only ever *sends* — see `RebalanceTick` (#1750).
+      () => { this.self.tell(REBALANCE_TICK); },
     );
   }
 
@@ -605,12 +719,33 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       node: info.node.toJSON(),
     }));
     if (regions.length > 0) {
-      this.self.tell({ kind: 'request-registrations', regions } satisfies CoordinatorEvent);
+      this.self.tell(new RequestRegistrationsEvent(regions));
     }
     await super.preRestart(reason, message);
   }
 
   override onReceive(message: CoordinatorInbox): void {
+    // The coordinator's own ticks (#1750) — classes, so no frame can be one.
+    if (message instanceof RebalanceTick) {
+      this.onRebalanceTick();
+      return;
+    }
+    if (message instanceof HandOffTimeoutTick) {
+      this.onHandOffTimeoutTick(message);
+      return;
+    }
+    if (message instanceof StatsQueryTimeoutTick) {
+      this.onStatsQueryTimeoutTick(message);
+      return;
+    }
+    if (message instanceof ShardMapPublishTick) {
+      this.onShardMapPublishTick();
+      return;
+    }
+    if (message instanceof MemberRemovedReceived) {
+      this.onMemberRemoved(message.address);
+      return;
+    }
     if (message instanceof AuthenticatedShardingMessage) {
       this.receiveShardingMessage(message.message, message.peer);
       return;
@@ -638,7 +773,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!isShardingMessage(envelope.body)) {
       this.log.debug(
         `[sharding] dropping a non-sharding envelope addressed to the '${this.options.typeName}' `
-        + `coordinator from ${from}`,
+        + `coordinator from ${sanitizeNodeAddressForLog(from)}`,
       );
       return;
     }
@@ -668,11 +803,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // Leader, but lease not yet held — buffer instead of drop so
       // regions don't need to retry on the next cluster event.
       if (this.acquireBuffer.length < ShardCoordinator.ACQUIRE_BUFFER_CAP) {
-        this.acquireBuffer.push(message);
+        this.acquireBuffer.push({ message, peer });
       }
       return;
     }
-    this.dispatchShardingMessage(message);
+    this.dispatchShardingMessage(message, peer);
   }
 
   /**
@@ -703,10 +838,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * not come through here — it synthesises its message from the cluster event's
    * own address, which is not a claim anyone made over the wire.
    */
-  private maySpeakFor(message: ShardingMessage, peer: NodeAddress | null): boolean {
+  private maySpeakFor(message: ShardingMessage, peer: NodeAddress | null): peer is NodeAddress {
+    // Every peer-supplied field below goes through the transport's escaping
+    // helpers (#1220): `isShardingMessage` admits any kind with the `sharding.`
+    // prefix, so the kind is the sender's text, and a CR or LF in it forged
+    // whole records in `ConsoleLogger`.  Escaped at each call site rather than
+    // at the sink, the decision #1178 and #936 already took for the transport:
+    // a sink cannot tell a line break the framework meant from one a peer sent.
     if (peer === null) {
       this.log.warn(
-        `[sharding] refusing an unattributed '${message.kind}' for type `
+        `[sharding] refusing an unattributed '${sanitizeWireKindForLog(message.kind)}' for type `
         + `"${this.options.typeName}" — a coordinator directive has to arrive on an `
         + `authenticated connection`,
       );
@@ -719,13 +860,18 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // `hello`.  The peer is the transport's own value, which is enough to find
     // the sender.
     this.log.warn(
-      `[sharding] refusing '${message.kind}' for type "${this.options.typeName}" from ${peer} — `
+      `[sharding] refusing '${sanitizeWireKindForLog(message.kind)}' for type "${this.options.typeName}" `
+      + `from ${sanitizeNodeAddressForLog(peer)} — `
       + `it names a different node, and only that node may speak for its region`,
     );
     return false;
   }
 
-  private dispatchShardingMessage(message: ShardingMessage): void {
+  /**
+   * @param peer the authenticated node that sent `message` — the lifecycle
+   *   reports, which name no node of their own, are attributed by it (#1267).
+   */
+  private dispatchShardingMessage(message: ShardingMessage, peer: NodeAddress): void {
     match(message)
       .with({ kind: 'sharding.Register' }, (m) => this.onRegister(m))
       .with({ kind: 'sharding.GetShardHome' }, (m) => this.onGetShardHome(m))
@@ -733,8 +879,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'sharding.BeginHandOffAcknowledgment' }, () => this.onBeginHandOffAcknowledgment())
       .with({ kind: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
       .with({ kind: 'sharding.RegionHeartbeat' }, (m) => this.onRegionHeartbeat(m))
-      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
-      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m, peer))
+      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m, peer))
       .with({ kind: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
       .with({ kind: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
       .with({ kind: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
@@ -758,16 +904,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private handleCoordinatorEvent(evt: CoordinatorEvent): void {
     match(evt)
-      .with({ kind: 'reconcile' }, () => this.onReconcile())
-      .with({ kind: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
-      .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
-      .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
-      .with({ kind: 'request-registrations' }, (m) => this.onRequestRegistrations(m))
-      .with({ kind: 'registration-barrier-timeout' }, () => this.onRegistrationBarrierTimeout())
-      .with({ kind: 'conflict-release-retry' }, (m) => this.onConflictReleaseRetry(m))
-      .with({ kind: 'leader-changed' }, () => this.onLeaderChanged())
-      .with({ kind: 'coordinator-state-loaded' }, (m) => this.onCoordinatorStateLoaded(m))
-      .with({ kind: 'coordinator-state-load-timeout' }, (m) => this.onCoordinatorStateLoadTimeout(m))
+      .with(P.instanceOf(ReconcileEvent), () => this.onReconcile())
+      .with(P.instanceOf(LeaseAcquireResultEvent), (m) => this.onLeaseAcquireResult(m))
+      .with(P.instanceOf(LeaseLostEvent), (m) => this.onLeaseLost(m))
+      .with(P.instanceOf(AcquireRetryEvent), () => this.onAcquireRetry())
+      .with(P.instanceOf(RequestRegistrationsEvent), (m) => this.onRequestRegistrations(m))
+      .with(P.instanceOf(RegistrationBarrierTimeoutEvent), () => this.onRegistrationBarrierTimeout())
+      .with(P.instanceOf(ConflictReleaseRetryEvent), (m) => this.onConflictReleaseRetry(m))
+      .with(P.instanceOf(LeaderChangedEvent), () => this.onLeaderChanged())
+      .with(P.instanceOf(CoordinatorStateLoadedEvent), (m) => this.onCoordinatorStateLoaded(m))
+      .with(P.instanceOf(CoordinatorStateLoadTimeoutEvent), (m) => this.onCoordinatorStateLoadTimeout(m))
       .exhaustive();
   }
 
@@ -812,11 +958,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private async runAcquire(): Promise<void> {
     try {
       const got = await this.options.lease!.acquire();
-      this.self.tell({ kind: 'lease-acquire-result', got } satisfies CoordinatorEvent);
+      this.self.tell(new LeaseAcquireResultEvent(got));
     } catch (error) {
-      this.self.tell({
-        kind: 'lease-acquire-result', got: false, error: error as Error,
-      } satisfies CoordinatorEvent);
+      this.self.tell(new LeaseAcquireResultEvent(false, error as Error));
     }
   }
 
@@ -850,7 +994,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.acquireBuffer.length > 0) {
       const buffered = this.acquireBuffer;
       this.acquireBuffer = [];
-      for (const message of buffered) this.dispatchShardingMessage(message);
+      for (const { message, peer } of buffered) this.dispatchShardingMessage(message, peer);
     }
   }
 
@@ -868,7 +1012,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     this.rebalanceInProgress.clear();
     this.dropConflictReleases();
-    this.pending.clear();
+    this.clearPendingShardHomes();
     this.acquireBuffer = [];
     // Deliberately do NOT clear `regions` or `shardHome` here.  We
     // stay leader and likely re-acquire — keeping the cached view
@@ -878,14 +1022,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // self-correct via the standard "remote send fails →
     // MemberRemoved → invalidateHomesOnNode" flow on the regions.
     // Re-enter the acquire loop in case we're still the leader.
-    this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
+    this.self.tell(new ReconcileEvent());
   }
 
   private scheduleAcquireRetry(): void {
     const interval = this.options.acquireRetryIntervalMs ?? DEFAULT_ACQUIRE_RETRY_INTERVAL_MS;
     this.acquireRetryTimer?.cancel();
     this.acquireRetryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
-      this.self.tell({ kind: 'acquire-retry' } satisfies CoordinatorEvent);
+      this.self.tell(new AcquireRetryEvent());
     });
   }
 
@@ -1211,8 +1355,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
     this.refusedRegions.add(key);
     this.log.error(
-      `refusing to register region ${message.region} on ${message.node.host}:${message.node.port} `
-      + `for type "${this.options.typeName}": it hashes with numShards=${message.numShards} but this `
+      `refusing to register region ${sanitizeWireTextForLog(message.region)} `
+      + `on ${sanitizeNodeAddressForLog(NodeAddress.fromJSON(message.node))} `
+      + `for type "${this.options.typeName}": it hashes with numShards=${sanitizeWireTextForLog(message.numShards)} but this `
       + `coordinator governs the type with numShards=${this.options.numShards}. Routing would split `
       + `and the same entity id would run on both nodes at once.`,
     );
@@ -1382,11 +1527,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (awaiting.size === 0 && !loading) return;
     const timeoutMs = this.registrationWindowMs();
     const windowTimer = awaiting.size === 0 ? null : this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
-      this.self.tell({ kind: 'registration-barrier-timeout' } satisfies CoordinatorEvent);
+      this.self.tell(new RegistrationBarrierTimeoutEvent());
     });
     const term = this.leaderTerm;
     const loadTimer = !loading ? null : this.system.scheduler.scheduleOnceFunction(this.coordinatorStateLoadTimeoutMs(), () => {
-      this.self.tell({ kind: 'coordinator-state-load-timeout', term } satisfies CoordinatorEvent);
+      this.self.tell(new CoordinatorStateLoadTimeoutEvent(term));
     });
     this.registrationBarrier = { awaiting, windowTimer, windowElapsed: windowTimer === null, loading, loadTimer };
     this.log.debug(
@@ -1599,7 +1744,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // `acceptedHostedShards` states, and for the same reason: the claim is
     // caller-sized, and a stale region re-registers on every membership event.
     this.log.warn(
-      `[sharding] region ${message.region} on ${message.node.host}:${message.node.port} claimed `
+      `[sharding] region ${sanitizeWireTextForLog(message.region)} `
+      + `on ${sanitizeNodeAddressForLog(NodeAddress.fromJSON(message.node))} claimed `
       + `${conflicting.size} shard(s) of type "${this.options.typeName}" that ${Array.from(owners).sort().join(', ')} `
       + `already own${owners.size === 1 ? 's' : ''}; ownership stays put and ${released} hand-off(s) were sent `
       + `to give the stale copies up`,
@@ -1632,7 +1778,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private scheduleConflictReleaseRetry(shardId: number): Cancellable {
     return this.system.scheduler.scheduleOnceFunction(this.conflictReleaseRetryMs(), () => {
-      this.self.tell({ kind: 'conflict-release-retry', shardId } satisfies CoordinatorEvent);
+      this.self.tell(new ConflictReleaseRetryEvent(shardId));
     });
   }
 
@@ -1727,7 +1873,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // One line per registration, never one per id: the claim is caller-sized,
       // so a per-id warning is itself the amplification.
       this.log.warn(
-        `[sharding] region ${message.region} claimed ${claimed.length} hosted shard(s) for type `
+        `[sharding] region ${sanitizeWireTextForLog(message.region)} claimed ${claimed.length} `
+        + `hosted shard(s) for type `
         + `"${this.options.typeName}"; keeping ${accepted.size} after scanning ${scanned} — the rest `
         + `were duplicates or outside 0..${this.options.numShards - 1}`,
       );
@@ -1755,7 +1902,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private isKnownShardId(shardId: number): boolean {
     if (this.isShardIdInRange(shardId)) return true;
     this.log.warn(
-      `ignoring a shard request for id ${shardId} — outside 0..${this.options.numShards - 1} `
+      `ignoring a shard request for id ${sanitizeWireTextForLog(shardId)} — outside 0..${this.options.numShards - 1} `
       + `for type "${this.options.typeName}"`,
     );
     return false;
@@ -1795,11 +1942,50 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       return;
     }
 
-    const list = this.pending.get(message.shardId) ?? [];
-    list.push(message);
-    this.pending.set(message.shardId, list);
+    this.enqueuePendingShardHome(message);
 
     if (!this.rebalanceInProgress.has(message.shardId)) this.tryAllocate(message.shardId);
+  }
+
+  /**
+   * Hold `message` until its shard has a home — bounded (#1219).
+   *
+   * The queue empties only on allocation, and any authenticated member may
+   * ask, so an unbounded one let a member grow this node's heap for as long as
+   * a shard stayed unplaceable.  A request repeating one already waiting — the
+   * same region on the same node — is not queued: it would be answered with the
+   * same frame.  Past {@link MAX_PENDING_SHARD_HOME_REQUESTS} distinct
+   * requesters the newest goes to dead letters, so an honest region that asked
+   * before a flood keeps its place, and the region that was turned away asks
+   * again with its next message.  One warning per shard per episode — the flood
+   * is caller-sized, so a line per request would be the amplification — and the
+   * latch clears when the queue is answered or dropped.
+   */
+  private enqueuePendingShardHome(message: GetShardHome): void {
+    const list = this.pending.get(message.shardId) ?? [];
+    const repeat = list.some((waiting) =>
+      waiting.requester === message.requester && namesSameNode(waiting.requesterNode, message.requesterNode));
+    if (repeat) return;
+    if (list.length >= MAX_PENDING_SHARD_HOME_REQUESTS) {
+      this.system.deadLetters.tell(new DeadLetter(message, null, this.self));
+      if (!this.pendingOverflowWarned.has(message.shardId)) {
+        this.pendingOverflowWarned.add(message.shardId);
+        this.log.warn(
+          `[sharding] ${MAX_PENDING_SHARD_HOME_REQUESTS} regions are already waiting for a home for shard `
+          + `${message.shardId} of type "${this.options.typeName}"; further GetShardHome requests go to dead `
+          + `letters until it is placed — check why no region can take it`,
+        );
+      }
+      return;
+    }
+    list.push(message);
+    this.pending.set(message.shardId, list);
+  }
+
+  /** Forget every waiting `GetShardHome`, and the overflow warnings that went with them. */
+  private clearPendingShardHomes(): void {
+    this.pending.clear();
+    this.pendingOverflowWarned.clear();
   }
 
   /**
@@ -1995,13 +2181,83 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.shardHome.delete(shardId);
   }
 
-  private onEntityStarted(message: EntityStarted): void {
+  private onEntityStarted(message: EntityStarted, peer: NodeAddress): void {
     if (!this.options.rememberEntities) return;
+    if (!this.isReportFromHost(message, peer)) return;
+    if (!this.hasRoomFor(message.shardId, message.entityId)) return;
     this.applyRememberEvent({ kind: 'started', shardId: message.shardId, entityId: message.entityId });
     this.persistRememberEvent({ kind: 'started', shardId: message.shardId, entityId: message.entityId });
   }
 
-  private onEntityStopped(message: EntityStopped): void {
+  /**
+   * Whether a lifecycle report may edit the remember-entities registry (#1267).
+   *
+   * Both kinds name no region, so `claimedNode` has nothing to compare and the
+   * authority gate admitted them from any member — which wrote phantom pairs
+   * into a durable registry that the next allocation pre-creates as live
+   * entities, and forgot real ones.  Three rules, in order:
+   *
+   * - the shard id is one this type can have;
+   * - the sender is the node {@link shardHome} names for the shard.
+   *   **Decision:** attribution by node, not by a region field added to the
+   *   frame.  The region field would be a claim the node makes about itself,
+   *   checked against the same peer — it adds nothing a node-level check does
+   *   not already enforce, and a node hosts at most one region per type that
+   *   can own a shard (a proxy owns none), so the node *is* the region here;
+   * - the entity id is a non-empty string within
+   *   {@link MAX_REMEMBERED_ENTITY_ID_LENGTH}, since it becomes a `Set` member
+   *   and a persisted row.
+   *
+   * A refusal is logged without the entity id, which is the sender's text.
+   */
+  private isReportFromHost(message: EntityStarted | EntityStopped, peer: NodeAddress): boolean {
+    if (!this.isShardIdInRange(message.shardId)) return this.refuseReport(message, peer, 'names no shard of the type');
+    const home = this.regions.get(this.shardHome.get(message.shardId) ?? '');
+    if (home === undefined || !home.node.equals(peer)) {
+      return this.refuseReport(message, peer, `does not host shard ${message.shardId}`);
+    }
+    const entityId: unknown = message.entityId;
+    if (typeof entityId !== 'string' || entityId.length === 0 || entityId.length > MAX_REMEMBERED_ENTITY_ID_LENGTH) {
+      return this.refuseReport(
+        message, peer, `sent an entity id that is not a string of 1..${MAX_REMEMBERED_ENTITY_ID_LENGTH} characters`,
+      );
+    }
+    return true;
+  }
+
+  private refuseReport(message: EntityStarted | EntityStopped, peer: NodeAddress, reason: string): false {
+    this.log.warn(
+      `[sharding] refusing '${message.kind}' for type "${this.options.typeName}" from `
+      + `${sanitizeNodeAddressForLog(peer)} — it ${reason}`,
+    );
+    return false;
+  }
+
+  /**
+   * Whether `shardId` may remember one more entity (#1267): an id already
+   * remembered always may, a new one only below
+   * {@link MAX_REMEMBERED_ENTITIES_PER_SHARD}.  One warning per shard until it
+   * has room again — the reports past the bound are caller-sized.
+   */
+  private hasRoomFor(shardId: number, entityId: string): boolean {
+    const remembered = this.entitiesPerShard.get(shardId);
+    if (remembered === undefined || remembered.has(entityId) || remembered.size < MAX_REMEMBERED_ENTITIES_PER_SHARD) {
+      this.rememberedCapWarned.delete(shardId);
+      return true;
+    }
+    if (!this.rememberedCapWarned.has(shardId)) {
+      this.rememberedCapWarned.add(shardId);
+      this.log.warn(
+        `[sharding] shard ${shardId} of type "${this.options.typeName}" already has `
+        + `${MAX_REMEMBERED_ENTITIES_PER_SHARD} remembered entities; further entities started on it are not `
+        + `remembered until some stop — a type with this many entities per shard wants more shards`,
+      );
+    }
+    return false;
+  }
+
+  private onEntityStopped(message: EntityStopped, peer: NodeAddress): void {
+    if (!this.isReportFromHost(message, peer)) return;
     if (!this.options.rememberEntities) {
       // Existing behaviour: tidy the in-memory map even when we're
       // not remembering entities, so an unwise external trigger
@@ -2051,7 +2307,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .then(() => store.append(this.options.typeName, event))
       .catch((err) => {
         this.system.log.warn(
-          `[sharding] failed to persist remembered-entity event ${event.kind}/${event.shardId}/${event.entityId}`,
+          `[sharding] failed to persist remembered-entity event `
+          + `${event.kind}/${event.shardId}/${sanitizeWireTextForLog(event.entityId)}`,
           err,
         );
       });
@@ -2084,11 +2341,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
     const queryId = ++this.nextStatsQuery;
     this.statsQueries.set(queryId, query);
+    // Only ever *sends* — see `StatsQueryTimeoutTick` (#1750).
     query.timer = this.system.scheduler.scheduleOnceFunction(message.timeoutMs, () => {
-      const pending = this.statsQueries.get(queryId);
-      if (!pending) return;
-      this.statsQueries.delete(queryId);
-      this.answerStatsQuery(pending);
+      this.self.tell(new StatsQueryTimeoutTick(queryId, query));
     });
     for (const [key] of targets) {
       this.sendToRegion(key, {
@@ -2185,7 +2440,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // owns the canonical state now.
       this.regions.clear();
       this.shardHome.clear();
-      this.pending.clear();
+      this.clearPendingShardHomes();
       // A refusal is a verdict of *this* leader term.  Every region
       // re-registers on the leader change, so the next term re-derives it.
       this.refusedRegions.clear();
@@ -2213,7 +2468,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // route through the mailbox so the state machine serialises with
     // any in-flight acquire result.
     if (this.options.lease) {
-      this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
+      this.self.tell(new ReconcileEvent());
     }
   }
 
@@ -2254,7 +2509,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const store = this.options.coordinatorStateStore;
     if (!store) return;
     const loaded = (data: CoordinatorStateData | null): void => {
-      this.self.tell({ kind: 'coordinator-state-loaded', term, data } satisfies CoordinatorEvent);
+      this.self.tell(new CoordinatorStateLoadedEvent(term, data));
     };
     store.load(this.options.typeName).then(loaded, (err: unknown) => {
       this.system.log.warn(`[sharding] coordinator-state load failed for '${this.options.typeName}'`, err);
@@ -2433,7 +2688,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.shardMapPublishTimer) return;
     this.shardMapPublishTimer = this.system.scheduler.scheduleOnceFunction(
       SHARD_MAP_PUBLISH_DELAY_MS,
-      () => { this.shardMapPublishTimer = null; this.publishShardMap(); },
+      // Only ever *sends* — see `ShardMapPublishTick` (#1750).
+      () => { this.self.tell(SHARD_MAP_PUBLISH_TICK); },
     );
   }
 
@@ -2811,9 +3067,52 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!owner) return;
 
     const timeout = this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS;
-    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => this.onHandOffTimeout(shardId));
-    this.rebalanceInProgress.set(shardId, { from: ownerKey, timer });
+    // Only ever *sends* — see `HandOffTimeoutTick` (#1750).  The callback reads
+    // `handOff` when it fires, by which time it is assigned.
+    let handOff: InFlightHandOff | null = null;
+    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => {
+      if (handOff !== null) this.self.tell(new HandOffTimeoutTick(shardId, handOff));
+    });
+    handOff = { from: ownerKey, timer };
+    this.rebalanceInProgress.set(shardId, handOff);
     this.sendToRegion(ownerKey, { kind: 'sharding.HandOff', shardId });
+  }
+
+  /** The rebalance timer fired; tick now, behind whatever was queued first (#1750). */
+  private onRebalanceTick(): void {
+    if (this.isActive() && this.registrationBarrier === null) this.rebalanceTick();
+  }
+
+  /**
+   * A hand-off's timer fired (#1750).  Stale when that hand-off is no longer
+   * the one in flight for the shard — it completed, was cleared with its region
+   * or a lost leadership, or a new one replaced it — all of which a
+   * `HandOffComplete` or a leader change queued ahead of the tick can do.
+   */
+  private onHandOffTimeoutTick(tick: HandOffTimeoutTick): void {
+    if (this.rebalanceInProgress.get(tick.shardId) !== tick.handOff) return;
+    this.onHandOffTimeout(tick.shardId);
+  }
+
+  /**
+   * A statistics query's deadline is up (#1750): answer with what has come
+   * in.  Stale when the query was answered in full, or dropped with a lost
+   * leadership, before the tick was read.
+   */
+  private onStatsQueryTimeoutTick(tick: StatsQueryTimeoutTick): void {
+    if (this.statsQueries.get(tick.queryId) !== tick.query) return;
+    this.statsQueries.delete(tick.queryId);
+    this.answerStatsQuery(tick.query);
+  }
+
+  /**
+   * The coalescing window closed; publish the map as it stands now (#1750).
+   * The timer field stays set until here, so a change in the meantime is
+   * folded into this publish instead of arming a second one.
+   */
+  private onShardMapPublishTick(): void {
+    this.shardMapPublishTimer = null;
+    this.publishShardMap();
   }
 
   /**
@@ -2852,6 +3151,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       });
     }
     this.pending.delete(shardId);
+    this.pendingOverflowWarned.delete(shardId);
   }
 
   private shipRememberedEntities(shardId: number): void {

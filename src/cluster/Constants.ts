@@ -332,6 +332,57 @@ export const CONFLICT_RELEASE_MAX_ATTEMPTS = 5;
 export const SHARD_MAP_PUBLISH_DELAY_MS = 50;
 
 /**
+ * How many distinct requesters' `GetShardHome` the coordinator holds for one
+ * shard it cannot place yet (#1219).
+ *
+ * The queue is emptied only when the shard is allocated, and any authenticated
+ * member may ask — so without a bound, asking over and over for a shard that
+ * no region can take grew the coordinator's heap for as long as it stayed
+ * unplaceable.  A repeat of a request already waiting is not queued at all
+ * (it would be answered with the same frame), so what this bounds is distinct
+ * `(node, region)` pairs.  An honest cluster has one region per node per type,
+ * and this node accepts at most {@link MAX_INBOUND_CONNECTIONS} peers, so the
+ * same figure covers every honest requester with nothing to spare for a
+ * flood.  The queue keeps its oldest entries; a request past the bound goes to
+ * dead letters, and the region that sent it asks again with its next message.
+ */
+export const MAX_PENDING_SHARD_HOME_REQUESTS = 1_024;
+
+/**
+ * How many hex digits of `randomId` entropy a region's correlation id is drawn
+ * from — its remote asks and its `shards()` queries alike (#1268).
+ *
+ * The id travels as a JSON number, so the protocol and a rolling upgrade are
+ * untouched, and 13 hex digits (52 bits) is the most a number holds exactly
+ * below `Number.MAX_SAFE_INTEGER`.  It replaced a counter from 1, which made
+ * every live id a small integer any member could guess and answer.
+ */
+export const SHARD_CORRELATION_ID_HEX_DIGITS = 13;
+
+/**
+ * The longest entity id the coordinator writes into its remember-entities
+ * registry (#1267).
+ *
+ * The id arrives in a lifecycle report off the wire and becomes a `Set` member
+ * and a persisted row, which the next allocation turns back into a real entity
+ * actor — so its size is the sender's to choose unless something bounds it.
+ * 1 024 characters is many times any id an application derives from a key (a
+ * UUID is 36) and still keeps one report from writing an unbounded row.
+ */
+export const MAX_REMEMBERED_ENTITY_ID_LENGTH = 1_024;
+
+/**
+ * How many remembered entities the coordinator keeps for one shard (#1267).
+ *
+ * The registry is durable and is pre-created as live entities on the next
+ * allocation, so a member with a claim on a shard could otherwise grow both
+ * without limit.  100 000 per shard is far above any population a shard is
+ * sized for — a type that needs more wants more shards — and a report past it
+ * is refused with a warning rather than silently dropped.
+ */
+export const MAX_REMEMBERED_ENTITIES_PER_SHARD = 100_000;
+
+/**
  * How long the singleton manager waits before re-spawning a child that died
  * unexpectedly (#1175).
  *
@@ -636,6 +687,17 @@ export const MAX_LOGGED_WIRE_KIND_LENGTH = 64;
  * three parts at this bound still keep the line finite.
  */
 export const MAX_LOGGED_ADDRESS_PART_LENGTH = 253;
+
+/**
+ * How many characters of a free-form, peer-supplied string — a region path, an
+ * entity id — reach a log line (#1220).
+ *
+ * Wider than {@link MAX_LOGGED_WIRE_KIND_LENGTH} because what it bounds is
+ * longer by nature: a region path carries the system name, the guardian and the
+ * type name, and an entity id is whatever the application chose.  256 keeps a
+ * real path whole and still keeps one frame from writing an unbounded line.
+ */
+export const MAX_LOGGED_WIRE_TEXT_LENGTH = 256;
 
 /**
  * How often each `EnvelopeTrust` refusal reason may reach the log, whatever

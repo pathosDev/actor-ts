@@ -47,6 +47,7 @@ import {
   LeaderChanged,
   MemberRemoved,
   MemberUp,
+  type ClusterEvent,
   ShardMapChanged,
   ShardRegionRegistered,
   ShardRegionRegistrationRefused,
@@ -54,6 +55,13 @@ import {
 import { metricsOf } from '../../metrics/MetricsExtension.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef, remoteActorPath } from '../RemoteActorRef.js';
+import { SHARD_CORRELATION_ID_HEX_DIGITS } from '../Constants.js';
+import { randomId } from '../../util/RandomString.js';
+import {
+  sanitizeNodeAddressForLog,
+  sanitizeWireKindForLog,
+  sanitizeWireTextForLog,
+} from '../WireValidation.js';
 import { hashShardId } from './ShardAllocator.js';
 import { Passivate } from './Passivate.js';
 import {
@@ -248,6 +256,43 @@ class AsksSweepTick {}
 const ASKS_SWEEP_TICK = new AsksSweepTick();
 
 /**
+ * A cluster event, handed to the region by its own `cluster.subscribe`
+ * callback (#1750).
+ *
+ * `Cluster.emit` calls that callback synchronously, so handling the event
+ * there ran it ahead of everything already in the mailbox: a `MemberRemoved`
+ * overtook a queued `ShardHome` naming the removed node, its invalidation
+ * found nothing to clear, and the stale home was applied afterwards — for
+ * good.  The callback only sends this now, so the event is applied in mailbox
+ * order.  A class, like the ticks, so nothing off the wire can be one.
+ */
+class ClusterEventReceived {
+  constructor(readonly event: ClusterEvent) {}
+}
+
+/**
+ * "Retry the registration" — the region telling itself, on a timer (#1750).
+ *
+ * The shape of {@link PassivationSweepTick}: the retry re-targets the
+ * coordinator and sends `Register`, and run from the scheduler's callback it
+ * did so even with a `RegisterAcknowledgment` or `RegisterRefused` already
+ * queued.  One instance per armed retry, so a tick whose retry an answer has
+ * since cancelled is recognised as stale and ignored — a timer that already
+ * fired cannot take back the tick it sent.
+ */
+class RegisterRetryTick {}
+
+/**
+ * "Beat to the coordinator" — the region telling itself, on a timer (#1750).
+ * On the region's turn, a beat cannot go out ahead of a `RegisterRefused`
+ * already queued.
+ */
+class RegionHeartbeatTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const REGION_HEARTBEAT_TICK = new RegionHeartbeatTick();
+
+/**
  * A shard's run of unexpected deaths, and the wait it is in (#1437).
  *
  * Kept from the first such death until the region gives the shard up — a
@@ -312,7 +357,40 @@ type PendingQueryCaller = {
  */
 type PendingStatsQuery = PendingQueryCaller & {
   readonly timeoutMs: number;
+  /**
+   * The node whose coordinator was last asked, the only one whose answer
+   * settles the query (#1268) — re-recorded each time an acknowledgment asks
+   * again, so a successor coordinator's answer counts and its predecessor's
+   * late one does not.  `null` while no coordinator is known.
+   */
+  answerer: NodeAddress | null;
 };
+
+/**
+ * A caller waiting on an entity on another node, and the node it is waiting
+ * on (#1268).  The reply settles it only when it arrives from `node`: the
+ * correlation alone was a number any member could send.
+ */
+type PendingRemoteAsk = {
+  readonly sender: ActorRef;
+  readonly expireAt: number;
+  readonly node: NodeAddress;
+};
+
+/**
+ * A fresh correlation for a table keyed by number, drawn from `randomId` and
+ * redrawn while `taken` recognises it (#1268).
+ *
+ * Read back as a number so the wire shape — and a rolling upgrade — stays as
+ * it was; {@link SHARD_CORRELATION_ID_HEX_DIGITS} says why that is enough.
+ */
+function randomCorrelationId(taken: (correlationId: number) => boolean): number {
+  const digits = randomId(
+    SHARD_CORRELATION_ID_HEX_DIGITS,
+    (candidate) => taken(Number.parseInt(candidate, 16)),
+  );
+  return Number.parseInt(digits, 16);
+}
 
 /** What the region knows about a local entity — enough to decide passivation. */
 type EntityActivity = {
@@ -382,6 +460,9 @@ export class ShardRegion<TMessage = unknown>
     | PassivationSweepTick
     | AsksSweepTick
     | ShardRespawnTick
+    | ClusterEventReceived
+    | RegisterRetryTick
+    | RegionHeartbeatTick
     | ShardPassivationDeclined
   > {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
@@ -487,6 +568,8 @@ export class ShardRegion<TMessage = unknown>
   private envelopeUnsubscribe: (() => void) | null = null;
   private passivationTimer: Cancellable | null = null;
   private registerTimer: Cancellable | null = null;
+  /** The tick the armed register retry will send — any other is stale (#1750). */
+  private registerRetryTick: RegisterRetryTick | null = null;
   /**
    * Drives the liveness beat to the coordinator, or `null` when
    * `staleRegionDetection` is off — which it is unless a deployment asks for it
@@ -588,12 +671,10 @@ export class ShardRegion<TMessage = unknown>
    * Keyed by a correlation id that travels with {@link ShardEnvelope} across
    * the wire; the owning region looks it up when a {@link ShardReply} arrives.
    */
-  private readonly pendingAsks = new Map<number, { sender: ActorRef; expireAt: number }>();
-  private nextCorrelation = 0;
+  private readonly pendingAsks = new Map<number, PendingRemoteAsk>();
 
   /** Local callers of `ClusterSharding.shards()`, keyed by their correlation. */
   private readonly pendingStatsAsks = new Map<number, PendingStatsQuery>();
-  private nextStatsCorrelation = 0;
   /**
    * Local callers of `ClusterSharding.shardRefFor()`, keyed by shard — several
    * callers can wait on one shard, and each carries its own expiry, so a caller
@@ -740,13 +821,11 @@ export class ShardRegion<TMessage = unknown>
       randomFactor: this.config.shardFailureBackoffRandomFactor,
     });
 
-    this.unsubscribe = this.config.cluster.subscribe(evt =>
-      match(evt)
-        .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
-        .with(P.instanceOf(MemberRemoved), (event) => this.onMemberRemoved(event))
-        .with(P.instanceOf(MemberUp), () => this.onMemberUp())
-        .otherwise(() => this.onOtherClusterEvent()),
-    );
+    // Only ever *sends*: the event is applied on the region's turn, behind
+    // whatever is already queued — see `ClusterEventReceived` (#1750).
+    this.unsubscribe = this.config.cluster.subscribe((event) => {
+      this.self.tell(new ClusterEventReceived(event));
+    });
 
     // Claim the region's own path on the envelope router *before* registering
     // with the coordinator, so nothing the registration provokes can arrive
@@ -790,9 +869,41 @@ export class ShardRegion<TMessage = unknown>
       const beatMs = this.config.regionHeartbeatIntervalMs;
       this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         beatMs, beatMs,
-        () => this.sendRegionHeartbeat(),
+        // Only ever *sends* — see `RegionHeartbeatTick` (#1750).
+        () => { this.self.tell(REGION_HEARTBEAT_TICK); },
       );
     }
+  }
+
+  /** A cluster event, now on the region's turn (#1750). */
+  private onClusterEventReceived(message: ClusterEventReceived): void {
+    match(message.event)
+      .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
+      .with(P.instanceOf(MemberRemoved), (event) => this.onMemberRemoved(event))
+      .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+      .otherwise(() => this.onOtherClusterEvent());
+  }
+
+  /** The heartbeat timer fired; beat now, behind whatever was queued first (#1750). */
+  private onRegionHeartbeatTick(): void { this.sendRegionHeartbeat(); }
+
+  /**
+   * The register retry fired (#1750).  Stale when an answer — or a newer
+   * retry — has replaced the one that sent it: the registration it was for is
+   * settled, and retrying would re-target the coordinator and send `Register`
+   * behind an acknowledgment or a refusal that already said so.
+   */
+  private onRegisterRetryTick(tick: RegisterRetryTick): void {
+    if (tick !== this.registerRetryTick) return;
+    this.registerRetryTick = null;
+    this.ensureRegistered();
+  }
+
+  /** Stop retrying the registration; a tick already sent is now stale. */
+  private cancelRegisterRetry(): void {
+    this.registerTimer?.cancel();
+    this.registerTimer = null;
+    this.registerRetryTick = null;
   }
 
   /**
@@ -923,6 +1034,9 @@ export class ShardRegion<TMessage = unknown>
       | PassivationSweepTick
       | AsksSweepTick
       | ShardRespawnTick
+      | ClusterEventReceived
+      | RegisterRetryTick
+      | RegionHeartbeatTick
       | ShardPassivationDeclined,
   ): void {
     if (message instanceof EntityRecoveryTick) {
@@ -943,6 +1057,18 @@ export class ShardRegion<TMessage = unknown>
     }
     if (message instanceof AsksSweepTick) {
       this.onAsksSweepTick();
+      return;
+    }
+    if (message instanceof ClusterEventReceived) {
+      this.onClusterEventReceived(message);
+      return;
+    }
+    if (message instanceof RegisterRetryTick) {
+      this.onRegisterRetryTick(message);
+      return;
+    }
+    if (message instanceof RegionHeartbeatTick) {
+      this.onRegionHeartbeatTick();
       return;
     }
     if (message instanceof AuthenticatedShardingMessage) {
@@ -1143,37 +1269,40 @@ export class ShardRegion<TMessage = unknown>
       return;
     }
 
-    // Preserve an existing correlation if this sender is itself a proxy
-    // for an upstream asker (multi-hop forwarding).  Otherwise register a
-    // fresh correlation keyed to our local pendingAsks table so the reply
-    // reaches this region.
-    let originNode: NodeAddress;
-    let originRegion: string;
-    let correlationId: number;
-    if (sender instanceof ShardSenderRef) {
-      originNode = sender.originNode;
-      originRegion = sender.originRegion;
-      correlationId = sender.correlationId;
-    } else {
-      originNode = this.config.cluster.selfAddress;
-      originRegion = this.self.path.toString();
-      correlationId = this.registerPendingAsk(sender);
-    }
-
+    // Always a fresh correlation in this region's own table, bound to the node
+    // the envelope goes to — including when the sender is itself a
+    // `ShardSenderRef` for an upstream asker (multi-hop forwarding).  The
+    // origin's correlation used to travel on untouched, so the next hop
+    // answered the origin directly, from a node the origin never asked, and
+    // the origin could not tell that reply from a forgery (#1268).  Now each
+    // hop answers the node that asked it: the reply lands here, and the
+    // `ShardSenderRef` it settles passes it back upstream.
     const envelope: ShardEnvelope = {
       kind: 'sharding.Envelope',
       message,
-      originNode: originNode.toJSON(),
-      originRegion,
-      correlationId,
+      originNode: this.config.cluster.selfAddress.toJSON(),
+      originRegion: this.self.path.toString(),
+      correlationId: this.registerPendingAsk(sender, node),
     };
     new RemoteActorRef<ShardingMessage>(node, path, this.config.cluster).tell(envelope);
   }
 
-  private registerPendingAsk(sender: ActorRef): number {
-    const id = ++this.nextCorrelation;
-    this.pendingAsks.set(id, { sender, expireAt: this.system.clock.now() + this.asksTtlMs });
-    return id;
+  private registerPendingAsk(sender: ActorRef, node: NodeAddress): number {
+    const correlationId = randomCorrelationId((candidate) => this.pendingAsks.has(candidate));
+    this.pendingAsks.set(correlationId, { sender, expireAt: this.system.clock.now() + this.asksTtlMs, node });
+    return correlationId;
+  }
+
+  /**
+   * Whether a reply attributed to `peer` comes from `expected`, the node the
+   * question went to (#1268).  `null` is a frame that reached the mailbox
+   * unattributed — a `ShardSenderRef` answering on this very node tells its
+   * reply straight in — so it counts only when the question stayed here too.
+   */
+  private answeredBy(peer: NodeAddress | null, expected: NodeAddress | null): boolean {
+    if (expected === null) return false;
+    if (peer === null) return expected.equals(this.config.cluster.selfAddress);
+    return peer.equals(expected);
   }
 
   /**
@@ -1282,9 +1411,12 @@ export class ShardRegion<TMessage = unknown>
 
   private scheduleRegisterRetry(): void {
     this.registerTimer?.cancel();
+    const tick = new RegisterRetryTick();
+    this.registerRetryTick = tick;
     this.registerTimer = this.system.scheduler.scheduleOnceFunction(
       this.config.registerRetryIntervalMs,
-      () => this.ensureRegistered(),
+      // Only ever *sends* — see `RegisterRetryTick` (#1750).
+      () => { this.self.tell(tick); },
     );
   }
 
@@ -1400,19 +1532,19 @@ export class ShardRegion<TMessage = unknown>
       .with({ kind: 'sharding.HandOff' }, (m) => this.onHandOff(m, peer))
       .with({ kind: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m, peer))
       .with({ kind: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
-      .with({ kind: 'sharding.Reply' }, (m) => this.onShardReply(m))
+      .with({ kind: 'sharding.Reply' }, (m) => this.onShardReply(m, peer))
       // An EntityRef addressed one of our entities by id.
       .with({ kind: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
       // Someone on another node told a ref to one of our shards.
       .with({ kind: 'sharding.ToShard' }, (m) => this.onToShard(m))
-      // Lifecycle reports coming up from our own shards.
-      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
-      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      // Lifecycle reports coming up from our own shards — and only from them.
+      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m, peer))
+      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m, peer))
       // Introspection — node-local queries plus the coordinator's fan-out.
       .with({ kind: 'sharding.GetShards' }, (m) => this.onGetShards(m))
       .with({ kind: 'sharding.GetShardLocation' }, (m) => this.onGetShardLocation(m))
       .with({ kind: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
-      .with({ kind: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
+      .with({ kind: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m, peer))
       .with({ kind: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m, peer))
       // Every other `sharding.` kind — see `onUnhandled` for what that is.
       .otherwise((m) => this.onUnhandled(m));
@@ -1459,9 +1591,11 @@ export class ShardRegion<TMessage = unknown>
   private fromCoordinator(message: ShardingMessage, peer: NodeAddress | null): boolean {
     if (peer !== null && this.coordinatorNode !== null && peer.equals(this.coordinatorNode)) return true;
     this.log.warn(
-      `[sharding] refusing '${message.kind}' for '${this.config.typeName}' from `
-      + `${peer ?? 'an unauthenticated sender'} — only the coordinator's node `
-      + `(${this.coordinatorNode ?? 'not yet known'}) may issue it`,
+      // Escaped, though every caller today dispatches from a literal arm: the
+      // helper is what keeps that true if one ever stops doing so (#1220).
+      `[sharding] refusing '${sanitizeWireKindForLog(message.kind)}' for '${this.config.typeName}' from `
+      + `${peer === null ? 'an unauthenticated sender' : sanitizeNodeAddressForLog(peer)} — only the `
+      + `coordinator's node (${this.coordinatorNode ?? 'not yet known'}) may issue it`,
     );
     return false;
   }
@@ -1554,9 +1688,24 @@ export class ShardRegion<TMessage = unknown>
     this.system.deadLetters.tell(new DeadLetter(message.message, sender, this.self));
   }
 
-  private onShardReply(message: ShardReply): void {
+  /**
+   * A remote entity answered an ask (#1268).  Settled only from the node the
+   * ask went to; a reply from anyone else is refused and the entry left in
+   * place, so the honest reply still lands, and the asks sweep still reclaims
+   * an entry nobody answers.  Logged at debug, without the payload: a flood of
+   * forgeries must not become a flood of warnings.
+   */
+  private onShardReply(message: ShardReply, peer: NodeAddress | null): void {
     const entry = this.pendingAsks.get(message.correlationId);
     if (!entry) return;
+    if (!this.answeredBy(peer, entry.node)) {
+      this.log.debug(
+        `[sharding] ignoring a reply for '${this.config.typeName}' from `
+        + `${peer === null ? 'an unattributed sender' : sanitizeNodeAddressForLog(peer)} — `
+        + `the ask it names went to ${sanitizeNodeAddressForLog(entry.node)}`,
+      );
+      return;
+    }
     this.pendingAsks.delete(message.correlationId);
     entry.sender.tell(message.message as never);
   }
@@ -1565,8 +1714,7 @@ export class ShardRegion<TMessage = unknown>
     if (!this.fromCoordinator(message, peer)) return;
     this.log.debug(`[sharding] region '${this.config.typeName}' registered with coordinator`);
     this.registerRefused = false;
-    this.registerTimer?.cancel();
-    this.registerTimer = null;
+    this.cancelRegisterRetry();
     this.askAgainForPendingQueries();
     // Published only on the transition — see the field's own note.  It goes on
     // the node-local bus like `ShardMapChanged`, because it describes what
@@ -1608,7 +1756,7 @@ export class ShardRegion<TMessage = unknown>
   private askAgainForPendingQueries(): void {
     for (const shardId of this.pendingLocationAsks.keys()) this.askCoordinator(shardId);
     for (const [correlationId, pending] of this.pendingStatsAsks) {
-      this.askCoordinatorForStats(correlationId, pending.timeoutMs);
+      this.askCoordinatorForStats(correlationId, pending);
     }
   }
 
@@ -1643,12 +1791,12 @@ export class ShardRegion<TMessage = unknown>
     // it.  Clearing this is also what makes a later acknowledgment a real
     // transition again rather than a silent one.
     this.registrationAnnounced = false;
-    this.registerTimer?.cancel();
-    this.registerTimer = null;
+    this.cancelRegisterRetry();
     this.log.error(
       `[sharding] the coordinator refused to register region '${this.config.typeName}': `
       + `numShards must match across the cluster, but this node is configured with `
-      + `${message.regionNumShards} and the coordinator governs the type with ${message.numShards}. `
+      + `${sanitizeWireTextForLog(message.regionNumShards)} and the coordinator governs the type with `
+      + `${sanitizeWireTextForLog(message.numShards)}. `
       + `No shard will be allocated here and messages for this type will keep buffering until the `
       + `configuration agrees. Set the same numShards on every node that starts or proxies this type `
       + `(explicitly, or via ${ConfigKeys.sharding.numberOfShards}).`,
@@ -1757,7 +1905,7 @@ export class ShardRegion<TMessage = unknown>
     // `readShardingOptionsFromConfig` does.
     this.log.warn(
       `[sharding] the coordinator evicted this region of '${this.config.typeName}' after hearing `
-      + `nothing from it for ${message.silentForMs} ms and re-homed its shards; giving up the `
+      + `nothing from it for ${sanitizeWireTextForLog(message.silentForMs)} ms and re-homed its shards; giving up the `
       + `${released} shard(s) still hosted here and registering again. A node that is plainly `
       + `healthy seeing this is beating every ${this.config.regionHeartbeatIntervalMs} ms into a `
       + `stale-after that is too tight for it, or its beats are being lost on the way.`,
@@ -1828,7 +1976,7 @@ export class ShardRegion<TMessage = unknown>
   private isKnownShardId(shardId: number): boolean {
     if (this.isShardIdInRange(shardId)) return true;
     this.log.warn(
-      `[sharding] ignoring shard id ${shardId} for '${this.config.typeName}' — `
+      `[sharding] ignoring shard id ${sanitizeWireTextForLog(shardId)} for '${this.config.typeName}' — `
       + `outside 0..${this.config.numShards - 1}`,
     );
     return false;
@@ -1899,6 +2047,21 @@ export class ShardRegion<TMessage = unknown>
     if (this.registerRefused) return;
     if (!this.isKnownShardId(message.shardId)) return;
     const node = NodeAddress.fromJSON(message.node);
+    // A home on a node that is no longer a member would route every message
+    // for the shard there for good: nothing drops a cached home but the
+    // removal's own invalidation, a hand-off and a release (#1750).  Mailbox
+    // order puts the invalidation behind any home queued before the event;
+    // this covers a home that arrives after it — the coordinator answered
+    // before it learned of the removal.  Nothing is re-asked here: the
+    // removal re-registered this region, which re-asked for every buffered
+    // shard, and the coordinator answers that from its corrected map.
+    if (!this.isCurrentMember(node)) {
+      this.log.debug(
+        `[sharding] ignoring a home for shard ${message.shardId} of '${this.config.typeName}' on `
+        + `${sanitizeNodeAddressForLog(node)} — it is no member of the cluster any more`,
+      );
+      return;
+    }
     const local = node.equals(this.config.cluster.selfAddress) && message.region === this.self.path.toString();
     this.log.debug(
       `[sharding] shard ${message.shardId} of '${this.config.typeName}' home=${node} (${local ? 'LOCAL' : 'remote'})`,
@@ -1951,6 +2114,17 @@ export class ShardRegion<TMessage = unknown>
     this.flushBuffer(message.shardId);
   }
 
+  /**
+   * Whether `node` is this node or in this node's member view — `getMembers()`,
+   * which drops only `removed` tombstones (#1750).  A node that is leaving,
+   * down or unreachable still counts: its `MemberRemoved` is yet to come, and
+   * will invalidate whatever home names it.
+   */
+  private isCurrentMember(node: NodeAddress): boolean {
+    if (node.equals(this.config.cluster.selfAddress)) return true;
+    return this.config.cluster.getMembers().some((member) => member.address.equals(node));
+  }
+
   /* ---------------------------- Introspection --------------------------- */
 
   /**
@@ -1963,28 +2137,51 @@ export class ShardRegion<TMessage = unknown>
   private onGetShards(message: GetShards): void {
     const asker = this.sender.toNullable();
     if (!asker) return;
-    const correlationId = ++this.nextStatsCorrelation;
-    this.pendingStatsAsks.set(correlationId, {
+    const correlationId = randomCorrelationId((candidate) => this.pendingStatsAsks.has(candidate));
+    const pending: PendingStatsQuery = {
       asker,
       expireAt: this.system.clock.now() + this.asksTtlMs,
       timeoutMs: message.timeoutMs,
-    });
-    this.askCoordinatorForStats(correlationId, message.timeoutMs);
+      answerer: null,
+    };
+    this.pendingStatsAsks.set(correlationId, pending);
+    this.askCoordinatorForStats(correlationId, pending);
   }
 
-  private askCoordinatorForStats(correlationId: number, timeoutMs: number): void {
+  /**
+   * Ask the coordinator for `pending`'s statistics, and record whose node was
+   * asked — after the send, because `tellCoordinator` may first have to
+   * re-target the coordinator (#1268).
+   */
+  private askCoordinatorForStats(correlationId: number, pending: PendingStatsQuery): void {
     this.tellCoordinator({
       kind: 'sharding.GetClusterShardingStats',
       correlationId,
       requester: this.self.path.toString(),
       requesterNode: this.config.cluster.selfAddress.toJSON(),
-      timeoutMs,
+      timeoutMs: pending.timeoutMs,
     });
+    pending.answerer = this.coordinatorNode;
   }
 
-  private onClusterShardingStats(message: ClusterShardingStats): void {
+  /**
+   * The coordinator's answer to a `shards()` query — settled only from the node
+   * that query was last put to (#1268), for the reason {@link onShardReply}
+   * gives: the correlation alone was a number any member could send, and a
+   * fabricated answer here feeds an operator or an autoscaler invented shard
+   * statistics.
+   */
+  private onClusterShardingStats(message: ClusterShardingStats, peer: NodeAddress | null): void {
     const pending = this.pendingStatsAsks.get(message.correlationId);
     if (!pending) return;
+    if (peer === null || !this.answeredBy(peer, pending.answerer)) {
+      this.log.debug(
+        `[sharding] ignoring a shards() answer for '${this.config.typeName}' from `
+        + `${peer === null ? 'an unattributed sender' : sanitizeNodeAddressForLog(peer)} — `
+        + `only the coordinator that was asked may answer it`,
+      );
+      return;
+    }
     this.pendingStatsAsks.delete(message.correlationId);
     pending.asker.tell(message.shards.map((location) => this.toShardInfo(location)) as never);
   }
@@ -2142,7 +2339,11 @@ export class ShardRegion<TMessage = unknown>
    * because it owns the passivation policies and answers stats queries, and
    * relays the event to the coordinator when entities are remembered.
    */
-  private onEntityStarted(message: EntityStarted): void {
+  private onEntityStarted(message: EntityStarted, peer: NodeAddress | null): void {
+    if (!this.fromOwnShard(message, peer)) return;
+    // Only for a shard this region hosts: a report for any other would write an
+    // index entry nothing here can ever clear, and relay nothing anyway.
+    if (!this.localShards.has(message.shardId) && !this.shards.has(message.shardId)) return;
     let entityIds = this.shardEntities.get(message.shardId);
     if (!entityIds) { entityIds = new Set(); this.shardEntities.set(message.shardId, entityIds); }
     entityIds.add(message.entityId);
@@ -2178,7 +2379,38 @@ export class ShardRegion<TMessage = unknown>
       && !this.releasingShards.has(shardId);
   }
 
-  private onEntityStopped(message: EntityStopped): void {
+  /**
+   * Whether a lifecycle report came from one of this region's own shards
+   * (#1267).
+   *
+   * A shard tells its parent with a plain local `tell`, so its report arrives
+   * unattributed.  One that arrived inside an {@link AuthenticatedShardingMessage}
+   * came off the wire, and no peer has any business reporting a local shard's
+   * lifecycle: it planted an index entry per attacker-chosen id, kept the
+   * shard's idle clock from starting, and under `rememberEntities` was relayed
+   * to the coordinator under *this* node's identity, laundering the forgery
+   * past the coordinator's own gate.  The id has to be in range as well, so an
+   * impossible shard never gets an index entry.
+   *
+   * Only the attribution decides; the hosting check is `onEntityStarted`'s
+   * alone.  A stop may still arrive after its shard moved away — the shard's
+   * actor reports its entities as it goes down — and the bookkeeping it clears
+   * would otherwise stay behind; a stop from anything but a local shard is
+   * refused by the attribution rule above it.
+   */
+  private fromOwnShard(message: EntityStarted | EntityStopped, peer: NodeAddress | null): boolean {
+    if (peer !== null) {
+      this.log.warn(
+        `[sharding] refusing '${message.kind}' for '${this.config.typeName}' from `
+        + `${sanitizeNodeAddressForLog(peer)} — only this region's own shards report their entities`,
+      );
+      return false;
+    }
+    return this.isKnownShardId(message.shardId);
+  }
+
+  private onEntityStopped(message: EntityStopped, peer: NodeAddress | null): void {
+    if (!this.fromOwnShard(message, peer)) return;
     this.shardEntities.get(message.shardId)?.delete(message.entityId);
     if ((this.shardEntities.get(message.shardId)?.size ?? 0) === 0) {
       // That was the last one — the shard's own idle window starts here.
