@@ -111,9 +111,15 @@ class CapturingLogger implements Logger {
   withSource(_source: string): Logger { return this; }
   withFields(_fields: LogContextData): Logger { return this; }
 
-  /** Error records whose **message** names `projection` — not their source. */
+  /**
+   * The projection's own error records — whose **message** names it as
+   * `projection <name>`, not their source.  The prefix keeps out the
+   * supervisor's line for the same failure (#916), which names the
+   * projection's actor *path* and is throttled per actor, so counting it here
+   * would tie this count to timing rather than to the failures.
+   */
   errorsNaming(projection: string): LogRecord[] {
-    return this.records.filter((r) => r.level === 'error' && r.message.includes(projection));
+    return this.records.filter((r) => r.level === 'error' && r.message.includes(`projection ${projection}`));
   }
 }
 

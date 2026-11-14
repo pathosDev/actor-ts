@@ -23,14 +23,14 @@ Dashboard zu verdrahten.
 ## Actor-Metriken
 
 Metriken für Actor-Lebenszyklus und Nachrichtenverarbeitung,
-systemweit aufgezeichnet — jede ist eine einzelne Serie ohne
-Labels:
+systemweit aufgezeichnet — jede eine einzelne Serie ohne Labels,
+außer dem Restart-Zähler, der die Actor-Klasse trägt:
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
 | `actor_created_total` | counter | — | Erfolgreich gestartete Actor. |
 | `actor_terminated_total` | counter | — | Gestoppte Actor (sauberer Stopp oder nach einem Fehler). |
-| `actor_restarted_total` | counter | — | Supervisor-getriebene Restarts. |
+| `actor_restarted_total` | counter | `class` | Supervisor-getriebene Restarts, nach Actor-Klasse. |
 | `actor_messages_delivered_total` | counter | — | An `onReceive` zugestellte User-Nachrichten. |
 | `actor_message_handler_seconds` | histogram | — | Zeit in `onReceive`-Handlern, in Sekunden. |
 

@@ -3,6 +3,7 @@ import {
   ConsoleLogger, DISPLAY_NAME_FIELD, JsonLogger, LogLevel, NoopLogger, type JsonLogSink,
 } from '../../src/Logger.js';
 import { LogContext } from '../../src/LogContext.js';
+import { inspect } from 'node:util';
 
 describe('LogLevel', () => {
   test('orders numerically Debug < Info < Warn < Error < Off', () => {
@@ -387,5 +388,90 @@ describe('JsonLogger — #311 structured logging', () => {
     expect(r2.source).toBeUndefined();
     expect(r2.component).toBeUndefined();
     expect(r2.app).toBe('demo');
+  });
+});
+
+/**
+ * A log call never throws, whatever it is handed (#1749).  The framework
+ * reports lifecycle failures through these loggers, and a throw from the
+ * report used to skip the supervision step it was reporting on.
+ */
+describe('the stock loggers are total over their arguments', () => {
+  function messageGetterThrows(): Error {
+    const error = new Error('x');
+    Object.defineProperty(error, 'message', { get() { throw new Error('message getter boom'); } });
+    return error;
+  }
+  function revokedProxy(): object {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    return proxy;
+  }
+  function inspectThrows(): object {
+    return { [Symbol.for('nodejs.util.inspect.custom')]() { throw new Error('inspect boom'); } };
+  }
+  const HOSTILE: ReadonlyArray<[string, () => unknown]> = [
+    ['an error whose message getter throws', messageGetterThrows],
+    ['a revoked proxy', revokedProxy],
+    ['an object whose custom inspect throws', inspectThrows],
+  ];
+
+  describe('JsonLogger', () => {
+    for (const [name, build] of HOSTILE) {
+      test(`writes the line for ${name}`, () => {
+        const lines: string[] = [];
+        const log = new JsonLogger(LogLevel.Debug, '', {}, { write: (line) => { lines.push(line); } });
+        expect(() => log.error('lifecycle', build())).not.toThrow();
+        expect(lines).toHaveLength(1);
+        expect(JSON.parse(lines[0]!).msg).toBe('lifecycle');
+      });
+    }
+
+    test('keeps what it can read and puts the placeholder where the message was', () => {
+      const lines: string[] = [];
+      const log = new JsonLogger(LogLevel.Debug, '', {}, { write: (line) => { lines.push(line); } });
+      log.error('lifecycle', messageGetterThrows(), revokedProxy());
+      const [error, proxy] = JSON.parse(lines[0]!).args;
+      expect(error.name).toBe('Error');
+      expect(error.message).toBe('[unrenderable value]');
+      expect(typeof error.stack).toBe('string');
+      expect(proxy).toBe('[unrenderable value]');
+    });
+  });
+
+  describe('ConsoleLogger', () => {
+    const original = console.error;
+    let printed: string[];
+
+    /**
+     * Renders its arguments the way the runtime console does — through
+     * `util.inspect`, which runs an object's custom inspect and throws with
+     * it — but into an array, so the test can read what was written.
+     */
+    beforeEach(() => {
+      printed = [];
+      console.error = (...data: unknown[]) => {
+        printed.push(data.map((datum) => (typeof datum === 'string' ? datum : inspect(datum))).join(' '));
+      };
+    });
+    afterEach(() => { console.error = original; });
+
+    for (const [name, build] of HOSTILE) {
+      test(`writes the line for ${name}`, () => {
+        const log = new ConsoleLogger();
+        expect(() => log.error('lifecycle', build())).not.toThrow();
+        expect(printed).toHaveLength(1);
+        expect(printed[0]).toContain('lifecycle');
+      });
+    }
+
+    test('a throwing inspect is replaced by the placeholder, and primitives survive', () => {
+      const log = new ConsoleLogger();
+      log.error('lifecycle', 'kept', 42, inspectThrows());
+      expect(printed).toHaveLength(1);
+      expect(printed[0]).toContain('kept');
+      expect(printed[0]).toContain('42');
+      expect(printed[0]).toContain('[unrenderable value]');
+    });
   });
 });

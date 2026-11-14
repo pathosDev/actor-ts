@@ -8,20 +8,52 @@
  */
 
 /**
+ * What a log record shows in place of a value that cannot be read at all —
+ * an error whose `message` getter throws, a revoked proxy, an object whose
+ * custom inspect throws.  Format vocabulary of the normalisation below, so it
+ * lives beside it.
+ */
+export const UNRENDERABLE_VALUE = '[unrenderable value]';
+
+/**
  * Turn an `Error` into a plain object so `JSON.stringify` doesn't
  * collapse it to `"{}"` (Error's enumerable surface is empty).
  * Other values pass through unchanged — the replacer handles
  * remaining quirks (BigInt, circular).
+ *
+ * **Total**, because it runs outside every logger's own `try` and a log call
+ * must never throw (#1749).  Each field is read under its own guard, so an
+ * error whose `message` getter throws still shows its name and stack, with
+ * {@link UNRENDERABLE_VALUE} where the message would be.  A value that cannot
+ * even be asked `instanceof` — a revoked proxy throws from its prototype
+ * lookup — becomes the placeholder outright.  This used to throw from inside
+ * the framework's own report of a lifecycle failure, which then skipped the
+ * supervision step that report was for.
  */
 export function normaliseArg(v: unknown): unknown {
-  if (v instanceof Error) {
-    return {
-      name: v.name,
-      message: v.message,
-      ...(v.stack ? { stack: v.stack } : {}),
-    };
+  let isError: boolean;
+  try {
+    isError = v instanceof Error;
+  } catch {
+    return UNRENDERABLE_VALUE;
   }
-  return v;
+  if (!isError) return v;
+  const error = v as Error;
+  const stack = readField(() => error.stack);
+  return {
+    name: readField(() => error.name),
+    message: readField(() => error.message),
+    ...(stack ? { stack } : {}),
+  };
+}
+
+/** One field of a hostile value, or the placeholder if reading it throws. */
+function readField(read: () => unknown): unknown {
+  try {
+    return read();
+  } catch {
+    return UNRENDERABLE_VALUE;
+  }
 }
 
 /**

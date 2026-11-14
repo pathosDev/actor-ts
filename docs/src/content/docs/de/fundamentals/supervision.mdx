@@ -263,6 +263,20 @@ Das Fenster wird an `system.clock` gemessen, sodass ein Test unter
 einem `ManualScheduler` es durch Vorstellen der virtuellen Zeit
 überschreitet statt durch Schlafen.
 
+Das Budget gehört **jedem Kind einzeln**.  Unter
+`OneForOneStrategy` zählt nur, wie oft *dieses* Kind gescheitert
+ist: fünf Geschwister, die je einmal crashen, werden bei
+`maxRetries: 2` alle fünf neu gestartet.  Das Budget überlebt die
+Restarts, die es zählt, und endet mit dem Kind — ein gestopptes und
+unter demselben Namen neu gespawntes Kind beginnt mit vollem
+Budget.  `AllForOneStrategy` führt dagegen bewusst **ein**
+gemeinsames Budget für die ganze Gruppe: ihre Direktive startet
+ohnehin alle Kinder zusammen neu, also zählt jeder Fehler in der
+Gruppe als ein Restart der Gruppe.  Ein `supervisorStrategy()`, das
+bei jedem Aufruf eine neue Strategie baut, setzt das Budget nicht
+zurück; erst eine Strategie mit anderem `maxRetries` oder
+`withinTimeRangeMs` beginnt eine neue Zählung.
+
 <Aside type="caution" title="Der typed-Wrapper eskaliert stattdessen">
   [`Behaviors.supervise(...).onFailure(strategy)`](/de/typed/behaviors/)
   beachtet dieselben zwei Knöpfe und gewährt dieselben `maxRetries`

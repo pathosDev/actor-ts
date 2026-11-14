@@ -21,13 +21,14 @@ them out of the box lets you wire a dashboard immediately.
 ## Actor metrics
 
 Actor-lifecycle and message-handling metrics, recorded across the
-whole system — each is a single unlabeled series:
+whole system — each a single unlabeled series, except the restart
+counter, which carries the actor class:
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `actor_created_total` | counter | — | Actors successfully started. |
 | `actor_terminated_total` | counter | — | Actors stopped (clean stop or post-failure). |
-| `actor_restarted_total` | counter | — | Supervisor-driven restarts. |
+| `actor_restarted_total` | counter | `class` | Supervisor-driven restarts, by actor class. |
 | `actor_messages_delivered_total` | counter | — | User messages delivered to `onReceive`. |
 | `actor_message_handler_seconds` | histogram | — | Time spent inside `onReceive` handlers, in seconds. |
 

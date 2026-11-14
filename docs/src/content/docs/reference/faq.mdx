@@ -349,7 +349,9 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
 
 <Aside type="caution" title="Why does my actor keep restarting?">
   Usually `onReceive` is throwing.  Check the system log — every
-  failure is logged with the error and the directive applied.
+  failure is logged with the error and the directive applied, at
+  ERROR (`Resume` at WARN), at most one line per actor per second;
+  the next line says how many failures in between were not logged.
   The default supervisor restarts up to 10/minute; once that
   threshold is exceeded it stops the child, logging "Restart
   threshold exceeded (10 in 60000ms) — stopping children".

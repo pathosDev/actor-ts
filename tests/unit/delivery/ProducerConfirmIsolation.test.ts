@@ -284,9 +284,14 @@ describe('ProducerController — a confirm callback that throws (#1230)', () => 
  * was unguarded, so such a value left the very paths #1230 is about — the
  * acknowledgment faulted the producer, `postStop` abandoned its loop, and an
  * `async` callback's rejection became an unhandled one.
+ *
+ * The stock loggers are total since #1749, so the guard is pinned against a
+ * caller-supplied logger that still throws — `Logger` is an extension point —
+ * through {@link FragileJsonLogger}, which throws exactly where `JsonLogger`
+ * used to.
  */
 describe('ProducerController — a confirm failure the logger cannot render (#1230)', () => {
-  /** An error whose `message` cannot be read — so its `toString` throws, and so does `JsonLogger`. */
+  /** An error whose `message` cannot be read — so its `toString` throws, and so does a fragile logger. */
   class UnrenderableError extends Error {
     override get message(): string { throw new Error('the message of this error cannot be read'); }
   }
@@ -303,10 +308,25 @@ describe('ProducerController — a confirm failure the logger cannot render (#12
     ['a revoked proxy', revokedProxy],
   ];
 
-  /** The stock JSON logger, writing into memory instead of stdout. */
+  /**
+   * A JSON logger that renders each error argument with `String()` before
+   * writing — so it throws on both fixture values, as the stock `JsonLogger`
+   * did before #1749.  Its children are itself, so the producer's
+   * `withSource` logger is fragile too.
+   */
+  class FragileJsonLogger extends JsonLogger {
+    override error(message: string, ...args: unknown[]): void {
+      for (const arg of args) String(arg);
+      super.error(message, ...args);
+    }
+    override withSource(_source: string): Logger { return this; }
+    override withFields(_fields: LogContextData): Logger { return this; }
+  }
+
+  /** A fragile JSON logger, writing into memory instead of stdout. */
   const jsonLogger = (): { readonly logger: JsonLogger; readonly records: () => Array<{ level: string; msg: string }> } => {
     const lines: string[] = [];
-    const logger = new JsonLogger(LogLevel.Error, '', {}, { write: (line) => { lines.push(line); } });
+    const logger = new FragileJsonLogger(LogLevel.Error, '', {}, { write: (line) => { lines.push(line); } });
     return { logger, records: () => lines.map((line) => JSON.parse(line) as { level: string; msg: string }) };
   };
 

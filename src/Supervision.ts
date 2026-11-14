@@ -109,6 +109,21 @@ export class RestartBudget {
     return true;
   }
 
+  /**
+   * Whether this budget was built for the same allowance as `strategy`.
+   *
+   * Compared by value, not by identity, because the idiomatic
+   * `override supervisorStrategy() { return new OneForOneStrategy(…) }` hands
+   * the supervisor a fresh object on every failure.  A supervisor that rebuilt
+   * its budget whenever the object changed therefore started from zero on
+   * every failure, and `maxRetries` never bit at all (#917).  A strategy whose
+   * allowance really changed still gets a fresh tally.
+   */
+  hasAllowanceOf(strategy: Pick<SupervisorStrategy, 'maxRetries' | 'withinTimeRangeMs'>): boolean {
+    return this.strategy.maxRetries === strategy.maxRetries
+      && this.strategy.withinTimeRangeMs === strategy.withinTimeRangeMs;
+  }
+
   /** How many restarts are currently on record — for diagnostics and tests. */
   get recordedRestarts(): number { return this.failureTimes.length; }
 }
