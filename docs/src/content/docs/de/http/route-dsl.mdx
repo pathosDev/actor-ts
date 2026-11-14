@@ -233,6 +233,7 @@ type HttpRequest = {
   readonly query:   Record<string, string>;
   readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
+  readonly remoteAddress?: string;   // der Socket-Peer — hinter einem Proxy der Proxy
 };
 ```
 
@@ -241,6 +242,12 @@ taucht dort nie auf, weil die Parameter bereits in `query` geparst
 sind.  Das zählt für alles, was durch Anhängen an `path` gebaut wird:
 ein Redirect-Ziel, ein Cache-Key, ein Request-Fingerprint.
 Prozent-Escapes bleiben kodiert; einmal dekodieren, dann validieren.
+
+`remoteAddress` ist auf allen drei Backends der **Socket-Peer** — kein
+Forwarding-Header wird herangezogen.  Hinter einem Reverse-Proxy ist das
+der Proxy; die eigene Adresse des Clients liefert
+[`clientIpResolver`](/de/http/middleware/ip-allowlist/#den-durchlauf-wiederverwenden),
+der die Proxys benannt haben will, bevor er die Forwarding-Kette liest.
 
 ### Pfadparameter
 

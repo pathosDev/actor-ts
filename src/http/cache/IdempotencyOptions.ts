@@ -43,19 +43,94 @@ export const DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH = 255;
  * for every one of those.
  *
  * The bound exists because the scope reaches the key from the same place
- * the header does.  `identity`'s own documented recipe reads a raw client
- * header, so a 64 KiB `x-account-id` and a two-character
+ * the header does.  `identity`'s documented recipe used to read a raw client
+ * header (it now reads verified JWT claims), so a 64 KiB `x-account-id` and a two-character
  * `Idempotency-Key` composed a 64 KiB cache key under a middleware whose
  * documented cap was 255 — the header was checked, the scope was
  * concatenated four lines later unchecked (#607).
  */
 export const DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH = 255;
 
+/**
+ * Built-in default for {@link IdempotencyOptionsType.ttlMs}: how long a
+ * finished request's response is replayed.  24 hours, Stripe's window.
+ */
+export const DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60_000;
+
+/**
+ * Built-in default for {@link IdempotencyOptionsType.lockTtlMs}: how long
+ * the claim on an in-flight key lives (#984).
+ *
+ * One minute, because this TTL is the recovery path from a worker that
+ * died between claiming a key and recording its response — an evicted pod,
+ * an OOM kill, a rolling deploy.  Nothing else ever clears that claim, so
+ * every retry is answered 409 until it lapses.  With the response TTL in
+ * this role (the old behaviour) that was a day; a minute is long enough
+ * for an ordinary request handler and short enough that a client's retry
+ * schedule gets through.
+ */
+export const DEFAULT_IDEMPOTENCY_LOCK_TTL_MS = 60_000;
+
+/**
+ * What {@link idempotent} does with the claim when the handler throws.
+ * `'retain'` records the failure under the key; `'release'` frees the key
+ * for a retry.
+ */
+export type IdempotencyHandlerErrorPolicy = 'retain' | 'release';
+
+/** Built-in default for {@link IdempotencyOptionsType.onHandlerError}. */
+export const DEFAULT_IDEMPOTENCY_HANDLER_ERROR_POLICY: IdempotencyHandlerErrorPolicy = 'retain';
+
 /** Plain options-object shape accepted by {@link idempotent}. */
 export type IdempotencyOptionsType = {
   readonly cache: Cache;
   /** How long to remember responses.  Default: 24 hours. */
   readonly ttlMs?: number;
+  /**
+   * How long the claim on an in-flight key lives, separately from
+   * {@link ttlMs} (#984).  Default: {@link DEFAULT_IDEMPOTENCY_LOCK_TTL_MS}
+   * (60 s).
+   *
+   * It is also the longest a handler can run and stay exclusive: a handler
+   * still running when its claim lapses can be joined by a retry.  The
+   * overrun is detected — the late finisher neither stores its response nor
+   * clears the retry's claim (#1082) — but not prevented, so size this
+   * above the slowest handler you expect, and treat it as that handler's
+   * timeout.
+   */
+  readonly lockTtlMs?: number;
+  /**
+   * What happens to the key when the handler **throws** (#984).
+   *
+   * `'retain'` (the default) records the failure under the key for
+   * {@link ttlMs}: every retry is answered 500 without running the handler
+   * again, and the client has to reconcile and use a new key.  That is the
+   * safe side, because the middleware cannot know how much of the handler
+   * ran — a payment handler that captured the charge and then failed on
+   * the receipt e-mail would otherwise charge twice on the retry, the one
+   * outcome idempotency keys exist to prevent.
+   *
+   * `'release'` frees the key so a retry runs the handler again.  Correct
+   * only for a handler that is atomic — one that applies everything or
+   * nothing, such as a single database transaction.
+   *
+   * A handler that *returns* an error response decided what it means; see
+   * {@link cacheStatuses}.
+   */
+  readonly onHandlerError?: IdempotencyHandlerErrorPolicy;
+  /**
+   * Statuses whose responses are recorded and replayed (#984).  A response
+   * with any other status releases the key, so a retry runs the handler
+   * again.
+   *
+   * Unset, every status is recorded **except** 5xx, 408 and 429 — the
+   * statuses that say "this failed for now, try again".  Storing those
+   * pinned a downstream 503 for the whole {@link ttlMs}, replayed to the
+   * client that was retrying exactly as told.  Other 4xx are recorded: a
+   * 400 or 404 is the answer to that request, and replaying it is what an
+   * idempotency key promises.
+   */
+  readonly cacheStatuses?: ReadonlyArray<number>;
   /**
    * Header to read the idempotency key from.  Default: `'idempotency-key'`
    * (the standard).  Header names are matched case-insensitively against
@@ -94,16 +169,20 @@ export type IdempotencyOptionsType = {
    * same `Idempotency-Key` share one cache entry — fine for a public
    * endpoint, unsafe when the response is identity-specific (the second
    * caller would get the first caller's data / `Set-Cookie`).  Return the
-   * authenticated principal (user / tenant / API-key id), e.g.
-   * `identity: (request) => request.headers['x-account-id'] ?? 'anon'`.
+   * authenticated principal (user / tenant / API-key id) that a middleware
+   * **verified**, e.g. `identity: (request) => jwtClaimsOf(request)?.sub ??
+   * 'anonymous'` inside `JwtAuth`.  Never a raw header such as
+   * `x-account-id`: the client sets it, so a caller who names another
+   * account's id gets that account's scope — the replay this option exists
+   * to prevent.
    *
    * **Return an id, not free text.**  The result is concatenated into the
    * cache key, so it is held to the same two rules as the header value:
    * at most {@link maxScopeLength} characters, and no ASCII control
    * character or space.  Anything else is refused with 400 (#607) — which
-   * matters most for the recipe above, where the value is a raw client
-   * header and the client picks its size.  Deriving the scope from a
-   * validated session or token instead keeps the check inert.
+   * matters most where the value still reaches the key from client input
+   * and the client picks its size.  Deriving the scope from a validated
+   * session or token keeps the check inert.
    */
   readonly identity?: (request: HttpRequest) => string | Promise<string>;
 };
@@ -127,6 +206,21 @@ export class IdempotencyOptionsBuilder extends OptionsBuilder<IdempotencyOptions
   /** How long to remember responses (ms).  Default: 24 hours. */
   withTtlMs(ttlMs: number): this {
     return this.set('ttlMs', ttlMs);
+  }
+
+  /** How long the claim on an in-flight key lives (ms).  Default: 60 s. */
+  withLockTtlMs(lockTtlMs: number): this {
+    return this.set('lockTtlMs', lockTtlMs);
+  }
+
+  /** Record a thrown handler's failure (`'retain'`, default) or free the key (`'release'`). */
+  withOnHandlerError(onHandlerError: IdempotencyHandlerErrorPolicy): this {
+    return this.set('onHandlerError', onHandlerError);
+  }
+
+  /** Statuses whose responses are recorded.  Default: all but 5xx, 408 and 429. */
+  withCacheStatuses(cacheStatuses: ReadonlyArray<number>): this {
+    return this.set('cacheStatuses', cacheStatuses);
   }
 
   /** Header to read the idempotency key from.  Default: `'idempotency-key'`. */
@@ -162,17 +256,27 @@ export class IdempotencyOptionsBuilder extends OptionsBuilder<IdempotencyOptions
 
 /**
  * Validates resolved {@link IdempotencyOptionsType} settings: `ttlMs` (the
- * response-retention window) must be a positive finite number of
- * milliseconds, `maxKeyLength` and `maxScopeLength` positive integers, and
- * `missingHeader` one of its allowed literals.  (Presence of `cache` is a
+ * response-retention window) and `lockTtlMs` (the claim's lifetime) must be
+ * positive finite numbers of milliseconds, `maxKeyLength` and
+ * `maxScopeLength` positive integers, `missingHeader` and `onHandlerError`
+ * one of their allowed literals, and `cacheStatuses` a non-empty list of
+ * HTTP status codes — an empty one would record nothing and silently turn
+ * the middleware into a pass-through.  (Presence of `cache` is a
  * required-field concern, not a validity one.)
  */
 export class IdempotencyOptionsValidator extends OptionsValidator<IdempotencyOptionsType> {
   constructor() {
     super('IdempotencyOptions');
   }
-  protected rules(_s: Partial<IdempotencyOptionsType>): void {
+  protected rules(s: Partial<IdempotencyOptionsType>): void {
     this.positiveNumber('ttlMs');
+    this.positiveNumber('lockTtlMs');
+    this.oneOf('onHandlerError', ['retain', 'release']);
+    this.nonEmptyArray('cacheStatuses');
+    const invalidStatus = s.cacheStatuses?.find((status) => !Number.isInteger(status) || status < 100 || status > 599);
+    if (invalidStatus !== undefined) {
+      this.fail('cacheStatuses', 'must hold HTTP status codes (integers from 100 to 599)', invalidStatus);
+    }
     this.positiveInt('maxKeyLength');
     this.positiveInt('maxScopeLength');
     this.oneOf('missingHeader', ['reject', 'pass-through']);

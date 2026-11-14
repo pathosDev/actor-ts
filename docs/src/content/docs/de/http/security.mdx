@@ -132,8 +132,9 @@ braucht.
   }
   ```
 
-  Was die Forwarded-Header hier tun: `X-Forwarded-For` liest nur
-  [`IpAllowlist`](/de/http/middleware/ip-allowlist/), und erst, wenn du die
+  Was die Forwarded-Header hier tun: `X-Forwarded-For` lesen nur
+  [`IpAllowlist`](/de/http/middleware/ip-allowlist/) und der
+  `clientIpResolver`, den sie teilt, und erst, wenn du die
   Proxys benannt hast; `X-Forwarded-Proto` liest nichts — `Csrf` bekommt das
   Scheme stattdessen aus `expectedScheme`, gerade weil ein weitergereichtes
   Scheme von dem gesetzt wird, der die Anfrage schickt.

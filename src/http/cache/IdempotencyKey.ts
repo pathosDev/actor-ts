@@ -1,8 +1,13 @@
+import type { Cache } from '../../cache/Cache.js';
+import { acquireLock, type CacheLock } from '../../cache/CacheLock.js';
 import { complete } from '../Route.js';
 import { type HttpRequest, type HttpResponse, Status } from '../Types.js';
 import {
+  DEFAULT_IDEMPOTENCY_HANDLER_ERROR_POLICY,
+  DEFAULT_IDEMPOTENCY_LOCK_TTL_MS,
   DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
   DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH,
+  DEFAULT_IDEMPOTENCY_TTL_MS,
   IdempotencyOptionsValidator,
   type IdempotencyOptions,
   type IdempotencyOptionsType,
@@ -15,12 +20,33 @@ import {
  * that key so subsequent requests with the same key replay the same
  * outcome.
  *
- * Three states for a given key:
- *   1. **Absent** — handler runs; the (status, headers, body) tuple is
- *      cached under the key for `ttlMs` (default 24h).
- *   2. **In-flight** — another worker is currently processing this key.
- *      We respond `409 Conflict` so the client retries later.
- *   3. **Completed** — replay the cached response verbatim.
+ * States for a given key:
+ *   1. **Absent** — the request claims the key and the handler runs.
+ *   2. **In-flight** — another request holds the claim.  We respond
+ *      `409 Conflict` so the client retries later.  The claim lives for
+ *      `lockTtlMs` (default 60 s), not for the response TTL, so a worker
+ *      that dies mid-handler wedges the key for a minute rather than a
+ *      day (#984).
+ *   3. **Completed** — replay the recorded response verbatim, for `ttlMs`
+ *      (default 24 h).  Only statuses in `cacheStatuses` are recorded —
+ *      by default everything but 5xx, 408 and 429, so a transient failure
+ *      releases the key instead of being pinned.
+ *   4. **Failed** — the handler threw.  Under `onHandlerError: 'retain'`
+ *      (the default) that is recorded too, and replayed as a 500 that
+ *      tells the client to reconcile and use a new key: the middleware
+ *      cannot know how much of the handler ran, and running a partially
+ *      applied handler again is the double charge idempotency exists to
+ *      prevent.
+ *
+ * **The claim is token-checked (#1082).**  It is taken with
+ * {@link acquireLock}, so the key holds a random token rather than a
+ * shared marker, and every later write — the record, the failure, the
+ * release — happens only while that token is still the one under the key.
+ * A handler that overran its claim, while a retry took the key after the
+ * lapse, therefore neither stores its response over the retry's claim nor
+ * deletes it: the late response still goes to its own caller, and the key
+ * stays with the retry.  The check is a `get` and then a write, like
+ * `CacheLock.release` — see that method for the residual window.
  *
  * Storage is JSON-encoded — bodies that are `Uint8Array` are base64'd
  * so the round-trip preserves bytes.
@@ -93,12 +119,38 @@ type CachedResponse = {
   readonly requestFingerprint: string;
 };
 
-const IN_FLIGHT_MARKER: { readonly inFlight: true } = { inFlight: true } as const;
+/**
+ * The in-flight marker written before #1082, when every claim held the same
+ * value.  Still recognised as a claim on read, so a rolling deploy that
+ * mixes old and new instances over one cache keeps answering 409 for an
+ * old instance's in-flight key instead of trying to replay it.
+ */
+type LegacyInFlightMarker = { readonly inFlight: true };
+
+/** A claim, as {@link acquireLock} writes it: the holder's random token. */
+type ClaimToken = string;
+
+type StoredEntry = CachedResponse | ClaimToken | LegacyInFlightMarker;
+
+/**
+ * Body of the 500 replayed for a key whose handler threw under
+ * `onHandlerError: 'retain'`.  Says what the client can still do, because
+ * the one thing it must not do — retry with the same key and expect the
+ * handler to run — is exactly what it will try first.
+ */
+const HANDLER_FAILED_BODY = {
+  error: 'an earlier request with this idempotency-key failed after it may have applied side effects; '
+    + 'it is not run again — reconcile, then retry with a new key',
+} as const;
 
 export function idempotent(options: IdempotencyOptions) {
   const resolvedOptions = options as IdempotencyOptionsType;
   new IdempotencyOptionsValidator().validate(resolvedOptions);
-  const ttlMs = resolvedOptions.ttlMs ?? 24 * 60 * 60_000;
+  const cache = resolvedOptions.cache;
+  const ttlMs = resolvedOptions.ttlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
+  const lockTtlMs = resolvedOptions.lockTtlMs ?? DEFAULT_IDEMPOTENCY_LOCK_TTL_MS;
+  const onHandlerError = resolvedOptions.onHandlerError ?? DEFAULT_IDEMPOTENCY_HANDLER_ERROR_POLICY;
+  const recordable = statusFilter(resolvedOptions.cacheStatuses);
   const header = (resolvedOptions.headerName ?? 'idempotency-key').toLowerCase();
   const prefix = resolvedOptions.keyPrefix ?? 'idem:';
   const missing = resolvedOptions.missingHeader ?? 'reject';
@@ -127,8 +179,8 @@ export function idempotent(options: IdempotencyOptions) {
       // passes both rules, so the check below costs that case nothing.
       const scope = identity ? await identity(request) : '';
       // The scope is the OTHER half of the key, and it reaches the cache from
-      // the same place the header does — `identity`'s own recipe reads a raw
-      // client header.  Checking only the header left a 255-character cap
+      // the same place the header does — an `identity` may still read client
+      // input.  Checking only the header left a 255-character cap
       // over one half of a key whose other half was unbounded (#607).
       const scopeRejection = keyRejectionReason(scope, maxScopeLength);
       if (scopeRejection !== undefined) {
@@ -140,10 +192,10 @@ export function idempotent(options: IdempotencyOptions) {
       const fingerprint = await computeRequestFingerprint(request);
 
       // Probe — if the key already holds a completed response, replay.
-      const existing = await resolvedOptions.cache.get<CachedResponse | typeof IN_FLIGHT_MARKER>(cacheKey);
+      const existing = await cache.get<StoredEntry>(cacheKey);
       if (existing.isSome()) {
         const value = existing.value;
-        if (isInFlight(value)) {
+        if (isClaim(value)) {
           return complete(Status.Conflict, {
             error: 'idempotency-key in-flight; retry shortly',
           });
@@ -162,31 +214,81 @@ export function idempotent(options: IdempotencyOptions) {
         return decodeResponse(value);
       }
 
-      // Try to claim the key.  `setIfAbsent` is the kernel — if it
-      // returns false, somebody else got there a microsecond ago, fall
-      // back to the same in-flight response.
-      const claimed = await resolvedOptions.cache.setIfAbsent(cacheKey, IN_FLIGHT_MARKER, ttlMs);
-      if (!claimed) {
+      // Try to claim the key — `setIfAbsent` underneath, so if somebody
+      // else got there a microsecond ago we answer as for any in-flight
+      // key.  The claim lives for `lockTtlMs`, not `ttlMs` (#984), and holds
+      // a token only this request knows (#1082).
+      const claim = await acquireLock(cache, cacheKey, lockTtlMs);
+      if (claim.isNone()) {
         return complete(Status.Conflict, {
           error: 'idempotency-key in-flight; retry shortly',
         });
       }
+      const lock = claim.value;
 
       let response: HttpResponse;
       try {
         response = await handler(request);
       } catch (e) {
-        // On error, drop our in-flight claim so the client can retry.
-        await resolvedOptions.cache.delete(cacheKey);
+        // The handler may have applied side effects before it threw, and
+        // nothing here can tell how many.  `retain` records the failure so a
+        // retry is not a second execution; `release` frees the key, for a
+        // handler that is known to be all-or-nothing.  Either only while the
+        // claim is still ours — after a lapse the key belongs to a retry.
+        if (onHandlerError === 'release') await lock.release();
+        else await replaceIfStillHeld(cache, lock, failedRecord(fingerprint), ttlMs);
         throw e;
       }
-      // Replace the in-flight marker with the actual response,
-      // remembering the request fingerprint so subsequent replays
-      // can verify the request body matches.
-      await resolvedOptions.cache.set<CachedResponse>(cacheKey, encodeResponse(response, fingerprint), ttlMs);
+      if (recordable(response.status)) {
+        // Replace our claim with the response, remembering the request
+        // fingerprint so a replay can verify it is the same request.  When
+        // the claim has lapsed and a retry holds the key, this response is
+        // still this caller's answer — it is just not the key's record.
+        await replaceIfStillHeld(cache, lock, encodeResponse(response, fingerprint), ttlMs);
+      } else {
+        // A transient failure the handler reported itself (5xx, 408, 429 by
+        // default): it decided the request may be retried, so free the key.
+        await lock.release();
+      }
       return response;
     };
   };
+}
+
+/**
+ * Write `value` under the lock's key, but only while the lock's token is
+ * still the entry there.  `false` when it is not — the claim lapsed or was
+ * evicted, and whatever is under the key now is somebody else's.
+ *
+ * The same `get`-then-write shape as `CacheLock.release`, with the same
+ * narrow residual window between the two; the `Cache` surface has no
+ * compare-and-set, and Memcached could not provide one.
+ */
+async function replaceIfStillHeld(cache: Cache, lock: CacheLock, value: CachedResponse, ttlMs: number): Promise<boolean> {
+  const held = await cache.get<StoredEntry>(lock.key);
+  if (held.toNullable() !== lock.token) return false;
+  await cache.set<CachedResponse>(lock.key, value, ttlMs);
+  return true;
+}
+
+/** The record a thrown handler leaves under `onHandlerError: 'retain'`. */
+function failedRecord(requestFingerprint: string): CachedResponse {
+  return encodeResponse(complete(Status.InternalServerError, HANDLER_FAILED_BODY), requestFingerprint);
+}
+
+/**
+ * Which response statuses are recorded.  An explicit `cacheStatuses` list
+ * decides alone; unset, everything is recorded except the statuses that
+ * mean "not now" — any 5xx, 408 Request Timeout and 429 Too Many Requests
+ * (#984).
+ */
+function statusFilter(cacheStatuses: ReadonlyArray<number> | undefined): (status: number) => boolean {
+  if (cacheStatuses !== undefined) {
+    const listed = new Set(cacheStatuses);
+    return (status) => listed.has(status);
+  }
+  // 408 Request Timeout has no `Status` constant.
+  return (status) => status < 500 && status !== 408 && status !== Status.TooManyRequests;
 }
 
 /* ------------------------------ internals -------------------------------- */
@@ -231,7 +333,13 @@ function keyRejectionReason(value: string, maxLength: number): string | undefine
   return undefined;
 }
 
-function isInFlight(value: unknown): value is typeof IN_FLIGHT_MARKER {
+/**
+ * Whether a stored entry is a claim on an in-flight key rather than a
+ * record: a lock token (a string — a record is always an object), or the
+ * shared marker an instance from before #1082 writes.
+ */
+function isClaim(value: StoredEntry): value is ClaimToken | LegacyInFlightMarker {
+  if (typeof value === 'string') return true;
   return typeof value === 'object' && value !== null && (value as { inFlight?: boolean }).inFlight === true;
 }
 
