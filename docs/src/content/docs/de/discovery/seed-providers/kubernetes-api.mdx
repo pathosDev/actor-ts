@@ -9,11 +9,14 @@ Seeds zurück.  Funktioniert ohne DNS, ohne SRV, ohne manuelle
 Seed-Listen-Pflege — der Service ist dein Vertrag.
 
 ```ts
+import { ActorSystem } from 'actor-ts';
 import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
+const system = ActorSystem.create('my-app');
+
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
-  .withNamespace(process.env.K8S_NAMESPACE!)
+  .withNamespace(process.env.CLUSTER_NAMESPACE!)
   .withServiceName('actor-ts')
   .withSystemName('my-app')
   .withPort(2552);
@@ -26,7 +29,7 @@ const clusterOptions = ClusterOptions.create()
   .withHost('0.0.0.0')
   .withAdvertisedHost(process.env.POD_IP!)
   .withPort(2552)
-  .withSeeds(seeds);
+  .withSeeds(seeds.map((address) => address.toString()));
 await Cluster.join(
   system,
   clusterOptions,
@@ -137,7 +140,7 @@ umlenken kann:
 
 ```ts
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
-  .withNamespace(process.env.K8S_NAMESPACE!)
+  .withNamespace(process.env.CLUSTER_NAMESPACE!)
   .withServiceName('actor-ts')
   .withSystemName('my-app')
   .withPort(2552)
@@ -201,8 +204,9 @@ Aus dem Endpoints-Objekt des Service:
   als `<podIP>:<port>`.
 - **Nicht bereite / pending Pods** (in `notReadyAddresses`) →
   übersprungen (noch keine bereite IP).
-- **Dieser Pod selbst** → kann inkludiert sein oder nicht, je
-  nach Readiness-Timing; der Cluster behandelt Self-as-Seed korrekt.
+- **Dieser Pod selbst** → erst, wenn er Ready ist. `Cluster.join`
+  streicht die eigene Adresse aus der Seed-Liste, eine Liste mit nur
+  diesem Pod zählt also als leer.
 
 ## Cluster-weit vs. ReplicaSet
 
@@ -257,10 +261,17 @@ flowchart TB
   class BOOT warn
 ```
 
-Wenn du der erste Pod hochkommst, gibt die K8s-API nur diesen
-Pod zurück.  Die Self-Bootstrap-Logik des Frameworks behandelt
-das: `Cluster.join` mit Seeds, die nur sich selbst enthalten,
-befördert sich selbst zum Leader.
+Wenn du der erste Pod hochkommst, liefert der Lookup eine **leere
+Liste**: Mit dem `/ready` des Frameworks als Readiness-Probe ist ein
+Pod erst Ready, wenn er im Cluster `up` ist, also steht nicht einmal
+dieser Pod schon in den Endpoints. `Cluster.join` ohne Seeds wählt
+sich selbst und gründet den Cluster. (Bestünde deine Readiness-Probe
+früher, könnte die Liste nur diesen Pod enthalten — `Cluster.join`
+streicht die eigene Adresse, das Ergebnis ist dasselbe.) Deshalb
+müssen die Pods nacheinander starten — wie es die Default-Policy
+`OrderedReady` eines StatefulSets tut —, sonst können zwei gleichzeitig
+startende Pods je eine leere Liste finden und je einen Cluster
+gründen.
 
 Nachfolgende Pods sehen die existierenden Pods und joinen über
 sie.

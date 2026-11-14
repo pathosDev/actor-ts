@@ -185,6 +185,14 @@ describe('Kubernetes recipe (#1012, #1013)', () => {
       expect(sequence).not.toMatch(/concurrently|parallel/);
     });
 
+    test(`${page.language}: every server the app sample binds names a host the kubelet can reach`, () => {
+      // `system.http(port)` alone binds DEFAULT_HTTP_BIND_HOST, loopback, and
+      // the probes and the Service both arrive on the pod IP.
+      const binds = [...sample.matchAll(/system\.http\(([^)]*)\)/g)].map((m) => m[1]!);
+      expect(binds.length).toBeGreaterThanOrEqual(2);
+      expect(binds.filter((argumentsText) => !/host: '0\.0\.0\.0'/.test(argumentsText))).toEqual([]);
+    });
+
     test(`${page.language}: the page quotes no other grace period as the recipe's`, () => {
       const grace = /terminationGracePeriodSeconds: (\d+)/.exec(statefulSet)![1];
       const quoted = [...text.matchAll(/terminationGracePeriodSeconds: (\d+)(.*)$/gm)]

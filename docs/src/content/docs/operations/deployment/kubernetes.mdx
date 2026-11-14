@@ -330,6 +330,7 @@ expose these endpoints.
 import { ActorSystem } from 'actor-ts';
 import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
+import { completeText, get, path } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
 const system = ActorSystem.create('my-app');
@@ -349,13 +350,13 @@ const clusterOptions = ClusterOptions.create()
   .withRoles(['compute']);
 const cluster = await Cluster.join(system, clusterOptions);
 
-// 2. Management endpoints
-const mgmtRoutes = managementRoutes(system, cluster);
-await system.http(8558).bind(mgmtRoutes);
+// 2. Management endpoints — on every interface, so the kubelet can probe the pod IP
+const management = managementRoutes(system, cluster);
+await system.http(8558, { host: '0.0.0.0' }).bind(management);
 
 // 3. App HTTP server
-const http = system.extension(HttpExtensionId);
-await http.newServerAt('0.0.0.0', 8080).bind(routes);
+const routes = path('hello', get(async () => completeText(200, 'hello')));
+await system.http(8080, { host: '0.0.0.0' }).bind(routes);
 
 // 4. Run until the kubelet says stop, then shut down in order
 await system.runUntilTerminated();
@@ -371,7 +372,9 @@ Four pieces in order:
    default `OrderedReady` policy starts the next pod only after that,
    and it finds the first one.
 2. **Management endpoints** — `/health` + `/ready` for K8s probes,
-   `/cluster/members` for debugging.
+   `/cluster/members` for debugging.  Bound to `0.0.0.0` on purpose:
+   `system.http(port)` without a host binds loopback, and the kubelet
+   probes the pod IP.
 3. **App HTTP** — your routes, separate port from management.
 4. **Run until terminated** — installs the SIGTERM/SIGINT handlers,
    blocks, then runs the pipeline and resolves when the system is

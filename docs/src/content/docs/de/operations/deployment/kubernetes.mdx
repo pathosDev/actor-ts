@@ -339,6 +339,7 @@ des Frameworks stellen diese Endpunkte bereit.
 import { ActorSystem } from 'actor-ts';
 import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
+import { completeText, get, path } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
 const system = ActorSystem.create('my-app');
@@ -358,13 +359,13 @@ const clusterOptions = ClusterOptions.create()
   .withRoles(['compute']);
 const cluster = await Cluster.join(system, clusterOptions);
 
-// 2. Management-Endpunkte
-const mgmtRoutes = managementRoutes(system, cluster);
-await system.http(8558).bind(mgmtRoutes);
+// 2. Management-Endpunkte — auf allen Interfaces, damit das Kubelet die Pod-IP proben kann
+const management = managementRoutes(system, cluster);
+await system.http(8558, { host: '0.0.0.0' }).bind(management);
 
 // 3. App-HTTP-Server
-const http = system.extension(HttpExtensionId);
-await http.newServerAt('0.0.0.0', 8080).bind(routes);
+const routes = path('hello', get(async () => completeText(200, 'hello')));
+await system.http(8080, { host: '0.0.0.0' }).bind(routes);
 
 // 4. Laufen, bis das Kubelet Stopp sagt, dann geordnet herunterfahren
 await system.runUntilTerminated();
@@ -380,7 +381,9 @@ Vier Schritte in der Reihenfolge:
    `OrderedReady` des StatefulSets startet den nächsten Pod erst
    danach, und der findet den ersten.
 2. **Management-Endpunkte** — `/health` + `/ready` für die K8s-Probes,
-   `/cluster/members` zum Debuggen.
+   `/cluster/members` zum Debuggen. Bewusst an `0.0.0.0` gebunden:
+   `system.http(port)` ohne Host bindet Loopback, und das Kubelet probt
+   die Pod-IP.
 3. **App-HTTP** — deine Routes, getrennter Port vom Management.
 4. **Bis zum Terminieren laufen** — installiert die
    SIGTERM/SIGINT-Handler, blockiert, führt dann die Pipeline aus und
