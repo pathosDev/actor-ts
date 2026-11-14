@@ -571,6 +571,12 @@ export class ClusterClient {
       else try { sock.end(); } catch { /* already gone */ }
       return;
     }
+    // A frame using a tag outside the wire's allow-list was refused on its own
+    // and the rest decoded (#1303).  The client keeps the built-in list — it
+    // reads no `read-constraints` either — so the line says which tag it was.
+    for (const refusal of connection.decoder.lastRefusals()) {
+      this.log.warn(`ClusterClient: refusing a frame from a contact point — ${refusal.message}`);
+    }
     for (const frame of frames) {
       const checked = validateWireFrame(frame);
       if ('problem' in checked) {

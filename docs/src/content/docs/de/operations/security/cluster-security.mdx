@@ -569,6 +569,35 @@ Vorab-Scan des Rohpuffers würde es ohne beide schließen; er
 wurde mit 18–28 % jeder Frame-Dekodierung gemessen und für eine
 vierfache Verstärkung nicht ausgeliefert (#880).
 
+## Welche Klassen ein Peer dich bauen lassen kann
+
+Ein Frame ist ein getaggter JSON-Baum, und ein Tag fordert den
+Empfänger auf, eine Klasse zu konstruieren.  Bis #1303 befolgte der
+Empfänger jeden Tag, also wählte ein Peer, der den Handshake
+abgeschlossen hat, die Laufzeitklasse jedes Werts in jedem Body —
+ein für einen `string` typisierter Actor konnte eine vom Peer
+geschriebene `RegExp` bekommen (`(a+)+$` blockiert die Event-Loop
+bei einer kurzen Eingabe), eine `Error`-Unterklasse oder ein
+`undefined` an einer Stelle, die `JSON.parse` nie füllt.
+
+Der Decoder baut jetzt nur die Tags in
+`actor-ts.serialization.wire.admitted-tags`, standardmäßig die
+Daten-Tags: `date`, `bytes`, `typed-array`, `map`, `set`, `bigint`,
+`bidirectional-map`, `bidirectional-multi-map` und `number`.  Ein
+Frame mit einem anderen Tag wird **für sich allein abgelehnt** — er
+erreicht keinen Handler, der Transport loggt eine WARN, die den Tag
+nennt, und die Verbindung sowie die neben ihm gebündelten Frames
+bleiben erhalten.  Letzteres ist Absicht: Ein alter Node und ein
+feindlicher schreiben dieselben Bytes, und die Verbindung zu
+schließen ließe jeden von beiden einen gesunden Peer jeden Frame im
+Chunk kosten.  Der Inhalt eines abgelehnten Tags wird nie gelesen,
+ein abgelehntes Pattern also nie kompiliert.
+
+Die Liste zu erweitern erweitert, was jeder Peer dich bauen lassen
+kann; nimm einen Tag also nur dort auf, wo deine eigenen
+Nachrichten ihn tragen, und auf jedem Node, der sie empfängt.  `[]`
+dekodiert Frames als reines JSON.
+
 ## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
 
 Die Shape-Prüfung sagt, dass ein Frame *lesbar* ist — nicht,

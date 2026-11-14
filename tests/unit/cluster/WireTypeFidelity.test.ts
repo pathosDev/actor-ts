@@ -26,6 +26,9 @@ import type { LogContextData } from '../../../src/LogContext.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame, type EnvelopeMessage, type WireMessage } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
+import { TcpTransportOptions } from '../../../src/cluster/TcpTransportOptions.js';
+import { JSON_TREE_TAG_NAMES } from '../../../src/serialization/Constants.js';
+import { WireDecodeOptions } from '../../../src/serialization/WireDecodeOptions.js';
 import { CborSerializer } from '../../../src/serialization/CborSerializer.js';
 import { SerializationExtension } from '../../../src/serialization/SerializationExtension.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
@@ -100,10 +103,10 @@ interface Link {
   close(): Promise<void>;
 }
 
-function connect(): Link {
+function connect(receiverOptions?: TcpTransportOptions): Link {
   const senderLog = new RecordingLogger();
   const sender = new TcpTransport(addressA, senderLog);
-  const receiver = new TcpTransport(addressB, new NoopLogger());
+  const receiver = new TcpTransport(addressB, new NoopLogger(), receiverOptions);
 
   // Each side accepts an inbound socket and is told who is on it by a real
   // `hello` frame, which is what puts the peer into `byPeer` and lets `send`
@@ -131,6 +134,12 @@ function connect(): Link {
   };
 }
 
+/** Receiver options that admit every tag — the pre-#1303 decode, for the fidelity cases. */
+function admittingEveryTag(): TcpTransportOptions {
+  const wireDecode = WireDecodeOptions.create().withAdmittedTags(JSON_TREE_TAG_NAMES);
+  return TcpTransportOptions.create().withWireDecode(wireDecode);
+}
+
 /** Send one envelope body across the link and hand back what arrived. */
 function sendBody(link: Link, body: unknown): unknown {
   const before = link.senderSocket.writes.length;
@@ -145,8 +154,8 @@ function sendBody(link: Link, body: unknown): unknown {
   return arrived.body;
 }
 
-async function withLink(run: (link: Link) => void): Promise<void> {
-  const link = connect();
+async function withLink(run: (link: Link) => void, receiverOptions?: TcpTransportOptions): Promise<void> {
+  const link = connect(receiverOptions);
   try {
     run(link);
   } finally {
@@ -216,7 +225,11 @@ describe('a rich payload survives the outbound TcpTransport encode', () => {
     });
   });
 
-  test('RegExp, URL and Error keep their data instead of arriving as {}', async () => {
+  // #1303: the receiver decides what it builds, and the default allow-list is
+  // the data tags — so these four cross only to a node that admits them.  On
+  // the default list the frame is refused, not delivered as plain objects;
+  // `WireTagAllowList.test.ts` covers that side.
+  test('RegExp, URL and Error keep their data at a receiver that admits them', async () => {
     await withLink((link) => {
       const arrived = sendBody(link, {
         pattern: /^ab+c$/giu,
@@ -230,15 +243,35 @@ describe('a rich payload survives the outbound TcpTransport encode', () => {
       expect((arrived.endpoint as URL).href).toBe('https://example.test/a?b=1');
       expect(arrived.failure).toBeInstanceOf(Error);
       expect((arrived.failure as Error).message).toBe('boom');
+    }, admittingEveryTag());
+  });
+
+  test('a receiver on the default allow-list refuses the frame instead of delivering {}', async () => {
+    await withLink((link) => {
+      for (const body of [{ pattern: /x/ }, { endpoint: new URL('https://example.test/') }, { failure: new Error('boom') }]) {
+        link.sender.send(addressB, { kind: 'envelope', to: '/user/target', from: null, body });
+        (link.receiver as unknown as TransportInternals).onData(link.receiverSocket, link.senderSocket.writes.at(-1)!);
+      }
+      expect(link.received).toEqual([]);
+      expect(link.receiverSocket.ended).toBe(false);
     });
   });
 
-  test('undefined in a value position stays undefined instead of becoming null', async () => {
+  test('undefined in a value position stays undefined at a receiver that admits it', async () => {
     await withLink((link) => {
       const arrived = sendBody(link, { slots: [1, undefined, 3] }) as Record<string, unknown>;
       expect(arrived.slots).toEqual([1, undefined, 3]);
+    }, admittingEveryTag());
+  });
+
+  test('on the default allow-list a value-position undefined is refused, an unset property is not', async () => {
+    await withLink((link) => {
+      link.sender.send(addressB, { kind: 'envelope', to: '/user/target', from: null, body: { slots: [1, undefined] } });
+      (link.receiver as unknown as TransportInternals).onData(link.receiverSocket, link.senderSocket.writes.at(-1)!);
+      expect(link.received).toEqual([]);
       // An `undefined` object *property* still drops, exactly as JSON.stringify
-      // did — existing payloads with unset optional fields are unchanged.
+      // did — it writes no tag, so existing payloads with unset optional fields
+      // cross every allow-list unchanged.
       const optional = sendBody(link, { present: 1, absent: undefined }) as Record<string, unknown>;
       expect('absent' in optional).toBe(false);
     });
@@ -303,7 +336,11 @@ describe('the wire codec cannot be talked into misreading data', () => {
  *
  * Both pin *current, documented* behaviour, not desired behaviour.  When #823
  * gives the protocol a version handshake and #450's framing lands on top, these
- * are the tests that have to move, deliberately and with the docs.
+ * are the tests that have to move, deliberately and with the docs.  #1303 left
+ * them standing: `__map__`, `__bytes__` and `__date__` are data tags, admitted
+ * by default, so a malformed or legacy-shaped one still decodes — or throws —
+ * exactly as before.  What #1303 changed is the tags outside the allow-list,
+ * which are refused per frame (`WireTagAllowList.test.ts`).
  */
 describe('a legacy body shaped like a reserved tag', () => {
   test('costs the connection, and every frame batched into the same chunk', async () => {

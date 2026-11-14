@@ -531,6 +531,32 @@ of the raw buffer would close it with neither set; it was
 measured at 18–28 % of every frame decode and not shipped, for
 a fourfold amplification (#880).
 
+## Which classes a peer can make you build
+
+A frame is a tagged JSON tree, and a tag asks the receiver to
+construct a class.  Until #1303 the receiver followed every tag, so
+a peer that completed the handshake chose the runtime class of any
+value in any body — an actor typed for a `string` could be handed a
+`RegExp` the peer wrote (`(a+)+$` blocks the event loop on a short
+input), an `Error` subclass, or an `undefined` in a slot no
+`JSON.parse` fills.
+
+The decoder now builds only the tags in
+`actor-ts.serialization.wire.admitted-tags`, by default the data
+tags: `date`, `bytes`, `typed-array`, `map`, `set`, `bigint`,
+`bidirectional-map`, `bidirectional-multi-map` and `number`.  A
+frame using any other tag is **refused on its own** — it never
+reaches a handler, the transport logs a WARN naming the tag, and
+the connection and the frames batched beside it are kept.  That
+last part is deliberate: an old node and a hostile one write the
+same bytes, and closing the link would let either cost a healthy
+peer every frame in the chunk.  A refused tag's content is never
+read, so a refused pattern is never compiled.
+
+Widening the list widens what every peer may make you build, so
+add a tag only where your own messages carry it, and on every node
+that receives them.  `[]` decodes frames as plain JSON.
+
 ## What a well-formed frame still cannot grow
 
 Shape validation says a frame is *readable*, not that acting on

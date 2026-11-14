@@ -109,12 +109,13 @@ worth following from a writer you trust.  So the decoder takes an
 allow-list — `tags`, by name: `date`, `bytes`, `map`, `set`,
 `bidirectional-map`, `bidirectional-multi-map`, `bigint`, `number`,
 `undefined`, `regexp`, `url`, `error`, `typed-array` — and each
-reader passes the one that fits whose bytes it reads (#967):
+reader passes the one that fits whose bytes it reads (#967, #1303):
 
 | Reader | Tags it honours |
 | --- | --- |
 | Persistence `PayloadCodec`, `new JsonSerializer()` | All of them — these are bytes the framework wrote itself, and stored rows must keep decoding. |
 | `entity()` on an HTTP request | None: the body is plain JSON unless the route opts in with `EntityOptions.withTags([...])` — see [marshalling](/http/marshalling/#json-bodies-are-plain-json). |
+| The cluster wire (`FrameDecoder`) | The data tags — `date`, `bytes`, `typed-array`, `map`, `set`, `bigint`, the two bidirectional maps, `number` — set by `actor-ts.serialization.wire.admitted-tags`.  A frame using another tag is refused and logged; see the [overview](/serialization/overview/). |
 
 ```ts
 import { JsonSerializer } from 'actor-ts/serialization';

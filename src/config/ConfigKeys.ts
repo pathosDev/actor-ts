@@ -2224,6 +2224,14 @@ export const ConfigKeys = {
       maxDocumentBytes: 'actor-ts.serialization.read-constraints.max-document-bytes',
       maxStringLength: 'actor-ts.serialization.read-constraints.max-string-length',
     },
+    /**
+     * What the cluster wire's decoder builds out of a peer's frame (#1303) —
+     * read by `readWireDecodeOptionsFromConfig` and handed to every
+     * `FrameDecoder` a node's transport builds, and nothing else.
+     */
+    wire: {
+      admittedTags: 'actor-ts.serialization.wire.admitted-tags',
+    },
   },
 
   /**

@@ -22,6 +22,15 @@ export {
   readReadConstraintsOptionsFromConfig,
 } from './ReadConstraintsOptions.js';
 export type { ReadConstraintsOptionsType } from './ReadConstraintsOptions.js';
+export {
+  DEFAULT_WIRE_ADMITTED_TAGS,
+  defaultWireDecodeOptions,
+  readWireDecodeOptionsFromConfig,
+  WireDecodeOptions,
+  WireDecodeOptionsBuilder,
+  WireDecodeOptionsValidator,
+} from './WireDecodeOptions.js';
+export type { WireDecodeOptionsType } from './WireDecodeOptions.js';
 export { CborSerializer } from './CborSerializer.js';
 export { CborDecoder, CborEncoder, CborDecodeError, CborEncodeError } from './CborCodec.js';
 export { SerializationExtension, SerializationExtensionId } from './SerializationExtension.js';

@@ -186,6 +186,33 @@ ref.tell({ when: new Date() });
 ref.tell({ onDone: () => {} });
 ```
 
+**Was der Empfänger baut, entscheidet er selbst** (#1303).  Der
+Sender schreibt jeden Tag; der empfangende Node konstruiert nur die
+in `actor-ts.serialization.wire.admitted-tags`, standardmäßig die
+Daten-Tags — `date`, `bytes`, `typed-array`, `map`, `set`,
+`bigint`, die beiden bidirektionalen Maps und `number`.  Eine
+`RegExp`, eine `URL`, ein `Error` oder ein `undefined` an einer
+Wertposition (Array-Slot, `Set`-Element, `Map`-Eintrag) wird auf
+einem Default-Node daher **nicht rekonstruiert**: Der Frame, der es
+trägt, wird abgelehnt — übersprungen, mit einem WARN, der den Tag
+nennt — und erreicht den Actor nie.  Er wird auch nicht als
+einfaches Objekt ausgeliefert, denn das würde die Klasse des Werts
+ändern, ohne dass es jemand merkt.  Die Verbindung und die neben
+dem abgelehnten Frame gebündelten Frames bleiben erhalten.  Ein
+Frame sind Bytes, die ein Peer geschrieben hat; hier verläuft also
+die Grenze zwischen einem Peer, der Daten sendet, und einem Peer,
+der bestimmt, welche Klassen deine Actors bekommen — eine vom
+Angreifer geschriebene `RegExp` eingeschlossen.
+
+```hocon
+# every node that receives an Error across the wire
+actor-ts.serialization.wire.admitted-tags = [date, bytes, typed-array, map, set, bigint, bidirectional-map, bidirectional-multi-map, number, error]
+```
+
+Eine nicht gesetzte Objekt-Property ist kein Tag — sie wird
+verworfen, wie `JSON.stringify` sie verwirft —, also überqueren
+gewöhnliche optionale Felder jede Allow-List.
+
 ## Wo Serialisierung passiert
 
 ```
@@ -228,6 +255,17 @@ import { Aside } from '@astrojs/starlight/components';
   Nachricht stattdessen in einem gewöhnlichen Unit-Test durch
   `JsonSerializer` — denselben Tree, den der Wire rahmt, nur
   strenger bei `undefined`.
+</Aside>
+
+<Aside type="caution" title="Upgrade von v0.18: RegExp, URL, Error und undefined">
+  Ein v0.18-Node schreibt diese vier Tags ungefragt, und ein
+  v0.19-Node mit der Default-Allow-List lehnt jeden Frame ab, der
+  einen davon trägt — der übrige Verkehr kommt durch.  Ein
+  **Rolling Upgrade ist daher nicht sicher** für einen Cluster,
+  dessen Nachrichten einen davon tragen: in einem Fenster upgraden
+  oder die Tags für die Dauer in
+  `actor-ts.serialization.wire.admitted-tags` auf den neuen Nodes
+  listen (#1303).
 </Aside>
 
 <Aside type="caution" title="Einen laufenden Cluster aktualisieren">

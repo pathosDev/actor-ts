@@ -1,10 +1,16 @@
-import { decodeJsonTree, encodeJsonTree } from '../serialization/JsonTree.js';
+import { decodeJsonTree, encodeJsonTree, RefusedTagError } from '../serialization/JsonTree.js';
 import {
   defaultReadConstraintsOptions,
   ReadConstraintsOptionsValidator,
   type ReadConstraintsOptions,
   type ReadConstraintsOptionsType,
 } from '../serialization/ReadConstraintsOptions.js';
+import {
+  defaultWireDecodeOptions,
+  WireDecodeOptionsValidator,
+  type WireDecodeOptions,
+  type WireDecodeOptionsType,
+} from '../serialization/WireDecodeOptions.js';
 import { INITIAL_FRAME_BUFFER_BYTES, RETAINED_FRAME_BUFFER_BYTES } from './Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
@@ -464,21 +470,28 @@ const HEADER_SIZE = 4;
  * output; `undefined` in a value position (array slot, `Set` member, `Map` key
  * or value) is now preserved instead of becoming `null`.
  *
- * **Rolling upgrade — neither direction is safe, and the one that looks safe
- * is worth spelling out.**  A frame from an older node is untagged JSON, and
- * `decodeJsonTree` interprets a tag only when it is an object's sole own key,
- * so nearly all legacy traffic is carried through unchanged.  The exception is
- * a legacy value that already had that shape: `{__bytes__: 'not base64!!!'}`
- * decodes to a `Uint8Array` and `{__date__: 'whenever'}` to an Invalid Date,
- * silently, while `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`,
- * `__number__` and `__error__` throw at any depth — and a decoder throw costs
+ * **What the receiver builds is its own decision, not the sender's** (#1303).
+ * The encoder writes every tag it knows; {@link FrameDecoder} constructs only
+ * the ones in `actor-ts.serialization.wire.admitted-tags` — the data tags by
+ * default — and refuses a frame that uses any other, so a `RegExp`, `URL`,
+ * `Error` or value-position `undefined` sent to a node on the default list
+ * never arrives.  That is also what breaks a rolling upgrade from v0.18: an
+ * older node writes those tags unasked, and its frames carrying them are
+ * refused by an upgraded peer.
+ *
+ * **Rolling upgrade from a pre-tag node is not safe either.**  A frame from a
+ * node older than #450 is untagged JSON, and `decodeJsonTree` interprets a tag
+ * only when it is an object's sole own key, so nearly all legacy traffic is
+ * carried through unchanged.  The exception is a legacy value that already had
+ * that shape: `{__bytes__: 'not base64!!!'}` decodes to a `Uint8Array` and
+ * `{__date__: 'whenever'}` to an Invalid Date, silently, while a malformed
+ * admitted tag throws at any depth — and a decoder throw costs
  * {@link Transport} the whole connection, along with every frame batched into
  * the same chunk.  The `__literal__` escape only protects data *this* encoder
- * produced, so it does nothing here.  The other direction is plainly lossy: an
- * older node reading a newer node's frame sees the tag wrapper as plain data.
- * Since v0.18.0 the handshake negotiates a wire version (#823), so nodes on
- * either side of a break refuse each other instead of exchanging frames like
- * these; the encoding itself is not versioned.
+ * produced, so it does nothing here.  Since v0.18.0 the handshake negotiates a
+ * wire version (#823), so nodes on either side of such a break refuse each
+ * other instead of exchanging frames like these; the encoding itself is not
+ * versioned.
  */
 export function encodeFrame(message: WireMessage): Uint8Array {
   const json = JSON.stringify(encodeJsonTree(message, { undefinedValues: 'omit' }));
@@ -551,10 +564,21 @@ export class FrameDecoder {
    * overflows the walker's stack without them (#880).
    */
   private readonly readConstraints: Required<ReadConstraintsOptionsType>;
+  /** Which tags a frame may use — see `WireDecodeOptionsType` (#1303). */
+  private readonly wireDecode: Required<WireDecodeOptionsType>;
+  /** Refusals from the most recent {@link push}, cleared when the next one starts. */
+  private refusals: RefusedTagError[] = [];
+  /**
+   * Frames this decoder refused for using a tag outside the allow-list, over
+   * its whole life — the count beside the log line, for a test or a probe that
+   * wants the number rather than the text.
+   */
+  refusedFrames = 0;
 
   constructor(
     maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
     readConstraints: ReadConstraintsOptions = {},
+    wireDecode: WireDecodeOptions = {},
   ) {
     if (!Number.isFinite(maxFrameBytes) || maxFrameBytes < 1) {
       throw new Error(`FrameDecoder: maxFrameBytes must be a positive integer, got ${maxFrameBytes}`);
@@ -565,6 +589,24 @@ export class FrameDecoder {
       ...(readConstraints as Partial<ReadConstraintsOptionsType>),
     };
     new ReadConstraintsOptionsValidator().validate(this.readConstraints);
+    this.wireDecode = {
+      ...defaultWireDecodeOptions,
+      ...(wireDecode as Partial<WireDecodeOptionsType>),
+    };
+    new WireDecodeOptionsValidator().validate(this.wireDecode);
+  }
+
+  /**
+   * The frames the most recent {@link push} refused for using a tag outside the
+   * allow-list, one error each, naming the tag.
+   *
+   * A pull rather than a callback so the decoder needs no logger and no idea
+   * whose connection it serves: the transport, which knows the peer, reads this
+   * right after `push` and logs it.  Cleared at the start of every `push`, so a
+   * caller that never reads it holds no more than one chunk's worth.
+   */
+  lastRefusals(): readonly RefusedTagError[] {
+    return this.refusals;
   }
 
   /**
@@ -581,6 +623,7 @@ export class FrameDecoder {
   }
 
   push(chunk: Uint8Array): WireMessage[] {
+    if (this.refusals.length > 0) this.refusals = [];
     this.append(chunk);
     const out: WireMessage[] = [];
     const decoder = new TextDecoder();
@@ -629,14 +672,28 @@ export class FrameDecoder {
       // Reported separately from the parse failure: "the bytes were not JSON"
       // and "a tag in well-formed JSON was malformed" are different peers doing
       // different things, and the transport logs this reason to an operator.
-      // A hostile peer can reach it — a forged `__regexp__` or `__bytes__` is
-      // the cheapest way to try — and it lands in the same `push` throw the
-      // transport already answers by closing the connection.
+      // A hostile peer can reach it — a malformed `__bytes__` is the cheapest
+      // way to try — and it lands in the same `push` throw the transport
+      // already answers by closing the connection.
+      //
+      // A tag outside the allow-list is the one decode failure that is NOT
+      // that (#1303).  The frame was whole and well-formed and only asked for
+      // a class this node will not build, so it is refused alone: its bytes are
+      // already consumed, the frames after it in the chunk still decode, and
+      // the connection stays.  An old node and a hostile one write the same
+      // bytes here, and closing the link would hand either a cheap way to cost
+      // a healthy peer every frame batched beside the one it sent.
       try {
         out.push(decodeJsonTree(parsed, {
           maxNestingDepth: this.readConstraints.maxNestingDepth,
+          tags: this.wireDecode.admittedTags,
         }) as WireMessage);
       } catch (e) {
+        if (e instanceof RefusedTagError) {
+          this.refusals.push(e);
+          this.refusedFrames += 1;
+          continue;
+        }
         throw new Error(`Invalid wire frame payload: ${(e as Error).message}`);
       }
     }

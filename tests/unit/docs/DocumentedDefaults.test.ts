@@ -91,6 +91,7 @@ import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
 import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS, MAX_INBOUND_CONNECTIONS, MAX_PENDING_FRAMES } from '../../../src/cluster/Constants.js';
 import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
+import { DEFAULT_WIRE_ADMITTED_TAGS } from '../../../src/serialization/WireDecodeOptions.js';
 import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
@@ -484,6 +485,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // rather than being filed away as a feature switch with no constant (#880).
   { key: 'actor-ts.serialization.read-constraints.max-document-bytes', kind: 'bytes', constant: DEFAULT_MAX_DOCUMENT_BYTES },
   { key: 'actor-ts.serialization.read-constraints.max-string-length', kind: 'bytes', constant: DEFAULT_MAX_STRING_LENGTH },
+  { key: 'actor-ts.serialization.wire.admitted-tags', kind: 'list', constant: DEFAULT_WIRE_ADMITTED_TAGS },
 
   /* --- cluster bootstrap --- */
   { key: 'actor-ts.cluster.bootstrap.poll-interval', kind: 'duration', constant: DEFAULT_POLL_INTERVAL_MS },
