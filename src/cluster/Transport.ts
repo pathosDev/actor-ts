@@ -146,15 +146,16 @@ type Connection = {
   targetKey: string | null;
   /**
    * Every `byPeer` key this connection was registered under: the address a
-   * dial was opened to, and each identity a `hello` or `hello-ack` announced
-   * on it.  {@link TcpTransport.releasePeerSlot} gives all of them back.
+   * dial was opened to, and the identity its handshake announced.
+   * {@link TcpTransport.releasePeerSlot} gives all of them back.
    *
-   * `peer` and `targetKey` name two at most — the identity announced last and
-   * the dialled address — and a connection that announced a second identity
-   * holds more.  Released by those two alone, the earlier identity stayed
-   * mapped to a closed connection: every `send` to it went into that
-   * connection instead of a new dial, and the real peer's `hello` under it was
-   * turned away as a claim on an address already held (#1476).
+   * Two at most since #1814, which refuses a second identity on a connection
+   * that has one — {@link TcpTransport.identityAlreadySettled}.  The set stays
+   * the one way keys are released all the same: released by `peer` alone, a
+   * dial left its dialled address mapped to a closed connection, every `send`
+   * to it went into that connection instead of a new dial, and the real
+   * peer's `hello` under it was turned away as a claim on an address already
+   * held (#1476).
    */
   readonly peerKeys: Set<string>;
   /**
@@ -419,8 +420,7 @@ export class TcpTransport implements Transport {
     // Every key the connection holds goes with it, not just the one asked for:
     // a dial is registered under the address it dialled and, once acked, under
     // the one the peer announced — two different keys whenever a seed names a
-    // host the peer does not advertise itself as — and a connection holds one
-    // more for each further identity a handshake frame announced on it.
+    // host the peer does not advertise itself as.
     const connection = this.byPeer.get(peer.toString());
     if (connection) this.closeConnection(connection);
   }
@@ -709,6 +709,7 @@ export class TcpTransport implements Transport {
     if (connection.dropped) return;
     if (message.kind === 'hello') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (this.identityAlreadySettled(connection, peer, 'hello')) return;
       if (this.refuseOwnAddress(connection, peer, 'hello')) return;
       if (!this.certificateAdmits(connection, peer, 'hello')) return;
       const refusal = wireVersionRefusal(message, message.self);
@@ -777,6 +778,7 @@ export class TcpTransport implements Transport {
     }
     if (message.kind === 'hello-ack') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (this.identityAlreadySettled(connection, peer, 'hello-ack')) return;
       if (this.refuseOwnAddress(connection, peer, 'hello-ack')) return;
       if (!this.certificateAdmits(connection, peer, 'hello-ack')) return;
       // The acceptor speaks the version it acknowledged with; an older one
@@ -844,6 +846,45 @@ export class TcpTransport implements Transport {
       + `v${message.minWireVersion}..v${message.wireVersion}): ${sanitizePeerTextForLog(message.reason)}`,
     );
     this.dropConnection(connection);
+  }
+
+  /**
+   * Whether the connection already has its peer identity — then the handshake
+   * frame is spent here, and `true` comes back (#1814).
+   *
+   * A connection keeps one identity for its lifetime.  A frame naming the
+   * same one again changes nothing and is ignored: no second `hello-ack`, no
+   * second flush.  A frame naming a different one is refused and the
+   * connection dropped, whichever frame it is — a second `hello` on an
+   * accepted socket, a second `hello-ack` on a dial, or a `hello` arriving on
+   * a dial that was already acknowledged.  Taking it, as this used to, left
+   * the connection registered under both addresses: a `send` to the first
+   * still went to a socket whose peer now called itself something else, every
+   * later frame was handed to the cluster as coming from the second, and
+   * {@link peers} listed only the second.
+   *
+   * Asked before every other handshake check, because none of them is about a
+   * connection that already has a peer.  Under mTLS {@link certificateAdmits}
+   * would have held a second claim to the certificate too, so this is about
+   * one connection meaning one peer more than about trust — without TLS a peer
+   * may claim any *first* identity on a fresh connection anyway.  A dial keeps
+   * its two legitimate keys: the address it dialled, registered before the
+   * handshake, and the identity of its first `hello-ack`.
+   */
+  private identityAlreadySettled(
+    connection: Connection,
+    claimed: NodeAddress,
+    frame: 'hello' | 'hello-ack',
+  ): boolean {
+    const settled = connection.peer;
+    if (settled === null) return false;
+    if (claimed.toString() === settled.toString()) return true;
+    this.log.warn(
+      `${frame} refused: the connection already belongs to ${sanitizeNodeAddressForLog(settled)}, `
+      + `and the peer now claims ${sanitizeNodeAddressForLog(claimed)} — closing the connection`,
+    );
+    this.dropConnection(connection);
+    return true;
   }
 
   /**
@@ -955,10 +996,11 @@ export class TcpTransport implements Transport {
    * Release every `byPeer` slot a connection holds.  A dial is registered under
    * its target *before* the handshake, so keying cleanup on `peer` alone
    * stranded the slot whenever the handshake never completed — the address
-   * could then never be re-dialled (#697).  And `peer` is only the identity
-   * announced last: keying it on `peer` and the target stranded every earlier
-   * identity a connection announced (#1476).  So it walks
-   * {@link Connection.peerKeys}, which every registration goes through.
+   * could then never be re-dialled (#697).  And keying it on `peer` and the
+   * target by hand stranded every key the two did not name — an earlier
+   * identity, while a connection could still announce a second (#1476, #1814).
+   * So it walks {@link Connection.peerKeys}, which every registration goes
+   * through.
    *
    * Each delete is guarded on the map still pointing at this connection, so a
    * slot already taken over by its replacement is left alone.
