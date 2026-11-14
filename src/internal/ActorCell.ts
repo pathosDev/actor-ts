@@ -223,17 +223,25 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _watchWithMessages = new Map<string, TMessage>();
 
   /**
-   * Sliding-window tally of *this* cell's restarts under a one-for-one
-   * strategy, `null` until its first failure — which for most actors is never.
-   * Written and read only by the parent's {@link registerRestart}: the parent
-   * decides, but the allowance is the failing child's own (#917).  It lives on
-   * the cell rather than the instance so it survives the restarts it counts,
-   * and it dies with the cell, so a child stopped and spawned again under the
-   * same name starts with a whole allowance.
+   * Sliding-window restart tallies of this cell's children under a
+   * one-for-one strategy, **one per child name**, created on a child's first
+   * failure — which for most children is never.
    *
-   * It used to be one tally on the parent for all of its children, which made
-   * five siblings that each failed once spend one `maxRetries: 2` between them
-   * — and every top-level actor share the user guardian's.
+   * Per child, because the allowance is the failing child's own (#917): it
+   * used to be one tally for all of a parent's children, which made five
+   * siblings that each failed once spend one `maxRetries: 2` between them —
+   * and every top-level actor share the user guardian's.
+   *
+   * Per *name*, and kept on the parent rather than on the child's cell, so it
+   * outlives a child that is stopped and spawned again under the same name.
+   * On the cell it died with the child, and every re-creation bought a whole
+   * new allowance: an entity the shard re-creates after its restart backoff
+   * (#1437) got ten more restarts per re-creation instead of one instance per
+   * wait.  An entry for a name with no live child is dropped once its window
+   * holds no restart ({@link pruneRestartBudgets}); under a strategy with no
+   * window (`withinTimeRangeMs: 0`) it can never empty, so it is dropped when
+   * its child terminates — the alternative is a map that grows with every
+   * name that ever failed.
    *
    * A {@link RestartBudget} rather than a bare timestamp array, because this
    * cell used to keep the array *and* its own arithmetic over it, and the two
@@ -242,7 +250,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * `maxRetries: 5` therefore meant five restarts in the worker mesh, which
    * budgets its slot respawns through that class (#734), and six here.
    */
-  private _restartBudget: RestartBudget | null = null;
+  private _childRestartBudgets: Map<string, RestartBudget> | null = null;
 
   /**
    * The one tally this cell's children share under an all-for-one strategy.
@@ -256,7 +264,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * When the parent last logged one of *this* cell's failures, on
    * `system.clock`, and how many it has held back since — the per-actor
    * throttle behind {@link FAILURE_LOG_INTERVAL_MS}.  On the cell, like
-   * {@link _restartBudget}, so a crash loop is throttled across the restarts
+   * its restart budget, so a crash loop is throttled across the restarts
    * it consists of.
    */
   private _failureLoggedAt: number | null = null;
@@ -2980,7 +2988,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * Delegated rather than computed here: `RestartBudget` is the same sliding
    * window over the same two allowance fields, and keeping a second copy is
    * what let the two drift apart in the first place.  See
-   * {@link _restartBudget}.
+   * {@link _childRestartBudgets}.
    *
    * The window is measured on `system.clock`, not the budget's wall-clock
    * default: a parent under a `ManualScheduler` has to see "a minute passed"
@@ -2992,8 +3000,28 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._groupRestartBudget = this.budgetFor(this._groupRestartBudget, strategy);
       return this._groupRestartBudget.registerRestart();
     }
-    child._restartBudget = this.budgetFor(child._restartBudget, strategy);
-    return child._restartBudget.registerRestart();
+    const budgets = this._childRestartBudgets ??= new Map();
+    const name = child.self.path.name;
+    const budget = this.budgetFor(budgets.get(name) ?? null, strategy);
+    budgets.set(name, budget);
+    return budget.registerRestart();
+  }
+
+  /**
+   * Forget the tallies of names with no live child that nothing can draw on
+   * any more: one whose window holds no restart, and one with no window at
+   * all, which would otherwise never empty.  Run whenever a child terminates,
+   * so the map is bounded by the live children plus the names that failed
+   * within their window.  See {@link _childRestartBudgets}.
+   */
+  private pruneRestartBudgets(): void {
+    const budgets = this._childRestartBudgets;
+    if (budgets === null) return;
+    for (const [name, budget] of budgets) {
+      if (this._children.has(name)) continue;
+      if (!budget.windowed || !budget.holdsRestarts()) budgets.delete(name);
+    }
+    if (budgets.size === 0) this._childRestartBudgets = null;
   }
 
   /**
@@ -3015,6 +3043,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const childRef = signal.child;
     const key = childRef.path.name;
     if (this._children.has(key)) this._children.delete(key);
+    this.pruneRestartBudgets();
     // Any Terminated(childRef) owed to us was already delivered via the
     // child's watcher set in finalizeTermination — no double delivery here.
 
