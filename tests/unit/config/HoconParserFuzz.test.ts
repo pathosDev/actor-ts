@@ -18,7 +18,7 @@
 import { describe, expect, test } from 'bun:test';
 import fc from 'fast-check';
 import { MAX_HOCON_NESTING_DEPTH } from '../../../src/config/Constants.js';
-import { parseHocon } from '../../../src/config/HoconParser.js';
+import { parseHocon, type ConfigObject, type ConfigValue } from '../../../src/config/HoconParser.js';
 import { hoconDocumentArbitrary, hoconViolations, outcomeOf } from '../../util/DecoderFuzz.js';
 
 /** Characters HOCON gives meaning to, plus a few ordinary ones, so random text reaches past the first token. */
@@ -94,5 +94,41 @@ describe('parseHocon nesting', () => {
         expect(outcomeOf(() => parseHocon(text)).kind).toBe(depth + 1 > MAX_HOCON_NESTING_DEPTH ? 'threw' : 'decoded');
       },
     ), { numRuns: 60 });
+  });
+
+  /**
+   * The ceiling bounds one path from the root, not a total across siblings.
+   * The cases above only pin it from above (too deep is refused); these pin it
+   * from below.  A level a finished subtree failed to give back would add up
+   * over its siblings, and a document far wider than the ceiling, though
+   * shallow, would be refused — which only a large file, never a deep one,
+   * shows.
+   */
+  const SIBLINGS = 1_000;
+  const siblingText = (index: number): string => `k${index} { a.b = [1, [2]], c { d = x } }`;
+  const siblingValue: ConfigObject = { a: { b: [1, [2]] }, c: { d: 'x' } };
+  const siblingsExpected = (): ConfigObject =>
+    Object.fromEntries(Array.from({ length: SIBLINGS }, (_, index) => [`k${index}`, siblingValue]));
+
+  test('a document far wider than the ceiling, but shallow, parses to its value', () => {
+    const text = Array.from({ length: SIBLINGS }, (_, index) => siblingText(index)).join('\n');
+    expect(parseHocon(text)).toEqual(siblingsExpected());
+  });
+
+  test('a path exactly at the ceiling is accepted after many sibling subtrees, and one level more is not', () => {
+    const siblings = Array.from({ length: SIBLINGS }, (_, index) => siblingText(index)).join('\n');
+    // `MAX - 1` segments of `a.` and then `b`: the value sits at level MAX.
+    const atCeiling = `${siblings}\n${'a.'.repeat(MAX_HOCON_NESTING_DEPTH - 1)}b = 1`;
+    let expected: ConfigValue = 1;
+    expected = { b: expected };
+    for (let level = 1; level < MAX_HOCON_NESTING_DEPTH; level++) expected = { a: expected };
+    expect(parseHocon(atCeiling)).toEqual({ ...siblingsExpected(), ...(expected as ConfigObject) });
+    // Inside a list inside the siblings' own nesting, too: depth is given back
+    // after a list as well as after an object.
+    const listThenCeiling = `${siblings}\nlists = [[[1]], [[2]]]\n${'a.'.repeat(MAX_HOCON_NESTING_DEPTH - 1)}b = 1`;
+    expect(outcomeOf(() => parseHocon(listThenCeiling)).kind).toBe('decoded');
+    const pastCeiling = `${siblings}\n${'a.'.repeat(MAX_HOCON_NESTING_DEPTH)}b = 1`;
+    expect(hoconViolations(pastCeiling)).toEqual([]);
+    expect(outcomeOf(() => parseHocon(pastCeiling)).kind).toBe('threw');
   });
 });
