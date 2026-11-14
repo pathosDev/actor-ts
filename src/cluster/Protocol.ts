@@ -519,6 +519,26 @@ export function encodeFrame(message: WireMessage): Uint8Array {
 export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 /**
+ * Why {@link FrameDecoder.push} refused a peer's bytes: a length prefix past a
+ * cap, a payload that is not JSON, or a JSON-tree payload the walker refused
+ * as malformed or too deep.  `Transport` answers it by dropping the connection.
+ *
+ * A class of its own rather than a bare `Error` so that "the decoder refused
+ * this input" can be told apart from a defect *inside* the decoder — a
+ * `RangeError` out of a `DataView`, a stack overflow — by type rather than by
+ * reading the message (#1369).  The generative properties in
+ * `tests/unit/cluster/FrameDecoderFuzz.test.ts` assert exactly that over
+ * arbitrary bytes, which a plain `Error` made impossible to state.  Where the
+ * refusal came from the walker, its `SerializationError` is the `cause`.
+ */
+export class FrameDecodeError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'FrameDecodeError';
+  }
+}
+
+/**
  * Incremental decoder that buffers bytes across multiple chunks and yields
  * whole frames.  TCP gives no message boundaries — the caller feeds bytes as
  * they arrive and collects whatever frames completed.
@@ -635,7 +655,7 @@ export class FrameDecoder {
         // Reject BEFORE buffering — the attacker can't force an OOM
         // by claiming a 4 GiB frame.  Throwing here triggers
         // connection-shutdown in the transport layer.
-        throw new Error(
+        throw new FrameDecodeError(
           `wire frame claims length ${length} > maxFrameBytes ${this.maxFrameBytes} — `
           + `connection terminated to prevent OOM/DoS`,
         );
@@ -654,7 +674,7 @@ export class FrameDecoder {
       // peer actually chooses (#880).
       const documentCeiling = this.readConstraints.maxDocumentBytes;
       if (documentCeiling > 0 && length > documentCeiling) {
-        throw new Error(
+        throw new FrameDecodeError(
           `wire frame of ${length} bytes exceeds maxDocumentBytes ${documentCeiling} — `
           + `connection terminated before the document is buffered`,
         );
@@ -667,7 +687,7 @@ export class FrameDecoder {
       try {
         parsed = JSON.parse(json);
       } catch (e) {
-        throw new Error(`Invalid wire frame JSON: ${(e as Error).message}`);
+        throw new FrameDecodeError(`Invalid wire frame JSON: ${(e as Error).message}`, { cause: e });
       }
       // Reported separately from the parse failure: "the bytes were not JSON"
       // and "a tag in well-formed JSON was malformed" are different peers doing
@@ -694,7 +714,7 @@ export class FrameDecoder {
           this.refusedFrames += 1;
           continue;
         }
-        throw new Error(`Invalid wire frame payload: ${(e as Error).message}`);
+        throw new FrameDecodeError(`Invalid wire frame payload: ${(e as Error).message}`, { cause: e });
       }
     }
     this.reclaim();
