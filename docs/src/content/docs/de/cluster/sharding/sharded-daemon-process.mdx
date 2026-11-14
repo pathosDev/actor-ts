@@ -67,8 +67,13 @@ Drei Dinge passieren bei `init`:
 
 1. Das Framework registriert einen sharded Entity-Typ
    (`daemon-reconciler`).
-2. Jede Entity-ID ist einfach der Index des Daemons als String
-   (`'0'`, `'1'`, …, `'7'`).
+2. Jeder Daemon bekommt eine Entity-ID, die so gewählt ist, dass
+   Daemon `i` auf Shard `i` der `numDaemons` Shards des Typs landet —
+   ein Daemon pro Shard, sodass nie zwei Daemons aneinander gebunden
+   sind.  Wo der Index als String (`'3'`) schon auf seinen eigenen
+   Shard hasht, ist das die ID; die übrigen bekommen einen
+   deterministischen Ersatz (`'shard-key-17'`).  Dein Daemon sieht
+   weiterhin seinen Index, nie die ID.
 3. Interne "Wake-up"-Nachrichten werden an jeden Index geschickt,
    was die Sharding-Maschinerie zwingt, die Entity-Actors auf
    den vom Koordinator gewählten Nodes zu materialisieren.
@@ -100,7 +105,11 @@ interface ShardedDaemonProcessHandle<T> {
 `ShardedDaemonProcess` ist ein **dünner Wrapper um ClusterSharding**:
 
 - `typeName: 'daemon-<name>'`.
-- `extractEntityId: env => env.index.toString()`.
+- `extractEntityId`: der Daemon-Index, abgebildet auf seine
+  Entity-ID, ein Shard pro Daemon (siehe oben).  Eine ID, die eine
+  von einem früheren Release geschriebene Registry noch kennt und die
+  keinen Daemon mehr benennt, passiviert sich beim Start und
+  verschwindet aus der Registry.
 - `rememberEntities: true` — sodass ein Node-Ausfall den Daemon
   woanders neu spawnt.
 - `allocationStrategy: LeastShardAllocationStrategy` per Default —
