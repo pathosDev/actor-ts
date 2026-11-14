@@ -331,7 +331,7 @@ vergisst, weist also Clients ab, die den Header nie setzen.
 `HttpResponse.body` akzeptiert einen Web-`ReadableStream<Uint8Array>`,
 und alle drei Backends streamen ihn direkt zum Client, ohne ihn im
 Speicher zu puffern — Fastify reicht den Stream an `reply.send`,
-Express leitet ihn per `Readable.fromWeb` weiter, und Hono gibt ihn
+Express leitet ihn per `stream.pipeline` weiter, und Hono gibt ihn
 als `Response`-Body zurück.  Gib einen direkt aus einem Handler
 zurück:
 
@@ -346,6 +346,17 @@ Ohne expliziten `Content-Type` fällt ein Stream auf
 `application/octet-stream` zurück.  Streams sind einmalig; leite
 eine streamende Response daher nicht durch die Caching-Middleware.
 Für SSE nimm den [`SseActor`](/de/io/sse/).
+
+Scheitert der Stream, bekommt der Client nie eine Response, die
+vollständig aussieht.  Scheitert die Quelle vor ihrem ersten Chunk,
+gibt es einen 5xx oder eine geschlossene Verbindung; auf Express ist das
+ein gewöhnlicher Handler-Fehler, `withErrorHandler` sieht ihn also und
+wählt den Status.  Ist der erste Chunk draußen, steht der Status schon
+auf der Leitung; das Backend schließt dann die Verbindung, und der Client
+sieht einen abgeschnittenen Body.  Trennt der Client mitten im Body,
+wird der Stream abgebrochen, und was er liest, wird freigegeben.  Auf
+Express wird ein Fehler nach dem ersten Chunk zusätzlich auf `error`
+geloggt.
 
 Setze `Content-Length` selbst, wenn du sie kennst.  Ein Backend
 leitet die Länge aus einem `Uint8Array`-Body ab, hat bei einem Stream

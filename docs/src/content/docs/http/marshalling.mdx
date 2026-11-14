@@ -324,7 +324,7 @@ empty case turns away clients that never set the header.
 `HttpResponse.body` accepts a web `ReadableStream<Uint8Array>`, and
 all three backends stream it straight to the client without
 buffering it in memory — Fastify hands the stream to `reply.send`,
-Express pipes it through `Readable.fromWeb`, and Hono returns it as
+Express runs it through `stream.pipeline`, and Hono returns it as
 a `Response` body.  Return one straight from a handler:
 
 ```ts
@@ -338,6 +338,16 @@ Without an explicit `Content-Type` a stream defaults to
 `application/octet-stream`.  Streams are one-shot, so don't wrap a
 streaming response in the caching middleware.  For SSE, use the
 [`SseActor`](/io/sse/).
+
+When the stream fails, the client never gets a response that looks
+complete.  A source that fails before its first chunk gets a 5xx or a
+closed connection; on Express it is an ordinary handler error, so
+`withErrorHandler` sees it and chooses the status.  Once the first
+chunk is out, the status is on the wire, so the backend closes the
+connection and the client sees a truncated body.  A client that
+disconnects mid-body cancels the stream, which releases whatever it
+reads from.  On Express, a failure after the first chunk is also logged
+at `error`.
 
 Set `Content-Length` yourself when you know it.  A backend derives
 the length from a `Uint8Array` body but has nothing to measure on a

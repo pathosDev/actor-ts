@@ -366,6 +366,12 @@ export class HttpExtension implements Extension {
           }
           active.setErrorHandler(errorHandler);
         }
+        // A stream body that fails once its response is committed can no
+        // longer be answered by anyone; the log line is all that is left of it.
+        active.setStreamFailureHandler?.((err, request) => {
+          const where = request ? `${request.method} ${request.path}` : 'a response';
+          system.log.error(`[http] ${where}: the response body stream failed after the response was committed; the connection was closed`, err);
+        });
 
         // The longest a handler on this server may take before the framework
         // answers it 503: the configured deadline, raised to the longest

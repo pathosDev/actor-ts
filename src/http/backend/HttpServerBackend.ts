@@ -1505,6 +1505,18 @@ export interface HttpServerBackend {
   setErrorHandler?(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
 
   /**
+   * Optional: register the listener for a `ReadableStream` body whose source
+   * failed after the response was committed — the status and headers are on
+   * the wire, so no error handler can answer any more, the backend truncates
+   * the response, and this is the only place the failure can still be seen.
+   * `HttpExtension` wires it to the system log.  A failure before the first
+   * byte is not reported here: it goes to {@link setErrorHandler} like any
+   * other.  `request` is absent only for a response the backend wrote outside
+   * a route (#979).
+   */
+  setStreamFailureHandler?(handler: (err: unknown, request: HttpRequest | undefined) => void): void;
+
+  /**
    * Optional capability: register a WebSocket endpoint.  Backends that
    * implement this support `websocket()` routes; absence is detected by
    * `HttpExtension.bind` and reported as a clear error.

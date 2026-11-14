@@ -3,7 +3,7 @@ import { createServer, ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type ServerOptions as HttpsServerOptions } from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { Readable } from 'node:stream';
+import { pipeline, Readable } from 'node:stream';
 import { match } from 'ts-pattern';
 import { detectRuntime } from '../../runtime/Detect.js';
 import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
@@ -105,6 +105,46 @@ interface ExpressResponseLike {
 type ExpressNext = (err?: unknown) => void;
 type ExpressHandler = (req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
 type ExpressErrorHandler = (err: unknown, req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
+
+/** What one `read()` of a stream body's reader settles with — named off the reader, whichever lib spells it. */
+type ChunkReadResult = Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']>>;
+
+/**
+ * The chunks of a stream body after the first, which has already been read.
+ *
+ * A read that rejects is the source failing: it is reported once and
+ * rethrown, so `pipeline` destroys the response.  Leaving early — the
+ * response destroyed because the client went away — runs `finally` with the
+ * stream unfinished, and the source is cancelled there, which is what
+ * releases whatever it reads from.
+ */
+async function* chunksAfter(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  first: Uint8Array,
+  onSourceFailure: (err: unknown) => void,
+): AsyncGenerator<Uint8Array> {
+  let settled = false;
+  try {
+    yield first;
+    for (;;) {
+      let next: ChunkReadResult;
+      try {
+        next = await reader.read();
+      } catch (err) {
+        settled = true;
+        onSourceFailure(err);
+        throw err;
+      }
+      if (next.done) {
+        settled = true;
+        return;
+      }
+      yield next.value;
+    }
+  } finally {
+    if (!settled) await reader.cancel().catch(() => { /* the source failed while cancelling */ });
+  }
+}
 
 /** Escape a literal string for safe embedding in a RegExp source. */
 function escapeRegExp(s: string): string {
@@ -289,6 +329,7 @@ export class ExpressBackend implements HttpServerBackend {
   private wss: WebsocketServerLike | null = null;
   private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private streamFailureHandler: ((err: unknown, request: HttpRequest | undefined) => void) | null = null;
   private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
 
   constructor(options: ExpressBackendOptions = {}) {
@@ -325,6 +366,10 @@ export class ExpressBackend implements HttpServerBackend {
 
   setErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.errorHandler = handler;
+  }
+
+  setStreamFailureHandler(handler: (err: unknown, request: HttpRequest | undefined) => void): void {
+    this.streamFailureHandler = handler;
   }
 
   setDefaultResponseHeaders(headers: Readonly<Record<string, string>>): void {
@@ -367,7 +412,7 @@ export class ExpressBackend implements HttpServerBackend {
         try {
           const adapted = this.adaptRequest(req);
           const out = await handler(adapted);
-          this.writeResponse(res, out);
+          await this.writeResponse(res, out, adapted);
         } catch (err) { next(err); }
       };
       this.app.use(notFound);
@@ -614,7 +659,7 @@ export class ExpressBackend implements HttpServerBackend {
           ? { ...adapted, params: { ...adapted.params, '*': (req.params as Record<string, string>)['0'] ?? '' } }
           : adapted;
         const out = await route.handler(finalRequest);
-        this.writeResponse(res, out);
+        await this.writeResponse(res, out, finalRequest);
       } catch (err) { next(err); }
     };
     const app = this.app!;
@@ -679,7 +724,7 @@ export class ExpressBackend implements HttpServerBackend {
       if (this.errorHandler) {
         try {
           const out = await this.errorHandler(err, adapted);
-          this.writeResponse(res, out);
+          await this.writeResponse(res, out, adapted);
           return;
         } catch (inner) {
           err = inner;
@@ -754,7 +799,13 @@ export class ExpressBackend implements HttpServerBackend {
     for (const [key, value] of Object.entries(this.defaultResponseHeaders)) res.setHeader(key, value);
   }
 
-  private writeResponse(res: ExpressResponseLike, response: HttpResponse): void {
+  /**
+   * Write `response`.  Settles at once for every body but a `ReadableStream`,
+   * where it settles once the first chunk is on its way — and rejects if the
+   * source fails before that, so the caller's `next(err)` puts the failure
+   * through the error handler while a status can still be chosen.
+   */
+  private writeResponse(res: ExpressResponseLike, response: HttpResponse, request?: HttpRequest): Promise<void> | void {
     res.status(response.status);
     this.applyDefaultResponseHeaders(res);
     if (response.headers) for (const [key, value] of Object.entries(response.headers)) res.setHeader(key, value);
@@ -776,12 +827,66 @@ export class ExpressBackend implements HttpServerBackend {
     }
     if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
       if (!response.contentType && !response.headers?.['content-type']) res.setHeader('content-type', 'application/octet-stream');
-      Readable.fromWeb(body as unknown as Parameters<typeof Readable.fromWeb>[0]).pipe(res as unknown as NodeJS.WritableStream);
-      return;
+      return this.writeStream(res, body as ReadableStream<Uint8Array>, request);
     }
     // Plain object → JSON.
     if (!response.contentType) res.setHeader('content-type', 'application/json; charset=utf-8');
     res.end(JSON.stringify(body));
+  }
+
+  /**
+   * Stream `body` into `res` so that neither end can outlive a failure of the
+   * other (#979).
+   *
+   * This used to be `Readable.fromWeb(body).pipe(res)`, and `pipe` installs an
+   * error handler on the destination only.  A source whose `pull` rejected
+   * raised an unhandled `'error'` on the adapter — the process exited on
+   * Node, and the request hung on Bun — and a client that went away left the
+   * adapter holding its reader lock, so the source's `cancel` never ran and
+   * whatever it read from (a file handle, a cursor, an upstream body) leaked
+   * once per aborted download.  `pipeline` destroys every stream in the chain
+   * on any error, a premature close included, and `chunksAfter` turns that
+   * destruction into a `cancel` of the source.  A bare `on('error')` on the
+   * adapter would have stopped the exit and left the leak.
+   *
+   * The first chunk is read before anything is written, because until then
+   * the status is still open: a source that fails there rejects, and the
+   * caller hands the failure to the error handler like any other.  After it,
+   * the headers are on the wire and a `200` cannot be taken back, so the only
+   * honest signal left is a truncated body — `pipeline` destroys the socket —
+   * and the failure goes to {@link setStreamFailureHandler}, which
+   * `HttpExtension` logs.  A client that disconnected is not a failure of the
+   * source and is not reported.
+   */
+  private async writeStream(
+    res: ExpressResponseLike,
+    body: ReadableStream<Uint8Array>,
+    request: HttpRequest | undefined,
+  ): Promise<void> {
+    const reader = body.getReader();
+    const destination = res as unknown as NodeJS.WritableStream & ServerResponse;
+    // A client gone before the first chunk exists must still release the source.
+    const cancelOnClose = (): void => { reader.cancel().catch(() => { /* already settled */ }); };
+    destination.once('close', cancelOnClose);
+    let first: ChunkReadResult;
+    try {
+      first = await reader.read();
+    } catch (err) {
+      reader.releaseLock();
+      throw err;
+    } finally {
+      destination.off('close', cancelOnClose);
+    }
+    if (first.done) {
+      res.end();
+      return;
+    }
+    const report = (err: unknown): void => { this.streamFailureHandler?.(err, request); };
+    pipeline(
+      Readable.from(chunksAfter(reader, first.value, report), { objectMode: false }),
+      destination,
+      () => { /* every failure that matters was reported from the source; the rest is a client gone */ },
+    );
   }
 
   private async createExpressApp(): Promise<ExpressAppLike> {
