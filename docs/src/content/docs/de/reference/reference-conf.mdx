@@ -1611,6 +1611,8 @@ actor-ts {
     #     socket that is closing, against node:http's 5s on Express and
     #     Hono-on-Node.  Set a duration to make them agree, or 0 to disable it
     #     -- except on the Hono backend under Bun, where 0 is refused, below.
+    #     On an HTTP/2 listener an idle session is closed at 72s when this is
+    #     unset, on every backend, PINGs or not.
     #     On the Hono backend under Bun it is Bun.serve's own idleTimeout, a
     #     wider bound: whole-connection inactivity, so a handler that writes
     #     nothing for that long, a long poll or a sparse SSE stream is cut

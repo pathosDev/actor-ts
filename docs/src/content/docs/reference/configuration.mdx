@@ -1643,12 +1643,17 @@ on both runtimes, and a PING frame resets nothing — and a stream whose request
 is still arriving at `request-timeout` is answered `408` and reset.  A stream
 in flight holds its session, so a slow handler, a long poll and an SSE stream
 outlive the idle bound as they do on HTTP/1.1, and a request received in full
-is never cut by the receive deadline.  Unset, an idle HTTP/2 session is left to
-Fastify's own session timer — 72 s on Node, 144 s on Bun, which fires it at
-twice the value and lets a PING reset it — and on Hono over Node to nothing at
-all.  On Bun the HTTP/2 listener bounds a connection that negotiates HTTP/1.1
-on the same port by neither key, so there both are reported held for HTTP/2
-only and `bind()` warns.  None
+is never cut by the receive deadline.  Unset, an idle HTTP/2 session is closed
+at **72 s** by the same timer of actor-ts's own — Fastify's own value, so
+Fastify on Node behaves as it did, while Fastify on Bun (which fired Fastify's
+timer at 144 s and let a PING reset it) and Hono over Node (which closed an
+idle session never) now get the same bound; the binding report carries it as
+`http2SessionIdleDefaultMs`.  HTTP/1.1 keep-alive keeps the backend's own value.
+On Bun the HTTP/2 listener reads neither `keepAliveTimeout` nor
+`requestTimeout` for a connection that negotiates HTTP/1.1 on the same port, so
+actor-ts bounds those too, with timers of its own: idle between requests, and
+a receive deadline per request, answered `408`.  Both keys are in effect for
+both protocols there.  None
 of this is the Hono backend under Bun, whose sessions `Bun.serve`'s own
 whole-connection bound holds (§ above), set or derived: an idle session there
 was closed within one sweep of a `4s` value (bun 1.4.2), and a silent stream

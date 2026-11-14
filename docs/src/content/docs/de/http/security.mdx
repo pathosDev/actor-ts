@@ -327,28 +327,26 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
     Client, der alle 300 ms pingt, wird die untätige Session pünktlich
     geschlossen.
 
-  **Ungesetzt** begrenzt eine untätige HTTP/2-Session auf dem Default-Backend
-  Fastifys eigener Session-Timer: **72 s auf Node, aber 144 s auf Bun**, das ihn
-  beim doppelten Wert feuern lässt — und auf Bun zählt dieser Timer einen
-  PING-Frame als Aktivität; ein Client, der einmal pro Sekunde pingte, hielt
-  eine Session ohne jeden Request offen, solange er weiter pingte (nach 170 s
-  noch offen, bun 1.4.2). Auf Hono über Node lässt ein ungesetzter
-  `idle-timeout` eine untätige HTTP/2-Session ganz ohne Schranke. **Setze
-  `idle-timeout` auf jedem HTTP/2-Listener.**
+  **Ungesetzt** schließt der eigene Timer von actor-ts eine untätige
+  HTTP/2-Session nach **72 s**, mit oder ohne PINGs, auf Fastify unter Node und
+  Bun und auf Hono über Node. Vorher war das Sache des Backends: Fastifys
+  Session-Timer, den Bun nach 144 s feuert und bei jedem PING-Frame
+  zurücksetzt — ein Client, der einmal pro Sekunde pingte, hielt eine Session
+  ohne jeden Request offen, solange er weiter pingte (nach 170 s noch offen,
+  bun 1.4.2) —, und auf Hono über Node gar nichts.
 
-  **Auf Bun begrenzt keine der beiden eine HTTP/1.1-Verbindung auf dem
-  HTTP/2-Listener.** Der Listener hält HTTP/1.1 auf demselben Port bereit, und
-  Bun reicht eine solche Verbindung an eine Behandlung weiter, die weder
-  `keepAliveTimeout` noch `requestTimeout` liest: eine
+  **Auf Bun begrenzt actor-ts die HTTP/1.1-Verbindungen auf dem
+  HTTP/2-Listener selbst.** Der Listener hält HTTP/1.1 auf demselben Port
+  bereit, und Bun reicht eine solche Verbindung an eine Behandlung weiter, die
+  weder `keepAliveTimeout` noch `requestTimeout` liest: eine
   HTTP/1.1-Keep-Alive-Verbindung war unter einem `idle-timeout` von 800 ms
   8 s nach ihrer Antwort noch offen, ein stockender HTTP/1.1-Body unter einem
-  `request-timeout` von 2 s nach 40 s (bun 1.4.2) — wo Node die erste nach 1,8 s
-  schließt und den zweiten beim nächsten Sweep mit `408` beantwortet. Auf Bun
-  werden die beiden deshalb als nur für HTTP/2 wirksam gemeldet, und `bind()`
-  warnt; `header-timeout` und `max-connections` gelten dort für beide
-  Protokolle. Wo nicht vertrauenswürdige Clients einen HTTP/2-Listener auf Bun
-  erreichen, terminiere HTTP/1.1 vor dem Prozess oder lass den Listener bei
-  HTTP/1.1.
+  `request-timeout` von 2 s nach 40 s (bun 1.4.2). actor-ts stellt deshalb auf
+  jeder solchen Verbindung eigene Timer — untätig zwischen zwei Requests, und
+  eine Empfangs-Deadline pro Request, beantwortet mit `408` —, und beide Keys
+  wirken dort für beide Protokolle, wie `header-timeout` und
+  `max-connections` schon zuvor. HTTP/1.1 per ALPN abzulehnen war die
+  Alternative, und sie würde jeden Client abweisen, der kein h2 spricht.
 
   **`header-timeout` ist anders, und das mit Absicht: actor-ts stellt die
   Deadline selbst scharf, statt die Zahl an die Runtime zu reichen und zu

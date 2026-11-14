@@ -1760,13 +1760,18 @@ dessen Request bei `request-timeout` noch eintrifft, wird mit `408` beantwortet
 und zurückgesetzt.  Ein laufender Stream hält seine Session; ein langsamer
 Handler, ein Long Poll und ein SSE-Stream überdauern die Idle-Schranke also wie
 unter HTTP/1.1, und ein vollständig empfangener Request wird von der
-Empfangs-Deadline nie gekappt.  Ungesetzt bleibt eine untätige HTTP/2-Session
-Fastifys eigenem Session-Timer überlassen — 72 s auf Node, 144 s auf Bun, das
-ihn beim doppelten Wert feuern lässt und von einem PING zurücksetzen lässt —,
-auf Hono über Node gar keiner Schranke.  Auf Bun begrenzt der HTTP/2-Listener
-eine Verbindung, die auf demselben Port HTTP/1.1 aushandelt, mit keinem der
-beiden Keys; dort werden beide als nur für HTTP/2 wirksam gemeldet, und
-`bind()` warnt.  Nichts davon betrifft das
+Empfangs-Deadline nie gekappt.  Ungesetzt wird eine untätige HTTP/2-Session
+vom selben eigenen Timer von actor-ts nach **72 s** geschlossen — Fastifys
+eigener Wert, Fastify auf Node verhält sich also wie bisher, während Fastify
+auf Bun (das Fastifys Timer nach 144 s feuerte und von einem PING zurücksetzen
+ließ) und Hono über Node (das eine untätige Session nie schloss) jetzt dieselbe
+Schranke bekommen; die Binding-Meldung trägt sie als
+`http2SessionIdleDefaultMs`.  HTTP/1.1-Keep-Alive behält den Wert des Backends.
+Auf Bun liest der HTTP/2-Listener für eine Verbindung, die auf demselben Port
+HTTP/1.1 aushandelt, weder `keepAliveTimeout` noch `requestTimeout`; actor-ts
+begrenzt diese deshalb ebenfalls mit eigenen Timern: untätig zwischen zwei
+Requests, und eine Empfangs-Deadline pro Request, beantwortet mit `408`.  Beide
+Keys wirken dort für beide Protokolle.  Nichts davon betrifft das
 Hono-Backend unter Bun, dessen Sessions die eigene verbindungsweite Schranke
 von `Bun.serve` hält (§ oben), gesetzt oder abgeleitet: eine untätige Session
 wurde dort innerhalb eines Takts nach einem Wert von `4s` geschlossen (bun

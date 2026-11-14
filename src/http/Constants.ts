@@ -214,3 +214,18 @@ export const DENO_NODE_HTTP_TIMEOUTS_SINCE = '2.7.13';
  * was `0` before, which severed every request in flight on a rolling deploy.
  */
 export const DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS = 4_000;
+
+/**
+ * How long an HTTP/2 session with no stream open is held before it is closed
+ * when `actor-ts.http.server.idle-timeout` is unset (#1757).
+ *
+ * Fastify's own `http2SessionTimeout`, so Fastify under Node behaves as it
+ * always did; what changes is the other pairs.  Fastify under Bun fired that
+ * timer at twice its value and let every PING reset it, so a client pinging
+ * held a session with no request on it for as long as it liked, and Hono
+ * under Node had no bound at all.  Armed as the framework's own timer, which
+ * counts open streams and ignores every other frame, it is one bound on every
+ * pair a `node:http2` server backs.  HTTP/1.1 keep-alive keeps each backend's
+ * own value: a default for the `idle-timeout` leaf itself would move that too.
+ */
+export const DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS = 72_000;
