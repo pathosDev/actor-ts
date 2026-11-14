@@ -228,6 +228,7 @@ type HttpRequest = {
   readonly query:   Record<string, string>;
   readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
+  readonly remoteAddress?: string;   // the socket peer — behind a proxy, the proxy
 };
 ```
 
@@ -236,6 +237,12 @@ never appears in it, because the parameters are already parsed into
 `query`.  That matters for anything built by appending to `path`: a
 redirect target, a cache key, a request fingerprint.  Percent-escapes
 are left encoded; decode once, then validate.
+
+`remoteAddress` is the **socket peer** on all three backends — no
+forwarding header is consulted.  Behind a reverse proxy that is the
+proxy; the client's own address comes from
+[`clientIpResolver`](/http/middleware/ip-allowlist/#reusing-the-walk),
+which needs the proxies named before it reads the forwarded chain.
 
 ### Path parameters
 

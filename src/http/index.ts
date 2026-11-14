@@ -46,6 +46,8 @@ export {
   IpAllowlistOptions,
   IpAllowlistOptionsBuilder,
   IpAllowlistOptionsValidator,
+  clientIpResolver,
+  resolveClientIp,
   strictTransportSecurity,
   hsts,
   HstsOptions,
@@ -92,6 +94,7 @@ export {
 export type {
   BearerTokenAuthOptions,
   IpAllowlistOptionsType,
+  ClientIpResolver,
   HstsOptionsType,
   CspOptionsType,
   CspDirectives,

@@ -107,6 +107,24 @@ import { Aside } from '@astrojs/starlight/components';
   the backend — it works identically on Fastify, Express and Hono.
 </Aside>
 
+## Reusing the walk
+
+The resolution `trustedProxies` switches on is public as
+`clientIpResolver`, for anything else that needs the client's address
+behind a proxy — a [rate-limit key](/http/middleware/rate-limit/#behind-a-reverse-proxy),
+a log line, an audit record:
+
+```ts
+import { clientIpResolver } from 'actor-ts/http';
+
+const clientIp = clientIpResolver(['10.0.0.0/8']);
+const address = clientIp(request);   // string, or undefined without a socket peer
+```
+
+Same walk, same fallbacks: no proxies named means the socket peer, an
+exhausted chain means the socket peer, no socket peer means `undefined`.
+`resolveClientIp(request, trustedProxies)` is the one-shot form.
+
 ## Where to next
 
 - **[Bearer token auth](/http/middleware/bearer-token/)** — the token

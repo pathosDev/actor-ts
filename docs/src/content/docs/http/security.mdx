@@ -129,8 +129,8 @@ the whole server does.
   ```
 
   What the forwarded headers do here: `X-Forwarded-For` is read only by
-  [`IpAllowlist`](/http/middleware/ip-allowlist/), and only once you have
-  named the proxies; `X-Forwarded-Proto` is read by nothing — `Csrf` gets
+  [`IpAllowlist`](/http/middleware/ip-allowlist/) and the
+  `clientIpResolver` it shares, and only once you have named the proxies; `X-Forwarded-Proto` is read by nothing — `Csrf` gets
   the scheme from `expectedScheme` instead, precisely because a forwarded
   scheme is set by whoever sends the request.
 - **Trusting client IPs.** `req.remoteAddress` is the socket peer, not a

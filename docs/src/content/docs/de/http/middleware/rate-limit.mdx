@@ -26,9 +26,41 @@ const routes = path('api', post(limited(apiHandler)));
 Jede eindeutige IP (hier: der Socket-Peer `request.remoteAddress`) bekommt ein
 Budget von 100/Minute.  Überschüssige Requests bekommen 429 mit einem
 `Retry-After`-Header.  **Nutze als Key einen Wert, den der Client nicht
-fälschen kann** — niemals einen rohen `x-forwarded-for` (siehe
-Sicherheitshinweis unten), sonst rotiert ein Angreifer den Header pro
-Request und umgeht das Limit.
+fälschen kann.**  Bei direkter Auslieferung ist das der Socket-Peer.
+Hinter einem Reverse-Proxy ist der Socket-Peer der Proxy, also löse den
+Client mit [`clientIpResolver`](#hinter-einem-reverse-proxy) auf und
+benenne die Proxys, denen Du vertraust — nicht mit dem
+Forwarding-Header selbst, den ein Angreifer pro Request rotiert, um das
+Limit zu umgehen.
+
+## Hinter einem Reverse-Proxy
+
+`request.remoteAddress` ist auf jedem Backend der Socket-Peer.  Hinter
+NGINX, einem AWS ALB oder Cloudflare ist das der Proxy, und wer darauf
+keyt, steckt jeden Client in denselben Bucket.  `clientIpResolver` löst
+den Client so auf, wie es [`IpAllowlist`](/de/http/middleware/ip-allowlist/)
+tut — er liest die Forwarding-Kette vom Socket-Ende nach innen und hält
+bei der ersten Adresse an, die keiner Deiner Proxys ist:
+
+```ts
+import { clientIpResolver, rateLimit } from 'actor-ts/http';
+
+const clientIp = clientIpResolver(['10.0.0.0/8']);   // Deine Load-Balancer
+const limited = rateLimit({
+  cache,
+  windowMs: 60_000,
+  max:      100,
+  key:      (request) => clientIp(request) ?? '<unresolved>',
+});
+```
+
+Ein direkter Client ist sein eigener Socket-Peer, ein von ihm gefälschter
+Header wird also nie gelesen; was ein Client der Kette voranstellt, wird
+nie erreicht.  Der Resolver antwortet nur dann mit `undefined`, wenn ein
+Request überhaupt keinen Socket-Peer hat, und wer diese Requests in einen
+gemeinsamen Bucket faltet, limitiert sie gemeinsam, statt sie
+durchzulassen.  Ein zweites Argument benennt einen Vendor-Header wie
+`cf-connecting-ip` statt `x-forwarded-for`.
 
 ## Konfiguration
 
@@ -176,9 +208,11 @@ import { Aside } from '@astrojs/starlight/components';
   `X-Forwarded-For` (oder ähnlich) — aber nicht an einer Position, die der
   Request benennen darf: NGINX, AWS ALB und Cloudflare **hängen** alle an
   den Header an, was der Client geschrieben hat bleibt also links davon.
-  Nimm `request.remoteAddress` als Key, oder löse die Client-Adresse so
-  auf, wie [`IpAllowlist`](/de/http/middleware/ip-allowlist/) es tut —
-  benenne die Proxys und lies die Kette vom Socket-Ende nach innen.
+  Nimm bei direkter Auslieferung `request.remoteAddress` als Key und
+  hinter einem Proxy [`clientIpResolver`](#hinter-einem-reverse-proxy) —
+  den Durchlauf, den [`IpAllowlist`](/de/http/middleware/ip-allowlist/)
+  macht: Er benennt die Proxys und liest die Kette vom Socket-Ende nach
+  innen.
 </Aside>
 
 <Aside type="caution" title="In-Memory-Cache über Pods">

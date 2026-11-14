@@ -8,6 +8,9 @@ export {
   IpAllowlistOptionsValidator,
 } from './IpAllowlistOptions.js';
 export type { IpAllowlistOptionsType } from './IpAllowlistOptions.js';
+// The trusted-proxy walk IpAllowlist uses, for any other client-address need (#1236).
+export { clientIpResolver, resolveClientIp } from './ClientIp.js';
+export type { ClientIpResolver } from './ClientIp.js';
 
 // Security headers — HSTS, CSP, and the securityHeaders bundle.
 export { strictTransportSecurity, hsts } from './Hsts.js';
