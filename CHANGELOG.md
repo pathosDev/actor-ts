@@ -51,6 +51,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `BrokerAcknowledgmentFailed` event for an acknowledgment the broker
   refused. The Kafka consumer logs its commit mode at start.
 
+- **`actor-ts.coordinated-shutdown.overall-timeout`** (30 s; `0` turns it
+  off) bounds a whole shutdown run (#920). Once it passes, the run halts with
+  an ERROR naming the phase and the tasks still pending, and `exit-process`
+  exits 1. `actor-system-terminate` gets its own 10 s budget, never less than
+  `default-phase-timeout`. A task that times out is logged at ERROR and keeps
+  running, and an exit waits for it, up to the deadline.
+- **`actor-ts.cluster.unreachable-gossip-rounds`** /
+  `withUnreachableGossipRounds` (default 3; `0` turns it off) (#930).
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -107,6 +116,75 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (#976).
 - **The CoordinatedShutdown `service-stop` task no longer leaves a live
   connection attached to a stopped broker actor** (#1223).
+
+- **A symmetric partition heals once the network does** (#930). Heartbeats
+  now keep going to unreachable members, and gossip reaches one of them every
+  n-th round, so the failure detector can mark a member reachable again.
+  Before, both halves stopped contacting each other and ran as separate
+  clusters until a restart. A multi-node scenario runs two partition-and-heal
+  episodes in a row. Still open on the issue: re-arming seed discovery for a
+  node that lost every peer.
+- **Member records with equal versions resolve the same way on every node**
+  (#935). The status further along the lifecycle wins (joining < weakly-up
+  < up < unreachable < leaving < down < removed), where two observers used to
+  diverge for good.
+- **An operator sees membership transitions at the default `info` level**
+  (#994): unreachable and reachable again (on this node's own detector
+  verdict), a peer parked as down, a peer leaving, and a leader change, each
+  logged once per edge. `cluster_members_up` now also follows changes learned
+  through gossip and removals that delete a member, so the runbook's flapping
+  query no longer under-reports.
+- **A bare `terminate()` shuts the downing provider down** (#1753). It
+  releases a won lease and lets the process exit, where the renewal kept both
+  alive.
+- **`NodeAddress.parse` refuses a `scheme://` prefix and any text after the
+  port** (#941). Before, it read the prefix into the system name, which never
+  matched the node's own address, and read `…:2552/system/x` as port 2552.
+- **`lease-majority` keeps the lease holder's whole side on an even split**
+  (#1824). Every node owned its own lease, so every node acquired for itself,
+  at most one won, and the winner's side-mates downed their own side, the
+  winner included. Now only each side's lowest-addressed reachable `up` member
+  (its lowest member when none is `up`) consults the lease, and the rest of
+  the side follows its verdict through the membership. This covers leases
+  built from configuration and leases passed in code alike.
+- **`TcpTransport` honours socket back-pressure** (#931):
+  - A native Bun socket used to cut the frame stream mid-frame and drop the
+    connection; Node and Deno buffered without bound.
+  - Each peer now holds at most `outbound-queue-size` whole frames and drops
+    the oldest. A WARN marks when dropping starts and another when the socket
+    drains.
+  - Frames held at an orderly close are written before the FIN.
+- **A frame `TcpTransport` sends to its own node is delivered** (#1813), so a
+  `ClusterRouter` no longer loses the local node's share over TCP.
+- **`TcpTransport` refuses a second, different handshake identity on an
+  established connection** (#1814).
+- **A `ClusterClient` connect attempt settles on every path** (#938, #1751).
+  - A contact point that resets or closes before its `hello-ack` rejects the
+    pending call at once, and the next call dials again; before, it hung
+    every later call.
+  - `close()` rejects an attempt still in flight.
+  - A contact point that answers after `connect-timeout` no longer takes over
+    the connection: its dial is aborted and its socket closed.
+  - Each socket gets its own frame decoder.
+- **`ClusterRouter` stops routing to a member as soon as it is unreachable,
+  leaving, downed or barred by a configuration mismatch** (#942). Before, it
+  kept sending that member 1/N of the traffic until its removal at
+  `downAfterMs`. A message routed while no routee matches now reaches dead
+  letters, where it used to only produce a warning.
+- **An object that appears twice in a cross-node message body arrives twice**
+  (#946). It used to arrive as `null` the second time, because the cycle
+  guard remembered every object it had visited. True cycles are still cut at
+  the back-edge.
+- **`ShardRegion` and `ShardCoordinator` handle cluster events and their
+  timers in mailbox order** (#1750), so a `MemberRemoved` can no longer
+  overtake a queued `ShardHome` and leave a shard routed to a removed node.
+  A region ignores a shard home on a node that is no longer a member.
+- **Under coordinated shutdown, offloaded actors get their `postStop`**
+  (#1754): parallelism shuts the workers down in `before-cluster-shutdown`,
+  before `worker-mesh-terminate` stops the threads.
+- **`maxRestarts: -1` keeps the worker respawn backoff growing** (#1255).
+  Before, every respawn waited only the minimum delay, a respawn storm.
+  `OffloadPool` says its budget is unlimited instead of logging `restart 0`.
 
 ### Changed
 
@@ -191,6 +269,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   blocking read without a bound could hold `quit()` forever while the actor
   stopped. *Migration:* use a positive block.
 
+- **BREAKING — under the `reject` overflow policy, `tell()` no longer
+  throws `MailboxFullError` into the sender** (#919). Before, an actor was
+  failed and restarted because the actor it sent to was slow. Now the arrival
+  is refused, counted as `drop-new`, and dead-lettered: `deadLetterDrops`
+  defaults to `true` under `reject`, and an explicit `false` is honoured. A
+  `BoundedMailbox` or `ControlAwareMailbox` built without `overflow` now
+  defaults to `drop-head`, and a `PriorityMailbox` to
+  `drop-lowest-priority`, matching the default the cell uses. *Migration:*
+  code that caught `MailboxFullError` subscribes to `DeadLetter` instead;
+  pass `overflow: 'reject'` explicitly to keep refusing. `unstashAll()`
+  under `reject` still throws.
+- **BREAKING — `ask()` delivers a non-plain message as the object it was
+  given** (#925). A `Map`, `Set`, `Date`, typed array, array or class
+  instance used to arrive stripped of its prototype and contents. Only plain
+  objects get a `replyTo` field now. *Migration:* a receiver of class-instance
+  asks replies through `this.sender`.
+- **BREAKING — `ClusterClient.ask` refuses a per-call `timeoutMs` that is not
+  a positive finite number** (#1763), with an `OptionsError` before anything
+  is sent. *Migration:* pass a finite deadline, or omit it to use
+  `ask-timeout`.
+
 ### Security
 
 - **`KubernetesLease.release()` no longer deletes a Lease record this node
@@ -203,6 +302,49 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   after the decision is applied** (#1660). If the lease is later reported
   lost, the node downs itself instead of running beside the side that took
   the lease.
+- **A gossip frame restamped inside `maxVersionSkewMs` no longer pins the
+  receiver's replay mark against the real sender** (#1262).
+  - Nodes stamp gossip sequences from their wall clock.
+  - Once a sender has a mark, its sequences are bounded by the clock it has
+    shown plus a 10 s lead, held per (member, incarnation).
+  - That learned offset rises at most 1 ms/s and by no more than one lead in
+    total, so a long-silent sender banks no extra allowance.
+  - A first frame still meets only the skew budget.
+
+  No wire change. What remains is written in the replay section of the
+  cluster-security page, which now carries the caveat #112 left.
+- **`TcpTransport` no longer writes peer-supplied text raw into its log
+  lines** (#1629). A plaintext peer could put a line break in its `hello` and
+  forge whole log records. Addresses, refusal reasons and certificate names
+  are escaped.
+- **Sharding refusal log lines escape peer-supplied text** (#1220): frame
+  kind, region path, shard count, shard id and entity id.
+- **The shard coordinator bounds the `GetShardHome` requests waiting on a
+  shard it cannot place** (#1219). A repeated request is not queued again.
+  Past 1 024 distinct requesters, the newest goes to dead letters with one
+  warning.
+- **`sharding.Reply` and `sharding.ClusterShardingStats` settle a waiting
+  caller only when they come from the node that was asked** (#1268).
+  Correlation ids are random instead of a counter from 1, so a member can no
+  longer answer another node's ask with made-up data.
+- **`sharding.EntityStarted` / `EntityStopped` are accepted only from their
+  source** (#1267). A region takes them only from its own shards, and the
+  coordinator only from the node hosting the shard. Remembered entity ids are
+  capped at 1 024 characters and each shard at 100 000 remembered entities.
+  The internal commands of the shard coordinator and the singleton manager are
+  now private classes matched by `instanceof`. A plain look-alike object that
+  reaches either mailbox is refused instead of obeyed; before, one could stop
+  a singleton whose lease was still held.
+- **A same-node actor-ref marker in a message body goes through the same
+  `EnvelopeTrust` check as an envelope's target** (#1572). A marker naming a
+  `/system` actor, a `/user` actor off the `untrusted-mode` allow-list, or an
+  empty path decodes to `Nobody`. So does the bare `/user` guardian, which is
+  also refused as an envelope or watch target. Each refusal is counted on
+  `cluster_envelope_refusals_total`.
+- **A `ClusterClient` given only half of a TLS client credential is refused
+  at construction** (#1085). Before, the half was dropped on the dial and the
+  client fell back to one-way TLS while its configuration read as mutual TLS.
+  *Migration:* supply both halves, or `ca` alone for one-way TLS.
 
 ## [0.18.0] — 2026-11-10
 
