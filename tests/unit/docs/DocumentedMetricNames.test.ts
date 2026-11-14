@@ -167,6 +167,17 @@ describe('documented metric names (#992)', () => {
     expect(unemittedStockNames(pages, emitted)).toEqual([]);
   });
 
+  test('every family src/ emits has a row on the stock-metrics page, in both languages', () => {
+    // The other direction.  `tests/unit/metrics/StockMetrics.test.ts` holds
+    // src/ to its label inventory; nothing held the reference page to either,
+    // and seven families had shipped without a row there.
+    for (const page of ['observability/metrics/stock-metrics.mdx', 'de/observability/metrics/stock-metrics.mdx']) {
+      const text = readNormalised(join(DOCUMENTATION_ROOT, page));
+      const rows = new Set([...text.matchAll(/^\| `([a-z0-9_]+)` \|/gm)].map((m) => m[1]!));
+      expect({ page, missing: [...emitted].filter((family) => !rows.has(family)).sort() }).toEqual({ page, missing: [] });
+    }
+  });
+
   test('the troubleshooting runbook queries metrics in both languages', () => {
     // The runbook is the page the guard exists for; a rewrite that dropped
     // every query would leave the checks above green over nothing.

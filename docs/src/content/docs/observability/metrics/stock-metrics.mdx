@@ -305,6 +305,7 @@ rate on those classes is drift rather than load.
 | `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes whose payload named a sender other than the connection they arrived on. |
 | `cluster_envelope_refusals_total` | counter | `reason`, `frame` | Inbound envelopes refused because their target path is outside what this node accepts by name. |
 | `cluster_outbound_refusals_total` | counter | `frame` | Frames this node refused to send because the destination was neither a member nor a node it already holds a connection to. |
+| `cluster_sharding_registrations_refused_total` | counter | `reason`, `type` | Shard-region registrations a coordinator refused. |
 
 For monitoring cluster health:
 
@@ -367,6 +368,14 @@ For monitoring cluster health:
   cluster.  `frame` is `envelope` or `wire`, so the family is two
   series; the destination is not a label, and the log line that
   accompanies it at most every 30 seconds names it escaped.
+- `cluster_sharding_registrations_refused_total` counts a shard region
+  whose registration the coordinator refused.  `reason` has one value
+  today, `num-shards-mismatch`: the region was started with a different
+  number of shards than the coordinator governs.  `type` is the sharded
+  type's name, taken from this node's own sharding settings and never
+  off the wire.  Any non-zero value is worth paging on — a refusal is
+  never transient — see
+  [when the coordinator refuses a region](/cluster/sharding/introspection/#when-the-coordinator-refuses-a-region).
 
 ## DistributedData metrics
 
@@ -529,6 +538,54 @@ stays; see the stock-label rule at the end of this page.
 
 See [Projections](/persistence/projections/) for the strategies
 these describe.
+
+## Offload metrics
+
+The [offload pool](/fundamentals/blocking-and-cpu-bound-work/#offloadpool-pure-functions-on-worker-threads)
+records every task it settles, and how many are waiting for a worker:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `offload_tasks_total` | counter | `task`, `outcome` | Offloaded task runs, by how they settled. |
+| `offload_task_seconds` | histogram | `task` | Wall time of an offloaded task, from `run()` to its settlement, in seconds. |
+| `offload_queue_depth` | gauge | — | Offloaded tasks waiting for a worker. |
+
+`task` is the export name and module file of the task, `name (file.ts)`
+— bounded by the tasks the application defines with
+`defineOffloadTask`, never off the wire.  `outcome` is `ok`, `threw`,
+`timeout`, `aborted`, `lost` (the worker died under the task),
+`invalid-arguments` (the arguments could not be sent to a worker) or
+`unavailable`.  A `timeout` or `threw` rate on one `task` is the alert;
+an `offload_queue_depth` that keeps climbing means the pool is too small
+for the load.
+
+## Router metrics
+
+A [scatter/gather router](/routing/scatter-gather/#metrics) records how
+each fan-out ended and how long the caller waited:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `router_scatter_gather_resolved_total` | counter | `outcome` | Scatter/gather fan-outs, by how they ended. |
+| `router_scatter_gather_latency_seconds` | histogram | — | Time from scattering a message to answering the caller, in seconds. |
+
+`outcome` is `first`, `timeout`, `all-failed`, `stopped` or
+`no-reply-target`; no latency is observed for `no-reply-target`, where
+no scatter ran.  Neither family carries a router path, so several
+routers in one system aggregate.
+
+## WebSocket client metrics
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `websocket_client_inbound_paused_seconds_total` | counter | — | Seconds WebSocket client sockets spent paused by their inbound high-water mark. |
+
+Only moves when `inboundHighWaterMark` is set and the runtime can pause
+a client socket — Bun, in practice; see
+[inbound flow control](/io/websocket/#inbound-flow-control).  A pause is
+booked when it ends, on resume or when the connection goes, so a socket
+that is paused right now has not been counted yet.  A rising rate means
+`onMessage` is not keeping up with what the peer publishes.
 
 ## Worker-mesh metrics
 
