@@ -294,6 +294,31 @@ describe('OffloadPool — pure functions on worker threads (#1558)', () => {
     }
   });
 
+  test('under maxRestarts: -1 the replacement line says the budget is unlimited, not "restart 0" (#1255)', async () => {
+    // `RestartBudget` records nothing under an unlimited allowance, so the
+    // tally the line used to quote stayed 0 for every replacement.
+    const logger = new RecordingLogger();
+    const backend = new FakeWorkerBackend({ onSpawn: (worker) => { hostOffloadWorker(worker, realImport); } });
+    const system = ActorSystem.create('offload-unlimited', ActorSystemOptions.create().withLogger(logger));
+    const poolOptions = OffloadPoolOptions.create()
+      .withSize(1)
+      .withMaxRestarts(-1)
+      .withBackend(backend);
+    const pool = OffloadPool.start(system, poolOptions);
+    try {
+      const doomed = pool.run(hang, []);
+      await awaitCondition(() => pool.workerCount === 1 && pool.queueDepth === 0, { label: 'dispatched' });
+      backend.spawned[0]!.simulateUncaughtThrow('segfault-ish');
+      await expect(doomed).rejects.toThrow(OffloadWorkerLostError);
+      const replacing = logger.records.filter((record) => record.message.includes('replacing it'));
+      expect(replacing.map((record) => record.message)).toEqual([
+        expect.stringMatching(/replacing it \(restart budget unlimited\)$/),
+      ]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
   test('warm-up spawns every worker up front; idle workers beyond min-size retire, the ones inside it stay', async () => {
     const r = rig((o) => o.withSize(2).withMinSize(1).withIdleTimeoutMs(30).withWarmUp());
     try {
