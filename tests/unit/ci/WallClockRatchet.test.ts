@@ -82,7 +82,7 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/ActorSystem.ts': 3,
   'src/Logger.ts': 2,
   'src/cache/InMemoryCache.ts': 8,
-  'src/cluster/Cluster.ts': 13,
+  'src/cluster/Cluster.ts': 12,
   'src/cluster/EnvelopeTrust.ts': 1,
   'src/cluster/bootstrap/StableObservation.ts': 5,
   'src/cluster/downing/LeaseMajority.ts': 2,
