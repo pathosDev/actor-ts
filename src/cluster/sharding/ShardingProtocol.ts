@@ -210,10 +210,29 @@ export type EntityStarted = {
   readonly entityId: string;
 };
 
+/**
+ * Why an entity stopped, as its shard saw it (#954).
+ *
+ * `'passivated'` is the one stop a shard asks for — a region passivation, an
+ * entity's own `Passivate`, or a passivation releasing the slot of an entity
+ * backing off — and the only one under which `rememberEntities` forgets the
+ * entity.  `'unrequested'` is every other stop: a failure past the restart
+ * budget, a failure under `stoppingStrategy`, a start that keeps failing, a
+ * plain `stopSelf`.  The shard cannot tell those apart — `Terminated` carries
+ * no cause — and need not: none of them is the system deciding the entity
+ * should go away, so a remembered entity keeps its place in the registry.
+ */
+export type EntityStopReason = 'passivated' | 'unrequested';
+
 export type EntityStopped = {
   readonly kind: 'sharding.EntityStopped';
   readonly shardId: number;
   readonly entityId: string;
+  /**
+   * Optional on the wire: a region from before #954 sends none, and a report
+   * without one is read as `'passivated'` — the only meaning a stop had then.
+   */
+  readonly reason?: EntityStopReason;
 };
 
 export type RememberedEntities = {
