@@ -224,6 +224,26 @@ describe('persistAll on a journal without atomic batch appends (#959)', () => {
     }
   });
 
+  test('a batch of exactly two events is refused too — the smallest batch that can leave a prefix', async () => {
+    const client = new FakeD1Client();
+    const journal = d1Journal(client);
+    const system = makeSystem('persist-two-refused', journal);
+    try {
+      const reports: Report[] = [];
+      const basket = system.spawn(() => new Basket('basket-two', reports), 'basket');
+      basket.tell({ kind: 'addAll', values: [1, 2] });
+      await waitFor(reports, 1, 'the refused two-event persistAll answered');
+
+      const failure = reports[0] as FailedReport;
+      expect(failure.kind).toBe('failed');
+      expect(failure.error).toBeInstanceOf(NonAtomicBatchAppendError);
+      expect((failure.error as NonAtomicBatchAppendError).eventCount).toBe(2);
+      expect(await journal.highestSeq('basket-two')).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+
   test('a single-event persist is unaffected — it is atomic on every backend', async () => {
     const journal = d1Journal(new FakeD1Client());
     const system = makeSystem('persist-one-on-d1', journal);
