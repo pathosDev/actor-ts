@@ -127,6 +127,32 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
+   * Log on a lifecycle or supervision path, where the line must never decide
+   * the outcome (#1749).
+   *
+   * `Logger` is an extension point, and even the stock ones ran user code — a
+   * custom inspect, a throwing getter — while rendering.  Every lifecycle site
+   * used to log a caught failure first and act on it afterwards, so a throw
+   * from the report skipped the action: a `preStart` failure never reached the
+   * parent and the failed instance went on handling messages, a `postStop`
+   * failure left watchers without `Terminated` and `terminate()` unsettled, a
+   * `preRestart` failure stopped the restart half-way.  Each site now acts
+   * first and reports through here, and a report that throws is dropped: the
+   * logger is the thing that just failed, so there is nowhere left to say so.
+   *
+   * A message that reads fields off a failure (`cause.message`) is passed as a
+   * function, so that building it is guarded too: those fields are as hostile
+   * as the arguments.
+   */
+  private _report(level: 'debug' | 'warn' | 'error', message: string | (() => string), ...args: unknown[]): void {
+    try {
+      this.log[level](typeof message === 'function' ? message() : message, ...args);
+    } catch {
+      // Lost report, kept decision — see above.
+    }
+  }
+
+  /**
    * Not `readonly`, for exactly one write after the constructor's: the first
    * start of an actor that declares control messages swaps the queue built
    * here for one that can serve them, envelopes and all — see
@@ -1312,7 +1338,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     try {
       release();
     } catch (e) {
-      this.log.error(
+      this._report(
+        'error',
         `a release for ${describeMessageType(message)} threw — the message is handed over regardless`,
         e,
       );
@@ -1374,8 +1401,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       }
       watcher.tell(terminated as never);
     } catch (e) {
-      this.log.error(`watcher ${watcher.path} refused Terminated — dead-lettering it`, e);
       this.system.deadLetters.tell(new DeadLetter(terminated, this.self, watcher));
+      this._report('error', `watcher ${watcher.path} refused Terminated — dead-lettered it`, e);
     }
   }
 
@@ -1778,7 +1805,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // builds a DisplayNameLogger and renders the path on first use, and an
       // actor that never logs is meant never to pay for either (#867).
       if (this.system._diagnostics.debugLifecycle) {
-        this.log.debug(`started — ${actor.constructor.name}`);
+        this._report('debug', `started — ${actor.constructor.name}`);
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
@@ -1787,8 +1814,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // them would disagree with a caller's own `onDrop` for the same
       // messages.  A no-op unless the flush above already ran.
       this._flushDeferredMailboxDrops('unknown');
-      this.log.error('Actor initialization failed', err);
+      // Supervision first, the report second (#1749).
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to start`, err));
+      this._report('error', 'Actor initialization failed', err);
     }
   }
 
@@ -1851,7 +1879,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     try {
       await this.actor?.postStop();
     } catch (e) {
-      this.log.error('postStop threw', e);
+      this._report('error', 'postStop threw', e);
     }
 
     // Drain the stash first — those messages arrived before anything still
@@ -1896,7 +1924,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this.system.eventStream.hasSubscribers) {
       this.system.eventStream.publish(new ActorStopped(this.self));
     }
-    if (this.system._diagnostics.debugLifecycle) this.log.debug('stopped');
+    if (this.system._diagnostics.debugLifecycle) this._report('debug', 'stopped');
 
     // Notify watchers.  One shared `Terminated`, one guarded send each — see
     // `_notifyWatcher` for why the loop must not be able to throw.  Built only
@@ -1954,7 +1982,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     try {
       await this.actor.preRestart(cause);
     } catch (e) {
-      this.log.error('preRestart threw', e);
+      this._report('error', 'preRestart threw', e);
     }
 
     // Tear the children down unless the actor opted out.  This lives here
@@ -2006,7 +2034,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       ).inc();
       this.system.eventStream.publish(new ActorRestarted(this.self, cause));
       if (this.system._diagnostics.debugLifecycle) {
-        this.log.debug(`restarted after ${cause.name}: ${cause.message}`);
+        this._report('debug', () => `restarted after ${cause.name}: ${cause.message}`);
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
@@ -2806,9 +2834,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this._parent) {
       this._parent.enqueueSystem({ kind: 'failure', cause, child: this.self, message });
     } else {
-      // Root guardian failed — log and terminate the system.
-      this.log.error(`Guardian ${this.path} failed; terminating system`, cause);
+      // Root guardian failed — terminate the system, then say so.
       this.enqueueSystem({ kind: 'terminate' });
+      this._report('error', `Guardian ${this.path} failed; terminating system`, cause);
     }
   }
 
@@ -2846,10 +2874,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       case Directive.Restart: {
         const withinLimit = this.registerRestart(strategy, child);
         if (!withinLimit) {
-          this.log.warn(
+          for (const child of affected) child.enqueueSystem({ kind: 'terminate' });
+          this._report(
+            'warn',
             `Restart threshold exceeded (${strategy.maxRetries} in ${strategy.withinTimeRangeMs}ms) — stopping children`,
           );
-          for (const child of affected) child.enqueueSystem({ kind: 'terminate' });
         } else {
           for (const child of affected) child.enqueueSystem({ kind: 'recreate', cause });
         }

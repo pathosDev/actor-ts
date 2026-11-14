@@ -19,6 +19,7 @@ import {
 } from '../../../src/index.js';
 import type { LogContextData } from '../../../src/LogContext.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
+import { ThrowingLogger } from '../../util/ThrowingLogger.js';
 
 /**
  * The failure paths through `ActorCell` that left an actor in a state nothing
@@ -163,5 +164,119 @@ describe('a terminating actor with a queued message does not spin the dispatcher
     // `late` itself schedules.  The spin measured ~120 000 in 300 ms.
     expect(executions - before).toBeLessThan(20);
     expect(letters).toContain('late');
+  });
+});
+
+/* ------------------------------------ #1749 ---------------------------------- */
+
+describe('a logger that cannot render the failure never skips its supervision step (#1749)', () => {
+  function unrenderable(): Error {
+    const error = new Error('x');
+    Object.defineProperty(error, 'message', { get() { throw new Error('message getter boom'); } });
+    return error;
+  }
+
+  /** Records JsonLogger output so the lifecycle line can be inspected. */
+  function jsonSystem(name: string): { system: ActorSystem; lines: string[] } {
+    const lines: string[] = [];
+    const logger = new JsonLogger(LogLevel.Info, '', {}, { write: (line) => { lines.push(line); } });
+    return { system: quietSystem(name, logger), lines };
+  }
+
+  test('preStart: the actor is restarted and the next message reaches the new instance', async () => {
+    const { system, lines } = jsonSystem('unrenderable-prestart');
+    let starts = 0;
+    let received = 0;
+    class Subject extends Actor<string> {
+      override preStart(): void { starts++; if (starts === 1) throw unrenderable(); }
+      override onReceive(): void { received++; }
+    }
+    const subject = system.spawn(Subject, 'subject');
+    await awaitCondition(() => starts === 2, { label: 'the failed start was supervised and restarted' });
+    subject.tell('hello');
+    await awaitCondition(() => received === 1, { label: 'the restarted instance handled the message' });
+    expect(lines.some((line) => line.includes('Actor initialization failed'))).toBe(true);
+  });
+
+  test('postStop: watchers still receive Terminated', async () => {
+    const { system, lines } = jsonSystem('unrenderable-poststop');
+    class Subject extends Actor<string> {
+      override onReceive(): void {}
+      override postStop(): void { throw unrenderable(); }
+    }
+    const seen: string[] = [];
+    class Watcher extends Actor<Terminated> {
+      constructor(private readonly target: ActorRef) { super(); }
+      override preStart(): void { this.context.watch(this.target); }
+      override onReceive(message: Terminated): void { seen.push(message.actor.path.name); }
+    }
+    const subject = system.spawn(Subject, 'subject');
+    system.spawn(() => new Watcher(subject), 'watcher');
+    await sleep(20); // lets the watch register before the stop; the poll below is the assertion
+    system.stop(subject);
+    await awaitCondition(() => seen.includes('subject'), { label: 'Terminated reached the watcher' });
+    expect(lines.some((line) => line.includes('postStop threw'))).toBe(true);
+  });
+
+  test('preRestart: a new instance is created and handles the next message', async () => {
+    const { system, lines } = jsonSystem('unrenderable-prerestart');
+    let starts = 0;
+    let received = 0;
+    class Subject extends Actor<string> {
+      override preStart(): void { starts++; }
+      override onReceive(message: string): void {
+        if (message === 'crash') throw new Error('crash');
+        received++;
+      }
+      override preRestart(): void { throw unrenderable(); }
+    }
+    const subject = system.spawn(Subject, 'subject');
+    subject.tell('crash');
+    subject.tell('after');
+    await awaitCondition(() => starts === 2 && received === 1, {
+      label: 'the restart completed and the new instance handled the next message',
+    });
+    expect(lines.some((line) => line.includes('preRestart threw'))).toBe(true);
+  });
+
+  /**
+   * A caller-supplied logger that throws on every call: each lifecycle hook
+   * below fails, so each has a report to make, and none of the reports may
+   * cost the step after it.
+   */
+  test('a logger that throws on every call costs no lifecycle step', async () => {
+    const system = quietSystem('throwing-logger', new ThrowingLogger());
+    let starts = 0;
+    let received = 0;
+    class Subject extends Actor<string> {
+      override preStart(): void { starts++; if (starts === 1) throw new Error('first start'); }
+      override onReceive(message: string): void {
+        if (message === 'crash') throw new Error('handler');
+        received++;
+      }
+      override preRestart(): void { throw new Error('preRestart'); }
+      override postStop(): void { throw new Error('postStop'); }
+    }
+    const seen: string[] = [];
+    class Watcher extends Actor<Terminated> {
+      constructor(private readonly target: ActorRef) { super(); }
+      override preStart(): void { this.context.watch(this.target); }
+      override onReceive(message: Terminated): void { seen.push(message.actor.path.name); }
+    }
+    const subject = system.spawn(Subject, 'subject');
+    await awaitCondition(() => starts === 2, { label: 'the failed start was restarted despite the logger' });
+
+    subject.tell('crash');
+    subject.tell('after');
+    await awaitCondition(() => starts === 3 && received === 1, {
+      label: 'the restart whose preRestart threw completed despite the logger',
+    });
+
+    system.spawn(() => new Watcher(subject), 'watcher');
+    await sleep(20); // lets the watch register before the stop; the poll below is the assertion
+    system.stop(subject);
+    await awaitCondition(() => seen.includes('subject'), {
+      label: 'Terminated reached the watcher although postStop threw and its report did too',
+    });
   });
 });

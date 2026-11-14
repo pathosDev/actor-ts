@@ -25,11 +25,17 @@ import { awaitCondition } from '../util/AwaitCondition.js';
  * from the comparison guard `subscribe` and `unsubscribe` threw; from the
  * predicate guard the throw reached the delivery guard, which logged a failed
  * delivery instead of the predicate's failure.
+ *
+ * The stock loggers have since been made total (#1749), so they no longer
+ * throw on these values.  The bus's guards stay pinned against a caller-supplied
+ * logger that still does — `Logger` is an extension point — through
+ * {@link fragileLogger}, which renders its arguments with `String()` and so
+ * throws exactly where `JsonLogger` used to.
  */
 
 class EventA { constructor(public readonly payload: string) {} }
 
-/** An error whose `message` cannot be read — so its `toString` throws, and so does `JsonLogger`. */
+/** An error whose `message` cannot be read — so its `toString` throws, and so does a fragile logger. */
 class UnrenderableError extends Error {
   override get message(): string { throw new Error('the message of this error cannot be read'); }
 }
@@ -64,9 +70,24 @@ function jsonLogger(): { readonly logger: JsonLogger; readonly messages: () => s
   return { logger, messages: () => lines.map((line) => (JSON.parse(line) as { msg: string }).msg) };
 }
 
-/** A bus whose log is the stock JSON logger, as a running system's is. */
-function busWithJsonLogger(): { readonly bus: EventStream; readonly messages: () => string[] } {
-  const { logger, messages } = jsonLogger();
+/**
+ * A caller-supplied logger that renders its arguments with `String()`, and so
+ * throws on both fixture values — the shape the stock `JsonLogger` had before
+ * #1749.  A line it can render is recorded.
+ */
+function fragileLogger(): { readonly logger: { warn(message: string, ...args: unknown[]): void }; readonly messages: () => string[] } {
+  const lines: string[] = [];
+  const logger = {
+    warn(message: string, ...args: unknown[]): void {
+      lines.push([message, ...args.map((arg) => String(arg))].join(' '));
+    },
+  };
+  return { logger, messages: () => lines };
+}
+
+/** A bus whose log is a fragile caller-supplied logger. */
+function busWithFragileLogger(): { readonly bus: EventStream; readonly messages: () => string[] } {
+  const { logger, messages } = fragileLogger();
   const bus = new EventStream();
   bus.log = logger;
   return { bus, messages };
@@ -80,7 +101,7 @@ describe('EventStream reports a failure the logger cannot render, and contains i
   });
 
   test.each(unrenderableValues)('a callback that throws %s', (_label, value) => {
-    const { bus, messages } = busWithJsonLogger();
+    const { bus, messages } = busWithFragileLogger();
     bus.subscribeFunction(EventA, () => { throw value(); });
     const seen: string[] = [];
     bus.subscribeFunction(EventA, (event) => { seen.push(event.payload); });
@@ -93,7 +114,7 @@ describe('EventStream reports a failure the logger cannot render, and contains i
   });
 
   test.each(unrenderableValues)('a channel whose instanceof throws %s', (_label, value) => {
-    const { bus, messages } = busWithJsonLogger();
+    const { bus, messages } = busWithFragileLogger();
     const throwingChannel = { [Symbol.hasInstance](): boolean { throw value(); } };
     bus.subscribeFunction(throwingChannel as never, () => {});
     const seen: string[] = [];
@@ -106,7 +127,7 @@ describe('EventStream reports a failure the logger cannot render, and contains i
   });
 
   test.each(unrenderableValues)('an actor subscriber whose tell throws %s', (_label, value) => {
-    const { bus, messages } = busWithJsonLogger();
+    const { bus, messages } = busWithFragileLogger();
     const exploding = new RecordingRef('exploding');
     exploding.tell = () => { throw value(); };
     bus.subscribe(exploding, EventA);
@@ -120,7 +141,7 @@ describe('EventStream reports a failure the logger cannot render, and contains i
   });
 
   test.each(unrenderableValues)('a predicate that throws %s', (_label, value) => {
-    const { bus, messages } = busWithJsonLogger();
+    const { bus, messages } = busWithFragileLogger();
     bus.subscribe(new RecordingRef('filtered'), EventA, () => { throw value(); });
     const healthy = new RecordingRef('healthy');
     bus.subscribe(healthy, EventA);
@@ -134,7 +155,7 @@ describe('EventStream reports a failure the logger cannot render, and contains i
   test.each(unrenderableValues)('a stored subscriber whose equals throws %s', (_label, value) => {
     // `unsubscribe` compares against every stored subscriber, and every actor
     // stop calls it.
-    const { bus, messages } = busWithJsonLogger();
+    const { bus, messages } = busWithFragileLogger();
     const hostile = {
       path: new ActorPath('', null, 'test-sys').child('hostile'),
       tell: () => {},
@@ -157,7 +178,7 @@ describe('EventStream reports a failure the logger cannot render, and contains i
     const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
     process.on('unhandledRejection', onUnhandled);
     try {
-      const { bus, messages } = busWithJsonLogger();
+      const { bus, messages } = busWithFragileLogger();
       const rejected = value();
       bus.subscribeFunction(EventA, async () => { throw rejected; });
 
@@ -234,6 +255,9 @@ describe('EventStream on a running system, with the stock JSON logger', () => {
     await assertCompletesWithin(system.terminate(), 2_000, 'terminate() after unrenderable callback throws');
 
     expect(messages().some((message) => message.includes('initialization failed'))).toBe(false);
-    expect(messages().some((message) => message.includes(NOT_RENDERED))).toBe(true);
+    // The stock logger renders the value itself now (#1749): the warning is
+    // written in full, with the placeholder where the unreadable message was.
+    expect(messages().some((message) => message.includes('threw — skipping it for this event'))).toBe(true);
+    expect(messages().some((message) => message.includes(NOT_RENDERED))).toBe(false);
   });
 });
