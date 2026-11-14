@@ -1,14 +1,25 @@
+import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorFactory } from '../../Actor.js';
 import { Broadcast } from '../../Router.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import {
   ClusterRouterOptionsValidator,
   DEFAULT_MAILBOX_DEPTH_REFRESH_MS,
   DEFAULT_MAILBOX_DEPTH_STALE_AFTER_MS,
 } from './ClusterRouterOptions.js';
 import type { ClusterRouterOptions, ClusterRouterOptionsType } from './ClusterRouterOptions.js';
-import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
+import {
+  type ClusterEvent,
+  MemberConfigurationMismatch,
+  MemberDown,
+  MemberLeft,
+  MemberReachable,
+  MemberRemoved,
+  MemberUnreachable,
+  MemberUp,
+} from '../ClusterEvents.js';
 import type { NodeAddress } from '../NodeAddress.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { pickRendezvous } from './ConsistentHashing.js';
@@ -44,14 +55,18 @@ import { isMailboxDepthReport, routeeFullPath, type MailboxDepthReportMessage } 
  * address), so round-robin counters stay sane across rebuilds.
  *
  * **Empty set.**  If no member matches the role (or the cluster is
- * empty), messages are dropped with a warn-level log.  The router
- * deliberately doesn't queue while waiting for routees, since that
- * would silently grow unbounded.
+ * empty), messages go to dead letters, with a warn-level log.  The
+ * router deliberately doesn't queue while waiting for routees, since
+ * that would silently grow unbounded.
  *
  * **Rebuild trigger.**  Subscribes to `cluster.subscribe(...)` and
- * rebuilds on `MemberUp` / `MemberRemoved`.  Other events
- * (`MemberJoined`, `MemberWeaklyUp`, `MemberUnreachable`) are ignored
- * because the router only sends to fully-up members.
+ * rebuilds on every event that can change what `placementCandidates()`
+ * returns: `MemberUp`, `MemberUnreachable`, `MemberReachable`,
+ * `MemberLeft`, `MemberDown`, `MemberRemoved` and
+ * `MemberConfigurationMismatch` (#942).  An unreachable member leaves the
+ * set the moment the failure detector says so, not `downAfterMs` later at
+ * its removal — until then its share of the traffic went into a transport
+ * buffer the peer was not reading, and nothing reached dead letters.
  *
  * **Load-aware routing.**  `smallest-mailbox` picks the routee whose node
  * last reported the shallowest mailbox.  The reading is *cached* and
@@ -115,17 +130,7 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
 
   override preStart(): void {
     this.rebuildRoutees();
-    this.unsubscribe = this.options.cluster.subscribe((evt) => {
-      // Only `up` and `removed` change the routee set.  `joined`,
-      // `weakly-up`, `unreachable` are intermediate states we don't
-      // route to.  Replay-on-subscribe (Cluster fires every current
-      // member as a series of MemberJoined/MemberUp on subscribe) is
-      // already handled by the initial rebuild — but firing here too
-      // is harmless (rebuild is idempotent).
-      if (evt instanceof MemberUp || evt instanceof MemberRemoved) {
-        this.rebuildRoutees();
-      }
-    });
+    this.unsubscribe = this.options.cluster.subscribe((event) => this.onClusterEvent(event));
     if (this.options.routerType === 'smallest-mailbox') this.startDepthProbe();
   }
 
@@ -158,6 +163,46 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
 
   /* ----------------------------- internals ------------------------------ */
 
+  /**
+   * One arm for every event that can move a member into or out of
+   * `placementCandidates()` — the set the routees are built from (#942).
+   *
+   * Enumerated rather than "rebuild on anything": a rebuild also asks the
+   * mailbox-depth probe for a fresh reading, so the periodic
+   * `ClusterStatsPublished` and the sharding events would each cost an
+   * envelope per routee for nothing.  The union holds the events that
+   * announce a status entering or leaving `up` (`MemberLeft` alone is what a
+   * `leaving` status learned through gossip emits), plus the configuration
+   * mismatch that bars a peer while enforcement is on.  One `P.union` arm
+   * because the member events share a `{ member }` shape, and consecutive
+   * `P.instanceOf` arms would narrow structurally rather than by class.
+   * Replay-on-subscribe lands here too; the rebuild is idempotent.
+   */
+  private onClusterEvent(event: ClusterEvent): void {
+    match(event)
+      .with(
+        P.union(
+          P.instanceOf(MemberUp),
+          P.instanceOf(MemberUnreachable),
+          P.instanceOf(MemberReachable),
+          P.instanceOf(MemberLeft),
+          P.instanceOf(MemberDown),
+          P.instanceOf(MemberRemoved),
+          P.instanceOf(MemberConfigurationMismatch),
+        ),
+        () => this.onMembershipChanged(),
+      )
+      .otherwise(() => this.onUnrelatedClusterEvent());
+  }
+
+  private onMembershipChanged(): void {
+    this.rebuildRoutees();
+  }
+
+  private onUnrelatedClusterEvent(): void {
+    /* joining, weakly-up, leadership, shard maps and stats leave the routee set as it is */
+  }
+
   private onMailboxDepthReport(report: MailboxDepthReportMessage): void {
     this.depthProbe?.record(report);
   }
@@ -170,10 +215,13 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
   private onRoutedMessage(message: TMessage): void {
     const sender = this.sender.toNullable();
     if (this.routees.length === 0) {
-      this.log.warn('ClusterRouter: no routees match — dropping message', {
+      this.log.warn('ClusterRouter: no routees match — sending message to dead letters', {
         role: this.options.role,
         routeePath: this.options.routeePath,
       });
+      // A log line alone was the only trace, which left the window after the
+      // last routee went unreachable invisible to the application.
+      this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
       return;
     }
     if (this.options.routerType === 'broadcast') {
