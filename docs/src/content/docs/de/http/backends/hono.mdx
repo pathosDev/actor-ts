@@ -137,10 +137,11 @@ Unter der eingebauten Deadline von 30 s gilt das für alles bis `32s`: `5s` etwa
 schneidet einen Handler, der nichts geschrieben hat, ab 4 s ab, spätestens nach
 8 s.
 
-Lass ihn positiv. `0` schaltet ihn ab, und unter Hono auf Bun ist er die
-einzige Schranke für einen Request, dessen Body nicht mehr weiterkommt, und für
-eine Verbindung, die zwischen zwei Requests untätig ist, weil keine der anderen
-drei installiert wird: mit `0` bleibt eine solche Verbindung offen, bis der
+Lass ihn positiv: `bind()` lehnt `0` mit einem `OptionsError` ab, der den Key
+und `withIdleTimeoutMs` nennt. `0` schaltete ihn ab, und unter Hono auf Bun ist
+er die einzige Schranke für einen Request, dessen Body nicht mehr weiterkommt,
+und für eine Verbindung, die zwischen zwei Requests untätig ist, weil keine der
+anderen drei installiert wird: eine solche Verbindung bliebe offen, bis der
 Client sie schließt. Eine Verbindung, deren Request-Header nie vollständig
 ankommen, schließt Bun selbst weiterhin, nach etwa 12 s.
 

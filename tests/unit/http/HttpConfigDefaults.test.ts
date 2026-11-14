@@ -1284,8 +1284,8 @@ describe('readHttpShutdownGracePeriodFromConfig', () => {
     expectExactOptions(readHttpShutdownGracePeriodFromConfig(Config.parseString('actor-ts.system.name = x')), undefined);
   });
 
-  test('the shipped reference.conf resolves to the documented 0ms', () => {
-    expectExactOptions(readHttpShutdownGracePeriodFromConfig(Config.parseString(REFERENCE_CONF)), 0);
+  test('the shipped reference.conf resolves to the documented 4s (#997)', () => {
+    expectExactOptions(readHttpShutdownGracePeriodFromConfig(Config.parseString(REFERENCE_CONF)), 4_000);
   });
 });
 

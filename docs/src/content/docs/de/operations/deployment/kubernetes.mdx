@@ -223,13 +223,18 @@ Seite:
 
 | Phase | Wer den Task registriert | Worst Case |
 | --- | --- | --- |
-| `service-unbind` | beide `bind()`-Aufrufe | 5 s |
-| `service-requests-done` | dein Request-Drain, falls du einen registrierst | 5 s |
+| `before-service-unbind` | die Health-Check-Registry — `/ready` wird `503` | 0 s, er kehrt sofort zurück |
+| `service-unbind` | beide `bind()`-Aufrufe — keine Verbindungen mehr annehmen | 5 s |
+| `service-requests-done` | beide `bind()`-Aufrufe — der Drain, höchstens `actor-ts.http.shutdown-grace-period` (4 s) | 5 s |
 | `cluster-sharding-shutdown-region` | `Cluster.join` | 5 s |
 | `cluster-leave` | `Cluster.join` | 5 s |
 | `actor-system-terminate` | der eingebaute Terminator | 10 s |
 
-Das sind `4 × 5 s + 10 s = 30 s` — genau die Frist. Die Tasks innerhalb
+Das sind `4 × 5 s + 10 s = 30 s` — genau die Frist. Das Budget einer
+Phase ist das, was ein hängender Task nehmen kann; der Readiness-Task
+kehrt zurück, sobald er läuft, und kostet also nichts. Die 4 s des
+Drains liegen in den 5 s seiner Phase und lassen eine Sekunde für das
+erzwungene Schließen. Die Tasks innerhalb
 einer Phase laufen parallel, der zweite `bind()` kostet also nichts
 extra — aber jede **weitere Phase**, die einen Task bekommt, addiert
 ihren Timeout, und jenseits von 30 s schneidet die Frist den Lauf ab
@@ -298,7 +303,9 @@ des Frameworks stellen diese Endpunkte bereit.
   schicken?" Bereits durch die Checks des Frameworks abgesichert:
   `cluster-membership` (dieser Knoten ist `up`) und
   `cluster-transport` (er ist nicht von jedem Peer abgeschnitten),
-  dazu `startup`, solange Startup-Tasks laufen.  Damit ein Knoten aus
+  dazu `startup`, solange Startup-Tasks laufen, und `shutdown` ab dem
+  Moment, in dem ein Shutdown beginnt — `503`, solange der Pod leerläuft,
+  bis der Listener schließt.  Damit ein Knoten aus
   der Rotation bleibt, bis seine Shard-Regionen registriert sind,
   nenne die Typen in `actor-ts.sharding.healthcheck.names` (siehe
   [die eingebauten Checks](/de/observability/management/health-checks/#die-eingebauten-checks)).
@@ -403,7 +410,8 @@ Vier Schritte in der Reihenfolge:
    SIGTERM/SIGINT-Handler, blockiert, führt dann die Pipeline aus und
    löst auf, wenn das System unten ist.  Es gibt keinen separaten
    Teardown-Schritt zu schreiben: beide `bind()`-Aufrufe haben ihr
-   Unbind in der `service-unbind`-Phase registriert und `Cluster.join`
+   Unbind in der `service-unbind`-Phase und ihren Drain in
+   `service-requests-done` registriert und `Cluster.join`
    den Leave in `cluster-leave` — der Pod fällt also aus den
    Service-Endpoints und aus dem Cluster, bevor die Actors stoppen.
 
@@ -506,9 +514,12 @@ Für jeden Pod, der Reihe nach (StatefulSet) oder beliebig
 2. **10-Sekunden-LB-Drain**.
 3. SIGTERM kommt an.
 4. Coordinated Shutdown läuft:
+   - `/ready` auf `503` stellen (`before-service-unbind`, verdrahtet
+     von der Health-Check-Registry).
    - Keine neuen HTTP-Requests mehr annehmen (`service-unbind`,
      verdrahtet von `bind()`).
-   - In-flight Requests drainen (`service-requests-done`, deins).
+   - In-flight Requests drainen (`service-requests-done`, verdrahtet
+     von `bind()`, höchstens `actor-ts.http.shutdown-grace-period`).
    - Broker-Verbindungen schließen (`service-stop`, verdrahtet von
      jedem Broker-Actor).
    - Die Shards dieses Knotens abgeben

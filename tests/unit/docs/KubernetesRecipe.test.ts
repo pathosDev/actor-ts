@@ -50,17 +50,29 @@ const PAGES = [
 ] as const;
 
 /**
- * Phases the framework itself fills for the page's app — two `bind()` calls
- * and a `Cluster.join` — whatever the operator registers:
- * `HttpExtension` (service-unbind), `Cluster.join` (sharding hand-off and
- * leave), and the built-in terminator (actor-system-terminate).
+ * Phases the framework itself fills for the page's app — two `bind()` calls,
+ * the management routes and a `Cluster.join` — whatever the operator
+ * registers: the health-check registry (before-service-unbind, #997),
+ * `HttpExtension` (service-unbind and its drain in service-requests-done),
+ * `Cluster.join` (sharding hand-off and leave), and the built-in terminator
+ * (actor-system-terminate).
  */
 const WIRED_FOR_THE_PAGE_APP: ReadonlyArray<string> = [
+  Phases.BeforeServiceUnbind,
   Phases.ServiceUnbind,
+  Phases.ServiceRequestsDone,
   Phases.ClusterShardingShutdownRegion,
   Phases.ClusterLeave,
   Phases.ActorSystemTerminate,
 ];
+
+/**
+ * Phases whose only task returns synchronously, so it cannot hold its phase
+ * for any part of the budget: the readiness flip in before-service-unbind
+ * adds a check to the registry and returns (#997).  The page's table says
+ * `0 s` for each, which the test below holds it to.
+ */
+const INSTANT_FOR_THE_PAGE_APP: ReadonlyArray<string> = [Phases.BeforeServiceUnbind];
 
 /**
  * Manifest variables nothing in the framework or the sample reads, each with
@@ -173,9 +185,14 @@ describe('Kubernetes recipe (#1012, #1013)', () => {
       // The run never outlasts `overall-timeout`, so that — not a sum of phase
       // budgets — is what the grace period has to hold beside `preStop`.
       expect(grace).toBeGreaterThanOrEqual(preStop + DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS / 1000);
-      const budgetOf = (phase: string): number =>
-        phase === Phases.ActorSystemTerminate ? DEFAULT_ACTOR_SYSTEM_TERMINATE_TIMEOUT_MS : DEFAULT_PHASE_TIMEOUT_MS;
+      const budgetOf = (phase: string): number => {
+        if (INSTANT_FOR_THE_PAGE_APP.includes(phase)) return 0;
+        return phase === Phases.ActorSystemTerminate ? DEFAULT_ACTOR_SYSTEM_TERMINATE_TIMEOUT_MS : DEFAULT_PHASE_TIMEOUT_MS;
+      };
       expect(rows.reduce((sum, phase) => sum + budgetOf(phase), 0)).toBeLessThanOrEqual(DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS);
+      for (const phase of INSTANT_FOR_THE_PAGE_APP) {
+        expect(new RegExp(`^\\| \`${phase}\` \\|[^\\n]*\\| 0 s`, 'm').test(text), `${phase} is listed at 0 s`).toBe(true);
+      }
     });
 
     test(`${page.language}: the coordinated-shutdown page orders PreStop before SIGTERM, as this page does`, () => {

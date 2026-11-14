@@ -65,12 +65,12 @@ key and the deadline. A route that needs longer has to write something before
 then, or run on another backend: setting `idle-timeout` yourself chooses the
 bound, at most `255s`, but cannot carry it past that.
 
-Keep `idle-timeout` positive on that backend under Bun. `0` turns it off, and
-it is the only bound there on a request whose body stops arriving and on a
+Keep `idle-timeout` positive on that backend under Bun: `bind()` refuses `0`.
+It is the only bound there on a request whose body stops arriving and on a
 connection left idle between requests — `header-timeout`, `request-timeout`
-and `max-connections` cannot be installed on that pair — so with `0` such a
-connection stays open until the client closes it. Measured on bun 1.4.2: a
-body announced at 10 bytes that stopped after 1 was still open after 40 s
+and `max-connections` cannot be installed on that pair — so turned off, such a
+connection would stay open until the client closes it. Measured on bun 1.4.2:
+a body announced at 10 bytes that stopped after 1 was still open after 40 s
 under `0`, and closed at 36 s with the key unset.
 
 The block reaches `requestTimeout()` through a hook that `compile()` resolves,

@@ -223,6 +223,15 @@ export interface HonoServerRunner {
    * the configuration vocabulary, which `src/runtime/` does not import.
    */
   readonly idleTimeoutCeilingMs?: number;
+  /**
+   * `true` on a runner whose idle timeout is the only connection bound it can
+   * install — no header deadline, no receive deadline, no connection cap — so
+   * an {@link HonoServeOptions.idleTimeoutMs} of `0` would leave a request
+   * whose body stops arriving open until the client closes it.  The backend
+   * refuses `0` on such a runner, by the key's name, for the reason it
+   * refuses a value past {@link idleTimeoutCeilingMs} (#1767).
+   */
+  readonly idleTimeoutIsOnlyBound?: boolean;
   serve(options: HonoServeOptions): Promise<HonoServerHandle>;
   /**
    * Optional capability — all three built-in runners implement it.

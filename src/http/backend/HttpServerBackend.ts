@@ -1,7 +1,7 @@
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { detectRuntime, runtimeVersion, type RuntimeKind, versionAtLeast } from '../../runtime/Detect.js';
 import { armChainedTimeout, type Cancellable, type HostTimers, unreferencedHostTimers } from '../../Scheduler.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES, DENO_NODE_HTTP_TIMEOUTS_SINCE } from '../Constants.js';
+import { DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS, DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES, DENO_NODE_HTTP_TIMEOUTS_SINCE } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
 import type { PreAttachBufferLimits, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
@@ -70,8 +70,29 @@ export interface ServerBinding {
    * that reported one.  Every shipped backend reports.
    */
   readonly serverOptionsReport?: ServerOptionsReport;
-  /** Stop the server; waits up to `gracePeriodMs` for in-flight requests. */
+  /**
+   * Stop the server: stop accepting at once, wait up to `gracePeriodMs` for
+   * the requests in flight to finish, then force whatever is still open.
+   * `0`, or no value, forces at once — the same on every shipped backend,
+   * through {@link drainWindowOf} (#997).  The binding `HttpExtension.bind`
+   * returns supplies `actor-ts.http.shutdown-grace-period` when the caller
+   * names no window.
+   */
   unbind(gracePeriodMs?: number): Promise<void>;
+}
+
+/**
+ * The drain window a backend's `unbind(gracePeriodMs)` waits for requests in
+ * flight before it forces their connections: the value when it is a positive
+ * finite number, `0` — force at once — otherwise.
+ *
+ * One function so that one value means one thing.  The three backends used to
+ * read it three ways: Fastify and Hono forced at `0`, Express substituted a
+ * hidden second for it, so switching backends silently changed what a
+ * shutdown did to a request in flight (#997).
+ */
+export function drainWindowOf(gracePeriodMs: number | undefined): number {
+  return gracePeriodMs !== undefined && Number.isFinite(gracePeriodMs) && gracePeriodMs > 0 ? gracePeriodMs : 0;
 }
 
 /**
@@ -451,20 +472,25 @@ export type ServerOptionsReport = {
    * so the warning `bind()` logs can say what is bounded rather than claim
    * nothing is.  Present only on an HTTP/2 listener where such a field was set.
    *
-   *   - **`idleTimeoutMs` and `requestTimeoutMs` under Bun** hold for HTTP/2,
-   *     through {@link enforceSessionIdleTimeout} and
-   *     {@link enforceStreamRequestTimeout}, and not for a connection that
-   *     negotiates HTTP/1.1 on the same port: Bun's HTTP/2 server reads neither
-   *     `keepAliveTimeout` nor `requestTimeout` for one.  Measured on bun 1.4.2
-   *     with Fastify over TLS + HTTP/2, a keep-alive HTTP/1.1 connection was
-   *     still open 8 s after its response under an 800 ms idle-timeout, and a
-   *     stalled HTTP/1.1 body 40 s in under a 2 s request-timeout, where node
-   *     closed the first at 1.8 s and answered the second `408` at 30.0 s.
    *   - **`maxHeaderBytes` under Node** holds for HTTP/1.1 — see the field.
+   *
+   * `idleTimeoutMs` and `requestTimeoutMs` under Bun were the other entry,
+   * held for HTTP/2 only, until the framework bounded the HTTP/1.1 half of
+   * Bun's listener itself (#1756) — see {@link enforceHttp1BoundsOnHttp2Listener}.
    */
   readonly heldForOneProtocol?: {
     readonly [Field in ProtocolHeldBound]?: ListenerProtocol;
   };
+  /**
+   * Present on an HTTP/2 listener whose `idle-timeout` was unset: the bound
+   * the framework armed on an idle HTTP/2 session in its place, in
+   * milliseconds — {@link DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS}, a timer of
+   * its own that PING frames do not extend, the same on Fastify under Node and
+   * Bun and on Hono under Node (#1757).  HTTP/1.1 keep-alive keeps the
+   * backend's own value; Hono under Bun is bound by `Bun.serve`'s idle timeout
+   * instead and carries no such member.
+   */
+  readonly http2SessionIdleDefaultMs?: number;
   /**
    * Present only where the backend chose the idle timeout itself and the
    * runtime would not let it choose one long enough: what it installed, in
@@ -528,7 +554,7 @@ export type ServerListenOptions = Partial<HttpServerOptionsType> & {
  */
 export type ListenServerOptionsReport = Pick<
   ServerOptionsReport,
-  'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs' | 'maxConnections' | 'heldForOneProtocol'
+  'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs' | 'maxConnections' | 'heldForOneProtocol' | 'http2SessionIdleDefaultMs'
 >;
 
 /**
@@ -670,11 +696,13 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * **Where it does and does not reach** — the honest half, in the shape
  * {@link transportFrameCapOf} uses for the `ws` shim:
  *
- *   - **Fastify** — `this.app.server`.  All four — except on its HTTP/2
- *     listener under Bun, where a connection that negotiates HTTP/1.1 reads
- *     neither `keepAliveTimeout` nor `requestTimeout`: there `idleTimeoutMs`
- *     and `requestTimeoutMs` hold for HTTP/2 only and are reported so, in
- *     {@link ServerOptionsReport.heldForOneProtocol}.
+ *   - **Fastify** — `this.app.server`.  All four.  On its HTTP/2 listener
+ *     under Bun a connection that negotiates HTTP/1.1 reads neither
+ *     `keepAliveTimeout` nor `requestTimeout`, so there the two are held for
+ *     HTTP/1.1 by {@link enforceHttp1BoundsOnHttp2Listener} (#1756).  With
+ *     `idleTimeoutMs` unset an idle HTTP/2 session gets
+ *     {@link DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS} on every HTTP/2 listener
+ *     (#1757).
  *   - **Express** — the server the backend builds and listens on: `node:http`,
  *     or `node:https` under `tls`, which carries the same four properties and
  *     events.  All four, on either.
@@ -698,7 +726,8 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  *     so a handler that writes nothing, a long poll or a sparse SSE stream is
  *     cut too — in whole seconds rounded up, checked on a 4 s sweep that can
  *     close a connection up to one sweep early, and at most 255 s: a longer
- *     one is refused at `listen()`.  Unset, the runner derives it from the
+ *     one is refused at `listen()`, and so is `0`, since it is the only bound
+ *     there (#1767).  Unset, the runner derives it from the
  *     server's longest request deadline, 36 s for the built-in 30 s, so that
  *     `requestTimeout()`'s `503` is written before Bun cuts the connection —
  *     see `bunIdleTimeoutOf` in `src/runtime/http/BunHonoRunner.ts`.  An idle
@@ -741,6 +770,7 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
 export function applyServerOptions(
   server: NodeHttpServerLike | null | undefined,
   options: Partial<HttpServerOptionsType> | undefined,
+  hostTimers: HostTimers = unreferencedHostTimers,
 ): ListenServerOptionsReport {
   if (!server || !options) return NOTHING_IN_EFFECT;
   const report = {
@@ -749,23 +779,34 @@ export function applyServerOptions(
     requestTimeoutMs: false,
     maxConnections: false,
   };
+  const http2Listener = typeof server.updateSettings === 'function';
   // Bun's HTTP/2 listener hands a connection that negotiated HTTP/1.1 to
   // handling that reads neither `keepAliveTimeout` nor `requestTimeout`, so
-  // there the two bounds hold for HTTP/2 alone — through the framework's own
-  // halves — and are reported as such rather than as in effect.  A set `0`
-  // asks for no bound, which every protocol honours.
-  const http1Unbounded = typeof server.updateSettings === 'function' && detectRuntime() === 'bun';
+  // there the framework holds both for HTTP/1.1 itself, as it holds them for
+  // HTTP/2 sessions and streams — see enforceHttp1BoundsOnHttp2Listener
+  // (#1756).  An unset idle-timeout keeps the backend's own number, which Bun
+  // would otherwise not apply either.
+  if (http2Listener && detectRuntime() === 'bun') {
+    enforceHttp1BoundsOnHttp2Listener(server, options.idleTimeoutMs ?? server.keepAliveTimeout, options.requestTimeoutMs, hostTimers);
+  }
   // Deno's node:http shim accepted `keepAliveTimeout` and `requestTimeout`
   // and applied neither before DENO_NODE_HTTP_TIMEOUTS_SINCE, so there a value
   // above `0` is written and reported not in effect; `0` asks for no bound,
   // which arming nothing honours.
   const timeoutsIgnored = !nodeHttpTimeoutsApply();
-  const heldForOneProtocol: { -readonly [Field in ProtocolHeldBound]?: ListenerProtocol } = {};
+  let http2SessionIdleDefaultMs: number | undefined;
   if (options.idleTimeoutMs !== undefined) {
     server.keepAliveTimeout = options.idleTimeoutMs;
-    enforceSessionIdleTimeout(server, options.idleTimeoutMs);
-    if (http1Unbounded && options.idleTimeoutMs > 0) heldForOneProtocol.idleTimeoutMs = 'HTTP/2';
-    else report.idleTimeoutMs = !timeoutsIgnored || options.idleTimeoutMs === 0;
+    enforceSessionIdleTimeout(server, options.idleTimeoutMs, hostTimers);
+    report.idleTimeoutMs = !timeoutsIgnored || options.idleTimeoutMs === 0;
+  } else if (http2Listener) {
+    // Unset, an idle HTTP/2 session was the backend's and the runtime's: 72 s
+    // on Fastify under Node, 144 s and extended by every PING under Bun, and
+    // never closed on Hono under Node.  The framework's own timer at
+    // Fastify's value makes it one bound on every pair (#1757); HTTP/1.1
+    // keep-alive keeps the backend's own.
+    enforceSessionIdleTimeout(server, DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS, hostTimers);
+    http2SessionIdleDefaultMs = DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS;
   }
   if (options.headerTimeoutMs !== undefined) {
     const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
@@ -781,9 +822,8 @@ export function applyServerOptions(
   if (options.requestTimeoutMs !== undefined) {
     server.requestTimeout = options.requestTimeoutMs;
     // `0` is "no bound" on HTTP/2 as it is on HTTP/1.1, so it arms nothing.
-    if (options.requestTimeoutMs > 0) enforceStreamRequestTimeout(server, options.requestTimeoutMs);
-    if (http1Unbounded && options.requestTimeoutMs > 0) heldForOneProtocol.requestTimeoutMs = 'HTTP/2';
-    else report.requestTimeoutMs = !timeoutsIgnored || options.requestTimeoutMs === 0;
+    if (options.requestTimeoutMs > 0) enforceStreamRequestTimeout(server, options.requestTimeoutMs, hostTimers);
+    report.requestTimeoutMs = !timeoutsIgnored || options.requestTimeoutMs === 0;
   }
   if (options.maxConnections !== undefined && options.maxConnections !== Infinity) {
     server.maxConnections = options.maxConnections;
@@ -792,7 +832,10 @@ export function applyServerOptions(
     // that alone would be the silent failure the report exists to end.
     report.maxConnections = enforceMaxConnections(server, options.maxConnections)().installed;
   }
-  return Object.keys(heldForOneProtocol).length > 0 ? { ...report, heldForOneProtocol } : report;
+  return {
+    ...report,
+    ...(http2SessionIdleDefaultMs !== undefined ? { http2SessionIdleDefaultMs } : {}),
+  };
 }
 
 /**
@@ -903,6 +946,124 @@ export function enforceSessionIdleTimeout(
     });
     session.once?.('close', disarm);
   });
+}
+
+/** The slice of an HTTP/1.1 request {@link enforceHttp1BoundsOnHttp2Listener} reads. */
+type Http1RequestLike = {
+  readonly socket?: unknown;
+  /** True once the whole request, body included, has been received — whether or not anything read it. */
+  readonly complete?: boolean;
+};
+
+/** The slice of an HTTP/1.1 response {@link enforceHttp1BoundsOnHttp2Listener} reads. */
+type Http1ResponseLike = {
+  readonly headersSent?: boolean;
+  once?: (event: 'finish' | 'close', listener: () => void) => unknown;
+};
+
+/** One HTTP/1.1 connection on an HTTP/2 listener, as {@link enforceHttp1BoundsOnHttp2Listener} tracks it. */
+type Http1Connection = {
+  readonly socket: ServerSocketLike;
+  requestsInFlight: number;
+  idle: Cancellable | undefined;
+};
+
+/**
+ * Bound the HTTP/1.1 connections an HTTP/2 listener takes beside its sessions
+ * under Bun: `idleTimeoutMs` between requests, as `keepAliveTimeout` would, and
+ * `requestTimeoutMs` on each request's receive, as `requestTimeout` would
+ * (#1756).
+ *
+ * **Why a mechanism of its own.**  Bun's `http2.createSecureServer({
+ * allowHTTP1 })` hands a connection that negotiated HTTP/1.1 to handling that
+ * reads neither property.  Measured on bun 1.4.2 with Fastify over TLS +
+ * HTTP/2: a keep-alive connection was still open 6 s after its response under
+ * `idle-timeout = 800ms`, and a POST that announced 1000 bytes and sent 10 was
+ * still open after 40 s under `request-timeout = 2s` — where the TLS listener
+ * without HTTP/2 closed the first at 1.8 s and the second on its 30 s sweep.
+ * `max-connections` ships unset, so nothing else limited how many such
+ * connections a client held.  Refusing HTTP/1.1 through ALPN was the other
+ * answer, and the worse one where the bound can be held: it turns away every
+ * client that cannot speak h2 — a health checker, `curl` without `--http2`, a
+ * proxy that speaks HTTP/1.1 upstream — to close a gap timers close.
+ *
+ * Each connection is recognised at `'secureConnection'` by its ALPN protocol:
+ * not `h2` is HTTP/1.1.  Its requests arrive on the server's `'request'`
+ * carrying that very socket — measured on bun 1.4.2, `request.socket` is the
+ * object `'secureConnection'` handed out — so they are matched by identity, and
+ * an HTTP/2 request, whose `socket` is a session's, is never one of them.
+ *
+ * **Idle** is armed when a response finishes with no other request in flight
+ * on the connection and destroys the socket when it fires; a request disarms
+ * it.  Not before the first request: the header deadline bounds that, as on
+ * every other listener.  **Receive** is armed when a request arrives that has
+ * not been received in full, and at the deadline a request still incomplete is
+ * answered `408` and its connection destroyed; one whose body did arrive is
+ * left to its handler however long that takes, the HTTP/1.1 rule.  Exact rather
+ * than swept, so it fires at the value and not up to 30 s after it.
+ *
+ * `0` or no value is "no bound", as on every other listener; the caller passes
+ * the backend's own `keepAliveTimeout` for an unset `idle-timeout`, so "unset
+ * keeps the backend's own" holds here too.  Timers are unreferenced and go
+ * with the connection.  `hostTimers` is the seam a test fires them through.
+ */
+export function enforceHttp1BoundsOnHttp2Listener(
+  server: NodeHttpServerLike,
+  idleTimeoutMs: number | undefined,
+  requestTimeoutMs: number | undefined,
+  hostTimers: HostTimers = unreferencedHostTimers,
+): void {
+  if (typeof server.on !== 'function') return;
+  const idleMs = idleTimeoutMs !== undefined && idleTimeoutMs > 0 ? idleTimeoutMs : undefined;
+  const receiveMs = requestTimeoutMs !== undefined && requestTimeoutMs > 0 ? requestTimeoutMs : undefined;
+  if (idleMs === undefined && receiveMs === undefined) return;
+  const connections = new WeakMap<object, Http1Connection>();
+  server.on('secureConnection', (socket) => {
+    if ((socket as { alpnProtocol?: unknown }).alpnProtocol === 'h2') return;
+    const connection: Http1Connection = { socket, requestsInFlight: 0, idle: undefined };
+    connections.set(socket, connection);
+    socket.once?.('close', () => {
+      connection.idle?.cancel();
+      connection.idle = undefined;
+    });
+  });
+  server.on('request', (...eventArguments) => {
+    const request = eventArguments[0] as Http1RequestLike | null | undefined;
+    const response = eventArguments[1] as Http1ResponseLike | null | undefined;
+    const socket = request?.socket;
+    if (typeof socket !== 'object' || socket === null) return;
+    const connection = connections.get(socket);
+    if (connection === undefined) return;
+    connection.idle?.cancel();
+    connection.idle = undefined;
+    connection.requestsInFlight++;
+    const receive = receiveMs !== undefined && request!.complete !== true
+      ? armChainedTimeout(() => { expireHttp1Request(request!, response, connection.socket); }, receiveMs, hostTimers)
+      : undefined;
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      receive?.cancel();
+      connection.requestsInFlight--;
+      if (connection.requestsInFlight === 0 && idleMs !== undefined) {
+        connection.idle = armChainedTimeout(() => { connection.socket.destroy(); }, idleMs, hostTimers);
+      }
+    };
+    response?.once?.('finish', settle);
+    response?.once?.('close', settle);
+  });
+}
+
+/**
+ * The receive deadline of one HTTP/1.1 request ran out: a request received in
+ * full by now is its handler's, and is left alone; one still arriving is
+ * answered `408` when nothing has been written yet, and its connection goes.
+ */
+function expireHttp1Request(request: Http1RequestLike, response: Http1ResponseLike | null | undefined, socket: ServerSocketLike): void {
+  if (request.complete === true) return;
+  if (response?.headersSent !== true) socket.end?.(HEADER_TIMEOUT_RAW_RESPONSE);
+  socket.destroy();
 }
 
 /**
@@ -1503,6 +1664,18 @@ export interface HttpServerBackend {
    * error mapping.  `HttpExtension` wires `withErrorHandler` here.
    */
   setErrorHandler?(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
+
+  /**
+   * Optional: register the listener for a `ReadableStream` body whose source
+   * failed after the response was committed — the status and headers are on
+   * the wire, so no error handler can answer any more, the backend truncates
+   * the response, and this is the only place the failure can still be seen.
+   * `HttpExtension` wires it to the system log.  A failure before the first
+   * byte is not reported here: it goes to {@link setErrorHandler} like any
+   * other.  `request` is absent only for a response the backend wrote outside
+   * a route (#979).
+   */
+  setStreamFailureHandler?(handler: (err: unknown, request: HttpRequest | undefined) => void): void;
 
   /**
    * Optional capability: register a WebSocket endpoint.  Backends that

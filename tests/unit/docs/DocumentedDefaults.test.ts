@@ -147,6 +147,7 @@ import { DEFAULT_CASSANDRA_ALL_IDS_TABLE, DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACT
 import { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from '../../../src/persistence/Constants.js';
 import { CASSANDRA_REPLICATION_CLASSES } from '../../../src/persistence/journals/CassandraPluginOptions.js';
 import {
+  DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS,
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES,
@@ -801,6 +802,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.worker-cluster.restart-window', kind: 'duration', constant: DEFAULT_RESTART_WINDOW_MS },
 
   /* --- http --- */
+  { key: 'actor-ts.http.shutdown-grace-period', kind: 'duration', constant: DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS },
   { key: 'actor-ts.http.websocket.max-frame-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES },
   { key: 'actor-ts.http.websocket.max-buffered-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_POLICY.maxBufferedBytes },
   { key: 'actor-ts.http.websocket.on-oversize-frame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
@@ -1397,7 +1399,6 @@ const FEATURE_SWITCHES: readonly string[] = [
   // produce the identical policy.  It is also only consulted while
   // `remote.untrusted-mode` is on, which is the switch this one qualifies (#877).
   'actor-ts.remote.trusted-selection-paths',
-  'actor-ts.http.shutdown-grace-period', // 0ms = close listeners at once
   'actor-ts.sharding.remember-entities',
   'actor-ts.sharding.max-entities', // 0 = unbounded
   // `[]` = gate readiness on no sharded type, the same empty-list sentinel as

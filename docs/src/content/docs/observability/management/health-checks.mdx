@@ -56,11 +56,17 @@ there forks them.
 | `cluster-transport` | readiness | `Cluster.join` | the node can reach **none** of the peers it still expects |
 | `startup` | readiness | the registry itself, when the system has [startup tasks](/fundamentals/actor-system/#starting-up) | the startup graph is still running, or one of its tasks failed |
 | `shard-region:<type>` | readiness | `Cluster.join`, one per type in [`actor-ts.sharding.healthcheck.names`](/reference/configuration/#actor-tssharding) | this node's region for the type is not registered with its coordinator — see [gating on a shard region](#gating-on-a-shard-region) |
+| `shutdown` | readiness | the registry itself, in `before-service-unbind` once a [coordinated shutdown](/fundamentals/coordinated-shutdown/) starts | always — it exists only while the system drains |
 
 `startup` exists only on a system with startup tasks, and it stays once
 startup is over: `true` from then on, or `false` with the failed task
 and its error in `detail`.  While the graph runs, `detail` names the
 phase it is in.
+
+`shutdown` appears when the shutdown pipeline starts, a phase before the
+HTTP servers stop accepting, so `/ready` answers `503` while the node
+drains its requests in flight and until the listener closes.  A system
+that is not shutting down does not carry it.
 
 `cluster-transport` is deliberately a *total isolation* test, not
 "every peer is reachable".  A partial partition leaves the node able

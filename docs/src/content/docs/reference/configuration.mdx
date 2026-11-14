@@ -1425,7 +1425,7 @@ read at all, so a malformed value does not stop that node either.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
-| `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
+| `http.shutdown-grace-period` | `4s` | How long `unbind()` lets in-flight requests finish before their connections are forced closed — the same on Fastify, Express and Hono.  `0` forces at once.  On shutdown the drain is a `service-requests-done` task, so keep it under that phase's budget (`default-phase-timeout`, `5s`); `/ready` answers `503` from the start of the pipeline. |
 | `http.server` | *(see below)* | Connection-level bounds for the listening socket itself. |
 | `http.cors` | *(see below)* | Per-route defaults for the [`cors()`](/http/middleware/cors/) directive. |
 | `http.hsts` | *(see below)* | The policy the [`hsts()`](/http/middleware/security-headers/) middleware sends. |
@@ -1440,9 +1440,16 @@ wrote yourself.  An unrecognised name fails the `bind()` with a
 `ConfigError` rather than silently falling back to Fastify.  Express and
 Hono are optional peer dependencies, imported only if you name them.
 
-The grace period defaults to `0` — force as soon as the server closes —
-because that is what `unbind()` has always done in practice.  Raise it if
-you want in-flight requests to finish.
+The grace period defaults to `4s`, and it means the same on every backend:
+`unbind()` stops accepting at once, lets the requests in flight finish for
+up to that long, then forces what is still open; `0` forces at once.  On a
+coordinated shutdown the server stops accepting in `service-unbind` and
+drains in `service-requests-done`, and `/ready` has answered `503` since
+`before-service-unbind`.  The 4 s sit inside that phase's 5 s budget, with
+a second left for the forced close — raise the phase's `timeout` with the
+grace period.  Until v0.19 the default was `0`, which severed every
+request in flight on a rolling deploy, and Express quietly waited a second
+where the others did not.
 
 It is usually an upper bound rather than a delay: `unbind()` returns as soon
 as the server has actually closed.  Where a backend's `close()` cannot
@@ -1456,7 +1463,7 @@ The bounds on a **connection** — as against a route on it — come from
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it — on the Hono backend under Bun, where it is the only bound on a request whose body stops arriving, that leaves such a connection open until the client closes it (§ below).  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
+| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it — except on the Hono backend under Bun, where it is the only bound on a request whose body stops arriving, so `0` is refused (§ below).  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
 | `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  A shorter `request-timeout` is the header deadline too: the guard runs on the smaller of the two.  `0` disables it.  At most `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`.  Shorter than `header-timeout`, it bounds the header phase as well, since the headers are part of the request.  At most `4294967295` ms. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
@@ -1593,10 +1600,11 @@ A value you set is written as given.  Where it can cut a silent handler before
 the request deadline's `503` — its earliest cut lands less than 2 s past the
 deadline — `bind()` warns, naming the key, the value and the deadline: the
 `5s` of the example above cuts a handler that has written nothing from 4 s on.
-`0` turns it off, and here it is the only bound on a request whose body stops
+`0` is refused here: it is the only bound on a request whose body stops
 arriving and on a connection idle between requests, since none of the other
-three is installed: with `0` such a connection stays open until the client
-closes it.
+three is installed, and `Bun.serve` reads `0` as never closing — such a
+connection would stay open until the client closes it.  `bind()` fails with an
+`OptionsError` naming the key and `withIdleTimeoutMs`.
 
 Unset, it is not Bun's own 10 s, which cut any handler silent for about 12 s
 with no response at all.  It is derived from the server's longest request
@@ -1635,12 +1643,17 @@ on both runtimes, and a PING frame resets nothing — and a stream whose request
 is still arriving at `request-timeout` is answered `408` and reset.  A stream
 in flight holds its session, so a slow handler, a long poll and an SSE stream
 outlive the idle bound as they do on HTTP/1.1, and a request received in full
-is never cut by the receive deadline.  Unset, an idle HTTP/2 session is left to
-Fastify's own session timer — 72 s on Node, 144 s on Bun, which fires it at
-twice the value and lets a PING reset it — and on Hono over Node to nothing at
-all.  On Bun the HTTP/2 listener bounds a connection that negotiates HTTP/1.1
-on the same port by neither key, so there both are reported held for HTTP/2
-only and `bind()` warns.  None
+is never cut by the receive deadline.  Unset, an idle HTTP/2 session is closed
+at **72 s** by the same timer of actor-ts's own — Fastify's own value, so
+Fastify on Node behaves as it did, while Fastify on Bun (which fired Fastify's
+timer at 144 s and let a PING reset it) and Hono over Node (which closed an
+idle session never) now get the same bound; the binding report carries it as
+`http2SessionIdleDefaultMs`.  HTTP/1.1 keep-alive keeps the backend's own value.
+On Bun the HTTP/2 listener reads neither `keepAliveTimeout` nor
+`requestTimeout` for a connection that negotiates HTTP/1.1 on the same port, so
+actor-ts bounds those too, with timers of its own: idle between requests, and
+a receive deadline per request, answered `408`.  Both keys are in effect for
+both protocols there.  None
 of this is the Hono backend under Bun, whose sessions `Bun.serve`'s own
 whole-connection bound holds (§ above), set or derived: an idle session there
 was closed within one sweep of a `4s` value (bun 1.4.2), and a silent stream

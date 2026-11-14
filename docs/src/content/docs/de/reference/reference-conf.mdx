@@ -1558,10 +1558,13 @@ actor-ts {
 
   http {
     backend = "fastify"   # fastify | express | hono
-    # In-flight drain window for unbind() before connections are forced.
-    # 0 keeps the historical behaviour (force immediately); raise it if you
-    # want in-flight requests to finish on shutdown.
-    shutdown-grace-period = 0ms
+    # How long unbind() lets requests in flight finish before it forces their
+    # connections closed -- the same on every backend; 0 forces at once.  On
+    # shutdown the server stops accepting in service-unbind, /ready has gone
+    # 503 a phase earlier, and the drain is a service-requests-done task, so
+    # keep this under that phase's budget (default-phase-timeout, 5s): 4s
+    # leaves a second for the forced close.
+    shutdown-grace-period = 4s
 
     # Connection-level bounds for the server itself -- the listening socket a
     # bind() opens, not a route on it.  withServerOptions(...) wins per field,
@@ -1607,8 +1610,9 @@ actor-ts {
     #     balancer's idle window and the balancer never posts a request onto a
     #     socket that is closing, against node:http's 5s on Express and
     #     Hono-on-Node.  Set a duration to make them agree, or 0 to disable it
-    #     -- which on the Hono backend under Bun leaves a stalled body
-    #     unbounded, below.
+    #     -- except on the Hono backend under Bun, where 0 is refused, below.
+    #     On an HTTP/2 listener an idle session is closed at 72s when this is
+    #     unset, on every backend, PINGs or not.
     #     On the Hono backend under Bun it is Bun.serve's own idleTimeout, a
     #     wider bound: whole-connection inactivity, so a handler that writes
     #     nothing for that long, a long poll or a sparse SSE stream is cut
@@ -1620,7 +1624,8 @@ actor-ts {
     #     routes -- so the 503 is written first: 36s for the built-in 30s.
     #     There it is also the only bound on a request whose body stops
     #     arriving and on a connection idle between requests -- none of the
-    #     other timeouts is installed -- so 0 leaves such a connection open
+    #     other timeouts is installed -- so bind() refuses 0, which Bun.serve
+    #     reads as never closing and which would leave such a connection open
     #     until the client closes it.  A value whose earliest cut lands less
     #     than 2s past the deadline makes bind() warn: the 5s below cuts a
     #     handler that has written nothing from 4s on.
@@ -3158,8 +3163,10 @@ actor-ts {
     # get.
     exit-code = 0
 
-    # Framework components register their own teardown in the pipeline: the
-    # HTTP server unbinds in service-unbind, broker actors close their
+    # Framework components register their own teardown in the pipeline:
+    # readiness turns red in before-service-unbind, the HTTP server stops
+    # accepting in service-unbind and drains in service-requests-done, broker
+    # actors close their
     # connections in service-stop, a joined cluster leaves in cluster-leave,
     # DevTools detaches with the rest of the service layer.  Set false to keep
     # the phases and register everything yourself -- for an embedder that owns

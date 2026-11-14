@@ -30,6 +30,7 @@ export {
   ACTOR_SYSTEM_LIVENESS_CHECK_NAME,
   HealthCheckExtensionId,
   healthChecksOf,
+  SHUTDOWN_READINESS_CHECK_NAME,
   STARTUP_READINESS_CHECK_NAME,
 } from './HealthCheckExtension.js';
 export { shardRegionCheckName, shardRegionRegistered } from './ReadinessChecks.js';

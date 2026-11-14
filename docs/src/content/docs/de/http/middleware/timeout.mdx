@@ -67,12 +67,12 @@ Route, die länger braucht, muss vorher etwas schreiben oder auf einem anderen
 Backend laufen: `idle-timeout` selbst zu setzen wählt die Schranke, höchstens
 `255s`, hebt sie aber nicht darüber hinaus.
 
-Lass `idle-timeout` auf diesem Backend unter Bun positiv. `0` schaltet ihn ab,
-und er ist dort die einzige Schranke für einen Request, dessen Body nicht mehr
+Lass `idle-timeout` auf diesem Backend unter Bun positiv: `bind()` lehnt `0`
+ab. Er ist dort die einzige Schranke für einen Request, dessen Body nicht mehr
 weiterkommt, und für eine Verbindung, die zwischen zwei Requests untätig ist —
 `header-timeout`, `request-timeout` und `max-connections` lassen sich auf
-diesem Paar nicht installieren —, mit `0` bleibt eine solche Verbindung also
-offen, bis der Client sie schließt. Gemessen auf bun 1.4.2: ein Body, der mit
+diesem Paar nicht installieren —, abgeschaltet bliebe eine solche Verbindung
+also offen, bis der Client sie schließt. Gemessen auf bun 1.4.2: ein Body, der mit
 10 Bytes angekündigt war und nach 1 Byte stehen blieb, war unter `0` nach
 40 s noch offen und wurde bei ungesetztem Key nach 36 s geschlossen.
 

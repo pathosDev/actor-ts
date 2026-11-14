@@ -5,6 +5,7 @@ import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   applyServerOptions,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
+  drainWindowOf,
   headerCapReachesHttp2Streams,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
@@ -20,7 +21,7 @@ import type {
 import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } from '../HttpServerOptions.js';
 import { detectRuntime } from '../../runtime/Detect.js';
 import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
-import { nodeTlsServerOptions, type NodeTlsServerFields } from '../../runtime/http/NodeHonoRunner.js';
+import { closeIdleConnectionsWhileDraining, nodeTlsServerOptions, type NodeTlsServerFields } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
@@ -453,12 +454,13 @@ export class FastifyBackend implements HttpServerBackend {
         // `websocketServer` is undefined, and on Bun
         // `closeAllConnections` may also be unavailable.  After
         // forcing, `app.close()` resolves quickly and we return.
-        const grace = gracePeriodMs && gracePeriodMs > 0 ? gracePeriodMs : 0;
-        const server = (this.app as { server?: { closeAllConnections?: () => void } }).server;
+        const grace = drainWindowOf(gracePeriodMs);
+        const server = (this.app as { server?: { closeAllConnections?: () => void; closeIdleConnections?: () => void } }).server;
         const wss = (this.app as { websocketServer?: { clients?: Iterable<{ terminate?: () => void }> } }).websocketServer;
         const closing = this.app.close();
         if (grace > 0) {
           let timer: ReturnType<typeof setTimeout> | null = null;
+          const stopSweep = server ? closeIdleConnectionsWhileDraining(server) : () => { /* no server to sweep */ };
           await Promise.race([
             closing,
             new Promise<void>((resolve) => {
@@ -466,6 +468,7 @@ export class FastifyBackend implements HttpServerBackend {
               (timer as { unref?: () => void }).unref?.();
             }),
           ]);
+          stopSweep();
           if (timer) clearTimeout(timer);
         }
         try { server?.closeAllConnections?.(); } catch { /* best-effort */ }
