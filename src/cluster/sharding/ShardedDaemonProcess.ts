@@ -10,6 +10,8 @@ import { mergeOptions } from '../../util/OptionsMerge.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { LeastShardAllocationStrategy } from './AllocationStrategy.js';
 import { ClusterSharding } from './ClusterSharding.js';
+import { Passivate } from './Passivate.js';
+import { hashShardId } from './ShardAllocator.js';
 import { JournalRememberEntitiesStore } from './RememberEntitiesStore.js';
 import { StartShardingOptions } from './StartShardingOptions.js';
 import {
@@ -25,6 +27,10 @@ type DaemonEnvelope<T> = { readonly index: number; readonly body: T | Wakeup; };
 /** Internal no-op message used to materialize a daemon on startup. */
 type Wakeup = { readonly kind: 'sharded-daemon.wakeup'; };
 const WAKEUP: Wakeup = { kind: 'sharded-daemon.wakeup' };
+
+/** What a host sends itself, through its shard's passivation, to go away for good. */
+type Retire = { readonly kind: 'sharded-daemon.retire'; };
+const RETIRE: Retire = { kind: 'sharded-daemon.retire' };
 
 export interface ShardedDaemonProcessHandle<T> {
   /**
@@ -47,8 +53,9 @@ export interface ShardedDaemonProcessHandle<T> {
 /**
  * Starts exactly N named daemon actors spread across the cluster.  Built on
  * top of ClusterSharding: each daemon becomes an entity, each entity gets
- * its own shard via a 1-to-1 allocation, and `rememberEntities` ensures the
- * daemons respawn after a node failure.
+ * its own shard via a 1-to-1 allocation — the entity ids are chosen so that
+ * daemon `i` hashes onto shard `i` ({@link daemonEntityIds}) — and
+ * `rememberEntities` ensures the daemons respawn after a node failure.
  *
  * The allocation strategy defaults to `LeastShardAllocationStrategy` so
  * daemons spread evenly over nodes.  Every daemon index receives a
@@ -87,10 +94,16 @@ export class ShardedDaemonProcess {
     const registryJournal = persistenceExtension.journal;
     persistenceExtension.noteStoreUse('remember-entities', registryJournal);
 
+    const entityIds = daemonEntityIds(resolvedOptions.numDaemons);
+    const indexByEntityId = new Map(entityIds.map((entityId, index) => [entityId, index] as const));
     const startOptions = StartShardingOptions.create<DaemonEnvelope<T>>()
       .withTypeName(`daemon-${resolvedOptions.name}`)
-      .withEntityActor(() => new DaemonHost<T>(resolvedOptions.actorFor) as unknown as Actor<DaemonEnvelope<T>>)
-      .withExtractEntityId((env) => String(env.index))
+      .withEntityActor(
+        () => new DaemonHost<T>(resolvedOptions.actorFor, indexByEntityId) as unknown as Actor<DaemonEnvelope<T>>,
+      )
+      // An index outside `0..numDaemons-1` has no id in the table; its decimal
+      // string names no daemon either, so its host retires (see `DaemonHost`).
+      .withExtractEntityId((env) => entityIds[env.index] ?? String(env.index))
       .withExtractEntityMessage((env) => env.body)
       .withNumShards(resolvedOptions.numDaemons)
       .withRememberEntities(true)
@@ -167,20 +180,85 @@ export class ShardedDaemonProcess {
 class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
   private inner: ActorRef<T> | null = null;
 
-  constructor(private readonly actorFor: (i: number) => ActorClassOrFactory<T>) { super(); }
+  constructor(
+    private readonly actorFor: (i: number) => ActorClassOrFactory<T>,
+    private readonly indexByEntityId: ReadonlyMap<string, number>,
+  ) { super(); }
 
   override preStart(): void {
-    // The entity id IS the daemon index — `extractEntityId` stringifies it.
-    const daemon = this.actorFor(Number.parseInt(this.entityId, 10));
-    this.inner = this.context.spawn(daemon, 'daemon');
+    const index = this.indexByEntityId.get(this.entityId);
+    if (index === undefined) {
+      this.retire();
+      return;
+    }
+    this.inner = this.context.spawn(this.actorFor(index), 'daemon');
   }
 
-  override onReceive(message: DaemonEnvelope<T> | T | Wakeup): void {
+  override onReceive(message: DaemonEnvelope<T> | T | Wakeup | Retire): void {
     // ShardRegion uses `extractEntityMessage` to unwrap the envelope before
     // delivery, so `message` here is actually the `body` field of the envelope.
     if (isWakeup(message)) return; // already awake — preStart ran
+    if (isRetire(message)) {
+      this.context.stopSelf();
+      return;
+    }
     this.inner?.tell(message as T);
   }
+
+  /**
+   * An entity id that names no daemon: one a registry written before #951
+   * remembers — the bare index, for a daemon whose id moved so it gets a shard
+   * of its own — or an index `tell` was given outside `0..numDaemons-1`.
+   * Running it would be a second copy of a daemon, so it goes away through its
+   * shard's passivation, which is the stop that also drops it from the
+   * remember-entities registry: a plain stop would be read as a failure and
+   * kept there, to be revived on every failover.
+   */
+  private retire(): void {
+    this.log.warn(
+      `[sharding] daemon entity '${this.entityId}' names no daemon index of this set; `
+      + 'retiring it (a pre-0.19 remembered id, or an index outside 0..numDaemons-1)',
+    );
+    this.context.parent.toNullable()?.tell(new Passivate(RETIRE, this.self) as never);
+  }
+}
+
+/**
+ * The entity id of every daemon, by index — chosen so the region's own hash
+ * puts daemon `i` on shard `i` (#951).
+ *
+ * The type is governed with `numShards = numDaemons`, and the region places an
+ * entity on `hashShardId(entityId, numShards)`.  The bare index as the id hashed
+ * N ids into N buckets, which is the birthday problem: 100 daemons landed on 58
+ * shards, four on one, and since a shard is the unit of allocation no rebalance
+ * could ever separate them.  Choosing the ids instead of the hash keeps the
+ * region untouched and makes the "one shard per daemon" placement exact.
+ *
+ * An index whose decimal string already lands on its own shard keeps it, so a
+ * registry written before this change keeps every daemon that was placed
+ * right.  The other shards are filled from a deterministic sequence of
+ * candidates, `shard-key-0`, `shard-key-1`, …, each taking the first empty
+ * shard it hashes to — a coupon collector, about `N·ln N` hashes in all
+ * (under 20 ms for 10 000 daemons; per-index searching was quadratic, and half
+ * a minute at that size).  Every node computes the same table.
+ */
+export function daemonEntityIds(numDaemons: number): readonly string[] {
+  const entityIds = new Array<string | undefined>(numDaemons);
+  let unplaced = numDaemons;
+  for (let index = 0; index < numDaemons; index++) {
+    const decimal = String(index);
+    if (hashShardId(decimal, numDaemons) !== index) continue;
+    entityIds[index] = decimal;
+    unplaced--;
+  }
+  for (let candidate = 0; unplaced > 0; candidate++) {
+    const entityId = `shard-key-${candidate}`;
+    const shardId = hashShardId(entityId, numDaemons);
+    if (entityIds[shardId] !== undefined) continue;
+    entityIds[shardId] = entityId;
+    unplaced--;
+  }
+  return entityIds as string[];
 }
 
 /**
@@ -201,4 +279,8 @@ function onOtherClusterEvent(): void {}
 
 function isWakeup(x: unknown): x is Wakeup {
   return !!x && typeof x === 'object' && (x as { kind?: string }).kind === 'sharded-daemon.wakeup';
+}
+
+function isRetire(x: unknown): x is Retire {
+  return !!x && typeof x === 'object' && (x as { kind?: string }).kind === 'sharded-daemon.retire';
 }

@@ -158,6 +158,18 @@ hour), this is real overhead.  Consider:
 For low-churn workloads (10K stable entities), the cost is
 negligible.
 
+**The log does not grow with the churn.**  The default
+`JournalRememberEntitiesStore` compacts its stream: once 1 000
+events — or as many as the last snapshot holds, if that is more —
+have been appended behind its last snapshot, it writes one
+`snapshot` event carrying the live entity set and deletes the
+events before it.  A coordinator start therefore reads one snapshot
+plus at most one such interval, however long the type has been
+passivating and waking entities.  The snapshot itself is never
+deleted, so the stream is never compacted to nothing.  A registry
+written by an earlier release loads unchanged; once this release has
+compacted it, an earlier release can no longer read it.
+
 ## Pacing a restore
 
 Coming back is the expensive half, and by default it happens all at once.

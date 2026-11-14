@@ -163,6 +163,19 @@ Stunde) ist das echter Overhead. Erwäge:
 Für Low-Churn-Workloads (10K stabile Entities) sind die Kosten
 vernachlässigbar.
 
+**Das Log wächst nicht mit dem Churn.**  Der Default-Store
+`JournalRememberEntitiesStore` kompaktiert seinen Stream: Sobald
+hinter seinem letzten Snapshot 1 000 Events angehängt sind — oder so
+viele, wie der letzte Snapshot enthält, falls das mehr sind —,
+schreibt er ein `snapshot`-Event mit der Menge der lebenden Entities
+und löscht die Events davor.  Ein Coordinator-Start liest damit einen
+Snapshot plus höchstens ein solches Intervall, egal wie lange der Typ
+schon Entities passiviert und wieder aufweckt.  Der Snapshot selbst
+wird nie gelöscht, der Stream wird also nie auf nichts kompaktiert.
+Eine von einem früheren Release geschriebene Registry lädt
+unverändert; sobald dieses Release sie kompaktiert hat, kann ein
+früheres Release sie nicht mehr lesen.
+
 ## Einen Restore drosseln
 
 Das Zurückkommen ist die teure Hälfte, und per Default passiert es auf

@@ -35,8 +35,11 @@ The contract:
   Defaults to `Date.now()` if omitted, but you can pass any
   monotonic value.
 - **Ties on timestamp use replica ID as tiebreaker.**  Same
-  timestamp + same replica ID = same write; same timestamp +
-  different replicas = lexicographically-later wins.
+  timestamp + different replicas = lexicographically-later wins.
+  Same timestamp + same replica ID is not necessarily the same
+  write — one replica can write twice in one millisecond — so that
+  tie is broken on the value's JSON rendering, and every node keeps
+  the same one whatever order the two writes arrive in.
 - **Last write wins, *silently*.**  Concurrent writes don't surface
   to the caller — one of them is just gone.
 

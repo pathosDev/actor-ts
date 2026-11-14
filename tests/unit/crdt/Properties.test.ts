@@ -209,48 +209,56 @@ describe('ORSet — CRDT laws', () => {
 
 /* --------------------------- LWWRegister --------------------------- */
 
+/**
+ * **Timestamps come from a set of three, and the value is drawn independently
+ * of both the timestamp and the replica** (#950).
+ *
+ * That is what makes the tie reachable.  The generator this replaces drew from
+ * `1..10_000`, so two registers almost never shared a timestamp, and the one
+ * before it derived the value from the timestamp, so a tie produced two equal
+ * values and commuted trivially.  A full tie on `(timestamp, replica)` with
+ * different values is a real input — one replica writing twice in one
+ * millisecond, which the coordinator-state store did on every rebalance burst
+ * — and the property has to see it.
+ */
+const lwwTimestamp = fc.integer({ min: 1, max: 3 });
 const lwwArb: fc.Arbitrary<LWWRegister<string>> = fc.array(
   fc.record({
     replica: replicaId,
     value: element,
-    timestamp: fc.integer({ min: 1, max: 10_000 }),
+    timestamp: lwwTimestamp,
   }),
-  { maxLength: 10 },
+  { minLength: 1, maxLength: 4 },
 ).map((ops) => ops.reduce((acc, op) => acc.assign(op.replica, op.value, op.timestamp), LWWRegister.empty<string>()));
 
 describe('LWWRegister — CRDT laws', () => {
-  test('commutativity (deterministic for non-tied timestamps)', () => {
+  test('the generator produces full (timestamp, replica) ties with differing values', () => {
+    // Asserted rather than assumed: a law over a generator that never reaches
+    // the tie is the property this one replaced.
+    const pairs = fc.sample(fc.tuple(lwwArb, lwwArb), 500);
+    const fullTies = pairs.filter(([a, b]) => {
+      const left = a.toJSON();
+      const right = b.toJSON();
+      return left.timestamp === right.timestamp && left.replica === right.replica && left.value !== right.value;
+    });
+    expect(fullTies.length).toBeGreaterThan(10);
+  });
+
+  test('commutativity: merge(a, b) ≡ merge(b, a), full ties included', () => {
     fc.assert(fc.property(lwwArb, lwwArb, (a, b) => {
-      // Merge is "latest timestamp wins, ties broken by replica id" — a
-      // total order, hence commutative, only when the two registers have
-      // distinct (timestamp, replica) ordering keys.  Distinct timestamps
-      // resolve by timestamp; equal timestamp + different replica resolve
-      // by replica id (the case this test most wants to exercise — see
-      // title).  Both stay in scope below.
-      //
-      // A tie on BOTH timestamp AND replica with differing values has no
-      // deterministic winner: merge keeps its left argument, so
-      // merge(a,b) and merge(b,a) legitimately disagree.  That input is
-      // unreachable in real use — a replica never stamps two values at
-      // one timestamp — so we exclude it here rather than inventing an
-      // arbitrary value tie-break.  Without this guard the property was
-      // seed-dependent flaky (e.g. apple@14/node-b vs banana@14/node-b).
-      const ka = a.toJSON();
-      const kb = b.toJSON();
-      fc.pre(!(ka.timestamp === kb.timestamp && ka.replica === kb.replica));
-      expect(a.merge(b).value()).toBe(b.merge(a).value());
+      expect(a.merge(b).equals(b.merge(a))).toBe(true);
     }));
   });
 
   test('associativity', () => {
-    fc.assert(fc.property(lwwArb, lwwArb, lwwArb, (a, b, counter) => {
-      expect(a.merge(b).merge(counter).value()).toBe(a.merge(b.merge(counter)).value());
+    fc.assert(fc.property(lwwArb, lwwArb, lwwArb, (a, b, c) => {
+      expect(a.merge(b).merge(c).equals(a.merge(b.merge(c)))).toBe(true);
     }));
   });
 
   test('idempotence', () => {
     fc.assert(fc.property(lwwArb, (a) => {
-      expect(a.merge(a).value()).toBe(a.value());
+      expect(a.merge(a).equals(a)).toBe(true);
     }));
   });
 });
@@ -475,39 +483,34 @@ describe('ORMap — CRDT laws (property-based)', () => {
  * shrunk example was pinned here before the generator was changed.
  */
 describe('counterexample corpus', () => {
-  test('LWWMap: a tied (timestamp, replica) write of different values is order-dependent', () => {
+  test('LWWMap: a tied (timestamp, replica) write of different values converges', () => {
     // Found by this file's own LWWMap commutativity property on its first run,
     // `{ seed: 1424, path: "37" }`: two maps that both wrote key `clicks` at
     // timestamp 3 from `node-d`, one a value and one a removal.
     //
-    // It is `LWWRegister`'s documented tie behaviour reached one level up, not
-    // a separate defect — merge keeps its left argument, so the two orders
-    // disagree.  Pinned rather than deleted along with the generator that found
-    // it: the generator now models "a replica writes one thing at one instant"
-    // and can no longer produce this, which means nothing would notice if the
-    // merge's behaviour on it ever changed.  #950.
+    // It is `LWWRegister`'s tie reached one level up, not a separate defect.
+    // Until #950 merge kept its left argument and the two orders disagreed;
+    // the full tie is now broken on the value, so both orders keep the same
+    // side.  Pinned rather than deleted along with the generator that found
+    // it: the generator models "a replica writes one thing at one instant" and
+    // can no longer produce this.
     const withValue = LWWMap.empty<string, string>().put('node-d', 'clicks', 'cherry', 3);
     const withRemoval = LWWMap.empty<string, string>().remove('node-d', 'clicks', 3);
 
-    expect(withValue.merge(withRemoval).get('clicks')).toBe('cherry');
-    expect(withRemoval.merge(withValue).get('clicks')).toBeUndefined();
+    expect(withValue.merge(withRemoval).get('clicks')).toBe(withRemoval.merge(withValue).get('clicks'));
   });
 
-  test('LWWRegister: a full tie on timestamp AND replica has no deterministic winner', () => {
-    // Found by the commutativity property above, which was seed-dependent
-    // flaky until it excluded this shape: `apple@14/node-b` against
-    // `banana@14/node-b`.  Pinned here because the exclusion is a `fc.pre`,
-    // and a `pre` documents what is *not* tested — this documents what the
-    // behaviour actually is, so a future merge that changed it is a red test
-    // rather than a silently narrower property.
+  test('LWWRegister: a full tie on timestamp AND replica converges on one value (#950)', () => {
+    // Found by the commutativity property above, which excluded this shape
+    // with a `fc.pre` until #950: `apple@14/node-b` against `banana@14/node-b`.
+    // The exclusion called the input unreachable.  It was not: one replica
+    // writing twice in one millisecond is what the coordinator-state store did
+    // during a rebalance burst.  Merge now breaks the full tie on the value, so
+    // both arrival orders keep the same one.
     const left = LWWRegister.empty<string>().assign('node-b', 'apple', 14);
     const right = LWWRegister.empty<string>().assign('node-b', 'banana', 14);
 
-    // Merge keeps its left argument on a total tie, so the two orders
-    // legitimately disagree.  This is the documented behaviour, not a defect:
-    // a replica never stamps two values at one timestamp, so the input is
-    // unreachable in real use.
-    expect(left.merge(right).value()).toBe('apple');
-    expect(right.merge(left).value()).toBe('banana');
+    expect(left.merge(right).value()).toBe(right.merge(left).value());
+    expect(left.merge(right).equals(right.merge(left))).toBe(true);
   });
 });

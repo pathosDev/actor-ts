@@ -5,7 +5,10 @@ import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
-import { ShardedDaemonProcess } from '../../../../../src/cluster/sharding/ShardedDaemonProcess.js';
+import { daemonEntityIds, ShardedDaemonProcess } from '../../../../../src/cluster/sharding/ShardedDaemonProcess.js';
+import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.js';
+import { JournalRememberEntitiesStore } from '../../../../../src/cluster/sharding/RememberEntitiesStore.js';
+import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import { ShardedDaemonProcessOptions } from '../../../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { Logger } from '../../../../../src/Logger.js';
@@ -103,6 +106,91 @@ describe('ShardedDaemonProcess — single node', () => {
     handle.tell(2, 'hello');
     expect(await probe.expectMessage('2:hello', 1_000)).toBe('2:hello');
 
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+
+  test('100 daemons start on 100 distinct shards, daemon i on shard i (#951)', async () => {
+    // More than 64, the default shard count, and enough that hashing the bare
+    // index put four daemons on one shard.  Each daemon reports its index and
+    // the shard its host entity lives under, read off its parent's path.
+    const nodeA = await startNode('sdp-placement', 'h', 53002);
+    const probe = nodeA.kit.createTestProbe();
+
+    class Placed extends Actor<string> {
+      constructor(private readonly index: number) { super(); }
+      override preStart(): void {
+        const shard = /\/shard-(\d+)\//.exec(this.self.path.toString())?.[1];
+        probe.tell({ index: this.index, shard: Number(shard) });
+      }
+      override onReceive(): void {}
+    }
+
+    const daemonOptions = ShardedDaemonProcessOptions.create<string>()
+      .withName('placed')
+      .withNumDaemons(100)
+      .withActorFor((i) => () => new Placed(i));
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
+
+    const placements = new Map<number, number>();
+    while (placements.size < 100) {
+      const placement = await probe.receiveOne(3_000) as { index: number; shard: number };
+      placements.set(placement.index, placement.shard);
+    }
+    expect([...placements.keys()].sort((a, b) => a - b)).toEqual(Array.from({ length: 100 }, (_, i) => i));
+    for (const [index, shard] of placements) expect(shard).toBe(index);
+
+    handle.stop();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+
+  test('a registry written with bare-index ids starts each daemon once and forgets the stale ids (#951)', async () => {
+    // Before #951 daemon i was entity `String(i)`.  A registry from then still
+    // remembers those ids, and the ones that moved to a shard of their own
+    // would come back as second copies of their daemon.  Their hosts retire
+    // through passivation instead, which also drops them from the registry.
+    const nodeA = await startNode('sdp-legacy', 'h', 53003);
+    const probe = nodeA.kit.createTestProbe();
+    const numDaemons = 10;
+    const typeName = 'daemon-legacy';
+    const journal = nodeA.system.extension(PersistenceExtensionId).journal;
+    const registry = new JournalRememberEntitiesStore(journal);
+    for (let index = 0; index < numDaemons; index++) {
+      const entityId = String(index);
+      await registry.append(typeName, { kind: 'started', shardId: hashShardId(entityId, numDaemons), entityId });
+    }
+    const canonical = daemonEntityIds(numDaemons);
+    // The case is only a case if some ids actually moved.
+    expect(canonical.filter((entityId, index) => entityId !== String(index)).length).toBeGreaterThan(0);
+
+    class Counted extends Actor<string> {
+      constructor(private readonly index: number) { super(); }
+      override preStart(): void { probe.tell(this.index); }
+      override onReceive(): void {}
+    }
+    const daemonOptions = ShardedDaemonProcessOptions.create<string>()
+      .withName('legacy')
+      .withNumDaemons(numDaemons)
+      .withActorFor((i) => () => new Counted(i));
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
+
+    const started: number[] = [];
+    for (let i = 0; i < numDaemons; i++) started.push(await probe.receiveOne(3_000) as number);
+    expect(started.sort((a, b) => a - b)).toEqual(Array.from({ length: numDaemons }, (_, i) => i));
+
+    await awaitCondition(async () => {
+      const live = new Set<string>();
+      for (const event of await registry.load(typeName)) {
+        if (event.kind === 'started') live.add(event.entityId);
+        else live.delete(event.entityId);
+      }
+      return live.size === numDaemons && canonical.every((entityId) => live.has(entityId));
+    }, { timeoutMs: 3_000, intervalMs: 25, label: 'the registry holding exactly the canonical daemon ids' });
+    // No second copy of any daemon started while the stale ids retired.
+    await probe.expectNoMessage(200);
+
+    handle.stop();
     await nodeA.cluster.leave();
     await nodeA.system.terminate();
   });
