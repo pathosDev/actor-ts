@@ -146,8 +146,11 @@ Entity-Lebenszyklus hinzu:
 
 1. **Ein Write, wenn die Entity spawnt** (ein `append` eines
    `started`-Events).
-2. **Ein Write, wenn die Entity passiviert / stoppt** (ein `append`
-   eines `stopped`-Events).
+2. **Ein Write, wenn die Entity passiviert wird** (ein `append`
+   eines `stopped`-Events).  Ein Stopp, um den niemand gebeten hat —
+   ein Ausfall jenseits des Neustart-Budgets, ein schlichtes
+   `stopSelf` — schreibt nichts: Die Entity bleibt erinnert und kommt
+   von selbst zurück.
 
 Für High-Churn-Entities (Millionen kurzlebiger Sessions pro
 Stunde) ist das echter Overhead. Erwäge:
@@ -286,12 +289,13 @@ Verhalten des Frameworks:
 - **Ein Stopp ohne `Passivate`** — ein Ausfall jenseits des
   Neustart-Budgets des Shards, ein Recovery-Fehler, den die Entity
   verschluckt hat, ein verlorenes Lease, ein schlichtes `stopSelf` —
-  hängt ebenfalls ein `stopped`-Event an; die Entity wird also nicht aus
-  der Registry wiederbelebt. Sie kommt mit der nächsten Nachricht für
-  sie zurück, frühestens wenn ihr
+  hängt **nichts** an: Das System hat nicht entschieden, dass die Entity
+  gehen soll, also bleibt sie in der Registry, und ein Failover stellt
+  sie wieder her. Ihr Shard erzeugt sie am Ende ihres
   [`entity-restart-backoff`](/de/cluster/sharding/overview/#eine-entity-die-immer-wieder-stoppt)
-  es erlaubt: Eine Nachricht innerhalb der Wartezeit wird bis zu deren
-  Ende zurückgehalten.
+  neu, ohne auf eine Nachricht zu warten; eine Nachricht innerhalb der
+  Wartezeit wird bis zu deren Ende zurückgehalten. Eine Entity, die die
+  Registry verlassen soll, muss passivieren.
 
 ### Erinnerte Entities zählen gegen `maxEntities`
 
