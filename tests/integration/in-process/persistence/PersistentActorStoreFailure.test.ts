@@ -11,6 +11,9 @@ import {
   PersistenceExtensionId,
   PersistentActor,
   everyNEvents,
+  type Journal,
+  type JournalEntry,
+  type PersistentEvent,
   type SnapshotPolicy,
 } from '../../../../src/persistence/index.js';
 import { ActorLifecycleEvent, ActorRestarted, ActorStopped } from '../../../../src/SystemMessages.js';
@@ -125,7 +128,7 @@ type Harness = {
 async function makeHarness(
   name: string,
   wrap: {
-    readonly journal?: (inner: InMemoryJournal) => FaultInjectingJournal;
+    readonly journal?: (inner: InMemoryJournal) => Journal;
     readonly snapshots?: (inner: InMemorySnapshotStore) => FaultInjectingSnapshotStore;
   },
 ): Promise<Harness> {
@@ -153,7 +156,7 @@ async function amountsIn(journal: InMemoryJournal, persistenceId: string): Promi
 /* -------------------------------- tests ---------------------------------- */
 
 describe('PersistentActor — an append that throws inside persistAll', () => {
-  test('restarts the actor from the journal, skips the callback, and keeps the next command', async () => {
+  test('restarts the actor from the journal, skips the callback, and the next incarnation takes the queued command', async () => {
     let faulty: FaultInjectingJournal | undefined;
     const journalFaults = FaultInjectingJournalOptions.create()
       .withFailOn('append')
@@ -218,6 +221,174 @@ describe('PersistentActor — an append that throws inside persistAll', () => {
     await awaitCondition(() => observations.callbacks.length === 1, { label: 'the next deposit was persisted' });
     expect(observations.callbacks).toEqual([{ balance: 12 }]);
     expect(await amountsIn(journal, 'acct-ack-lost')).toEqual([5, 6, 1]);
+    await system.terminate();
+  });
+});
+
+/* ------------------- commands stashed during a persist ------------------- */
+
+/**
+ * Holds the first append open until the test releases it, then hands it to
+ * the wrapped journal — which may be a `FaultInjectingJournal` scripted to
+ * fail it.  A held promise rather than a sleep, so "the second command arrived
+ * while the append was in flight" is a fact the test establishes, not a race
+ * it hopes to win.
+ */
+class HeldAppendJournal implements Journal {
+  holding = false;
+  private release: (() => void) | null = null;
+  private held = false;
+
+  constructor(private readonly inner: Journal) {}
+
+  /** Let the held append proceed to the wrapped journal. */
+  releaseAppend(): void { this.release?.(); }
+
+  async append<E = unknown>(
+    persistenceId: string,
+    entries: ReadonlyArray<JournalEntry<E>>,
+    expectedSeq: number,
+  ): Promise<PersistentEvent<E>[]> {
+    if (!this.held) {
+      this.held = true;
+      this.holding = true;
+      await new Promise<void>((resolve) => { this.release = resolve; });
+    }
+    return this.inner.append(persistenceId, entries, expectedSeq);
+  }
+
+  read<E = unknown>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+    return this.inner.read<E>(persistenceId, fromSeq, toSeq);
+  }
+
+  highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
+
+  delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+
+  persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+}
+
+type PersistFailedCommand = { kind: 'persist-failed'; error: Error };
+type FireAndForgetCommand = DepositCommand | PersistFailedCommand;
+
+type StashObservations = Observations & {
+  /** Every command `onReceive` saw — including the ones it stashed. */
+  received: FireAndForgetCommand[];
+};
+
+const newStashObservations = (): StashObservations => ({ ...newObservations(), received: [] });
+
+/**
+ * Persists without awaiting, the style the `PersistentActor` class doc shows.
+ *
+ * It is the only style in which a command can be *stashed* by a persist: the
+ * mailbox awaits an async handler, so an actor that awaits `persistAll` never
+ * receives the next command while `_persisting` is true, and `persistAll`'s
+ * `unstashAll` in `finally` has nothing to replay.  A rejected persist is
+ * escalated by telling itself, and that message throws — so a failed append
+ * still reaches supervision.
+ */
+class FireAndForgetAccount extends PersistentActor<FireAndForgetCommand, Event, State> {
+  constructor(readonly persistenceId: string, private readonly observations: StashObservations) {
+    super();
+  }
+  initialState(): State { return { balance: 0 }; }
+  onEvent(state: State, event: Event): State { return { balance: state.balance + event.amount }; }
+  override onRecoveryComplete(state: State): void { this.observations.recovered.push(state); }
+  override async onReceive(message: FireAndForgetCommand): Promise<void> {
+    this.observations.received.push(message);
+    await super.onReceive(message);
+  }
+  onCommand(_state: State, command: FireAndForgetCommand): void {
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'persist-failed' }, (c) => this.onPersistFailed(c))
+      .exhaustive();
+  }
+
+  private onDeposit(command: DepositCommand): void {
+    this.observations.handled.push(command.amounts);
+    const events = command.amounts.map((amount): Event => ({ kind: 'deposited', amount }));
+    this.persistAll(events, (state) => { this.observations.callbacks.push(state); })
+      .catch((error: unknown) => {
+        this.self.tell({ kind: 'persist-failed', error: error instanceof Error ? error : new Error(String(error)) });
+      });
+  }
+
+  private onPersistFailed(command: PersistFailedCommand): never {
+    throw command.error;
+  }
+}
+
+const depositsReceived = (observations: StashObservations): Array<ReadonlyArray<number>> =>
+  observations.received.flatMap((c) => (c.kind === 'deposit' ? [c.amounts] : []));
+
+describe('PersistentActor — a command that arrives while persistAll is in flight', () => {
+  test('is stashed and then handled after the append completes, in order', async () => {
+    let held: HeldAppendJournal | undefined;
+    const { system, journal } = await makeHarness('stash-during-persist', {
+      journal: (inner) => (held = new HeldAppendJournal(inner)),
+    });
+    const observations = newStashObservations();
+    const ref = system.spawn(() => new FireAndForgetAccount('acct-stash', observations), 'account');
+    await awaitCondition(() => observations.recovered.length === 1, { label: 'the actor recovered' });
+
+    ref.tell({ kind: 'deposit', amounts: [5] });
+    await awaitCondition(() => held!.holding, { label: 'the first append is held in flight' });
+    ref.tell({ kind: 'deposit', amounts: [7] });
+    await awaitCondition(() => depositsReceived(observations).length === 2, {
+      label: 'the second command reached onReceive while the append was held',
+    });
+    // Received but not handled: it was stashed, not run against stale state.
+    expect(observations.handled).toEqual([[5]]);
+
+    held!.releaseAppend();
+    await awaitCondition(() => observations.callbacks.length === 2, {
+      label: 'the stashed command was replayed and persisted after the first',
+    });
+    expect(observations.handled).toEqual([[5], [7]]);
+    expect(observations.callbacks).toEqual([{ balance: 5 }, { balance: 12 }]);
+    expect(await amountsIn(journal, 'acct-stash')).toEqual([5, 7]);
+    await system.terminate();
+  });
+
+  test('stashed behind an append that then fails, is handled exactly once and survives the restart', async () => {
+    let held: HeldAppendJournal | undefined;
+    const journalFaults = FaultInjectingJournalOptions.create()
+      .withFailOn('append')
+      .withFailOnce();
+    const { system, journal, lifecycle } = await makeHarness('stash-during-failed-persist', {
+      journal: (inner) => (held = new HeldAppendJournal(new FaultInjectingJournal(inner, journalFaults))),
+    });
+    const observations = newStashObservations();
+    const ref = system.spawn(() => {
+      observations.incarnations++;
+      return new FireAndForgetAccount('acct-stash-fail', observations);
+    }, 'account');
+    await awaitCondition(() => observations.recovered.length === 1, { label: 'the first incarnation recovered' });
+
+    ref.tell({ kind: 'deposit', amounts: [5] });
+    await awaitCondition(() => held!.holding, { label: 'the failing append is held in flight' });
+    ref.tell({ kind: 'deposit', amounts: [7] });
+    await awaitCondition(() => depositsReceived(observations).length === 2, {
+      label: 'the second command reached onReceive while the append was held',
+    });
+    expect(observations.handled).toEqual([[5]]);
+
+    held!.releaseAppend();
+    await awaitCondition(() => observations.recovered.length === 2, {
+      label: 'the escalated append failure restarted the actor',
+    });
+    // `finally` puts the stashed command back in the mailbox before the
+    // failure is escalated, so it runs once — on the incarnation that stashed
+    // it, ahead of the escalation — instead of dying with that incarnation's
+    // stash as a dead letter.  The restart then recovers what it wrote.
+    expect(lifecycle.some((e) => e instanceof ActorRestarted && e.actor.equals(ref))).toBe(true);
+    expect(observations.incarnations).toBe(2);
+    expect(observations.handled).toEqual([[5], [7]]);
+    expect(observations.callbacks).toEqual([{ balance: 7 }]);
+    expect(observations.recovered).toEqual([{ balance: 0 }, { balance: 7 }]);
+    expect(await amountsIn(journal, 'acct-stash-fail')).toEqual([7]);
     await system.terminate();
   });
 });
