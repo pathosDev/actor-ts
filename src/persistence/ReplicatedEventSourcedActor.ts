@@ -99,22 +99,35 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * budget, or an outcome nothing can settle, fails the actor so its supervisor
  * sees a journal missing an event its state holds (see `_persistRemote`).
  *
- * Outside it, on purpose:
+ * **An append whose outcome `persist` never saw** (#1732) — cut by
+ * `call-timeout`, which gives up without cancelling, or committed by a store
+ * that then lost the answer — is settled once the journal call itself
+ * settles.  A call still waiting for its turn in the chain is cancelled, and
+ * nothing is written.  Otherwise the actor waits for the call: a success
+ * means it landed; a `JournalConcurrencyError` means it did not; any other
+ * error is settled by reading the journal back from the head the append saw
+ * and looking for the event id.  An event that landed is folded and
+ * broadcast, exactly as the successful `persist` would have done — so a peer
+ * receives it, and this replica's state shows it.  Three guards close the
+ * windows around that:
  *
- *   - **What a timed-out local append did.**  `call-timeout` gives up
- *     without cancelling, so the append may still land.  Nothing folds or
- *     broadcasts the event then — only a successful `persist` does either —
- *     so no peer ever receives it, and this replica's journal holds an event
- *     its state does not show.  Whether a later recovery folds it depends on
- *     where that recovery starts.  The landing moves the journal position a
- *     snapshot records past it — the uncancelled append and the next one
- *     both advance `_journalSeq` — so a snapshot taken after it counts the
- *     event as covered, and a recovery from that snapshot never folds it.
- *     A full replay does: no snapshot, or `snapshot-is-optional` falling
- *     back when the snapshot store does not answer.  The recovered state
- *     therefore depends on whether that snapshot was read.  There is no
- *     ambiguous-outcome policy yet; a response lost after the store
- *     committed takes the same route with no breaker involved.
+ *   - Until the event is folded, its journal position is not counted as
+ *     covered: a snapshot taken in between records the position one short
+ *     of it, and a recovery from that snapshot replays it.
+ *   - A stopped instance leaves what its journal calls still owe to its
+ *     successor on this node, which waits for it before its recovery reads —
+ *     under `recovery-timeout`, like the reads.  The successor therefore
+ *     replays an event that landed late and never mints its `seqAtReplica`
+ *     again.
+ *   - A recovery re-publishes this replica's own events after the snapshot,
+ *     so one that landed after its instance stopped still reaches the peers;
+ *     they deduplicate on the event id.  Best-effort like every publish: a
+ *     peer the mediator does not know yet misses it.
+ *
+ * What stays open: an outcome the journal cannot be read to settle is a
+ * `WARN`, and the event is folded and re-published only by the next recovery
+ * — if it landed.  `afterPersist` never runs for an event that landed late;
+ * its caller was told the write failed.
  *
  * A refused `persist` still consumes the `seqAtReplica` it was minted with.
  * Peers already accept a gap (see `_envelopeRejection`), and a skipped
@@ -221,6 +234,29 @@ type AppendOutcome = WrittenOutcome | AbsentOutcome | UnknownOutcome;
  */
 class RemoteAppendExhausted {
   constructor(readonly failure: Error) {}
+}
+
+/**
+ * Told to itself by an actor whose local append reached the journal after its
+ * `persist` had failed (#1732), so the fold happens in a mailbox turn.
+ */
+class LandedLate<E> {
+  constructor(readonly envelope: ReplicatedEventEnvelope<E>) {}
+}
+
+/**
+ * Per-system, per-persistence-id: what a stopped instance's journal calls
+ * still owe (#1732).  A timed-out append is not cancelled, so it can land
+ * after its actor stopped — and after a successor's recovery read, which then
+ * never sees it and mints its `seqAtReplica` again.  The successor waits for
+ * this before it reads.  Same `WeakMap` shape as the live-id registry below.
+ */
+const pendingJournalWorkBySystem = new WeakMap<ActorSystem, Map<string, Promise<void>>>();
+
+function getPendingJournalWorkForSystem(system: ActorSystem): Map<string, Promise<void>> {
+  let pending = pendingJournalWorkBySystem.get(system);
+  if (!pending) { pending = new Map(); pendingJournalWorkBySystem.set(system, pending); }
+  return pending;
 }
 
 function sleep(milliseconds: number): Promise<void> {
@@ -559,6 +595,15 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   private readonly _unsettled = new Set<Promise<void>>();
   /** Set in `postStop`: background work stops scheduling retries and reports instead of escalating. */
   private _stopped = false;
+  /**
+   * Events in the journal that are not folded yet, by event id, with their
+   * journal position — what keeps a snapshot from claiming their position
+   * (#1732).  Almost always empty: an entry lives from the write until the
+   * fold, which for a successful `persist` is the same turn.
+   */
+  private readonly _writtenUnfolded = new Map<string, number>();
+  /** This replica's own events the recovery replayed from the journal — re-published once subscribed (#1732). */
+  private _recoveredOwnEvents: Array<ReplicatedEventEnvelope<Event>> = [];
 
   /** Current state — updated after every event apply. */
   protected get state(): State { return this._state; }
@@ -686,6 +731,19 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       topicFor(this.persistenceId), this.self, null, /* deliverWithOrigin= */ true,
     ));
 
+    // 4. Re-publish this replica's own events from the replayed journal
+    //    (#1732).  An append whose `persist` failed may still have landed —
+    //    after a `call-timeout`, or with its answer lost — and if this
+    //    replica stopped before it settled, no peer ever received it.
+    //    Nothing marks which events those were, so every own event after the
+    //    snapshot goes out again; peers deduplicate on the event id, and the
+    //    snapshot policy bounds how many that is.  Best-effort like every
+    //    publish here: a peer the mediator does not know yet misses it.
+    for (const own of this._recoveredOwnEvents) {
+      pubsub.tell(new Publish<ReplicatedEventEnvelope<Event>>(topicFor(this.persistenceId), own) as unknown as never);
+    }
+    this._recoveredOwnEvents = [];
+
     await this.onRecoveryComplete(this._state);
   }
 
@@ -702,6 +760,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * asked to have verified.
    */
   private async _readRecovery(): Promise<ReplicatedRecovery<Event, State>> {
+    // A predecessor on this node may still have an append in flight — one a
+    // `call-timeout` gave up on.  Reading before it settles would miss the
+    // event and mint its `seqAtReplica` again (#1732).  Under the recovery
+    // deadline, like the reads: a store that never answers fails the recovery
+    // rather than wedging it.
+    const predecessor = pendingJournalWorkBySystem.get(this.system)?.get(this.persistenceId);
+    if (predecessor !== undefined) await predecessor;
     const persistence = this._persistence;
     const loaded = await loadSnapshotOrNull(
       () => persistence.callThroughSnapshotBreaker(
@@ -761,8 +826,9 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       // records the right `journalSeqAtSnapshot`.
       if (persisted.sequenceNr > this._journalSeq) this._journalSeq = persisted.sequenceNr;
       const envelope = persisted.event;
-      if (envelope.replica === replicaId && envelope.seqAtReplica > this._localSeq) {
-        this._localSeq = envelope.seqAtReplica;
+      if (envelope.replica === replicaId) {
+        if (envelope.seqAtReplica > this._localSeq) this._localSeq = envelope.seqAtReplica;
+        this._recoveredOwnEvents.push(envelope);
       }
       // Anything the snapshot already accounts for is a no-op here: `_absorb`
       // deduplicates on the event id the snapshot's `seenIds` carries.
@@ -786,6 +852,17 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   override postStop(): void {
     this._stopped = true;
+    // Hand what the journal calls still owe to a successor on this node, which
+    // waits for it before its recovery reads (#1732).  `_journal` is unset when
+    // `preStart` failed before the stores were resolved — nothing was written.
+    if (this._journal !== undefined) {
+      const pending = getPendingJournalWorkForSystem(this.system);
+      const drained = this._drain();
+      pending.set(this.persistenceId, drained);
+      void drained.finally(() => {
+        if (pending.get(this.persistenceId) === drained) pending.delete(this.persistenceId);
+      });
+    }
     // Release the live-pid registration so a fresh actor with the
     // same persistenceId can take over (e.g. after a graceful stop
     // + re-spawn).  Must run on every termination path, including
@@ -811,7 +888,8 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       | ReplicatedEventEnvelope<Event>
       | PubSubEnvelope<ReplicatedEventEnvelope<Event>>
       | SubscribeAcknowledgment
-      | RemoteAppendExhausted,
+      | RemoteAppendExhausted
+      | LandedLate<Event>,
   ): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
     if (message && typeof message === 'object' && (message as { subscribe?: unknown }).subscribe instanceof Subscribe) {
@@ -824,9 +902,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       this._handleTopicDelivery(message);
       return;
     }
-    // Only this actor creates one, and only by telling itself.
+    // Only this actor creates either, and only by telling itself.
     if (message instanceof RemoteAppendExhausted) {
       this._onRemoteAppendExhausted(message);
+      return;
+    }
+    if (message instanceof LandedLate) {
+      this._onLandedLate(message as LandedLate<Event>);
       return;
     }
     if (this._isEnvelope(message)) {
@@ -876,14 +958,15 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    *   - `CircuitBreakerTimeoutError` — the call outlived
    *     `actor-ts.circuit-breaker.<journal-breaker>.call-timeout`.  The
    *     timeout gives up; it does not cancel, so the append may still land.
-   *     No peer ever receives such an event, because only a successful
-   *     `persist` broadcasts, and this replica folds it only at a recovery
-   *     that replays it: a snapshot taken after it landed already counts it
-   *     as covered — see "What a timed-out local append did" in the class
-   *     description.
    *
-   * On either, nothing is folded and nothing is broadcast, and the
-   * `seqAtReplica` the event was minted with stays used — see the body.
+   * On either — and on any other journal error — nothing is folded or
+   * broadcast *by this call*, and the `seqAtReplica` the event was minted with
+   * stays used.  If the append landed after all, the actor folds and
+   * broadcasts the event once the journal call settles, without running
+   * `afterPersist` (#1732) — see "An append whose outcome `persist` never
+   * saw" in the class description.  A rejection therefore means "not
+   * confirmed", not "never happened": a command handler that retries one
+   * should be idempotent at the domain level.
    *
    * When a lease is configured (#89) and this replica is NOT the
    * holder, throws — the actor is in observer mode and writes must
@@ -922,7 +1005,19 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     // earlier append it is queued behind.  `isStoreOutage` travels with the
     // call, so a losing conditional append — the journal answering, not
     // failing — is not counted against the breaker.
-    await this._persistence.callThroughJournalBreaker('append', () => this._enqueueAppend(envelope).written);
+    const holder: { ticket: AppendTicket | null } = { ticket: null };
+    try {
+      await this._persistence.callThroughJournalBreaker('append', () => {
+        holder.ticket = this._enqueueAppend(envelope);
+        return holder.ticket.written;
+      });
+    } catch (error) {
+      // The caller hears the failure now; what the append actually did is
+      // settled in the background, and an event that landed after all is
+      // folded and broadcast then (#1732).
+      this._track(this._settleLocalAppend(envelope, holder.ticket));
+      throw error;
+    }
     this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ true);
     afterPersist?.(this._state);
   }
@@ -967,8 +1062,94 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       this.persistenceId, [{ event: envelope, tags: [REPLICATED_TAG] }], head,
     );
     const lastWrittenSeq = written[written.length - 1]?.sequenceNr ?? head + 1;
-    if (lastWrittenSeq > this._journalSeq) this._journalSeq = lastWrittenSeq;
+    this._recordWritten(envelope, lastWrittenSeq);
     return lastWrittenSeq;
+  }
+
+  /**
+   * Note that `envelope` is in the journal at `sequenceNr`.  An event not yet
+   * folded — a local append whose `persist` is still on its way to `_absorb`,
+   * or one that landed after its `persist` gave up — is remembered until it
+   * is, so a snapshot taken in between does not count its position as
+   * covered (see {@link _coveredJournalSeq}).
+   */
+  private _recordWritten(envelope: ReplicatedEventEnvelope<Event>, sequenceNr: number): void {
+    if (sequenceNr > this._journalSeq) this._journalSeq = sequenceNr;
+    const deduplicationKey = this._deduplicationKeyFor(envelope);
+    if (!this._seenIds.has(deduplicationKey)) this._writtenUnfolded.set(deduplicationKey, sequenceNr);
+  }
+
+  /**
+   * The journal position a snapshot may claim: everything up to it is in the
+   * state.  `_journalSeq` unless an event written before it has not been
+   * folded yet, in which case one short of the earliest such event — the
+   * recovery from that snapshot replays it, and anything after it that the
+   * snapshot already holds is deduplicated on its event id.
+   */
+  private _coveredJournalSeq(): number {
+    let covered = this._journalSeq;
+    for (const sequenceNr of this._writtenUnfolded.values()) {
+      if (sequenceNr - 1 < covered) covered = sequenceNr - 1;
+    }
+    return covered;
+  }
+
+  /**
+   * Settle a local append whose `persist` rejected (#1732).  If it is in the
+   * journal after all — a `call-timeout` that gave up on a call that then
+   * landed, or a store that committed and lost the answer — the event is
+   * folded and broadcast, exactly as the successful `persist` would have
+   * done.  Its `seqAtReplica` was never handed back, so nothing else carries
+   * that number.  `afterPersist` does not run: its caller has been told the
+   * write failed.
+   */
+  private async _settleLocalAppend(
+    envelope: ReplicatedEventEnvelope<Event>,
+    ticket: AppendTicket | null,
+  ): Promise<void> {
+    const outcome = await this._settleAppend(envelope, ticket);
+    if (outcome.kind === 'written') {
+      this._landedLate(envelope, outcome.sequenceNr);
+    } else if (outcome.kind === 'unknown') {
+      this.log.warn(
+        `replicated-es '${this.persistenceId}': whether the event ${envelope.eventId} reached the journal could not `
+        + 'be established — the journal could not be read; the next recovery folds and re-publishes it if it did',
+      );
+    }
+  }
+
+  /**
+   * An event of this replica's that reached the journal after its `persist`
+   * had already failed.  Folding it touches the actor's state, so it goes
+   * back through the mailbox; a stopped instance leaves it to its successor,
+   * whose recovery replays it and re-publishes it (see `preStart`).
+   */
+  private _landedLate(envelope: ReplicatedEventEnvelope<Event>, sequenceNr: number): void {
+    this._recordWritten(envelope, sequenceNr);
+    if (this._seenIds.has(this._deduplicationKeyFor(envelope)) || this._stopped) return;
+    this.self.tell(new LandedLate(envelope) as unknown as Command);
+  }
+
+  /** Back in the mailbox: fold the late event and broadcast it, as `persist` would have. */
+  private _onLandedLate(message: LandedLate<Event>): void {
+    this._absorb(message.envelope, /* persistLocally= */ false, /* broadcast= */ true);
+  }
+
+  /**
+   * Settles once every journal call this instance scheduled, and every
+   * retry or settling read still to come, has finished.  What a successor
+   * on this node waits for before it recovers (see `postStop`).
+   */
+  private async _drain(): Promise<void> {
+    for (;;) {
+      const tail = this._appendChain;
+      await tail;
+      if (this._unsettled.size === 0) {
+        if (tail === this._appendChain) return;
+        continue;
+      }
+      await Promise.allSettled([...this._unsettled]);
+    }
   }
 
   /**
@@ -1270,6 +1451,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     const deduplicationKey = this._deduplicationKeyFor(envelope);
     if (this._seenIds.has(deduplicationKey)) return;
     this._seenIds.add(deduplicationKey);
+    this._writtenUnfolded.delete(deduplicationKey);
 
     // Fast path: envelope sorts after every existing event → just append.
     const last = this._events[this._events.length - 1];
@@ -1452,7 +1634,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       seenIds: Array.from(this._seenIds),
       events: [...this._events],
       localSeq: this._localSeq,
-      journalSeqAtSnapshot: this._journalSeq,
+      journalSeqAtSnapshot: this._coveredJournalSeq(),
       takenBy: this.replicaId,
       takenAt: Date.now(),
     };

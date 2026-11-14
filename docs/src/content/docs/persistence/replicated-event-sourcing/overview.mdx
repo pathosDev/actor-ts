@@ -238,20 +238,32 @@ gap is harmless, since peers accept gaps already — a publish with no
 live subscriber is never retransmitted — and handing the number back
 would mint it twice once a timed-out append landed after all.
 
-**A timed-out append may still land.**  The `call-timeout` gives up;
-it does not cancel.  If the write reaches the journal anyway, nothing
-folds or broadcasts the event — only a successful `persist` does
-either — so no peer ever receives it, and this replica's journal holds
-an event its state does not show.  Whether a later recovery folds it
-depends on where that recovery starts.  The landing moves the journal
-position a snapshot records past the event, so a snapshot taken after
-it counts the event as covered, and a recovery from that snapshot
-never folds it.  A full replay does — with no snapshot, or with
-`snapshot-is-optional` falling back to the journal because the
-snapshot store did not answer — so the replica's recovered state
-depends on whether that snapshot was read.  A store that commits and
-loses the answer on the way back takes the same route without any
-breaker involved, and nothing repairs that divergence yet.
+**An append whose outcome `persist` never saw is settled.**  The
+`call-timeout` gives up; it does not cancel — and a store can commit
+and lose the answer on the way back.  So the replica waits for the
+journal call itself to end.  A call still waiting for its turn in the
+chain is cancelled, and nothing is written.  Otherwise a success means
+it landed, a `JournalConcurrencyError` means it did not, and any other
+error is settled by reading the journal back from the head the append
+saw and looking for the event id.  An event that landed is folded and
+broadcast exactly as a successful `persist` would have done it —
+without `afterPersist`, since the caller has already been told it
+failed.  A rejected `persist` therefore means "not confirmed", not
+"never happened".
+
+Three guards close the windows around that.  Until the event is
+folded, its journal position does not count as covered: a snapshot
+taken in between records the position one short of it, and a recovery
+from it replays the event.  A stopped instance hands what its journal
+calls still owe to its successor on this node, which waits for it
+before its recovery reads — under `recovery-timeout`, like the reads —
+so it replays an event that landed late and never mints its
+`seqAtReplica` again.  And a recovery re-publishes this replica's own
+events after the snapshot, so one that landed after its instance
+stopped still reaches the peers; they deduplicate on the event id.  An
+outcome that cannot be settled because the journal cannot be read is a
+warning, and only the next recovery folds and re-publishes the event —
+if it landed.
 
 **Recovery is guarded like a `PersistentActor`'s.**  It waits for one
 of `max-concurrent-recoveries` permits, reads the snapshot through the
