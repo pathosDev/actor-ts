@@ -107,9 +107,11 @@ Deployment-Completion-Checkpoint, kein Deployment-Schritt.
 
 - Alle Instanzen melden dieselbe Build-Version (`/health`,
   Cluster-Management-Endpunkte oder dein eigener Deploy-Tracker).
-- v1-Events werden vom neuen Code-Pfad gelesen
-  (`migration_chain_upcast_total{from="1",to="2"}`-Metrik oder ein
-  Log-Stichproben-Check auf `chain.read`).
+- v1-Events werden vom neuen Code-Pfad gelesen. Das Framework zählt
+  und loggt keinen Upcast, diese Prüfung liegt also bei dir: eine
+  eigene Logzeile oder ein eigener Counter um `chain.read`, oder ein
+  Replay eines aufgezeichneten v1-Events durch die Chain des neuen
+  Builds.
 - Writer emittieren weiter v1 (peek das Journal — die
   Manifest-Version des jüngsten Records sollte `1` sein).
 

@@ -73,19 +73,34 @@ Ursachen:
 Diagnostik:
 
 ```promql
-rate(cluster_unreachable_duration_ms_count[5m]) > 0.1
-# Häufige Übergänge
+changes(cluster_members_up[15m]) > 4
+# Ein Mitglied, das unreachable wird, verlässt den Zustand `up` und kehrt
+# zurück, sobald es wieder gehört wird — jedes Flappen bewegt den Gauge zweimal.
 ```
 
-In Logs:
+Der Gauge wird bei jedem Scrape abgetastet, ein Flappen, das kürzer
+ist als das Scrape-Intervall, taucht darin also nicht auf. Der
+Event-Stream sieht jedes — `MemberUnreachable`, wenn der Detektor ein
+Mitglied aufgibt, `MemberReachable`, wenn es wieder gehört wird:
+
+```ts
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberUnreachable) {
+    system.log.warn(`unreachable: ${evt.member.address}`);
+  } else if (evt instanceof MemberReachable) {
+    system.log.info(`reachable again: ${evt.member.address}`);
+  }
+});
+```
+
+Mit `logger.level = debug` loggt der Detektor die erste Hälfte selbst:
 
 ```
-[INFO ] cluster — node-X marked unreachable
-[INFO ] cluster — node-X marked reachable
-[INFO ] cluster — node-X marked unreachable
+FD: <address> → unreachable (heartbeat timeout)
 ```
 
-Anhaltendes Flapping signalisiert Schwellen-Tuning.
+Dieselbe Adresse, die immer wieder unreachable wird und zurückkommt,
+signalisiert Schwellen-Tuning.
 
 ## Sharding
 
@@ -108,22 +123,35 @@ Ursachen:
 4. **extractEntityId liefert undefined** — das Message-Routing hat
    nichts zum Hashen.
 
-Diagnostik:
+Diagnostik — keine Metrik zählt die Shards, die ein Node hostet; die
+Shard-Map tut es, über den
+[Management-Endpunkt](/de/observability/management/http-endpoints/#get-clustershardstypetypename):
 
-```promql
-sharding_shards_hosted{type="entity-type"}
-# Sollte numShards (gesamt) clusterweit entsprechen
+```bash
+curl -s http://pod-1:8558/cluster/shards?type=entity-type
+# regions[].shards — die Shards jeder Region; shardHome — jeder bisher
+# platzierte Shard.  404 heißt: Auf diesem Node ist noch keine Shard-Map angekommen.
 ```
 
 Logs:
 
 ```bash
-kubectl logs pod-1 | grep -i shard
-# → "coordinator: allocating shard X to node-Y"
+kubectl logs pod-1 | grep '\[sharding\]'
 ```
 
-Siehst du "no candidates", lehnt dein `role`-Filter jeden Node ab.
-Prüfe Role-Tags in `Cluster.join`.
+Warnt der Koordinator, dass kein Mitglied, das den Typ hostet, die
+`role` trägt, lehnt dein `role`-Filter jeden Node ab. Prüfe
+`actor-ts.sharding.role` gegen die Rollen, die die hostenden Nodes
+deklarieren (`actor-ts.cluster.roles` oder `withRoles` in
+`Cluster.join`).
+
+Eine Region, deren `numShards` von dem des Koordinators abweicht, wird
+ohne Umweg abgelehnt und gezählt — für diese Fehlkonfiguration gibt es
+also einen Alert:
+
+```promql
+increase(cluster_sharding_registrations_refused_total[15m]) > 0
+```
 
 Warnt der Koordinator, dass keine der registrierten Regionen, die den
 Typ hosten können, "is on a member that is up", dann stimmt die Rolle,
@@ -180,13 +208,21 @@ verzögert sich.**
 Ursache: **tiefes Journal ohne Snapshots**. Recovery liest jedes
 jemals gespeicherte Event.
 
-Diagnostik:
+Diagnostik — mit eingeschalteten Metriken wird die Journal-Hälfte jeder
+Recovery als ein `replay`-Aufruf gemessen:
 
 ```promql
-histogram_quantile(0.99, persistence_recovery_duration_ms_bucket)
+histogram_quantile(0.99,
+  sum by (le) (rate(persistence_journal_latency_seconds_bucket{operation="replay"}[5m])))
 ```
 
-Wenn P99-Recovery > 1 Sekunde ist, **setze eine Snapshot-Policy**:
+`replay` umfasst das Lesen der Events, nicht das Falten: Die Zeit, die
+dein `onEvent` pro Event braucht, steckt nicht darin. Der Snapshot-Read,
+mit dem eine Recovery beginnt, ist `persistence_snapshot_latency_seconds`
+mit `operation="load"` — siehe
+[Persistenz-Metriken](/de/observability/metrics/stock-metrics/#persistenz-metriken).
+
+Wenn P99-Replay > 1 Sekunde ist, **setze eine Snapshot-Policy**:
 
 ```ts
 override snapshotPolicy() { return everyNEvents(100); }
@@ -371,7 +407,7 @@ actor_mailbox_size{class=...}
 
 histogram_quantile(0.99, rate(actor_mailbox_wait_seconds_bucket[5m]))
 # …und wie lange Nachrichten warten, bis jemand sie annimmt.
-# Eine Serie entsteht erst ab 10 000 wartenden Nachrichten — dies
+# Der Gauge oben hat erst ab 10 000 wartenden Nachrichten eine Serie — dies
 # ist also das Signal, das sich zuerst bewegt: ein Rückstau zeigt
 # sich als Wartezeit, lange bevor er sich als Größe zeigt.
 
