@@ -186,28 +186,57 @@ function carriesNoRef(value: object): boolean {
     || ArrayBuffer.isView(value);
 }
 
-function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unknown {
+/**
+ * Walk one container with `value` on the ancestor path for as long as its own
+ * subtree is being walked — and no longer.
+ *
+ * Both walkers used to add every container to `ancestors` and never take it
+ * out again, which is visited-detection rather than cycle-detection: it cannot
+ * tell "this object contains itself" from "this object appears twice in the
+ * body", so the second occurrence of every shared sub-object crossed the wire
+ * as `null` (#946).  Removing it once its subtree is done keeps the set to the
+ * current path, so a shared value arrives in every position it held — as two
+ * equal copies, which is what a JSON wire can carry — while a genuine cycle is
+ * still cut where it closes, at the back-edge, exactly as before.
+ *
+ * Without a `try`/`finally` on purpose: a throw abandons the whole walk, and
+ * the set is the walk's own, built fresh by {@link encodeRefs} or
+ * {@link decodeRefs} for every call.
+ */
+function withAncestor<TValue extends object>(
+  value: TValue,
+  ancestors: WeakSet<object>,
+  walkContainer: (container: TValue) => unknown,
+): unknown {
+  if (ancestors.has(value)) return null;  // a genuine cycle: cut the back-edge
+  ancestors.add(value);
+  const out = walkContainer(value);
+  ancestors.delete(value);
+  return out;
+}
+
+function walk(value: unknown, encodeRef: RefEncoder, ancestors: WeakSet<object>): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value !== 'object') return value;
   if (value instanceof ActorRef) return encodeRef(value);
   if (carriesNoRef(value)) return value;
+  return withAncestor(value, ancestors, (container) => walkContainer(container, encodeRef, ancestors));
+}
 
-  if (seen.has(value as object)) return null;  // break cycles
-  seen.add(value as object);
-
+function walkContainer(value: object, encodeRef: RefEncoder, ancestors: WeakSet<object>): unknown {
   if (Array.isArray(value)) {
-    return value.map((v) => walk(v, encodeRef, seen));
+    return value.map((v) => walk(v, encodeRef, ancestors));
   }
 
   if (value instanceof BidirectionalMap) {
     return new BidirectionalMap(
-      Array.from(value.entries(), ([k, v]) => [k, walk(v, encodeRef, seen)] as [unknown, unknown]),
+      Array.from(value.entries(), ([k, v]) => [k, walk(v, encodeRef, ancestors)] as [unknown, unknown]),
     );
   }
   if (value instanceof BidirectionalMultiMap) {
     const out = new BidirectionalMultiMap<unknown, unknown>();
     for (const left of value.lefts()) {
-      for (const right of value.get(left)) out.add(left, walk(right, encodeRef, seen));
+      for (const right of value.get(left)) out.add(left, walk(right, encodeRef, ancestors));
     }
     return out;
   }
@@ -215,11 +244,11 @@ function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unk
     // Values only: a ref used as a Map *key* would have to be rewritten
     // without changing the key's identity, which no rebuild can promise.
     const out = new Map();
-    for (const [k, v] of value.entries()) out.set(k, walk(v, encodeRef, seen));
+    for (const [k, v] of value.entries()) out.set(k, walk(v, encodeRef, ancestors));
     return out;
   }
   if (value instanceof Set) {
-    return new Set(Array.from(value).map((v) => walk(v, encodeRef, seen)));
+    return new Set(Array.from(value).map((v) => walk(v, encodeRef, ancestors)));
   }
 
   const out: Record<string, unknown> = {};
@@ -230,27 +259,27 @@ function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unk
     // field's members instead.  Defined, it is a field like any other.
     if (k === '__proto__') {
       Object.defineProperty(out, k, {
-        value: walk(v, encodeRef, seen), enumerable: true, writable: true, configurable: true,
+        value: walk(v, encodeRef, ancestors), enumerable: true, writable: true, configurable: true,
       });
     } else {
-      out[k] = walk(v, encodeRef, seen);
+      out[k] = walk(v, encodeRef, ancestors);
     }
   }
   return out;
 }
 
-function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): unknown {
+function walkDecode(value: unknown, cluster: Cluster, ancestors: WeakSet<object>): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value !== 'object') return value;
 
   if (isWireActorRef(value)) return decodeSingleRef(value, cluster);
   if (carriesNoRef(value)) return value;
+  return withAncestor(value, ancestors, (container) => walkDecodeContainer(container, cluster, ancestors));
+}
 
-  if (seen.has(value as object)) return null;
-  seen.add(value as object);
-
+function walkDecodeContainer(value: object, cluster: Cluster, ancestors: WeakSet<object>): unknown {
   if (Array.isArray(value)) {
-    return value.map((v) => walkDecode(v, cluster, seen));
+    return value.map((v) => walkDecode(v, cluster, ancestors));
   }
 
   // The container branches mirror `walk` exactly.  They were missing here,
@@ -259,23 +288,23 @@ function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): un
   // `Object.entries` tail on arrival and was delivered as `{}`.
   if (value instanceof BidirectionalMap) {
     return new BidirectionalMap(
-      Array.from(value.entries(), ([k, v]) => [k, walkDecode(v, cluster, seen)] as [unknown, unknown]),
+      Array.from(value.entries(), ([k, v]) => [k, walkDecode(v, cluster, ancestors)] as [unknown, unknown]),
     );
   }
   if (value instanceof BidirectionalMultiMap) {
     const out = new BidirectionalMultiMap<unknown, unknown>();
     for (const left of value.lefts()) {
-      for (const right of value.get(left)) out.add(left, walkDecode(right, cluster, seen));
+      for (const right of value.get(left)) out.add(left, walkDecode(right, cluster, ancestors));
     }
     return out;
   }
   if (value instanceof Map) {
     const out = new Map();
-    for (const [k, v] of value.entries()) out.set(k, walkDecode(v, cluster, seen));
+    for (const [k, v] of value.entries()) out.set(k, walkDecode(v, cluster, ancestors));
     return out;
   }
   if (value instanceof Set) {
-    return new Set(Array.from(value).map((v) => walkDecode(v, cluster, seen)));
+    return new Set(Array.from(value).map((v) => walkDecode(v, cluster, ancestors)));
   }
 
   const out: Record<string, unknown> = {};
@@ -285,10 +314,10 @@ function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): un
     // decoded object's prototype (security audit #9).
     if (k === '__proto__') {
       Object.defineProperty(out, k, {
-        value: walkDecode(v, cluster, seen), enumerable: true, writable: true, configurable: true,
+        value: walkDecode(v, cluster, ancestors), enumerable: true, writable: true, configurable: true,
       });
     } else {
-      out[k] = walkDecode(v, cluster, seen);
+      out[k] = walkDecode(v, cluster, ancestors);
     }
   }
   return out;

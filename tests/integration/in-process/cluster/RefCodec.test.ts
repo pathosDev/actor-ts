@@ -172,7 +172,7 @@ describe('RefCodec — encodeRefs', () => {
     refA.other = refB; // cycle
     const encoded = encodeRefs(refA, cluster) as Record<string, unknown>;
     expect(encoded.name).toBe('a');
-    // one side of the cycle gets nulled out once the other is in `seen`
+    // the back-edge to an ancestor still on the current path becomes null
     expect(((encoded.other as Record<string, unknown>).other as unknown)).toBeNull();
   });
 
@@ -462,5 +462,105 @@ describe('RefCodec — round-trip through JSON.stringify', () => {
       await cluster.leave();
       await system.terminate();
     }
+  });
+});
+
+/**
+ * #946 — both walkers guarded against cycles with a `WeakSet` they only ever
+ * added to.  That is visited-detection: it cannot tell "this object is its own
+ * ancestor" from "this object appears twice in the tree", so the second
+ * occurrence of every shared sub-object crossed the wire as `null`.  The guard
+ * is now an ancestor set — a value is in it only while its subtree is being
+ * walked — so a shared value arrives in every position and a genuine cycle is
+ * still cut at its back-edge.
+ */
+describe('RefCodec — shared sub-objects are not cycles (#946)', () => {
+  let system: ActorSystem;
+  let cluster: Cluster;
+
+  beforeEach(async () => {
+    ({ system, cluster } = await buildCluster('share-test', 51_320));
+  });
+
+  afterEach(async () => {
+    await cluster.leave();
+    await system.terminate();
+  });
+
+  const shared = (): { id: string; n: number } => ({ id: 'S', n: 1 });
+
+  test('encode keeps a shared object in two fields and twice in one array', () => {
+    const value = shared();
+    const encoded = encodeRefs({ a: value, b: value, list: [value, value] }, cluster);
+    expect(encoded).toEqual({ a: value, b: value, list: [value, value] });
+  });
+
+  test('encode keeps a shared object as two Map values and as a member of two Sets', () => {
+    const value = shared();
+    const encoded = encodeRefs({
+      map: new Map([['p', value], ['q', value]]),
+      first: new Set([value]),
+      second: new Set([value]),
+    }, cluster) as { map: Map<string, unknown>; first: Set<unknown>; second: Set<unknown> };
+    expect(encoded.map.get('p')).toEqual(value);
+    expect(encoded.map.get('q')).toEqual(value);
+    expect([...encoded.first]).toEqual([value]);
+    expect([...encoded.second]).toEqual([value]);
+  });
+
+  test('a shared object holding a ref encodes the ref in every position', () => {
+    const local = system.spawn(Noop, 'shared-target');
+    const header = { replyTo: local };
+    const encoded = encodeRefs({ first: header, second: header }, cluster) as Record<string, { replyTo: unknown }>;
+    expect(isWireActorRef(encoded.first!.replyTo)).toBe(true);
+    expect(isWireActorRef(encoded.second!.replyTo)).toBe(true);
+    // And the ref itself, twice in one body, is a valid marker both times.
+    const twice = encodeRefs({ x: local, y: local }, cluster) as Record<string, unknown>;
+    expect(isWireActorRef(twice.x)).toBe(true);
+    expect(twice.y).toEqual(twice.x);
+  });
+
+  test('decode keeps a shared object in two fields, twice in an array and as two Map values', () => {
+    const value = shared();
+    const decoded = decodeRefs({
+      a: value, b: value, list: [value, value], map: new Map([['p', value], ['q', value]]),
+    }, cluster) as { a: unknown; b: unknown; list: unknown[]; map: Map<string, unknown> };
+    expect(decoded.a).toEqual(value);
+    expect(decoded.b).toEqual(value);
+    expect(decoded.list).toEqual([value, value]);
+    expect(decoded.map.get('q')).toEqual(value);
+  });
+
+  test('a body with shared sub-objects round-trips encode → JSON → decode intact', () => {
+    const local = system.spawn(Noop, 'shared-round-trip');
+    const user = { name: 'u', inbox: local };
+    const decoded = decodeRefs(
+      JSON.parse(JSON.stringify(encodeRefs({ author: user, reviewer: user }, cluster))),
+      cluster,
+    ) as Record<string, { name: string; inbox: unknown }>;
+    expect(decoded.author!.name).toBe('u');
+    expect(decoded.reviewer!.name).toBe('u');
+    expect(decoded.author!.inbox).toBe(local);
+    expect(decoded.reviewer!.inbox).toBe(local);
+  });
+
+  test('a genuine cycle still terminates on both sides, cut at the back-edge', () => {
+    const node: Record<string, unknown> = { name: 'cyc' };
+    node.self = node;
+    expect(encodeRefs(node, cluster)).toEqual({ name: 'cyc', self: null });
+    expect(decodeRefs(node, cluster)).toEqual({ name: 'cyc', self: null });
+
+    // A cycle through an array, with a shared sibling beside it: the sibling
+    // survives in both places, the back-edge alone is cut.
+    const value = shared();
+    const list: unknown[] = [value];
+    const root: Record<string, unknown> = { list, again: value };
+    list.push(root);
+    const encoded = encodeRefs(root, cluster) as { list: unknown[]; again: unknown };
+    expect(encoded.again).toEqual(value);
+    expect(encoded.list).toEqual([value, null]);
+    const decoded = decodeRefs(root, cluster) as { list: unknown[]; again: unknown };
+    expect(decoded.again).toEqual(value);
+    expect(decoded.list).toEqual([value, null]);
   });
 });
