@@ -132,6 +132,29 @@ describe('overall-timeout bounds the whole run (#920)', () => {
     await system.terminate();
   });
 
+  test('overall-timeout = 0 from HOCON lets a slow phase finish, with no halt and no deadline ERROR', async () => {
+    // A zero read as a 0 ms deadline would halt this run before its first
+    // phase settled; read as "off", the phase gets its whole own budget.
+    const { system, log } = withRecordedLog('overall-deadline-zero-slow-phase', {
+      'overall-timeout': '0s',
+      phases: { 'service-unbind': { timeout: '30s' } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    expect(shutdown.overallTimeoutMs).toBe(0);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'slow', async () => {
+      await sleep(60);   // the phase's own duration IS the assertion: it must outlive a 0 ms deadline
+      seen.push('unbound');
+    });
+    shutdown.addTask(Phases.ServiceStop, 'later', () => { seen.push('stopped'); });
+
+    await shutdown.run();
+
+    expect(seen).toEqual(['unbound', 'stopped']);
+    expect(errorsOf(log).filter((m) => m.includes('overall deadline'))).toEqual([]);
+    expect(system.isTerminated).toBe(true);
+  });
+
   test('overall-timeout = 0 sets no deadline', async () => {
     const { system, log } = withRecordedLog('overall-deadline-off', {
       'overall-timeout': '0s',
