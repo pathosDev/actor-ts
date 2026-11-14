@@ -36,6 +36,7 @@ import type { WebsocketServerRef } from '../../../../src/http/websocket/Websocke
 import { DEFAULT_WEBSOCKET_POLICY, type ResolvedWebsocketPolicy } from '../../../../src/http/websocket/WebsocketPolicy.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
 import { LogLevel } from '../../../../src/Logger.js';
+import type { LocalActorRef } from '../../../../src/internal/LocalActorRef.js';
 import { ManualScheduler } from '../../../../src/testkit/ManualScheduler.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { RecordingLogger } from '../../../util/RecordingLogger.js';
@@ -160,7 +161,20 @@ async function connect(
     timeoutMs: 4_000,
     label: 'the hub announced the connection',
   });
-  return h.record.connected[h.record.connected.length - 1]!;
+  const connection = h.record.connected[h.record.connected.length - 1]!;
+  // Checked before any virtual time passes, on every connection: a heartbeat
+  // armed at interval 0 is a 0 ms fixed-delay timer, which the first
+  // `advance` would spin on forever — so a wrongly armed timer has to fail
+  // here, on an assertion, not later as a hang.
+  const expectArmed = policy.heartbeatIntervalMs > 0 && socket.ping !== undefined;
+  expect(heartbeatArmed(connection)).toBe(expectArmed);
+  return connection;
+}
+
+/** Whether the connection actor behind `connection` has its heartbeat timer running. */
+function heartbeatArmed(connection: WebsocketConnection<PongMessage>): boolean {
+  const actor = (connection as unknown as { connectionRef: LocalActorRef<unknown> }).connectionRef;
+  return actor.getCell().timers.isTimerActive('websocket-heartbeat');
 }
 
 /**
@@ -224,6 +238,15 @@ describe('server heartbeat (#651)', () => {
     }
     expect(socket.terminated).toBe(false);
     expect(h.record.disconnected.has(connection.id)).toBe(false);
+  });
+
+  test('a heartbeat interval of 0 starts no heartbeat timer', async () => {
+    // No time passes here at all: the timer's absence is the assertion.
+    const h = newHarness('heartbeat-off-timer');
+    const socket = new HeartbeatSocket('silent');
+    const connection = await connect(h, socket, policyWith({ heartbeatIntervalMs: 0 }));
+    expect(heartbeatArmed(connection)).toBe(false);
+    expect(socket.pings).toBe(0);
   });
 
   test('a heartbeat interval of 0 sends no ping', async () => {
