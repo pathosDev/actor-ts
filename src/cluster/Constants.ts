@@ -349,6 +349,17 @@ export const SHARD_MAP_PUBLISH_DELAY_MS = 50;
 export const MAX_PENDING_SHARD_HOME_REQUESTS = 1_024;
 
 /**
+ * How many hex digits of `randomId` entropy a region's correlation id is drawn
+ * from — its remote asks and its `shards()` queries alike (#1268).
+ *
+ * The id travels as a JSON number, so the protocol and a rolling upgrade are
+ * untouched, and 13 hex digits (52 bits) is the most a number holds exactly
+ * below `Number.MAX_SAFE_INTEGER`.  It replaced a counter from 1, which made
+ * every live id a small integer any member could guess and answer.
+ */
+export const SHARD_CORRELATION_ID_HEX_DIGITS = 13;
+
+/**
  * How long the singleton manager waits before re-spawning a child that died
  * unexpectedly (#1175).
  *

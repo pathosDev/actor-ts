@@ -54,6 +54,8 @@ import {
 import { metricsOf } from '../../metrics/MetricsExtension.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef, remoteActorPath } from '../RemoteActorRef.js';
+import { SHARD_CORRELATION_ID_HEX_DIGITS } from '../Constants.js';
+import { randomId } from '../../util/RandomString.js';
 import {
   sanitizeNodeAddressForLog,
   sanitizeWireKindForLog,
@@ -317,7 +319,40 @@ type PendingQueryCaller = {
  */
 type PendingStatsQuery = PendingQueryCaller & {
   readonly timeoutMs: number;
+  /**
+   * The node whose coordinator was last asked, the only one whose answer
+   * settles the query (#1268) — re-recorded each time an acknowledgment asks
+   * again, so a successor coordinator's answer counts and its predecessor's
+   * late one does not.  `null` while no coordinator is known.
+   */
+  answerer: NodeAddress | null;
 };
+
+/**
+ * A caller waiting on an entity on another node, and the node it is waiting
+ * on (#1268).  The reply settles it only when it arrives from `node`: the
+ * correlation alone was a number any member could send.
+ */
+type PendingRemoteAsk = {
+  readonly sender: ActorRef;
+  readonly expireAt: number;
+  readonly node: NodeAddress;
+};
+
+/**
+ * A fresh correlation for a table keyed by number, drawn from `randomId` and
+ * redrawn while `taken` recognises it (#1268).
+ *
+ * Read back as a number so the wire shape — and a rolling upgrade — stays as
+ * it was; {@link SHARD_CORRELATION_ID_HEX_DIGITS} says why that is enough.
+ */
+function randomCorrelationId(taken: (correlationId: number) => boolean): number {
+  const digits = randomId(
+    SHARD_CORRELATION_ID_HEX_DIGITS,
+    (candidate) => taken(Number.parseInt(candidate, 16)),
+  );
+  return Number.parseInt(digits, 16);
+}
 
 /** What the region knows about a local entity — enough to decide passivation. */
 type EntityActivity = {
@@ -593,12 +628,10 @@ export class ShardRegion<TMessage = unknown>
    * Keyed by a correlation id that travels with {@link ShardEnvelope} across
    * the wire; the owning region looks it up when a {@link ShardReply} arrives.
    */
-  private readonly pendingAsks = new Map<number, { sender: ActorRef; expireAt: number }>();
-  private nextCorrelation = 0;
+  private readonly pendingAsks = new Map<number, PendingRemoteAsk>();
 
   /** Local callers of `ClusterSharding.shards()`, keyed by their correlation. */
   private readonly pendingStatsAsks = new Map<number, PendingStatsQuery>();
-  private nextStatsCorrelation = 0;
   /**
    * Local callers of `ClusterSharding.shardRefFor()`, keyed by shard — several
    * callers can wait on one shard, and each carries its own expiry, so a caller
@@ -1148,37 +1181,40 @@ export class ShardRegion<TMessage = unknown>
       return;
     }
 
-    // Preserve an existing correlation if this sender is itself a proxy
-    // for an upstream asker (multi-hop forwarding).  Otherwise register a
-    // fresh correlation keyed to our local pendingAsks table so the reply
-    // reaches this region.
-    let originNode: NodeAddress;
-    let originRegion: string;
-    let correlationId: number;
-    if (sender instanceof ShardSenderRef) {
-      originNode = sender.originNode;
-      originRegion = sender.originRegion;
-      correlationId = sender.correlationId;
-    } else {
-      originNode = this.config.cluster.selfAddress;
-      originRegion = this.self.path.toString();
-      correlationId = this.registerPendingAsk(sender);
-    }
-
+    // Always a fresh correlation in this region's own table, bound to the node
+    // the envelope goes to — including when the sender is itself a
+    // `ShardSenderRef` for an upstream asker (multi-hop forwarding).  The
+    // origin's correlation used to travel on untouched, so the next hop
+    // answered the origin directly, from a node the origin never asked, and
+    // the origin could not tell that reply from a forgery (#1268).  Now each
+    // hop answers the node that asked it: the reply lands here, and the
+    // `ShardSenderRef` it settles passes it back upstream.
     const envelope: ShardEnvelope = {
       kind: 'sharding.Envelope',
       message,
-      originNode: originNode.toJSON(),
-      originRegion,
-      correlationId,
+      originNode: this.config.cluster.selfAddress.toJSON(),
+      originRegion: this.self.path.toString(),
+      correlationId: this.registerPendingAsk(sender, node),
     };
     new RemoteActorRef<ShardingMessage>(node, path, this.config.cluster).tell(envelope);
   }
 
-  private registerPendingAsk(sender: ActorRef): number {
-    const id = ++this.nextCorrelation;
-    this.pendingAsks.set(id, { sender, expireAt: this.system.clock.now() + this.asksTtlMs });
-    return id;
+  private registerPendingAsk(sender: ActorRef, node: NodeAddress): number {
+    const correlationId = randomCorrelationId((candidate) => this.pendingAsks.has(candidate));
+    this.pendingAsks.set(correlationId, { sender, expireAt: this.system.clock.now() + this.asksTtlMs, node });
+    return correlationId;
+  }
+
+  /**
+   * Whether a reply attributed to `peer` comes from `expected`, the node the
+   * question went to (#1268).  `null` is a frame that reached the mailbox
+   * unattributed — a `ShardSenderRef` answering on this very node tells its
+   * reply straight in — so it counts only when the question stayed here too.
+   */
+  private answeredBy(peer: NodeAddress | null, expected: NodeAddress | null): boolean {
+    if (expected === null) return false;
+    if (peer === null) return expected.equals(this.config.cluster.selfAddress);
+    return peer.equals(expected);
   }
 
   /**
@@ -1405,7 +1441,7 @@ export class ShardRegion<TMessage = unknown>
       .with({ kind: 'sharding.HandOff' }, (m) => this.onHandOff(m, peer))
       .with({ kind: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m, peer))
       .with({ kind: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
-      .with({ kind: 'sharding.Reply' }, (m) => this.onShardReply(m))
+      .with({ kind: 'sharding.Reply' }, (m) => this.onShardReply(m, peer))
       // An EntityRef addressed one of our entities by id.
       .with({ kind: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
       // Someone on another node told a ref to one of our shards.
@@ -1417,7 +1453,7 @@ export class ShardRegion<TMessage = unknown>
       .with({ kind: 'sharding.GetShards' }, (m) => this.onGetShards(m))
       .with({ kind: 'sharding.GetShardLocation' }, (m) => this.onGetShardLocation(m))
       .with({ kind: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
-      .with({ kind: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
+      .with({ kind: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m, peer))
       .with({ kind: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m, peer))
       // Every other `sharding.` kind — see `onUnhandled` for what that is.
       .otherwise((m) => this.onUnhandled(m));
@@ -1561,9 +1597,24 @@ export class ShardRegion<TMessage = unknown>
     this.system.deadLetters.tell(new DeadLetter(message.message, sender, this.self));
   }
 
-  private onShardReply(message: ShardReply): void {
+  /**
+   * A remote entity answered an ask (#1268).  Settled only from the node the
+   * ask went to; a reply from anyone else is refused and the entry left in
+   * place, so the honest reply still lands, and the asks sweep still reclaims
+   * an entry nobody answers.  Logged at debug, without the payload: a flood of
+   * forgeries must not become a flood of warnings.
+   */
+  private onShardReply(message: ShardReply, peer: NodeAddress | null): void {
     const entry = this.pendingAsks.get(message.correlationId);
     if (!entry) return;
+    if (!this.answeredBy(peer, entry.node)) {
+      this.log.debug(
+        `[sharding] ignoring a reply for '${this.config.typeName}' from `
+        + `${peer === null ? 'an unattributed sender' : sanitizeNodeAddressForLog(peer)} — `
+        + `the ask it names went to ${sanitizeNodeAddressForLog(entry.node)}`,
+      );
+      return;
+    }
     this.pendingAsks.delete(message.correlationId);
     entry.sender.tell(message.message as never);
   }
@@ -1615,7 +1666,7 @@ export class ShardRegion<TMessage = unknown>
   private askAgainForPendingQueries(): void {
     for (const shardId of this.pendingLocationAsks.keys()) this.askCoordinator(shardId);
     for (const [correlationId, pending] of this.pendingStatsAsks) {
-      this.askCoordinatorForStats(correlationId, pending.timeoutMs);
+      this.askCoordinatorForStats(correlationId, pending);
     }
   }
 
@@ -1971,28 +2022,51 @@ export class ShardRegion<TMessage = unknown>
   private onGetShards(message: GetShards): void {
     const asker = this.sender.toNullable();
     if (!asker) return;
-    const correlationId = ++this.nextStatsCorrelation;
-    this.pendingStatsAsks.set(correlationId, {
+    const correlationId = randomCorrelationId((candidate) => this.pendingStatsAsks.has(candidate));
+    const pending: PendingStatsQuery = {
       asker,
       expireAt: this.system.clock.now() + this.asksTtlMs,
       timeoutMs: message.timeoutMs,
-    });
-    this.askCoordinatorForStats(correlationId, message.timeoutMs);
+      answerer: null,
+    };
+    this.pendingStatsAsks.set(correlationId, pending);
+    this.askCoordinatorForStats(correlationId, pending);
   }
 
-  private askCoordinatorForStats(correlationId: number, timeoutMs: number): void {
+  /**
+   * Ask the coordinator for `pending`'s statistics, and record whose node was
+   * asked — after the send, because `tellCoordinator` may first have to
+   * re-target the coordinator (#1268).
+   */
+  private askCoordinatorForStats(correlationId: number, pending: PendingStatsQuery): void {
     this.tellCoordinator({
       kind: 'sharding.GetClusterShardingStats',
       correlationId,
       requester: this.self.path.toString(),
       requesterNode: this.config.cluster.selfAddress.toJSON(),
-      timeoutMs,
+      timeoutMs: pending.timeoutMs,
     });
+    pending.answerer = this.coordinatorNode;
   }
 
-  private onClusterShardingStats(message: ClusterShardingStats): void {
+  /**
+   * The coordinator's answer to a `shards()` query — settled only from the node
+   * that query was last put to (#1268), for the reason {@link onShardReply}
+   * gives: the correlation alone was a number any member could send, and a
+   * fabricated answer here feeds an operator or an autoscaler invented shard
+   * statistics.
+   */
+  private onClusterShardingStats(message: ClusterShardingStats, peer: NodeAddress | null): void {
     const pending = this.pendingStatsAsks.get(message.correlationId);
     if (!pending) return;
+    if (peer === null || !this.answeredBy(peer, pending.answerer)) {
+      this.log.debug(
+        `[sharding] ignoring a shards() answer for '${this.config.typeName}' from `
+        + `${peer === null ? 'an unattributed sender' : sanitizeNodeAddressForLog(peer)} — `
+        + `only the coordinator that was asked may answer it`,
+      );
+      return;
+    }
     this.pendingStatsAsks.delete(message.correlationId);
     pending.asker.tell(message.shards.map((location) => this.toShardInfo(location)) as never);
   }

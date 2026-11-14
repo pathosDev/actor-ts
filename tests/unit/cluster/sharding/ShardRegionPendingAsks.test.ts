@@ -123,6 +123,12 @@ let coordinatorFrames: ShardingMessage[] = [];
  */
 let remoteEnvelopes: ShardEnvelope[] = [];
 
+/** Every `sharding.Reply` the node put on the wire — what a forwarding hop sends back toward its origin. */
+let remoteReplies: ShardReply[] = [];
+
+const isShardReply = (body: unknown): body is ShardReply =>
+  typeof body === 'object' && body !== null && (body as { kind?: unknown }).kind === 'sharding.Reply';
+
 const isShardEnvelope = (body: unknown): body is ShardEnvelope =>
   typeof body === 'object' && body !== null && (body as { kind?: unknown }).kind === 'sharding.Envelope';
 
@@ -135,6 +141,7 @@ function recordEnvelopes(transport: InMemoryTransport): void {
   const send = transport.send.bind(transport);
   transport.send = (to: NodeAddress, message: WireMessage): void => {
     if (message.kind === 'envelope' && isShardEnvelope(message.body)) remoteEnvelopes.push(message.body);
+    if (message.kind === 'envelope' && isShardReply(message.body)) remoteReplies.push(message.body);
     send(to, message);
   };
 }
@@ -240,8 +247,16 @@ type Harness = {
   readonly placeRemotely: (shardId: number) => void;
   /** Hand the region the other node's reply for the remote ask carrying `correlationId`. */
   readonly reply: (correlationId: number, message: unknown) => void;
+  /** Hand the region a reply for `correlationId` attributed to `peer` — a forgery unless it is the asked node (#1268). */
+  readonly replyFrom: (peer: NodeAddress, correlationId: number, message: unknown) => void;
   /** Answer the `shards()` query carrying `correlationId`, with an empty map. */
   readonly answerStats: (correlationId: number) => void;
+  /** Answer the `shards()` query carrying `correlationId` from `peer` — a forgery unless it is the coordinator's node (#1268). */
+  readonly answerStatsFrom: (peer: NodeAddress, correlationId: number) => void;
+  /** A member-like address that is neither this node nor the remote one. */
+  readonly bystander: NodeAddress;
+  /** The node `placeRemotely` places shards on. */
+  readonly remoteNode: NodeAddress;
   /** Resolve once the region has handled everything told to it before this call. */
   readonly fence: () => Promise<void>;
   /** Fire the sweep timer and wait until the region has acted on it. */
@@ -268,6 +283,7 @@ afterEach(async () => {
   answers.clear();
   coordinatorFrames = [];
   remoteEnvelopes = [];
+  remoteReplies = [];
 });
 
 type Node = {
@@ -374,15 +390,17 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
 
   // How a reply arrives: the other node's region tells it back, and the
   // cluster hands it over attributed to the connection it came in on.
-  const reply = (correlationId: number, message: unknown): void => {
+  const replyFrom = (peer: NodeAddress, correlationId: number, message: unknown): void => {
     const shardReply: ShardReply = { kind: 'sharding.Reply', correlationId, message };
-    region.tell(new AuthenticatedShardingMessage(remoteNode, shardReply));
+    region.tell(new AuthenticatedShardingMessage(peer, shardReply));
   };
+  const reply = (correlationId: number, message: unknown): void => replyFrom(remoteNode, correlationId, message);
 
-  const answerStats = (correlationId: number): void => {
+  const answerStatsFrom = (peer: NodeAddress, correlationId: number): void => {
     const stats: ClusterShardingStats = { kind: 'sharding.ClusterShardingStats', correlationId, shards: [] };
-    region.tell(authenticated(stats));
+    region.tell(new AuthenticatedShardingMessage(peer, stats));
   };
+  const answerStats = (correlationId: number): void => answerStatsFrom(cluster.selfAddress, correlationId);
 
   const fence = async (): Promise<void> => {
     await region.ask(locationQuery(FENCE_SHARD), 2_000);
@@ -405,7 +423,11 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
     place,
     placeRemotely,
     reply,
+    replyFrom,
     answerStats,
+    answerStatsFrom,
+    bystander: new NodeAddress(options.systemName, 'bystander', options.port),
+    remoteNode,
     fence,
     sweep: async () => {
       scheduler.fireSweep();
@@ -450,6 +472,10 @@ const debugLines = (log: RecordingLogger, fragment: string): string[] =>
 const pendingLocationsOf = (region: ShardRegion<Command>): ReadonlyMap<number, readonly unknown[]> =>
   (region as unknown as { readonly pendingLocationAsks: ReadonlyMap<number, readonly unknown[]> })
     .pendingLocationAsks;
+
+/** The correlations of the `shards()` queries still waiting, oldest first. */
+const statsCorrelationsOf = (region: ShardRegion<Command>): number[] =>
+  Array.from((region as unknown as { readonly pendingStatsAsks: ReadonlyMap<number, unknown> }).pendingStatsAsks.keys());
 
 /** The first of `entity-0`, `entity-1`, … that hashes to `shardId`. */
 function entityOn(shardId: number): string {
@@ -536,18 +562,21 @@ describe('the asks sweep forgets the callers nobody answers (#1436)', () => {
     const early = harness.recorder('early');
     const later = harness.recorder('later');
 
-    // A fresh region numbers its `shards()` queries from 1.
+    // Correlations are random (#1268), so each is read back off the table
+    // right after its query was made.
     harness.region.tell(statsQuery(), early);
     await harness.fence();
+    const [earlyCorrelation] = statsCorrelationsOf(harness.instance());
     harness.scheduler.advance(30_000);
     harness.region.tell(statsQuery(), later);
     await harness.fence();
-    // Query 1 is now past the lifetime; query 2, asked half a lifetime later, is not.
+    const laterCorrelation = statsCorrelationsOf(harness.instance()).find((id) => id !== earlyCorrelation)!;
+    // The early query is now past the lifetime; the later one, asked half a lifetime later, is not.
     harness.scheduler.advance(30_001);
     await harness.sweep();
 
-    harness.answerStats(1);
-    harness.answerStats(2);
+    harness.answerStats(earlyCorrelation!);
+    harness.answerStats(laterCorrelation);
     await harness.fence();
     await drain(early);
     await drain(later);
@@ -557,7 +586,7 @@ describe('the asks sweep forgets the callers nobody answers (#1436)', () => {
     expect(answersOf('later')).toEqual([[]]);
     const swept = debugLines(harness.log, 'shards() query');
     expect(swept).toHaveLength(1);
-    expect(swept[0]).toMatch(/query 1 of 'pending'/);
+    expect(swept[0]).toContain(`query ${earlyCorrelation} of 'pending'`);
   }, 20_000);
 
   test('shardRefFor() callers past their lifetime are dropped one by one, and an emptied shard with them', async () => {
@@ -822,10 +851,11 @@ describe('a query made before the region registered is delayed, not lost (#1436)
     );
     const statsFrame = coordinatorFrames.find((frame) => frame.kind === 'sharding.GetClusterShardingStats');
     // Asked again as the caller asked it — its own fan-out deadline, its own correlation.
-    expect(statsFrame).toMatchObject({ correlationId: 1, timeoutMs: 1_234 });
+    const [correlationId] = statsCorrelationsOf(harness.instance());
+    expect(statsFrame).toMatchObject({ correlationId, timeoutMs: 1_234 });
 
     harness.place(5);
-    harness.answerStats(1);
+    harness.answerStats(correlationId!);
     await harness.fence();
     await drain(location);
     await drain(stats);
@@ -921,5 +951,118 @@ describe('a query made before the region registered is delayed, not lost (#1436)
     await drain(stats);
 
     expect(answersOf('stats')).toEqual([[]]);
+  }, 20_000);
+});
+
+/**
+ * A reply settles a waiting caller only from the node it was waiting on, and
+ * its correlation cannot be guessed (#1268).
+ *
+ * `onShardReply` and `onClusterShardingStats` matched on the correlation alone,
+ * and the correlation was a per-region counter from 1 — so any member could
+ * spray replies for 1..N and answer other nodes' asks with whatever it liked,
+ * the honest reply then finding nobody waiting.  Each entry now records the
+ * node it was directed at, and the correlation comes from `randomId`.
+ */
+describe('a reply is bound to the node that was asked (#1268)', () => {
+  test('a reply from another peer does not settle the ask, and the honest reply still does', async () => {
+    const harness = await startRegion({ systemName: '1268-peer', port: 44_320, lifetimeMs: LIFETIME_FLOOR_MS });
+    const ask = await askRemotely(harness, 'bound', 5);
+
+    harness.replyFrom(harness.bystander, ask.correlationId, 'forged');
+    harness.replyFrom(harness.cluster.selfAddress, ask.correlationId, 'forged locally');
+    await harness.fence();
+    await drain(ask.caller);
+    expect(answerCountOf('bound')).toBe(0);
+
+    harness.reply(ask.correlationId, 'honest');
+    await harness.fence();
+    await drain(ask.caller);
+    expect(answersOf('bound')).toEqual(['honest']);
+  }, 20_000);
+
+  test('a reply with a fabricated correlation settles nothing, and the correlations are not a counter', async () => {
+    const harness = await startRegion({ systemName: '1268-guess', port: 44_322, lifetimeMs: LIFETIME_FLOOR_MS });
+    const first = await askRemotely(harness, 'first', 5);
+    const second = await askRemotely(harness, 'second', 6);
+
+    // The counter this replaced handed out 1, 2, …; a guess from that range,
+    // sent from the very node that was asked, must find nobody waiting.
+    expect(first.correlationId).not.toBe(1);
+    expect(second.correlationId).not.toBe(first.correlationId + 1);
+    for (let guess = 1; guess <= 64; guess++) harness.reply(guess, `guess ${guess}`);
+    await harness.fence();
+    await drain(first.caller);
+    await drain(second.caller);
+    expect(answerCountOf('first')).toBe(0);
+    expect(answerCountOf('second')).toBe(0);
+
+    harness.reply(first.correlationId, 'honest');
+    await harness.fence();
+    await drain(first.caller);
+    expect(answersOf('first')).toEqual(['honest']);
+  }, 20_000);
+
+  test('a refused forgery leaves the entry to the sweep, which still reclaims it', async () => {
+    const harness = await startRegion({ systemName: '1268-sweep', port: 44_324, lifetimeMs: LIFETIME_FLOOR_MS });
+    const ask = await askRemotely(harness, 'abandoned', 5);
+    harness.replyFrom(harness.bystander, ask.correlationId, 'forged');
+    await harness.fence();
+
+    harness.scheduler.advance(LIFETIME_FLOOR_MS + 1);
+    await harness.sweep();
+    harness.reply(ask.correlationId, 'too late');
+    await harness.fence();
+    await drain(ask.caller);
+    expect(answerCountOf('abandoned')).toBe(0);
+  }, 20_000);
+
+  test('a shards() answer from a node other than the coordinator\'s settles nothing', async () => {
+    const harness = await startRegion({ systemName: '1268-stats', port: 44_326, lifetimeMs: LIFETIME_FLOOR_MS });
+    const stats = harness.recorder('stats');
+    harness.region.tell(statsQuery(), stats);
+    await harness.fence();
+    const [correlationId] = statsCorrelationsOf(harness.instance());
+
+    harness.answerStatsFrom(harness.remoteNode, correlationId!);
+    await harness.fence();
+    await drain(stats);
+    expect(answerCountOf('stats')).toBe(0);
+
+    harness.answerStats(correlationId!);
+    await harness.fence();
+    await drain(stats);
+    expect(answersOf('stats')).toEqual([[]]);
+  }, 20_000);
+
+  test('a forwarding hop asks under its own correlation and relays the answer to the origin', async () => {
+    // A region that receives an envelope for a shard that has since moved
+    // forwards it.  It used to forward the origin's correlation untouched, so
+    // the next hop answered the origin directly — from a node the origin never
+    // asked.  Now the hop asks under a correlation of its own, bound to the
+    // node it forwarded to, and passes the answer back itself.
+    const harness = await startRegion({ systemName: '1268-hop', port: 44_328, lifetimeMs: LIFETIME_FLOOR_MS });
+    const entityId = entityOn(5);
+    harness.placeRemotely(5);
+    const envelope: ShardEnvelope = {
+      kind: 'sharding.Envelope',
+      message: { kind: 'work', id: entityId } satisfies WorkCommand,
+      originNode: harness.remoteNode.toJSON(),
+      originRegion: '/system/sharding/origin-region',
+      correlationId: 77,
+    };
+    harness.region.tell(new AuthenticatedShardingMessage(harness.remoteNode, envelope));
+    await harness.fence();
+
+    const forwarded = remoteEnvelopes.find((sent) => (sent.message as Partial<WorkCommand>).id === entityId);
+    expect(forwarded?.originNode).toEqual(harness.cluster.selfAddress.toJSON());
+    expect(forwarded?.correlationId).not.toBe(77);
+
+    harness.reply(forwarded!.correlationId!, 'answer');
+    await awaitCondition(() => remoteReplies.some((sent) => sent.correlationId === 77), {
+      timeoutMs: 4_000,
+      label: 'the hop relayed the answer to the origin under the origin\'s correlation',
+    });
+    expect(remoteReplies.find((sent) => sent.correlationId === 77)?.message).toBe('answer');
   }, 20_000);
 });
