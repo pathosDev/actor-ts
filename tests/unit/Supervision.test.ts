@@ -13,6 +13,7 @@ import {
   OneForOneStrategy,
   RestartBudget,
   stoppingStrategy,
+  type StrategyOptions,
   type SupervisorStrategy,
 } from '../../src/Supervision.js';
 import { TestKit } from '../../src/testkit/TestKit.js';
@@ -803,6 +804,42 @@ describe('the restart budget is kept per child', () => {
     await awaitCondition(() => starts.get('steady') === 2, { label: 'the sibling still restarts' });
     expect(starts.get('flaky')).toBe(3);
   });
+
+  /**
+   * The other direction of keying the tally by allowance: a strategy whose
+   * allowance really changes gets a fresh tally under the new allowance.
+   * Each case spends a `maxRetries: 2` budget, then changes one of the two
+   * fields and fails again — a kept budget would be full and stop the child.
+   */
+  const ALLOWANCE_CHANGES: ReadonlyArray<readonly [string, StrategyOptions]> = [
+    ['maxRetries 2 → 5, same window', { maxRetries: 5, withinTimeRangeMs: 60_000 }],
+    ['same maxRetries, window 60 s → 30 s', { maxRetries: 2, withinTimeRangeMs: 30_000 }],
+  ];
+  for (const [label, changed] of ALLOWANCE_CHANGES) {
+    test(`a changed allowance starts a fresh tally: ${label}`, async () => {
+      let options: StrategyOptions = { maxRetries: 2, withinTimeRangeMs: 60_000 };
+      const build = () => new OneForOneStrategy(() => Directive.Restart, options);
+      const starts = new Map<string, number>();
+      const seen: string[] = [];
+      const probe = sys().spawn(() => new LifecycleCollector(seen), `allowance-change-collector-${changed.maxRetries}-${changed.withinTimeRangeMs}`);
+      sys().eventStream.subscribe(probe, ActorStopped);
+      const childName = `changing-${changed.maxRetries}-${changed.withinTimeRangeMs}`;
+      const parent = sys().spawn(parentClass(build, starts, [childName]), `${childName}-parent`);
+      await awaitCondition(() => starts.get(childName) === 1, { label: 'the child started' });
+
+      parent.tell(childName);
+      await awaitCondition(() => starts.get(childName) === 2, { label: 'first restart granted' });
+      parent.tell(childName);
+      await awaitCondition(() => starts.get(childName) === 3, { label: 'second restart granted — the old budget is full' });
+
+      options = changed;
+      parent.tell(childName);
+      await awaitCondition(() => starts.get(childName) === 4, {
+        label: 'the restart after the allowance changed was granted from a fresh tally',
+      });
+      expect(seen).not.toContain(`ActorStopped:${childName}`);
+    });
+  }
 
   test('AllForOneStrategy keeps one budget for the whole group', async () => {
     const starts = new Map<string, number>();
