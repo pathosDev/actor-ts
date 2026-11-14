@@ -121,6 +121,25 @@ describe('LeaseMajority on an even split keeps the holder\'s whole side (#1824)'
     }
   });
 
+  test('a side with no `up` member still has an arbiter: its lowest member, and only that one, consults the lease', async () => {
+    inMemoryLeaseStore._clear();
+    const scheduler = new ManualScheduler();
+    const lowest = strategyOwnedBy(3, scheduler);
+    const mate = strategyOwnedBy(4, scheduler);
+    try {
+      // Both right-hand members are `leaving` — the only non-`up` status a
+      // strategy counts — so nobody on the side is `up`.
+      const noUpMember = { 3: 'leaving', 4: 'leaving' } as const;
+      expect((await decideTwice(mate.strategy, evenSplitFrom(4, noUpMember))).size).toBe(0);
+      expect([...(await decideTwice(lowest.strategy, evenSplitFrom(3, noUpMember)))].sort()).toEqual([key(1), key(2)]);
+      expect(inMemoryLeaseStore.peek(LEASE_NAME, scheduler.now())?.owner).toBe(key(3));
+      expect(mate.lease.checkAlive()).toBe(false);
+    } finally {
+      for (const node of [lowest, mate]) await node.strategy.shutdown();
+      inMemoryLeaseStore._clear();
+    }
+  });
+
   test('the holder\'s side-mate survives once the holder\'s decision reaches it as tombstones', async () => {
     inMemoryLeaseStore._clear();
     const scheduler = new ManualScheduler();
