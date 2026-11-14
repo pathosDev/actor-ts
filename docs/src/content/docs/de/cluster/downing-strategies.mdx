@@ -580,6 +580,39 @@ einen verwertbaren Gewinn liefern: Die Strategie arbitriert weiter
 und entscheidet nichts — dieselbe Haltung wie bei einem noch
 laufenden Acquire.
 
+### Nachdem ein Gewinn angewendet wurde
+
+Die Re-Validierung hilft nur, solange nach dem Gewinn noch gefragt
+wird.  Hat der Cluster ihn angewendet, ist die andere Seite im Bild
+dieser Seite als Tombstone vermerkt, das nächste Bild enthält
+niemanden Unerreichbaren mehr, und die Strategie wird zu dieser
+Partition nicht mehr gefragt.  Ein Gewinner, der *danach* länger als
+die TTL steht, verliert die Lease trotzdem — und arbitriert die
+andere Seite spät, weil ihr Stabilitätsfenster später aufging oder
+ihr erstes Acquire aufgegeben wurde, gewinnt sie die abgelaufene
+Lease und downt diese Seite, während diese Seite weiterläuft
+(#1660).
+
+Deshalb bleibt bei einem Gewinn, den die Strategie herausgegeben hat,
+das Überleben an die Lease gebunden.  Meldet das Backend die Lease
+als verloren (`onLost`, das beide eingebauten Backends beim ersten
+Renewal-Tick nach der Deadline feuern), downt sich dieser Node
+selbst: Er verlässt den Cluster genau so, wie es eine Entscheidung
+täte, die ihn nennt — `run-coordinated-shutdown-when-down` entscheidet,
+was folgt —, und loggt auf warn, warum.  Einen unbemerkten Ablauf
+kann er von einer Übernahme nicht unterscheiden, also fällt er
+sicher aus: Der Cluster hält an, statt sich zu spalten.
+
+Die Überwachung dauert, bis die Strategie heruntergefahren wird,
+nicht ein festes Fenster nach dem Gewinn: Die andere Seite kann
+arbitrieren, solange eines ihrer Mitglieder läuft und diese Seite
+noch als unerreichbar sieht, und nichts auf dieser Seite erfährt,
+wann das aufgehört hat.  Der Preis: Eine Lease, die viel später
+verloren geht — das Lease-Backend länger als die TTL unerreichbar —,
+nimmt den Node, der sie hält, ebenfalls heraus.  Ein Gewinn, der
+berechnet, aber nie herausgegeben wurde, und eine verlorene oder
+Mehrheitsentscheidung lösen nichts aus.
+
 ### Wenn dieser Node geht
 
 Ein gewonnener Schiedsspruch behält die Lease, und das Backend
@@ -635,6 +668,7 @@ Das Provider-Interface ist winzig:
 interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
   shutdown?(): Promise<void>;         // optional: zurückgeben, was sie hält
+  bindSelfDown?(downSelf: (reason: string) => void): void;  // optional: diesen Node später downen
 }
 
 type ClusterPartitionView = {
@@ -651,6 +685,14 @@ etwas hält, das sie zurückgeben muss: Der Cluster ruft es einmal auf,
 wenn dieser Node geht, nach dem letzten `decide()`, und
 `LeaseMajority` released dort ihre Lease.  Ein `shutdown()`, das
 wirft oder rejected, wird geloggt, und das Verlassen geht weiter.
+
+`bindSelfDown()` ist für eine Strategie, deren Urteil aufhören kann
+zu stimmen, nachdem es angewendet wurde.  Der Cluster ruft es einmal
+auf, mit einer Funktion, die diesen Node genau so gehen lässt, wie es
+eine Entscheidung täte, die ihn nennt; der Cluster fragt `decide()` zu
+einer Partition nicht mehr, sobald eine Entscheidung dazu angewendet
+wurde, also ist das der einzige Weg zurück.  `LeaseMajority` nutzt es,
+wenn die Lease hinter einem angewendeten Gewinn verloren geht.
 
 Nützlich für app-spezifische Regeln — z. B. "behalte immer den
 Node mit role=primary" oder "wenn die Partition den

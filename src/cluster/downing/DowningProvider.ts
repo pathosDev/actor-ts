@@ -47,6 +47,23 @@ export interface DowningProvider {
    * builds it anew; one built in code has to be built again.
    */
   shutdown?(): Promise<void>;
+
+  /**
+   * Called once by the `Cluster` that adopts the provider, with the way to take
+   * this node out **between** decisions (#1660).
+   *
+   * {@link decide} only answers when asked, and `Cluster` stops asking about a
+   * partition once a decision on it was applied.  A verdict whose validity
+   * outlives that moment — `LeaseMajority`'s win holds only for as long as its
+   * lease does — needs a way back: calling `downSelf` makes this node leave
+   * exactly as a decision naming it would, `run-coordinated-shutdown-when-down`
+   * included.  `reason` is logged at warn.  A call after the node left, or
+   * before it joined, does nothing.
+   *
+   * Optional: a strategy whose verdict is a pure function of one view has
+   * nothing to revisit.
+   */
+  bindSelfDown?(downSelf: (reason: string) => void): void;
 }
 
 /** Helper — `address.toString()` used as map keys consistently. */

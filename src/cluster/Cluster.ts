@@ -671,6 +671,7 @@ export class Cluster {
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
+    this.downing?.bindSelfDown?.((reason) => this.onProviderDownsSelf(reason));
     // Beside `downing` because the two answer one question between them — who
     // removes a peer the detector has given up on.  The pair is legal: with a
     // provider configured the switch is inert, since the detector then only
@@ -3907,6 +3908,19 @@ export class Cluster {
       this.emit(new MemberRemoved(removed));
     }
     if (downsSelf) this.leaveAfterDowningSelf();
+  }
+
+  /**
+   * The downing provider takes this node out between decisions, through the
+   * binding `DowningProvider.bindSelfDown` hands it — `LeaseMajority` whose
+   * applied win lost its lease (#1660).  The same route as a decision naming
+   * this node, announced at warn with the provider's reason.  A node that has
+   * already left, or never joined, has nothing to leave.
+   */
+  private onProviderDownsSelf(reason: string): void {
+    if (!this.started) return;
+    this.log.warn(`downing: the provider took this node out — ${reason}`);
+    this.leaveAfterDowningSelf();
   }
 
   /**

@@ -541,6 +541,34 @@ An acquire that takes longer than the lease's TTL can never produce
 a usable win: the strategy keeps arbitrating and decides nothing,
 the same posture as while an acquire is pending.
 
+### After a win is applied
+
+Re-validation only helps while the win is still being asked for.
+Once the cluster has applied it, the other side is tombstoned in
+this side's view, the next view has nobody unreachable, and the
+strategy is not asked about that partition again.  A winner that
+stalls past the TTL *after* that point loses the lease all the same
+— and if the other side arbitrates late, its stability window having
+opened later or its first acquire having been abandoned, it wins the
+lapsed lease and downs this side while this side goes on running
+(#1660).
+
+So a win the strategy has handed out keeps its survival tied to the
+lease.  When the backend reports the lease lost (`onLost`, which both
+built-in backends fire from the first renewal tick past the deadline),
+this node downs itself: it leaves exactly as a decision naming it
+would, with `run-coordinated-shutdown-when-down` deciding what follows,
+and logs at warn why.  It cannot tell a lapse nobody noticed from a
+takeover, so it fails closed — the cluster stops rather than forks.
+
+The watch lasts until the strategy is shut down, not for a fixed
+window after the win: the other side can arbitrate for as long as any
+of its members runs and still sees this one unreachable, and nothing
+on this side learns when that has stopped.  The price is that a lease
+lost much later — the lease backend unreachable for longer than the
+TTL — also takes the node that holds it out.  A win that was computed
+but never handed out, and a lost or majority decision, arm nothing.
+
 ### When this node leaves
 
 A won arbitration keeps the lease, and the backend renews it for as
@@ -591,6 +619,7 @@ The provider interface is tiny:
 interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
   shutdown?(): Promise<void>;         // optional: give back what it holds
+  bindSelfDown?(downSelf: (reason: string) => void): void;  // optional: down this node later
 }
 
 type ClusterPartitionView = {
@@ -606,6 +635,13 @@ for a strategy that holds something it has to give back: the cluster
 calls it once when this node leaves, after the last `decide()`, and
 `LeaseMajority` releases its lease there.  A `shutdown()` that throws
 or rejects is logged, and the leave goes on.
+
+`bindSelfDown()` is for a strategy whose verdict can stop being true
+after it was applied.  The cluster calls it once, with a function that
+makes this node leave exactly as a decision naming it would; the
+cluster stops asking `decide()` about a partition once a decision on it
+was applied, so this is the only way back.  `LeaseMajority` uses it
+when the lease behind an applied win is lost.
 
 Useful for app-specific rules — e.g. "always keep the node
 hosting role=primary," or "if the partition includes the
