@@ -83,7 +83,13 @@ export interface Transport {
   start(): Promise<void>;
   shutdown(): Promise<void>;
   setHandler(handler: WireHandler): void;
-  /** Best-effort fire-and-forget send. Opens a connection on first use. */
+  /**
+   * Best-effort fire-and-forget send. Opens a connection on first use.
+   *
+   * A frame addressed to {@link self} comes back to this transport's own
+   * handler, asynchronously, as though it had crossed the wire (#1813):
+   * `ClusterRouter` and any `RemoteActorRef` naming the local node rely on it.
+   */
   send(to: NodeAddress, message: WireMessage): void;
   /** Close the connection to a peer. */
   disconnect(peer: NodeAddress): void;
@@ -398,6 +404,12 @@ export class TcpTransport implements Transport {
 
   send(to: NodeAddress, message: WireMessage): void {
     if (this.stopped) return;
+    // Compared by the key `byPeer` uses, so an address built separately that
+    // names this node is this node too.
+    if (to.toString() === this.self.toString()) {
+      this.deliverToSelf(message);
+      return;
+    }
     const connection = this.byPeer.get(to.toString()) ?? this.openOutbound(to);
     if (connection.peer && connection.socket) {
       this.writeFrame(connection, message);
@@ -462,18 +474,73 @@ export class TcpTransport implements Transport {
    * layer — so it is logged at `error`, naming the frame kind and the peer.
    */
   private writeFrame(connection: Connection, message: WireMessage): void {
-    let frame: Uint8Array;
+    const frame = this.encodeOrReport(message, this.peerForLog(connection));
+    if (frame === null) return;
+    connection.socket?.write(frame);
+  }
+
+  /** {@link encodeFrame}, or `null` after logging why the frame for `target` is dropped — see {@link writeFrame}. */
+  private encodeOrReport(message: WireMessage, target: string): Uint8Array | null {
     try {
-      frame = encodeFrame(message);
+      return encodeFrame(message);
     } catch (err) {
       this.log.error(
-        `dropping a '${message.kind}' frame for ${this.peerForLog(connection)}: `
-        + `its payload cannot be serialised`,
+        `dropping a '${message.kind}' frame for ${target}: its payload cannot be serialised`,
         err as Error,
       );
-      return;
+      return null;
     }
-    connection.socket?.write(frame);
+  }
+
+  /**
+   * Hand a frame this node addressed to itself back to its own handler, the
+   * way the in-memory and worker-mesh transports do (#1813).
+   *
+   * `ClusterRouter` turns every candidate member into a `RemoteActorRef`, its
+   * own node included, and any `RemoteActorRef` may name the local node.  This
+   * transport used to dial its own listener for them, whose handshake refuses
+   * a peer claiming this node's address — so a role-less router lost its own
+   * node's whole share, and every key consistent hashing put on this node.
+   *
+   * It is a hop and not a shortcut, so that nothing behaves differently on the
+   * node itself: the frame is encoded and decoded by the same codec under the
+   * same caps — a message that would not survive the wire does not survive
+   * here either — shape-checked like an inbound frame, and delivered on a
+   * microtask, never inside the `send` that wrote it.  The two failure tiers
+   * are `onData`'s, minus the connection there is none of to drop.
+   *
+   * No connection is involved, so none is opened and {@link peers} never lists
+   * the node itself.  A handshake frame addressed to this node is not a
+   * message for its handler and is dropped.
+   */
+  private deliverToSelf(message: WireMessage): void {
+    const target = sanitizeNodeAddressForLog(this.self);
+    const frame = this.encodeOrReport(message, target);
+    if (frame === null) return;
+    queueMicrotask(() => {
+      if (this.stopped) return;
+      let decoded: WireMessage[];
+      try {
+        decoded = new FrameDecoder(this.maxFrameBytes, this.readConstraints).push(frame);
+      } catch (err) {
+        this.log.warn(`frame-decoder error on a frame from ${target}; dropping it`, err as Error);
+        return;
+      }
+      for (const value of decoded) {
+        const checked = validateWireFrame(value);
+        if ('problem' in checked) {
+          this.log.warn(`rejecting malformed frame from ${target}: ${checked.problem}`);
+          continue;
+        }
+        const kind = checked.message.kind;
+        if (kind === 'hello' || kind === 'hello-ack' || kind === 'hello-refused') continue;
+        try {
+          this.handler(this.self, checked.message);
+        } catch (err) {
+          this.log.warn(`wire handler threw on a frame from ${target}; dropping it`, err as Error);
+        }
+      }
+    });
   }
 
   /**
