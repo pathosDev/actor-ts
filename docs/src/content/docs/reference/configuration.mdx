@@ -2640,6 +2640,7 @@ be enumerated in `reference.conf`.
 | `projection.max-retry-backoff` | `60s` | Ceiling on that doubling delay.  Must be at least `retry-backoff` — a projection whose merged settings say otherwise refuses to start. |
 | `projection.poll-interval` | `1s` | How often a projection asks the journal for new events. |
 | `projection.group-after-envelopes` | `20` | Most events per `handleGroup` call ([grouped handlers](/persistence/projections/#grouped-handlers)).  Grouped projections only — a `handle` projection is delivered one event per call and ignores it. |
+| `projection.lookback-window` | `30s` | How far behind its newest handled event a by-tag projection re-reads, so an event committed after the projection passed its stamp is still handled — once ([late commits](/persistence/projections/#late-commits-and-the-lookback-window)).  By-tag projections only; `0` reads forward only. |
 
 These are the **process-wide** defaults for every projection.
 `ProjectionOptions` on a single projection outranks them, and they

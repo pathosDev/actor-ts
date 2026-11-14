@@ -16,6 +16,7 @@ import {
   FaultInjectingJournalOptions,
 } from '../../../../../src/testkit/index.js';
 import { assert, assertEqual, expectThrows } from './Assert.js';
+import { lateCommitContractScenarios } from './LateCommit.js';
 import { closeQuietly, type ContractScenario, type JournalHarness } from './Types.js';
 
 /**
@@ -626,5 +627,8 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         await closeQuietly(journal);
       },
     },
+    // The by-tag read side under a late commit (#957): a slow writer's event
+    // stamped behind a consumer's position still has to reach it, once.
+    ...lateCommitContractScenarios(),
   ];
 }

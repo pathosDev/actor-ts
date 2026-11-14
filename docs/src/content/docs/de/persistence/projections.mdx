@@ -137,9 +137,11 @@ Mal läuft, und bleib dabei.
 
 Wenn der Handler läuft, aber der Cursor nicht persistiert wird,
 **verarbeitet die Projektion dasselbe Event erneut** beim
-Neustart.  Das ist **At-least-once Delivery** — das Framework
-garantiert, dass kein Event verpasst wird, aber Duplikate sind
-möglich.
+Neustart.  Das ist **At-least-once Delivery**: Duplikate sind
+möglich, und ein Event wird nicht verpasst, solange sein Write
+innerhalb des [Lookback-Fensters](#späte-commits-und-das-lookback-fenster)
+nach dem Moment committet, in dem es den Zeitstempel bekam.  Ein
+By-Tag-Event, das später committet, wird verpasst.
 
 Mit [`handleGroup`](#gruppierte-handler) ist die Gruppe die Einheit
 der Wiederholung.  Der Cursor wird einmal pro Gruppe persistiert, auf
@@ -159,6 +161,73 @@ Handler müssen **idempotent** sein:
 Wenn du den Handler nicht idempotent machen kannst, muss die
 Projektion an einem 2-Phase-Commit mit dem Offset-Save teilnehmen —
 viel komplexer, nicht out-of-the-box bereitgestellt.
+
+## Späte Commits und das Lookback-Fenster
+
+Ein By-Tag-Cursor ist ein `Offset`, geordnet nach dem `timestamp` des
+Events, und jedes Journal stempelt ein Event mit `Date.now()`,
+**bevor** sein Write committet.  Die Reihenfolge, in der Events ihren
+Zeitstempel bekommen, ist also nicht die Reihenfolge, in der sie
+sichtbar werden.  Writer A stempelt ein Event um 10:00:00.000, und seine
+Transaktion wartet auf einen Lock; Writer B stempelt eines um
+10:00:00.005 und committet sofort.  Die Projektion verarbeitet B und
+schiebt ihren Cursor über 10:00:00.005 hinaus.  Dann committet A — mit
+dem früheren Zeitstempel.
+
+Eine Projektion, die von ihrem Cursor aus nur vorwärts liest, sähe A nie.
+Deshalb beginnt jeder Poll einer By-Tag-Projektion
+**`lookbackWindowMs` hinter ihrem neuesten verarbeiteten Event** und
+verwirft, was sie schon verarbeitet hat, mit `(persistenceId,
+sequenceNr)` als Schlüssel.  A wird verarbeitet, sobald es sichtbar
+wird, und nichts wird doppelt verarbeitet.  Das funktioniert auf jedem
+Backend gleich.  Kein Backend muss sich ändern, denn jedes beantwortet
+eine Query schon ab einem früheren Offset.
+
+```ts
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-balance-view')
+  .withTag('account')
+  .withLookbackWindowMs(60_000);
+```
+
+- **Default: 30 s**, oder `actor-ts.projection.lookback-window`.  Das
+  ist die längste Frist, die ein mitgeliefertes Journal seinem eigenen
+  Write setzt: die 30 s des D1-Transports, gegenüber den 15 s
+  Request-Timeout von SQL Server, den 2 s Coordinator-Write-Timeout von
+  Cassandra und den 1 s Busy-Timeout von SQLite.  Ein Write, der länger
+  als seine Frist braucht, schlägt fehl, statt zu committen.  Postgres
+  und MariaDB haben standardmäßig keine Statement-Frist.  Wenn du ihre
+  Lock-Wartezeiten länger laufen lässt, begrenze Appends mit dem
+  `call-timeout` des Journal-Breakers oder vergrößere das Fenster
+  entsprechend.  Writer auf verschiedenen Nodes addieren außerdem ihren
+  Uhrenversatz zur Lücke.
+- **Ein Event, das mehr als das Fenster nach seinem Zeitstempel
+  committet, wird verpasst.**  Das Fenster macht aus einem späten Commit
+  statt stillem Verlust einen begrenzten Fall.  Es ist keine
+  commit-geordnete Sequenz: Cassandra, DynamoDB und D1 können keine
+  vergeben.
+- **Der Preis ist ein erneutes Lesen.**  Jeder Poll holt die Events des
+  Fensters noch einmal.  Beim Default-Poll von einer Sekunde wird jedes
+  Event etwa dreißigmal gelesen.  Ein stark beschriebenes Tag auf einem
+  Backend mit knappen Write-Fristen verträgt ein kürzeres Fenster.  `0`
+  liest nur vorwärts — das Verhalten, bevor es das Fenster gab.
+- **Die Deduplizierung wird mit dem Cursor gespeichert.**  Jeder Commit
+  legt neben dem Offset die neueste verarbeitete `sequenceNr` jeder
+  persistenceId ab, die ein Event im Fenster hat.  Ein Neustart spielt
+  das Fenster daher weder erneut ab, noch verpasst er ein Event, das
+  spät committet hat, während die Projektion nicht lief.  Der Zustand
+  ist begrenzt: ein Eintrag pro persistenceId, die innerhalb des
+  Fensters auf das Tag geschrieben hat.  Ein Cursor, der gespeichert
+  wurde, bevor es das Fenster gab, setzt fort, ohne etwas hinter sich
+  erneut abzuspielen.
+
+Ein Live-Stream über `eventsByTag` liest durch dasselbe Fenster.  Er
+nimmt dessen Größe aus `LiveQueryOptions.lookbackWindowMs` (Default
+30 s), weil die Query-Schicht keine Konfiguration lesen kann.  Der
+Zustand des Streams wird nicht persistiert: Setzt du einen Stream ab
+einem gespeicherten Offset fort, wird nichts ausgeliefert, was vor
+diesem Offset gestempelt wurde.  Wenn ein später Commit über einen
+Neustart hinweg erfasst werden muss, nimm eine Projektion.
 
 ## Wenn der Handler wirft
 
@@ -203,8 +272,9 @@ es aufgibt.
 
 Fehlerbehandlung ist meist eine *betriebliche* Entscheidung — derselbe
 Code will in Produktion `retry-and-fail` und in der Entwicklungsschleife
-`skip` — deshalb haben die vier Felder, die Poll-Kadenz und die
-Gruppengröße auch prozessweite Defaults unter `actor-ts.projection`:
+`skip` — deshalb haben die vier Felder, die Poll-Kadenz, die
+Gruppengröße und das Lookback-Fenster auch prozessweite Defaults unter
+`actor-ts.projection`:
 
 ```hocon
 actor-ts.projection {
@@ -214,6 +284,7 @@ actor-ts.projection {
   max-retry-backoff     = 60s
   poll-interval         = 1s
   group-after-envelopes = 50   # handleGroup projections only
+  lookback-window       = 60s  # byTag projections only
 }
 ```
 

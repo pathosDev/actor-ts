@@ -1,7 +1,8 @@
 import { type Option } from '../../util/Option.js';
 import { MAX_PERSISTENCE_ID_LENGTH } from '../Constants.js';
 import type { DurableStateStore } from '../DurableStateStore.js';
-import { offsetStart, type Offset } from '../query/PersistenceQuery.js';
+import { offsetStart } from '../query/PersistenceQuery.js';
+import type { TagCursor } from '../query/TagLookbackWindow.js';
 
 /**
  * Per-projection persistent cursor.  The {@link ProjectionActor}
@@ -13,16 +14,24 @@ import { offsetStart, type Offset } from '../query/PersistenceQuery.js';
  *
  * Two flavours of cursor are stored: a simple integer
  * (sequence-based, used by `eventsByPersistenceId`) and the composite
- * {@link Offset} (timestamp-based, used by `eventsByTag`).  The store
+ * {@link TagCursor} (timestamp-based, used by `eventsByTag`).  The store
  * persists both as plain JSON so the underlying backend doesn't need
  * to know about the difference.
+ *
+ * **Store the by-tag cursor whole** (#957).  A `TagCursor` is an
+ * `Offset` plus the lookback window's deduplication state — which events
+ * behind the offset were already handled.  A store that keeps only the three
+ * offset fields still works, and loses only that state: on restart the
+ * projection treats everything at or behind the offset as handled, exactly
+ * as it did before the window existed, so an event stamped behind the saved
+ * offset that is not yet visible when the projection restarts is missed.
  */
 export interface OffsetStore {
   loadSequence(projectionName: string, persistenceId: string): Promise<number>;
   saveSequence(projectionName: string, persistenceId: string, seqNr: number): Promise<void>;
 
-  loadOffset(projectionName: string, tag: string): Promise<Offset>;
-  saveOffset(projectionName: string, tag: string, offset: Offset): Promise<void>;
+  loadOffset(projectionName: string, tag: string): Promise<TagCursor>;
+  saveOffset(projectionName: string, tag: string, offset: TagCursor): Promise<void>;
 
   /** Forget every cursor for `projectionName`.  Used by tests + reset tooling. */
   clear(projectionName: string): Promise<void>;
@@ -38,7 +47,7 @@ export interface OffsetStore {
  */
 export class InMemoryOffsetStore implements OffsetStore {
   private readonly seq = new Map<string, Map<string, number>>();
-  private readonly off = new Map<string, Map<string, Offset>>();
+  private readonly off = new Map<string, Map<string, TagCursor>>();
 
   async loadSequence(projection: string, persistenceId: string): Promise<number> {
     return this.seq.get(projection)?.get(persistenceId) ?? 0;
@@ -49,10 +58,10 @@ export class InMemoryOffsetStore implements OffsetStore {
     inner.set(persistenceId, seqNr);
   }
 
-  async loadOffset(projection: string, tag: string): Promise<Offset> {
+  async loadOffset(projection: string, tag: string): Promise<TagCursor> {
     return this.off.get(projection)?.get(tag) ?? offsetStart;
   }
-  async saveOffset(projection: string, tag: string, offset: Offset): Promise<void> {
+  async saveOffset(projection: string, tag: string, offset: TagCursor): Promise<void> {
     let inner = this.off.get(projection);
     if (!inner) { inner = new Map(); this.off.set(projection, inner); }
     inner.set(tag, offset);
@@ -174,11 +183,11 @@ export class DurableStateOffsetStore implements OffsetStore {
     await this.save(this.seqKey(projection, persistenceId), { value: seqNr });
   }
 
-  async loadOffset(projection: string, tag: string): Promise<Offset> {
-    const rec = await this.load<Offset>(this.offKey(projection, tag));
+  async loadOffset(projection: string, tag: string): Promise<TagCursor> {
+    const rec = await this.load<TagCursor>(this.offKey(projection, tag));
     return rec ?? offsetStart;
   }
-  async saveOffset(projection: string, tag: string, offset: Offset): Promise<void> {
+  async saveOffset(projection: string, tag: string, offset: TagCursor): Promise<void> {
     await this.save(this.offKey(projection, tag), offset);
   }
 

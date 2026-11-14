@@ -2822,6 +2822,7 @@ lassen sich deshalb in `reference.conf` nicht aufzählen.
 | `projection.max-retry-backoff` | `60s` | Obergrenze dieser Verdopplung.  Muss mindestens `retry-backoff` sein — eine Projektion, deren gemergte Settings das verletzen, startet nicht. |
 | `projection.poll-interval` | `1s` | Wie oft eine Projektion das Journal nach neuen Events fragt. |
 | `projection.group-after-envelopes` | `20` | Höchstzahl Events pro `handleGroup`-Aufruf ([gruppierte Handler](/de/persistence/projections/#gruppierte-handler)).  Nur für gruppierte Projektionen — eine `handle`-Projektion bekommt ein Event pro Aufruf und ignoriert den Wert. |
+| `projection.lookback-window` | `30s` | Wie weit hinter ihrem neuesten verarbeiteten Event eine By-Tag-Projektion erneut liest, damit ein Event, das erst committet wurde, nachdem die Projektion seinen Zeitstempel überholt hat, trotzdem verarbeitet wird — genau einmal ([späte Commits](/de/persistence/projections/#späte-commits-und-das-lookback-fenster)).  Nur für By-Tag-Projektionen; `0` liest nur vorwärts. |
 
 Das sind die **prozessweiten** Defaults für jede Projektion.
 `ProjectionOptions` einer einzelnen Projektion sticht sie, und sie

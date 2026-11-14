@@ -82,6 +82,36 @@ export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 export const DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS = 1_000;
 
 /**
+ * How far behind its newest delivered stamp a by-tag consumer re-reads, in
+ * milliseconds — the built-in value behind `LiveQueryOptions.lookbackWindowMs`
+ * and a by-tag projection's `lookbackWindowMs`, published as
+ * `actor-ts.projection.lookback-window` (#957).
+ *
+ * The window has to cover the longest gap between an append's `Date.now()` and
+ * the moment its write becomes visible, plus the clock skew between writer
+ * nodes — an event whose commit lags its stamp by more than this is still
+ * missed.  Thirty seconds is the longest per-request deadline any shipped
+ * journal applies to its own write by default: the D1 transport's
+ * `DEFAULT_D1_TIMEOUT_MS` (30 s), against SQL Server's 15 s `requestTimeout`,
+ * a 2 s Cassandra coordinator write timeout and SQLite's 1 s busy timeout.  A
+ * write that takes longer than its request deadline fails rather than commits,
+ * so a commit later than that is the case the backend itself treats as broken.
+ * Postgres and MariaDB apply no statement deadline by default — a deployment
+ * that lets their lock waits run longer bounds them with the journal breaker's
+ * `call-timeout` or raises this window to match.
+ *
+ * The price is a re-read: every poll fetches the window's worth of the tag
+ * again and drops what it delivered, so at the default one-second poll a tag
+ * is read about thirty times.  A busy tag on a backend with tight write
+ * deadlines can afford a shorter window; `0` restores forward-only reads.
+ *
+ * Its own constant rather than `DEFAULT_D1_TIMEOUT_MS` reused: the two mean
+ * different things and must be free to move apart.  Lives here because it
+ * backs two options types, as the poll interval above does.
+ */
+export const DEFAULT_TAG_LOOKBACK_WINDOW_MS = 30_000;
+
+/**
  * Table (SQL) holding the one-row database identity (#1358).  Deliberately a
  * fixed name shared by the SQLite stores and the whole relational family, and
  * deliberately NOT stem-prefixed like the event tables: the identity belongs

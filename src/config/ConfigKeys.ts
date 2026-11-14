@@ -1555,6 +1555,8 @@ export const ConfigKeys = {
    *
    * `groupAfterEnvelopes` reaches `handleGroup` projections only; a `handle`
    * projection has no group to size and ignores it (#1448).
+   * `lookbackWindow` reaches `byTag` projections only; a by-persistence-id
+   * cursor is a sequence number, which a late commit cannot pass (#957).
    */
   projection: {
     recoveryStrategy: 'actor-ts.projection.recovery-strategy',
@@ -1563,6 +1565,7 @@ export const ConfigKeys = {
     maxRetryBackoff: 'actor-ts.projection.max-retry-backoff',
     pollInterval: 'actor-ts.projection.poll-interval',
     groupAfterEnvelopes: 'actor-ts.projection.group-after-envelopes',
+    lookbackWindow: 'actor-ts.projection.lookback-window',
   },
 
   /**

@@ -87,7 +87,9 @@ A short tour of what's in the box:
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections
   (event by event or a group per call with `withHandleGroup`, and a
   per-projection handler-failure strategy: retry with backoff, skip to dead
-  letters, or stop), persistence-query, replicated event sourcing.  Journals for in-memory,
+  letters, or stop; by-tag reads re-read a lookback window and deduplicate,
+  so an event committed late is still delivered once), persistence-query,
+  replicated event sourcing.  Journals for in-memory,
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
   Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,

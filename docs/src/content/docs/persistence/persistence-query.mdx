@@ -250,6 +250,17 @@ in their original sequence.
 offset returned alongside each event; resume from the persisted
 offset on restart.
 
+**Offset order is not commit order.**  The `timestamp` is taken
+*before* the write commits, so a slow writer's event can become
+visible after a newer one.  `eventsByTag` therefore starts each read
+`lookbackWindowMs` behind the newest event it delivered and drops
+what it already delivered, keyed on `(persistenceId, sequenceNr)`.
+Such a late event is still delivered, once, and arrives behind newer
+ones.  `currentEventsByTag` is a one-shot read with no memory, so a
+consumer that polls it from its own position misses late events — use
+`eventsByTag`, a [projection](/persistence/projections/#late-commits-and-the-lookback-window),
+or `TagLookbackWindow`, which both of them read through.
+
 ## Tag filters
 
 ```ts
@@ -327,6 +338,7 @@ Live streams poll the journal.  Configurable via `LiveQueryOptions`:
 | Option | Default | What |
 | --- | --- | --- |
 | `pollIntervalMs` | 1000 | How often to check for new events. |
+| `lookbackWindowMs` | 30000 | `eventsByTag` only: how far behind the newest delivered event each read starts, so an event that committed late is still delivered.  `0` reads forward only. |
 
 For sub-poll-interval delivery, see
 [Push-based query](/persistence/push-based-query/).
