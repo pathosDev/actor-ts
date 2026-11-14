@@ -25,6 +25,11 @@ import type { Member } from '../Member.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
+import {
+  sanitizeNodeAddressForLog,
+  sanitizeWireKindForLog,
+  sanitizeWireTextForLog,
+} from '../WireValidation.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import type {
   CoordinatorStateData,
@@ -638,7 +643,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!isShardingMessage(envelope.body)) {
       this.log.debug(
         `[sharding] dropping a non-sharding envelope addressed to the '${this.options.typeName}' `
-        + `coordinator from ${from}`,
+        + `coordinator from ${sanitizeNodeAddressForLog(from)}`,
       );
       return;
     }
@@ -704,9 +709,15 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * own address, which is not a claim anyone made over the wire.
    */
   private maySpeakFor(message: ShardingMessage, peer: NodeAddress | null): boolean {
+    // Every peer-supplied field below goes through the transport's escaping
+    // helpers (#1220): `isShardingMessage` admits any kind with the `sharding.`
+    // prefix, so the kind is the sender's text, and a CR or LF in it forged
+    // whole records in `ConsoleLogger`.  Escaped at each call site rather than
+    // at the sink, the decision #1178 and #936 already took for the transport:
+    // a sink cannot tell a line break the framework meant from one a peer sent.
     if (peer === null) {
       this.log.warn(
-        `[sharding] refusing an unattributed '${message.kind}' for type `
+        `[sharding] refusing an unattributed '${sanitizeWireKindForLog(message.kind)}' for type `
         + `"${this.options.typeName}" — a coordinator directive has to arrive on an `
         + `authenticated connection`,
       );
@@ -719,7 +730,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // `hello`.  The peer is the transport's own value, which is enough to find
     // the sender.
     this.log.warn(
-      `[sharding] refusing '${message.kind}' for type "${this.options.typeName}" from ${peer} — `
+      `[sharding] refusing '${sanitizeWireKindForLog(message.kind)}' for type "${this.options.typeName}" `
+      + `from ${sanitizeNodeAddressForLog(peer)} — `
       + `it names a different node, and only that node may speak for its region`,
     );
     return false;
@@ -1211,8 +1223,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
     this.refusedRegions.add(key);
     this.log.error(
-      `refusing to register region ${message.region} on ${message.node.host}:${message.node.port} `
-      + `for type "${this.options.typeName}": it hashes with numShards=${message.numShards} but this `
+      `refusing to register region ${sanitizeWireTextForLog(message.region)} `
+      + `on ${sanitizeNodeAddressForLog(NodeAddress.fromJSON(message.node))} `
+      + `for type "${this.options.typeName}": it hashes with numShards=${sanitizeWireTextForLog(message.numShards)} but this `
       + `coordinator governs the type with numShards=${this.options.numShards}. Routing would split `
       + `and the same entity id would run on both nodes at once.`,
     );
@@ -1599,7 +1612,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // `acceptedHostedShards` states, and for the same reason: the claim is
     // caller-sized, and a stale region re-registers on every membership event.
     this.log.warn(
-      `[sharding] region ${message.region} on ${message.node.host}:${message.node.port} claimed `
+      `[sharding] region ${sanitizeWireTextForLog(message.region)} `
+      + `on ${sanitizeNodeAddressForLog(NodeAddress.fromJSON(message.node))} claimed `
       + `${conflicting.size} shard(s) of type "${this.options.typeName}" that ${Array.from(owners).sort().join(', ')} `
       + `already own${owners.size === 1 ? 's' : ''}; ownership stays put and ${released} hand-off(s) were sent `
       + `to give the stale copies up`,
@@ -1727,7 +1741,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // One line per registration, never one per id: the claim is caller-sized,
       // so a per-id warning is itself the amplification.
       this.log.warn(
-        `[sharding] region ${message.region} claimed ${claimed.length} hosted shard(s) for type `
+        `[sharding] region ${sanitizeWireTextForLog(message.region)} claimed ${claimed.length} `
+        + `hosted shard(s) for type `
         + `"${this.options.typeName}"; keeping ${accepted.size} after scanning ${scanned} — the rest `
         + `were duplicates or outside 0..${this.options.numShards - 1}`,
       );
@@ -2051,7 +2066,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .then(() => store.append(this.options.typeName, event))
       .catch((err) => {
         this.system.log.warn(
-          `[sharding] failed to persist remembered-entity event ${event.kind}/${event.shardId}/${event.entityId}`,
+          `[sharding] failed to persist remembered-entity event `
+          + `${event.kind}/${event.shardId}/${sanitizeWireTextForLog(event.entityId)}`,
           err,
         );
       });

@@ -54,6 +54,11 @@ import {
 import { metricsOf } from '../../metrics/MetricsExtension.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef, remoteActorPath } from '../RemoteActorRef.js';
+import {
+  sanitizeNodeAddressForLog,
+  sanitizeWireKindForLog,
+  sanitizeWireTextForLog,
+} from '../WireValidation.js';
 import { hashShardId } from './ShardAllocator.js';
 import { Passivate } from './Passivate.js';
 import {
@@ -1459,9 +1464,11 @@ export class ShardRegion<TMessage = unknown>
   private fromCoordinator(message: ShardingMessage, peer: NodeAddress | null): boolean {
     if (peer !== null && this.coordinatorNode !== null && peer.equals(this.coordinatorNode)) return true;
     this.log.warn(
-      `[sharding] refusing '${message.kind}' for '${this.config.typeName}' from `
-      + `${peer ?? 'an unauthenticated sender'} — only the coordinator's node `
-      + `(${this.coordinatorNode ?? 'not yet known'}) may issue it`,
+      // Escaped, though every caller today dispatches from a literal arm: the
+      // helper is what keeps that true if one ever stops doing so (#1220).
+      `[sharding] refusing '${sanitizeWireKindForLog(message.kind)}' for '${this.config.typeName}' from `
+      + `${peer === null ? 'an unauthenticated sender' : sanitizeNodeAddressForLog(peer)} — only the `
+      + `coordinator's node (${this.coordinatorNode ?? 'not yet known'}) may issue it`,
     );
     return false;
   }
@@ -1648,7 +1655,8 @@ export class ShardRegion<TMessage = unknown>
     this.log.error(
       `[sharding] the coordinator refused to register region '${this.config.typeName}': `
       + `numShards must match across the cluster, but this node is configured with `
-      + `${message.regionNumShards} and the coordinator governs the type with ${message.numShards}. `
+      + `${sanitizeWireTextForLog(message.regionNumShards)} and the coordinator governs the type with `
+      + `${sanitizeWireTextForLog(message.numShards)}. `
       + `No shard will be allocated here and messages for this type will keep buffering until the `
       + `configuration agrees. Set the same numShards on every node that starts or proxies this type `
       + `(explicitly, or via ${ConfigKeys.sharding.numberOfShards}).`,
@@ -1757,7 +1765,7 @@ export class ShardRegion<TMessage = unknown>
     // `readShardingOptionsFromConfig` does.
     this.log.warn(
       `[sharding] the coordinator evicted this region of '${this.config.typeName}' after hearing `
-      + `nothing from it for ${message.silentForMs} ms and re-homed its shards; giving up the `
+      + `nothing from it for ${sanitizeWireTextForLog(message.silentForMs)} ms and re-homed its shards; giving up the `
       + `${released} shard(s) still hosted here and registering again. A node that is plainly `
       + `healthy seeing this is beating every ${this.config.regionHeartbeatIntervalMs} ms into a `
       + `stale-after that is too tight for it, or its beats are being lost on the way.`,

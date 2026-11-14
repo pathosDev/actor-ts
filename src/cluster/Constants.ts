@@ -638,6 +638,17 @@ export const MAX_LOGGED_WIRE_KIND_LENGTH = 64;
 export const MAX_LOGGED_ADDRESS_PART_LENGTH = 253;
 
 /**
+ * How many characters of a free-form, peer-supplied string — a region path, an
+ * entity id — reach a log line (#1220).
+ *
+ * Wider than {@link MAX_LOGGED_WIRE_KIND_LENGTH} because what it bounds is
+ * longer by nature: a region path carries the system name, the guardian and the
+ * type name, and an entity id is whatever the application chose.  256 keeps a
+ * real path whole and still keeps one frame from writing an unbounded line.
+ */
+export const MAX_LOGGED_WIRE_TEXT_LENGTH = 256;
+
+/**
  * How often each `EnvelopeTrust` refusal reason may reach the log, whatever
  * the refusal rate (#877).
  *
