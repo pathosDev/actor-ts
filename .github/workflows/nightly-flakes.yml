@@ -240,6 +240,37 @@ jobs:
             echo "suites in the job above, which run them at factor 1."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The deep half of the scheduled-delivery property (#1370).  Per commit,
+  # `tests/unit/delivery/DeliveryOrderingProperties.test.ts` explores 40
+  # message orderings, bounded to stay inside bun's 5 s cap; this explores
+  # thousands, with wider workloads.  The file is named `.nightly.ts` so
+  # `bun test` never collects it — a name, not an environment variable, keeps
+  # it out of the per-commit run (`NoEnvironmentGatedSkips.test.ts`).
+  #
+  # Repetition is not what this measures: the seed is pinned, so every night
+  # explores the same orderings and a red night replays exactly from the
+  # `path` it prints.  It is a regression guard over a wider space than the
+  # per-commit file can afford.
+  scheduled-orderings:
+    name: reliable delivery under scheduled orderings, deep
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Explore delivery orderings
+        run: bun test ./tests/nightly/DeliveryOrderingDeep.nightly.ts
+
   stress:
     name: whole suite, repeated
     runs-on: ubuntu-latest
