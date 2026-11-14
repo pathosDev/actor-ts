@@ -269,6 +269,25 @@ Buns 5-s-Limit.  Die tiefe Erkundung ist
 ihren Pfad startet.  Ihr Name hält `bun test` davon ab, sie einzusammeln —
 keine Umgebungsvariable, die `NoEnvironmentGatedSkips.test.ts` verbietet.
 
+### Eingaben, die niemand gewählt hat
+
+Jeder Decoder, der Bytes von außen liest, bekommt auch Bytes, die kein Encoder
+geschrieben hat (#1369): `CborDecoder`, der `FrameDecoder` der Cluster-Leitung,
+der eingehende WebSocket-Pfad, `parseHocon` und der JSON-Baum-Walker, dazu eine
+Differential-Property, die CBOR und den JSON-Baum gegeneinander hält.  Die
+Eingaben sind gleichförmiges Rauschen und fast gültige Bytes — eine echte
+Kodierung mit ersetzten Bytes, an jedem Offset abgeschnitten, ein Längenfeld,
+das bis 2^64 - 1 beansprucht, Verschachtelung über jede Obergrenze hinaus.  Das
+Gesetz ist überall dasselbe: ein Wert oder der eigene Fehler des Decoders,
+niemals eine andere Exception; was er baut, bleibt in seiner Allow-List; und es
+ist nicht größer als die Eingabe, die dafür bezahlt hat.  Das gemeinsame
+Vokabular liegt in `tests/util/DecoderFuzz.ts`.
+
+Die tiefe Variante ist `tests/nightly/DecoderFuzzDeep.nightly.ts`.  Sie
+importiert die Dateien pro Commit unverändert und hebt nur die Fallzahl von 120
+auf 10 000, sodass die beiden nicht auseinanderlaufen können; der Seed bleibt
+der des Preloads.
+
 ## Der Katalog
 
 Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.

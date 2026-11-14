@@ -246,6 +246,91 @@ Das alles ist Vorbeugung. Wenn ein Test *bereits* zeitweise umfällt, hat
 Repeat-Run-Harness, das einen Flake von einem kaputten Test unterscheidet, und
 den Katalog der Ursachen, die diese Suite tatsächlich hatte.
 
+## Unterscheidet der Test überhaupt?
+
+Line-Coverage sagt, dass eine Zeile *gelaufen* ist. Sie sagt nicht, ob eine
+Assertion bemerken würde, dass die Zeile falsch ist: Ein Test, der eine
+Funktion aufruft und nichts prüft, hebt die Coverage-Zahl und bindet nichts.
+Herausfinden lässt sich das nur, indem man die Zeile absichtlich kaputt macht
+und schaut, ob ein Test rot wird. Das ist Mutation Testing, und das Repository
+hat einen Runner dafür:
+
+```sh
+# eine Datei oder mehrere
+bun run test:mutation -- src/Supervision.ts
+
+# ein Glob
+bun run test:mutation -- --files='src/mailbox/*.ts'
+
+# alles, was dein Branch geändert hat, committet oder nicht
+bun run test:mutation -- --since=origin/develop
+
+# die Mutanten auflisten, ohne etwas auszuführen
+bun run test:mutation -- --dry-run src/util/OptionsMerge.ts
+```
+
+Für jede Datei wendet `scripts/mutation-run.mjs` jeweils eine kleine Änderung
+an, führt die Tests aus, die die Datei abdecken, und stellt das Original
+wieder her:
+
+| Operator | Änderung |
+|---|---|
+| `relational-boundary` | `<` ↔ `<=`, `>` ↔ `>=` |
+| `equality` | `===` ↔ `!==`, `==` ↔ `!=` |
+| `logical` | `&&` ↔ `\|\|` |
+| `boolean-literal` | `true` ↔ `false` |
+| `removed-call` | ein einzeiliges Aufruf-Statement wird zu `;` |
+| `removed-return` | ein einzeiliges `return …;` wird zu `;` |
+
+Kommentare, Strings und Template-Literale werden nie mutiert, eine Log-Zeile
+oder eine Fehlermeldung kann also keinen Befund erzeugen. Ein Mutant, der sich
+nicht parsen lässt oder zu demselben JavaScript kompiliert wie das Original
+(ein `true` innerhalb eines `type`), wird verworfen, bevor er läuft.
+`scripts/mutation-config.json` enthält die übrigen Filter, etwa entfernte
+Log-Aufrufe, jeweils mit Begründung.
+
+**Welche Tests laufen:** die Tests, die die Datei direkt importieren, und der
+Test mit dem Namen der Datei (`Supervision.ts` → `Supervision.test.ts`). Der
+transitive Importgraph wird nicht benutzt, weil fast jeder Test `ActorSystem`
+erreicht. Eine Datei, die nur über ein Barrel erreicht wird, bekommt keinen
+Test zugeordnet. Die Tests lassen sich mit `--tests=a.test.ts,b.test.ts` selbst
+angeben. Multi-Node-, Broker-, Smoke- und Beispiel-Suiten werden nie gewählt.
+
+**Den Bericht lesen.** Der Lauf gibt pro Datei eine Tabelle aus und schreibt
+`.mutation/report.md` und `.mutation/report.json`. Jeder Mutant landet in einem
+dieser Zustände:
+
+- **killed** — ein Test wurde rot. Das ist das gewünschte Ergebnis.
+- **survived** — alle Tests blieben grün. Das ist der Befund: Entweder fehlt
+  eine Assertion, oder der Mutant ist *äquivalent*, die Änderung ist also
+  nicht beobachtbar (etwa eine Grenze, die zwei Codepfade gleich behandeln).
+  Beides ist es wert, festgehalten zu werden.
+- **timed-out** — der Mutant hat die Tests hängen lassen, und der Watchdog
+  hat sie beendet. Das zählt als erkannt, aber zufällig, deshalb steht er
+  neben den Überlebenden.
+- **no-coverage** — der Baseline-Lauf hat die Zeile nie ausgeführt, oder der
+  Datei ist kein Test zugeordnet. Er läuft nicht und zählt nicht zur Quote.
+- **not-run** — `--budget-minutes` war aufgebraucht, bevor der Mutant dran war.
+
+Die Quote ist (killed + timed-out) ÷ (killed + timed-out + survived). Ein
+Überlebender ist nur so aussagekräftig wie die Zuordnung dahinter: Er heißt,
+dass *die zugeordneten Tests* nichts bemerkt haben. Bevor du ihn meldest, prüfe,
+ob eine Suite außerhalb der Zuordnung die Zeile abdeckt.
+
+**Sicherheit.** Der Runner mutiert den Working Tree direkt, einen Mutanten
+nach dem anderen. Bevor er eine Datei anfasst, sichert er die Originalbytes in
+`.mutation/journal/`. Er stellt die Datei nach jedem Mutanten wieder her, bei
+Strg-C und beim Beenden. Wurde ein Lauf hart abgebrochen, stellt der nächste
+Lauf zuerst aus dem Journal wieder her. `--recover` tut nur das. Committe deine
+Arbeit vor einem langen Lauf trotzdem.
+
+Ein Quoten-Gate gibt es noch nicht. Der nächtliche Workflow `mutation` führt
+das Set `nightly` aus `scripts/mutation-config.json` aus und lädt den Bericht
+als Artefakt hoch. `scripts/mutation-baseline.json` enthält die Zahl der
+Überlebenden pro Datei aus dem ersten gemessenen Lauf, und der Bericht zeigt
+für jede Datei die Baseline neben der heutigen Zahl, damit ein späterer Lauf
+erkennen kann, ob die Zahl gestiegen oder gesunken ist.
+
 ## Was nicht testen
 
 import { Aside } from '@astrojs/starlight/components';

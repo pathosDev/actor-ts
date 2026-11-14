@@ -1749,8 +1749,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * ever reached the actor that failed.  Their mailboxes then filled and
    * nothing was ever processed again — no error, no dead letters, just a
    * silently dead branch of the tree (#635).
+   *
+   * No instance means the constructor threw, and there is nothing to resume —
+   * the same reasoning as {@link onRecreate}'s guard (#914).  Resuming here
+   * lifted the suspension off a cell that would stay `creating` for good: user
+   * messages are dispatched only to a running cell, so its queue filled
+   * unread, its parent kept it, and its watchers never heard of it (#1384).
    */
-  private onResume(): void {
+  private onResume(): void | Promise<void> {
+    if (!this.actor) return this.onTerminate();
     this.mailbox.resume();
     if (this.state === 'suspended') this.state = 'running';
     for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });

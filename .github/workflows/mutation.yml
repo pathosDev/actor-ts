@@ -1,0 +1,101 @@
+name: mutation
+
+# Does an assertion discriminate?  Line coverage cannot say (#1368): a test that
+# calls a function and asserts nothing raises the coverage gate's number and
+# constrains nothing, and the tracker has held a dozen issues that are exactly
+# that, each found by somebody breaking one line by hand.  This job does the
+# same experiment mechanically over a bounded file set —
+# `scripts/mutation-run.mjs` applies one small perturbation at a time
+# (`<` ↔ `<=`, `===` ↔ `!==`, `&&` ↔ `||`, a flipped boolean, a removed call or
+# return) and runs the tests that import the file.  A mutant the tests do not
+# notice is a *survivor*, and the survivor list is the finding.
+#
+# **A measurement, not a gate.**  Nothing here fails on a score: the first job
+# is to have a baseline at all, and the survivors in it still need triage —
+# some are real gaps, some are equivalent mutants (a boundary nothing can
+# observe).  The job goes red only when the runner itself fails.  The report
+# (`report.md`, `report.json`) is the artifact and the step summary.
+#
+# **Scheduled, never per commit.**  One mutant costs one run of its file's
+# tests, and the runner is sequential on purpose — it mutates the checkout in
+# place, so two mutants at once would each be read by the other's tests.  The
+# set is named in `scripts/mutation-config.json` (`sets.nightly`), and
+# `--budget-minutes` stops starting new mutants well inside `timeout-minutes`,
+# so a slow night still uploads a report: the mutants it did not reach are
+# listed as `not-run` rather than lost with a killed job.
+#
+# Docs: docs/src/content/docs/testing/overview.mdx ("Does the test
+# discriminate?") and its DE mirror.
+
+on:
+  # 05:30 UTC — after nightly-flakes.yml (04:00), so the two long nightlies do
+  # not start in the same minute.  Cron fires only on the default branch.
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+    inputs:
+      files:
+        description: 'Glob of src/ files to mutate instead of the nightly set (e.g. src/mailbox/*.ts)'
+        required: false
+        default: ''
+      since:
+        description: 'Mutate what changed since this ref instead (e.g. origin/main)'
+        required: false
+        default: ''
+
+# Read-only floor, stated rather than inherited (#621).  The results leave as an
+# artifact and a step summary; nothing is written back.
+permissions:
+  contents: read
+
+jobs:
+  mutate:
+    name: mutation run, bounded set
+    runs-on: ubuntu-latest
+    # The runner's own budget is 100 minutes (below); the rest is checkout,
+    # install and the last mutant in flight when the budget runs out.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `--since` needs the history to find a merge base; nothing here
+          # talks to the remote afterwards (#622).
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Mutate
+        env:
+          # Through `env:`, never `${{ }}` inside the script — a workflow
+          # expression is pasted into the shell before it runs.
+          FILES: ${{ inputs.files }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          if [[ -n "$FILES" ]]; then
+            selection=(--files="$FILES")
+          elif [[ -n "$SINCE" ]]; then
+            selection=(--since="$SINCE")
+          else
+            selection=(--set=nightly)
+          fi
+          bun run test:mutation -- "${selection[@]}" --budget-minutes=100 --report-dir=.mutation
+
+      - name: Upload the report
+        # `.mutation` is a dot-directory: without `include-hidden-files` the
+        # upload finds nothing, and `if-no-files-found: error` is what makes
+        # that a red step instead of a warning (see nightly-flakes.yml).
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .mutation/
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error

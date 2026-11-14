@@ -86,3 +86,17 @@ export const SECRETS_CONF_ENVIRONMENT_VARIABLE = 'ACTOR_TS_SECRETS_CONF';
  * is an empty layer, so a deployment without secrets needs nothing.
  */
 export const DEFAULT_SECRETS_CONF_FILENAME = 'secrets.conf';
+
+/**
+ * How deep a HOCON document may nest before `parseHocon` refuses it: each key
+ * of a path expression, each object under a key and each list counts a level.
+ *
+ * The parser recurses once per level, and so does everything that walks the
+ * tree it returns — resolution, merging, `stripUndefined` — so without a bound
+ * a document of `[` repeated some tens of thousands of times, a few hundred
+ * kilobytes, ended in a `RangeError` from the engine's stack instead of a
+ * parse error naming the line, and a dotted path of 40 000 segments spent
+ * seconds building its object before it overflowed (#1369).  256 is the
+ * serializers' `MAX_NESTING_DEPTH`, and far past any real configuration.
+ */
+export const MAX_HOCON_NESTING_DEPTH = 256;

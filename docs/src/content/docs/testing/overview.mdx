@@ -234,6 +234,87 @@ All of that is prevention. When a test is *already* failing intermittently,
 harness that tells a flake from a broken test, and the catalog of causes this
 suite has actually had.
 
+## Does the test discriminate?
+
+Line coverage says a line *ran*. It cannot say whether any assertion would
+notice the line being wrong: a test that calls a function and checks nothing
+raises the coverage figure and constrains nothing. The way to find out is to
+break the line on purpose and see whether a test goes red. That is mutation
+testing, and the repository has a runner for it:
+
+```sh
+# one file, or several
+bun run test:mutation -- src/Supervision.ts
+
+# a glob
+bun run test:mutation -- --files='src/mailbox/*.ts'
+
+# everything your branch changed, committed or not
+bun run test:mutation -- --since=origin/develop
+
+# list the mutants without running anything
+bun run test:mutation -- --dry-run src/util/OptionsMerge.ts
+```
+
+For each file, `scripts/mutation-run.mjs` applies one small change at a time,
+runs the tests that cover the file, and puts the original back:
+
+| operator | change |
+|---|---|
+| `relational-boundary` | `<` ↔ `<=`, `>` ↔ `>=` |
+| `equality` | `===` ↔ `!==`, `==` ↔ `!=` |
+| `logical` | `&&` ↔ `\|\|` |
+| `boolean-literal` | `true` ↔ `false` |
+| `removed-call` | a one-line call statement becomes `;` |
+| `removed-return` | a one-line `return …;` becomes `;` |
+
+Comments, strings and template literals are never mutated, so a log line or
+an error message cannot produce a finding. A mutant that does not parse, or
+that compiles to the same JavaScript as the original (a `true` inside a
+`type`), is dropped before it runs. `scripts/mutation-config.json` holds the
+remaining filters, such as removed log calls, each with its reason.
+
+**Which tests run:** the tests that import the file directly, plus the test
+with the file's own name (`Supervision.ts` → `Supervision.test.ts`). The
+transitive import graph is not used, because nearly every test reaches
+`ActorSystem`. A file that is reached only through a barrel maps to no test.
+Name the tests yourself with `--tests=a.test.ts,b.test.ts`. Multi-node, broker,
+smoke and example suites are never selected.
+
+**Reading the report.** The run prints a table per file and writes
+`.mutation/report.md` and `.mutation/report.json`. Each mutant ends up in one
+of these states:
+
+- **killed** — a test went red. This is the outcome you want.
+- **survived** — every test stayed green. This is the finding: either an
+  assertion is missing, or the mutant is *equivalent*, meaning nothing can
+  observe the change (say, a boundary that two code paths treat the same
+  way). Both are worth writing down.
+- **timed-out** — the mutant made the tests hang, and the watchdog killed
+  them. It counts as detected, but by accident, so it is listed next to the
+  survivors.
+- **no-coverage** — the baseline run never executed the line, or no test
+  maps to the file. It is not run and not scored.
+- **not-run** — `--budget-minutes` ran out before the mutant's turn.
+
+The score is (killed + timed-out) ÷ (killed + timed-out + survived). A
+survivor is only as strong as the mapping behind it: it means *the mapped
+tests* did not notice. Before you file it, check whether a suite outside the
+mapping covers the line.
+
+**Safety.** The runner mutates the working tree in place, one mutant at a
+time. Before it touches a file, it saves the original bytes to
+`.mutation/journal/`. It restores the file after every mutant, on Ctrl-C and on
+exit. If a run was killed outright, the next run restores from the journal
+first. `--recover` does only that. Commit your work before a long run anyway.
+
+There is no score gate yet. The nightly `mutation` workflow runs the set named
+`nightly` in `scripts/mutation-config.json` and uploads the report as an
+artifact. `scripts/mutation-baseline.json` holds the survivor count per file
+from the first measured run, and the report prints each file's baseline
+beside today's figure, so a later run can tell whether the count went up or
+down.
+
 ## What not to test
 
 import { Aside } from '@astrojs/starlight/components';

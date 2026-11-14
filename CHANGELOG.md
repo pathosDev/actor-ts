@@ -107,6 +107,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   A difference between backends is either a contract failure or a declared
   deviation with its reason. The suite replaces ten per-backend test files.
 
+- **Mutation testing: `bun run test:mutation`** (#1368). The runner applies
+  one small mutation at a time to a `src/` file (relational boundary,
+  equality, logical operator, boolean literal, removed call or return),
+  runs the tests that import that file, and reports each mutant as
+  killed, survived, timed out or not covered, listing every survivor.
+  - Strings, comments and regex literals are never mutated. Mutants that do
+    not parse, or that compile to the same JavaScript as the original, are
+    dropped before they run.
+  - Files are selected by path, glob, `--since=<ref>` or a named set.
+  - The original bytes are journalled before each mutant, so a run killed
+    outright is undone by the next run or by `--recover`.
+  - A nightly `mutation` workflow reports against
+    `scripts/mutation-baseline.json`. The first measurement is 77.1 % over 83
+    mutants in three files. There is no gate yet. StrykerJS was evaluated and
+    crashes under Bun 1.4.2, so the runner is in-house.
+- **Generative byte-level properties for every decoder** (#1369): the CBOR
+  decoder, the cluster frame decoder, the WebSocket inbound path, the HOCON
+  parser and the JSON-tree decoder. Each must return a value or throw its own
+  error, build only allowed classes, and do work bounded by the size of its
+  input. A CBOR-vs-JSON differential holds the two codecs to one answer, and
+  a nightly job runs every property with 10 000 cases.
+- **Multi-node suites that run several fault episodes against one cluster**
+  (#1379). One suite runs partition and heal with a different split each
+  time, one runs rejoin churn that includes the seed and the leader, and one
+  keeps a sharded workload and a singleton running across both. After every
+  episode the suite asserts that no bookkeeping is left behind: one view on
+  every node, no stale reachability or parking, exactly one home per shard
+  and one singleton host.
+- **A seeded supervision stress test** (#1384). It injects failures into the
+  constructor, `preStart`, `preRestart`, `postRestart` and `postStop` under
+  every directive and scope, on virtual time, and checks that no suspended
+  actor processes a message, that every death is reported exactly once, and
+  that restart budgets hold per child name.
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -311,6 +345,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is logged. After a restart, a hub no longer runs `onClientDisconnected`
   for connections it never connected.
 
+- **An actor whose constructor throws is stopped when its supervisor answers
+  `Resume`** (#1384). Before, it stayed in `creating` for good: its messages
+  were never processed, its parent kept it, and its watchers never got
+  `Terminated`. `Restart` already stopped it (#914). The supervision stress
+  test found this.
+- **The HOCON parser refuses a document nested deeper than 256 levels**, with
+  a parse error naming the line (#1369). Each key of a path expression, each
+  object under a key and each list counts as a level. Before, deep nesting
+  ended in a `RangeError` from the engine's stack, and a long dotted path
+  took seconds before overflowing.
+- **The WebSocket frame-size count measures an unpaired surrogate as the 3
+  bytes it is sent as** (#1369). It counted 4 and skipped the next
+  character, so a run of them was undercounted by a third against
+  `max-frame-bytes` and the cap on the buffer held before a connection is
+  attached.
+- **Property tests generate inputs up to the `maxLength` they state**
+  (#1774). fast-check's default size had capped every length at ten.
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
@@ -435,6 +487,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that answers nothing within one interval is dropped. *Migration:* clients
   that follow the WebSocket spec answer pings on their own. Set
   `heartbeat-interval = 0` to keep the old behaviour.
+
+- **The cluster wire's frame decoder refuses input with its own
+  `FrameDecodeError`** instead of a bare `Error` (#1369). A refusal can now
+  be told apart from a defect inside the decoder by its type.
 
 ### Security
 

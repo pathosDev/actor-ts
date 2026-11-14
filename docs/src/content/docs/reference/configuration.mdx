@@ -3613,6 +3613,11 @@ Not supported, and refused with an error that says so: joining objects or
 lists (`{ a = 1 } { b = 2 }`, `[1] [2]`, `${base} { … }`), `+=`, and
 triple-quoted strings ([#537](https://github.com/pathosDev/actor-ts/issues/537)).
 
+A document may nest at most 256 levels deep, counting each key of a path
+expression, each object under a key and each list; deeper is refused with a
+parse error naming the line
+([#1369](https://github.com/pathosDev/actor-ts/issues/1369)).
+
 ### Includes are not supported
 
 ```hocon
