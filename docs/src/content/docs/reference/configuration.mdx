@@ -1374,13 +1374,14 @@ an attacker push established peers off the node.
 `outbound-queue-size` is the one key here that bounds what this node holds
 rather than what a peer holds against it: frames written for a peer that cannot
 take them right now, with the oldest dropped first, because the newest
-membership and heartbeat state is the state worth keeping. Today that is the
-buffer in front of the handshake, so a `tell` racing the handshake is held
-rather than lost. The key is named for the category and not for that one
-buffer: the post-handshake backpressure queue
-([issue #931](https://github.com/pathosDev/actor-ts/issues/931)) is the same
-quantity with the same policy and the same warning, and will land under this
-key rather than a second one.
+membership and heartbeat state is the state worth keeping. Two buffers carry
+this bound each: the one in front of the handshake, so a `tell` racing the
+handshake is held rather than lost, and the one behind a socket that pushes
+back ([issue #931](https://github.com/pathosDev/actor-ts/issues/931)), so a
+peer that stops reading costs this node at most this many frames instead of
+its heap. Frames are held whole, never cut: what the peer receives is a frame
+stream with gaps, each reported by a warning when it opens and another naming
+its size when the socket drains.
 
 None of the five has an "off" spelling. `0` is refused for each, because it is
 a distinct way of breaking the node rather than a way of removing a cap: no

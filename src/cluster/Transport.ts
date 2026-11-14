@@ -213,6 +213,25 @@ type Connection = {
   /** Set once when `pending` first overflows, so the warning is not per-frame. */
   pendingOverflowed: boolean;
   /**
+   * Encoded frames held behind a socket that said it could take no more
+   * (#931), oldest first, bounded by {@link TcpTransport.outboundQueueSize}.
+   * Written on the socket's `onDrain`, in order, until it pushes back again.
+   *
+   * The post-handshake twin of {@link pending}, with the same bound, the same
+   * drop-oldest policy and a one-shot WARN — the reason the HOCON key is named
+   * for the category.  It holds frames, never parts of one: a frame is handed
+   * to the socket whole or not at all, and the socket keeps whatever the
+   * runtime has not written yet, so nothing a peer receives is ever cut short.
+   */
+  outbox: Uint8Array[];
+  /**
+   * Whether the socket's last write answered `false` and no `onDrain` has
+   * come since — while it is set, every frame goes into {@link outbox}.
+   */
+  backPressured: boolean;
+  /** Frames dropped from {@link outbox} in the current back-pressure episode, reported when it ends. */
+  outboxDropped: number;
+  /**
    * Set when the connection is torn down, and never cleared (#1476).
    *
    * Tearing a connection down does not stop everything it already set in
@@ -349,6 +368,9 @@ export class TcpTransport implements Transport {
       incompleteFrameTimer: null,
       holdsInboundSlot: false,
       pendingOverflowed: false,
+      outbox: [],
+      backPressured: false,
+      outboxDropped: 0,
       dropped: true,
     };
   }
@@ -366,6 +388,7 @@ export class TcpTransport implements Transport {
         onData: (sock, chunk) => this.onData(sock, chunk),
         onClose: (sock) => this.onClose(sock),
         onError: (_sock, err) => this.log.warn('inbound socket error', err),
+        onDrain: (sock) => this.onDrain(sock),
       },
     });
     // Both addresses when they differ: one line that answers "what did it
@@ -476,7 +499,69 @@ export class TcpTransport implements Transport {
   private writeFrame(connection: Connection, message: WireMessage): void {
     const frame = this.encodeOrReport(message, this.peerForLog(connection));
     if (frame === null) return;
-    connection.socket?.write(frame);
+    this.writeEncoded(connection, frame);
+  }
+
+  /**
+   * Hand one encoded frame to the socket — or, while the socket is pushing
+   * back, to the connection's {@link Connection.outbox} (#931).
+   *
+   * The socket's answer is the whole signal.  `TcpTransport.send` used to
+   * drop it, and what that cost differed by runtime: a native Bun socket wrote
+   * what the kernel would take and dropped the rest, so the frame stream was
+   * cut mid-frame and the receiver read the next frame's bytes as a length
+   * prefix; Node and Deno kept everything, so a peer that stopped reading grew
+   * this process's heap without bound.  Every adapter now keeps what it was
+   * handed and answers `false` past its high-water mark, and this side stops
+   * writing there and holds at most {@link outboundQueueSize} frames until the
+   * socket drains.
+   *
+   * Over the bound the oldest held frame goes, as in front of the handshake —
+   * the newest membership and heartbeat state is the state worth keeping —
+   * with one WARN when an episode starts dropping and one when it ends,
+   * naming how many went.  `=== false` rather than `!`: a socket of a
+   * caller's own that still answers nothing is treated as one that never
+   * pushes back, which is what it was before.
+   */
+  private writeEncoded(connection: Connection, frame: Uint8Array): void {
+    const socket = connection.socket;
+    if (socket === null) return;
+    if (!connection.backPressured) {
+      connection.backPressured = socket.write(frame) === false;
+      return;
+    }
+    if (connection.outbox.length >= this.outboundQueueSize) {
+      connection.outbox.shift();
+      connection.outboxDropped += 1;
+      if (connection.outboxDropped === 1) {
+        this.log.warn(
+          `send buffer for ${this.peerForLog(connection)} hit ${this.outboundQueueSize} frames while the `
+          + `peer is not taking them; dropping oldest until it drains`,
+        );
+      }
+    }
+    connection.outbox.push(frame);
+  }
+
+  /**
+   * The socket can take more again: write the held frames, in order, until it
+   * pushes back or none are left, and close the episode's report once the
+   * outbox is empty (#931).  `fallback` is a dial's own connection, as for
+   * {@link onData}.
+   */
+  private onDrain(sock: TcpSocketLike, fallback?: Connection): void {
+    const connection = this.bySocket.get(sock) ?? fallback;
+    if (connection === undefined || connection.dropped) return;
+    connection.backPressured = false;
+    while (connection.outbox.length > 0 && !connection.backPressured) {
+      connection.backPressured = sock.write(connection.outbox.shift()!) === false;
+    }
+    if (connection.outbox.length > 0 || connection.outboxDropped === 0) return;
+    this.log.warn(
+      `send buffer for ${this.peerForLog(connection)} drained; ${connection.outboxDropped} frame(s) were `
+      + `dropped while the peer was not taking them`,
+    );
+    connection.outboxDropped = 0;
   }
 
   /** {@link encodeFrame}, or `null` after logging why the frame for `target` is dropped — see {@link writeFrame}. */
@@ -599,6 +684,9 @@ export class TcpTransport implements Transport {
       incompleteFrameTimer: null,
       holdsInboundSlot: true,
       pendingOverflowed: false,
+      outbox: [],
+      backPressured: false,
+      outboxDropped: 0,
       dropped: false,
     };
     this.bySocket.set(sock, connection);
@@ -627,6 +715,9 @@ export class TcpTransport implements Transport {
       incompleteFrameTimer: null,
       holdsInboundSlot: false,
       pendingOverflowed: false,
+      outbox: [],
+      backPressured: false,
+      outboxDropped: 0,
       dropped: false,
     };
     this.claimPeerSlot(targetKey, connection);
@@ -667,7 +758,7 @@ export class TcpTransport implements Transport {
                 wireVersion: CLUSTER_WIRE_VERSION,
                 minWireVersion: MIN_CLUSTER_WIRE_VERSION,
               };
-              s.write(encodeFrame(hello));
+              connection.backPressured = s.write(encodeFrame(hello)) === false;
             },
             // Both pass the connection explicitly: the socket is absent from
             // `bySocket` until the `await` below installs it, and never enters
@@ -676,6 +767,7 @@ export class TcpTransport implements Transport {
             // would reach `acceptInbound` as a stranger's first bytes (#1476).
             onData: (s, chunk) => this.onData(s, chunk, connection),
             onClose: (s) => this.onClose(s, connection),
+            onDrain: (s) => this.onDrain(s, connection),
             onError: (_s, err) => this.log.warn(`outbound error -> ${sanitizeNodeAddressForLog(to)}`, err),
           },
         });
@@ -836,7 +928,7 @@ export class TcpTransport implements Transport {
         self: this.self.toJSON(),
         wireVersion: CLUSTER_WIRE_VERSION,
       };
-      connection.socket?.write(encodeFrame(ack));
+      this.writeEncoded(connection, encodeFrame(ack));
       return;
     }
     if (message.kind === 'hello-refused') {
@@ -1256,6 +1348,7 @@ export class TcpTransport implements Transport {
    * that accepted and never spoke keeps its own half.
    */
   private closeConnection(connection: Connection): void {
+    const held = connection.outbox.splice(0, connection.outbox.length);
     if (!this.retireConnection(connection)) return;
     const socket = connection.socket;
     if (socket === null) return;
@@ -1263,6 +1356,11 @@ export class TcpTransport implements Transport {
       this.abortSocket(socket);
       return;
     }
+    // What the outbox holds goes out ahead of the FIN: `Cluster.leave` writes
+    // its leave frames immediately before `shutdown()`, and a peer slow to
+    // read must not lose them for it (#931).  Bounded already, and the socket
+    // queues them whatever it answers.
+    for (const frame of held) socket.write(frame);
     try { socket.end(); } catch { /* ignore */ }
   }
 
@@ -1299,6 +1397,7 @@ export class TcpTransport implements Transport {
     this.releaseInboundSlot(connection);
     this.releasePeerSlot(connection);
     connection.pending.length = 0;
+    connection.outbox.length = 0;
     return true;
   }
 

@@ -102,15 +102,15 @@ export type TcpTransportOptionsType = {
    * before the oldest are dropped (#846).  Default: 1000
    * (`MAX_PENDING_FRAMES`).
    *
-   * Today that is the pre-handshake buffer: a `send` racing the handshake is
-   * held rather than lost, and an unbounded hold turns a silently-stuck peer
-   * into a memory leak.  The name is the **category**, not that one buffer —
-   * #931 adds the post-handshake backpressure queue, which is the same
-   * quantity ("frames this node is holding because the peer is not taking
-   * them"), with the same drop-oldest policy and the same one-shot WARN, and
-   * it lands under this key rather than a second one.  A key cannot be renamed
-   * without a breaking config change, which is why it is named for where it
-   * is going.
+   * Two buffers carry this bound, each per connection.  The pre-handshake one:
+   * a `send` racing the handshake is held rather than lost, and an unbounded
+   * hold turns a silently-stuck peer into a memory leak.  And, since #931, the
+   * one behind a socket whose `write` answered `false`: the same quantity
+   * ("frames this node is holding because the peer is not taking them"), with
+   * the same drop-oldest policy and a WARN when an episode starts dropping and
+   * another naming the count when the socket drains.  Frames are held whole,
+   * so a peer that stops reading sees gaps, never a cut frame.  The name is
+   * the **category** for that reason: one key for both.
    *
    * Oldest first, because the newest membership and heartbeat state is the
    * state worth keeping.

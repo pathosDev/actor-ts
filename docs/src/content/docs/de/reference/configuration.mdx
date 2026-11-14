@@ -1466,12 +1466,14 @@ Angreifer etablierte Peers vom Knoten schieben.
 hält, statt was ein Peer gegen ihn hält: Frames, die für einen Peer geschrieben
 wurden, der sie gerade nicht annehmen kann; die ältesten fallen zuerst weg, denn
 der neueste Membership- und Heartbeat-Stand ist der, den zu behalten sich lohnt.
-Heute ist das der Puffer vor dem Handshake, damit ein `tell`, das mit dem
-Handshake um die Wette läuft, gehalten statt verloren wird. Der Key ist nach der
-Kategorie benannt, nicht nach diesem einen Puffer: die Backpressure-Queue nach
-dem Handshake ([Issue #931](https://github.com/pathosDev/actor-ts/issues/931))
-ist dieselbe Größe mit derselben Policy und derselben Warnung und landet unter
-diesem Key statt unter einem zweiten.
+Das sind zwei Puffer mit je dieser Grenze: der vor dem Handshake, damit ein
+`tell`, das mit dem Handshake um die Wette läuft, gehalten statt verloren wird,
+und der hinter einem Socket, der Backpressure meldet
+([Issue #931](https://github.com/pathosDev/actor-ts/issues/931)) — ein Peer,
+der nicht mehr liest, kostet diesen Knoten höchstens so viele Frames statt
+seines Heaps. Frames werden ganz gehalten, nie abgeschnitten: Der Peer bekommt
+einen Frame-Strom mit Lücken, und jede Lücke meldet eine Warnung, wenn sie
+beginnt, und eine zweite mit ihrer Größe, wenn der Socket wieder abläuft.
 
 Keiner der fünf hat eine „Aus"-Schreibweise. `0` wird für jeden abgelehnt, weil
 es keine Art ist, eine Schranke zu entfernen, sondern jeweils eine eigene Art,

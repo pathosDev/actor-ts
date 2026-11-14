@@ -90,8 +90,9 @@ not the expensive part.  `benchmarks/cluster/tcp-message-cost.ts` is the
 source, and the only benchmark that exercises this transport: the framing
 round-trip needs `TcpTransport` over loopback, as the in-memory transport's
 limits below say, and the far node lives on its own thread because two nodes
-on one event loop lose the tail of a burst to the loopback buffers (#931) —
-the benchmark verifies every batch, so that is a throw, not a number.
+on one event loop cannot read while a burst is being written, so a burst
+longer than `outbound-queue-size` loses its oldest frames to that bound
+(#931) — the benchmark verifies every batch, so that is a throw, not a number.
 
 ### Runtime backends
 
@@ -111,15 +112,28 @@ deadline as an abort signal (see [Association lifecycle](#association-lifecycle)
 and native `Bun.connect` cannot be cancelled, so they go through Bun's own
 `node:net` / `node:tls`, which can.  The listener stays on `Bun.listen`.
 
-So on Bun the two ends of one connection do not buffer alike — the dialling
-side's half of #931.  The side that dialled writes through `node:net`, which
-keeps in memory whatever the peer cannot take yet, without bound; a socket that
-`Bun.listen` accepted writes natively, and native Bun drops what the kernel
-will not take, so the receiver's decoder reads the rest of the stream from the
-middle of a frame.  On Node and Deno both ends buffer.  Neither runtime pushes
-back on the sender — `TcpSocketLike.write` reports nothing — so a peer that
-stops reading grows the heap at one end and breaks the stream at the other,
-and the bound that would stop both is #931's to add.
+#### Back-pressure
+
+Every backend queues what the kernel will not take yet and says so:
+`TcpSocketLike.write` answers `false` once a socket holds more than its
+runtime's high-water mark, and the backend's `onDrain` reports when it can
+take more (#931).  `TcpTransport` stops writing to a peer at that `false` and
+holds at most `outbound-queue-size` whole frames for it — the same bound, and
+the same drop-oldest policy, as the buffer in front of the handshake — then
+writes them in order on the drain.  A frame is never cut: a peer that stops
+reading sees a frame stream with gaps, and this node logs one WARN when a
+back-pressure episode starts dropping and one naming how many frames went
+when the socket drains.  An orderly close (`disconnect`, `shutdown`) writes
+what is held before its FIN, so the `leave` frames `Cluster.leave` sends just
+before shutting down are not lost behind a slow reader.
+
+Before 0.19 nothing pushed back, and the two ends of one Bun connection
+failed differently: the side that dialled writes through `node:net`, which
+kept whatever the peer could not take without bound, and a socket that
+`Bun.listen` accepted wrote natively, which dropped what the kernel would not
+take — the receiver's decoder then read the rest of the stream from the middle
+of a frame and the connection was dropped.  Node and Deno buffered without
+bound at both ends.
 
 ### Optional TLS
 

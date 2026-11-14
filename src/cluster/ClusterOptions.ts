@@ -857,11 +857,11 @@ export type ClusterOptionsType = {
    * now, before the oldest are dropped.  Default: 1000
    * (`MAX_PENDING_FRAMES` in `cluster/Constants.ts`) (#846).
    *
-   * Today that is the pre-handshake buffer — a `send` racing the handshake is
-   * held rather than lost — and the name is the category rather than that one
-   * buffer: #931 adds the post-handshake backpressure queue, the same quantity
-   * with the same drop-oldest policy and the same one-shot WARN, and it lands
-   * under this field rather than a second one.
+   * Two buffers carry it: the pre-handshake one — a `send` racing the
+   * handshake is held rather than lost — and, since #931, the one behind a
+   * socket that pushes back, with the same drop-oldest policy.  Frames are
+   * held whole, so a peer that stops reading sees gaps, never a cut frame;
+   * see `TcpTransportOptionsType.outboundQueueSize`.
    */
   readonly outboundQueueSize?: number;
   /**
