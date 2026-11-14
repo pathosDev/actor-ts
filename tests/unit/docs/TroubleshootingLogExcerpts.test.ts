@@ -63,8 +63,27 @@ function patternOf(line: string): RegExp {
   return new RegExp(literal);
 }
 
+/**
+ * No message the framework logs is anywhere near this long; a line past it is
+ * generated, and the one that exists is `src/devtools/generated/UiAssets.ts`'s
+ * embedded bundle, a single line of about 258 000 characters.
+ *
+ * The matching is per line for the same reason.  Run over the whole of `src/`
+ * as one string, an unanchored pattern with several `[^\n]*?` gaps scans from
+ * every occurrence of its first literal to the end of that line, and on the
+ * bundle line that is quadratic: one second on a fast development machine,
+ * 42–70 s per test on a CI runner, against bun's 5 s cap.
+ */
+const MAX_SOURCE_LINE_LENGTH = 2_000;
+
+function sourceLinesUnder(directory: string): string[] {
+  return sourceTextUnder(directory)
+    .split('\n')
+    .filter((line) => line.length <= MAX_SOURCE_LINE_LENGTH);
+}
+
 describe('troubleshooting log excerpts', () => {
-  const source = sourceTextUnder(join(REPOSITORY_ROOT, 'src'));
+  const sourceLines = sourceLinesUnder(join(REPOSITORY_ROOT, 'src'));
 
   for (const page of PAGES) {
     const text = readNormalised(join(DOCUMENTATION_ROOT, page));
@@ -76,7 +95,11 @@ describe('troubleshooting log excerpts', () => {
 
     test(`${page}: every excerpt line matches a line src/ writes`, () => {
       const lines = logFences(text).flatMap((fence) => fence.split('\n')).filter((line) => line.trim() !== '');
-      expect(lines.filter((line) => !patternOf(line).test(source))).toEqual([]);
+      const unmatched = lines.filter((line) => {
+        const pattern = patternOf(line);
+        return !sourceLines.some((sourceLine) => pattern.test(sourceLine));
+      });
+      expect(unmatched).toEqual([]);
     });
   }
 });
