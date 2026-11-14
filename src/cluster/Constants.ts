@@ -332,6 +332,23 @@ export const CONFLICT_RELEASE_MAX_ATTEMPTS = 5;
 export const SHARD_MAP_PUBLISH_DELAY_MS = 50;
 
 /**
+ * How many distinct requesters' `GetShardHome` the coordinator holds for one
+ * shard it cannot place yet (#1219).
+ *
+ * The queue is emptied only when the shard is allocated, and any authenticated
+ * member may ask — so without a bound, asking over and over for a shard that
+ * no region can take grew the coordinator's heap for as long as it stayed
+ * unplaceable.  A repeat of a request already waiting is not queued at all
+ * (it would be answered with the same frame), so what this bounds is distinct
+ * `(node, region)` pairs.  An honest cluster has one region per node per type,
+ * and this node accepts at most {@link MAX_INBOUND_CONNECTIONS} peers, so the
+ * same figure covers every honest requester with nothing to spare for a
+ * flood.  The queue keeps its oldest entries; a request past the bound goes to
+ * dead letters, and the region that sent it asks again with its next message.
+ */
+export const MAX_PENDING_SHARD_HOME_REQUESTS = 1_024;
+
+/**
  * How long the singleton manager waits before re-spawning a child that died
  * unexpectedly (#1175).
  *

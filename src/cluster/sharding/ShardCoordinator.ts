@@ -7,8 +7,10 @@ import {
   CONFLICT_RELEASE_MAX_ATTEMPTS,
   CONFLICT_RELEASE_RETRY_INTERVAL_MS,
   COORDINATOR_REGISTRATION_GOSSIP_ROUNDS,
+  MAX_PENDING_SHARD_HOME_REQUESTS,
   SHARD_MAP_PUBLISH_DELAY_MS,
 } from '../Constants.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import { DEFAULT_REGISTER_RETRY_INTERVAL_MS } from './ShardingOptions.js';
 import {
   DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
@@ -188,6 +190,14 @@ function namesPeer(claimed: NodeAddressData, peer: NodeAddress): boolean {
     && claimed.port === peer.port;
 }
 
+/**
+ * Whether two payload addresses name the same node — both already passed the
+ * authority gate, so the comparison is {@link namesPeer}'s, field by field.
+ */
+function namesSameNode(left: NodeAddressData, right: NodeAddressData): boolean {
+  return left.systemName === right.systemName && left.host === right.host && left.port === right.port;
+}
+
 type RegionInfo = {
   readonly node: NodeAddress;
   readonly path: string;
@@ -355,6 +365,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly regions = new Map<string, RegionInfo>();
   private readonly shardHome = new Map<number, string>(); // shardId → regionPath
   private readonly pending = new Map<number, Array<GetShardHome>>(); // waiting queries
+  /** Shards whose full {@link pending} queue has been warned about this episode (#1219). */
+  private readonly pendingOverflowWarned = new Set<number>();
   private readonly rebalanceInProgress = new Map<number, { from: string; timer: Cancellable }>();
   private readonly entitiesPerShard = new Map<number, Set<string>>();
   private readonly statsQueries = new Map<number, StatsQuery>();
@@ -880,7 +892,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     this.rebalanceInProgress.clear();
     this.dropConflictReleases();
-    this.pending.clear();
+    this.clearPendingShardHomes();
     this.acquireBuffer = [];
     // Deliberately do NOT clear `regions` or `shardHome` here.  We
     // stay leader and likely re-acquire — keeping the cached view
@@ -1810,11 +1822,50 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       return;
     }
 
-    const list = this.pending.get(message.shardId) ?? [];
-    list.push(message);
-    this.pending.set(message.shardId, list);
+    this.enqueuePendingShardHome(message);
 
     if (!this.rebalanceInProgress.has(message.shardId)) this.tryAllocate(message.shardId);
+  }
+
+  /**
+   * Hold `message` until its shard has a home — bounded (#1219).
+   *
+   * The queue empties only on allocation, and any authenticated member may
+   * ask, so an unbounded one let a member grow this node's heap for as long as
+   * a shard stayed unplaceable.  A request repeating one already waiting — the
+   * same region on the same node — is not queued: it would be answered with the
+   * same frame.  Past {@link MAX_PENDING_SHARD_HOME_REQUESTS} distinct
+   * requesters the newest goes to dead letters, so an honest region that asked
+   * before a flood keeps its place, and the region that was turned away asks
+   * again with its next message.  One warning per shard per episode — the flood
+   * is caller-sized, so a line per request would be the amplification — and the
+   * latch clears when the queue is answered or dropped.
+   */
+  private enqueuePendingShardHome(message: GetShardHome): void {
+    const list = this.pending.get(message.shardId) ?? [];
+    const repeat = list.some((waiting) =>
+      waiting.requester === message.requester && namesSameNode(waiting.requesterNode, message.requesterNode));
+    if (repeat) return;
+    if (list.length >= MAX_PENDING_SHARD_HOME_REQUESTS) {
+      this.system.deadLetters.tell(new DeadLetter(message, null, this.self));
+      if (!this.pendingOverflowWarned.has(message.shardId)) {
+        this.pendingOverflowWarned.add(message.shardId);
+        this.log.warn(
+          `[sharding] ${MAX_PENDING_SHARD_HOME_REQUESTS} regions are already waiting for a home for shard `
+          + `${message.shardId} of type "${this.options.typeName}"; further GetShardHome requests go to dead `
+          + `letters until it is placed — check why no region can take it`,
+        );
+      }
+      return;
+    }
+    list.push(message);
+    this.pending.set(message.shardId, list);
+  }
+
+  /** Forget every waiting `GetShardHome`, and the overflow warnings that went with them. */
+  private clearPendingShardHomes(): void {
+    this.pending.clear();
+    this.pendingOverflowWarned.clear();
   }
 
   /**
@@ -2201,7 +2252,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // owns the canonical state now.
       this.regions.clear();
       this.shardHome.clear();
-      this.pending.clear();
+      this.clearPendingShardHomes();
       // A refusal is a verdict of *this* leader term.  Every region
       // re-registers on the leader change, so the next term re-derives it.
       this.refusedRegions.clear();
@@ -2868,6 +2919,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       });
     }
     this.pending.delete(shardId);
+    this.pendingOverflowWarned.delete(shardId);
   }
 
   private shipRememberedEntities(shardId: number): void {
