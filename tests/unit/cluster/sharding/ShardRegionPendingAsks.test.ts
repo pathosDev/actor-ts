@@ -40,6 +40,7 @@ import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { LeaderChanged } from '../../../../src/cluster/ClusterEvents.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { stageMember } from '../../../util/StagedMember.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
@@ -373,8 +374,11 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
   // region sends it is recorded by `recordEnvelopes` and goes no further.  It
   // still needs a transport the cluster counts as a connected peer — the
   // cluster sends nothing to an address that is neither a member nor
-  // connected (#936) — and one that drops what it receives is enough.
-  const remoteNode = new NodeAddress(options.systemName, 'elsewhere', options.port);
+  // connected (#936) — and one that drops what it receives is enough.  And it
+  // is staged as a member, because a region refuses a home on a node that is
+  // none (#1750).  Its host sorts after this node's, so staging it does not
+  // move the leadership — the lowest address leads.
+  const remoteNode = stageMember(cluster, new NodeAddress(options.systemName, 'remote', options.port));
   remoteListener = new InMemoryTransport(remoteNode);
   await remoteListener.start();
 

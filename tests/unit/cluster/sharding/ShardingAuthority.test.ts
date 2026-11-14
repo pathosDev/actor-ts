@@ -34,6 +34,7 @@ import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { ShardMapChanged } from '../../../../src/cluster/ClusterEvents.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { stageMember } from '../../../util/StagedMember.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
 import {
@@ -418,7 +419,7 @@ describe('ShardRegion handoff ownership (#584)', () => {
     // `shardHomeNodes` for the id: a routing-cache eviction for a shard the
     // region was never handing off, repeatable across every id in range.
     const victim = await startVictim('authority-handoff-unowned', 47_380);
-    const elsewhere = new NodeAddress('handoff-elsewhere', 'h', 47_381);
+    const elsewhere = stageMember(victim.cluster, new NodeAddress('handoff-elsewhere', 'h', 47_381));
     const elsewhereRegion = '/system/cluster/sharding/region-entity';
     const remoteShardId = (victim.shardId + 1) % NUM_SHARDS;
 

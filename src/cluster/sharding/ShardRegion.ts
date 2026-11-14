@@ -47,6 +47,7 @@ import {
   LeaderChanged,
   MemberRemoved,
   MemberUp,
+  type ClusterEvent,
   ShardMapChanged,
   ShardRegionRegistered,
   ShardRegionRegistrationRefused,
@@ -255,6 +256,43 @@ class AsksSweepTick {}
 const ASKS_SWEEP_TICK = new AsksSweepTick();
 
 /**
+ * A cluster event, handed to the region by its own `cluster.subscribe`
+ * callback (#1750).
+ *
+ * `Cluster.emit` calls that callback synchronously, so handling the event
+ * there ran it ahead of everything already in the mailbox: a `MemberRemoved`
+ * overtook a queued `ShardHome` naming the removed node, its invalidation
+ * found nothing to clear, and the stale home was applied afterwards — for
+ * good.  The callback only sends this now, so the event is applied in mailbox
+ * order.  A class, like the ticks, so nothing off the wire can be one.
+ */
+class ClusterEventReceived {
+  constructor(readonly event: ClusterEvent) {}
+}
+
+/**
+ * "Retry the registration" — the region telling itself, on a timer (#1750).
+ *
+ * The shape of {@link PassivationSweepTick}: the retry re-targets the
+ * coordinator and sends `Register`, and run from the scheduler's callback it
+ * did so even with a `RegisterAcknowledgment` or `RegisterRefused` already
+ * queued.  One instance per armed retry, so a tick whose retry an answer has
+ * since cancelled is recognised as stale and ignored — a timer that already
+ * fired cannot take back the tick it sent.
+ */
+class RegisterRetryTick {}
+
+/**
+ * "Beat to the coordinator" — the region telling itself, on a timer (#1750).
+ * On the region's turn, a beat cannot go out ahead of a `RegisterRefused`
+ * already queued.
+ */
+class RegionHeartbeatTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const REGION_HEARTBEAT_TICK = new RegionHeartbeatTick();
+
+/**
  * A shard's run of unexpected deaths, and the wait it is in (#1437).
  *
  * Kept from the first such death until the region gives the shard up — a
@@ -422,6 +460,9 @@ export class ShardRegion<TMessage = unknown>
     | PassivationSweepTick
     | AsksSweepTick
     | ShardRespawnTick
+    | ClusterEventReceived
+    | RegisterRetryTick
+    | RegionHeartbeatTick
     | ShardPassivationDeclined
   > {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
@@ -527,6 +568,8 @@ export class ShardRegion<TMessage = unknown>
   private envelopeUnsubscribe: (() => void) | null = null;
   private passivationTimer: Cancellable | null = null;
   private registerTimer: Cancellable | null = null;
+  /** The tick the armed register retry will send — any other is stale (#1750). */
+  private registerRetryTick: RegisterRetryTick | null = null;
   /**
    * Drives the liveness beat to the coordinator, or `null` when
    * `staleRegionDetection` is off — which it is unless a deployment asks for it
@@ -778,13 +821,11 @@ export class ShardRegion<TMessage = unknown>
       randomFactor: this.config.shardFailureBackoffRandomFactor,
     });
 
-    this.unsubscribe = this.config.cluster.subscribe(evt =>
-      match(evt)
-        .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
-        .with(P.instanceOf(MemberRemoved), (event) => this.onMemberRemoved(event))
-        .with(P.instanceOf(MemberUp), () => this.onMemberUp())
-        .otherwise(() => this.onOtherClusterEvent()),
-    );
+    // Only ever *sends*: the event is applied on the region's turn, behind
+    // whatever is already queued — see `ClusterEventReceived` (#1750).
+    this.unsubscribe = this.config.cluster.subscribe((event) => {
+      this.self.tell(new ClusterEventReceived(event));
+    });
 
     // Claim the region's own path on the envelope router *before* registering
     // with the coordinator, so nothing the registration provokes can arrive
@@ -828,9 +869,41 @@ export class ShardRegion<TMessage = unknown>
       const beatMs = this.config.regionHeartbeatIntervalMs;
       this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         beatMs, beatMs,
-        () => this.sendRegionHeartbeat(),
+        // Only ever *sends* — see `RegionHeartbeatTick` (#1750).
+        () => { this.self.tell(REGION_HEARTBEAT_TICK); },
       );
     }
+  }
+
+  /** A cluster event, now on the region's turn (#1750). */
+  private onClusterEventReceived(message: ClusterEventReceived): void {
+    match(message.event)
+      .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
+      .with(P.instanceOf(MemberRemoved), (event) => this.onMemberRemoved(event))
+      .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+      .otherwise(() => this.onOtherClusterEvent());
+  }
+
+  /** The heartbeat timer fired; beat now, behind whatever was queued first (#1750). */
+  private onRegionHeartbeatTick(): void { this.sendRegionHeartbeat(); }
+
+  /**
+   * The register retry fired (#1750).  Stale when an answer — or a newer
+   * retry — has replaced the one that sent it: the registration it was for is
+   * settled, and retrying would re-target the coordinator and send `Register`
+   * behind an acknowledgment or a refusal that already said so.
+   */
+  private onRegisterRetryTick(tick: RegisterRetryTick): void {
+    if (tick !== this.registerRetryTick) return;
+    this.registerRetryTick = null;
+    this.ensureRegistered();
+  }
+
+  /** Stop retrying the registration; a tick already sent is now stale. */
+  private cancelRegisterRetry(): void {
+    this.registerTimer?.cancel();
+    this.registerTimer = null;
+    this.registerRetryTick = null;
   }
 
   /**
@@ -961,6 +1034,9 @@ export class ShardRegion<TMessage = unknown>
       | PassivationSweepTick
       | AsksSweepTick
       | ShardRespawnTick
+      | ClusterEventReceived
+      | RegisterRetryTick
+      | RegionHeartbeatTick
       | ShardPassivationDeclined,
   ): void {
     if (message instanceof EntityRecoveryTick) {
@@ -981,6 +1057,18 @@ export class ShardRegion<TMessage = unknown>
     }
     if (message instanceof AsksSweepTick) {
       this.onAsksSweepTick();
+      return;
+    }
+    if (message instanceof ClusterEventReceived) {
+      this.onClusterEventReceived(message);
+      return;
+    }
+    if (message instanceof RegisterRetryTick) {
+      this.onRegisterRetryTick(message);
+      return;
+    }
+    if (message instanceof RegionHeartbeatTick) {
+      this.onRegionHeartbeatTick();
       return;
     }
     if (message instanceof AuthenticatedShardingMessage) {
@@ -1323,9 +1411,12 @@ export class ShardRegion<TMessage = unknown>
 
   private scheduleRegisterRetry(): void {
     this.registerTimer?.cancel();
+    const tick = new RegisterRetryTick();
+    this.registerRetryTick = tick;
     this.registerTimer = this.system.scheduler.scheduleOnceFunction(
       this.config.registerRetryIntervalMs,
-      () => this.ensureRegistered(),
+      // Only ever *sends* — see `RegisterRetryTick` (#1750).
+      () => { this.self.tell(tick); },
     );
   }
 
@@ -1623,8 +1714,7 @@ export class ShardRegion<TMessage = unknown>
     if (!this.fromCoordinator(message, peer)) return;
     this.log.debug(`[sharding] region '${this.config.typeName}' registered with coordinator`);
     this.registerRefused = false;
-    this.registerTimer?.cancel();
-    this.registerTimer = null;
+    this.cancelRegisterRetry();
     this.askAgainForPendingQueries();
     // Published only on the transition — see the field's own note.  It goes on
     // the node-local bus like `ShardMapChanged`, because it describes what
@@ -1701,8 +1791,7 @@ export class ShardRegion<TMessage = unknown>
     // it.  Clearing this is also what makes a later acknowledgment a real
     // transition again rather than a silent one.
     this.registrationAnnounced = false;
-    this.registerTimer?.cancel();
-    this.registerTimer = null;
+    this.cancelRegisterRetry();
     this.log.error(
       `[sharding] the coordinator refused to register region '${this.config.typeName}': `
       + `numShards must match across the cluster, but this node is configured with `
@@ -1958,6 +2047,21 @@ export class ShardRegion<TMessage = unknown>
     if (this.registerRefused) return;
     if (!this.isKnownShardId(message.shardId)) return;
     const node = NodeAddress.fromJSON(message.node);
+    // A home on a node that is no longer a member would route every message
+    // for the shard there for good: nothing drops a cached home but the
+    // removal's own invalidation, a hand-off and a release (#1750).  Mailbox
+    // order puts the invalidation behind any home queued before the event;
+    // this covers a home that arrives after it — the coordinator answered
+    // before it learned of the removal.  Nothing is re-asked here: the
+    // removal re-registered this region, which re-asked for every buffered
+    // shard, and the coordinator answers that from its corrected map.
+    if (!this.isCurrentMember(node)) {
+      this.log.debug(
+        `[sharding] ignoring a home for shard ${message.shardId} of '${this.config.typeName}' on `
+        + `${sanitizeNodeAddressForLog(node)} — it is no member of the cluster any more`,
+      );
+      return;
+    }
     const local = node.equals(this.config.cluster.selfAddress) && message.region === this.self.path.toString();
     this.log.debug(
       `[sharding] shard ${message.shardId} of '${this.config.typeName}' home=${node} (${local ? 'LOCAL' : 'remote'})`,
@@ -2008,6 +2112,17 @@ export class ShardRegion<TMessage = unknown>
     // ref to it, and the ref answers before the buffered traffic replays.
     this.flushLocationAsks(message.shardId);
     this.flushBuffer(message.shardId);
+  }
+
+  /**
+   * Whether `node` is this node or in this node's member view — `getMembers()`,
+   * which drops only `removed` tombstones (#1750).  A node that is leaving,
+   * down or unreachable still counts: its `MemberRemoved` is yet to come, and
+   * will invalidate whatever home names it.
+   */
+  private isCurrentMember(node: NodeAddress): boolean {
+    if (node.equals(this.config.cluster.selfAddress)) return true;
+    return this.config.cluster.getMembers().some((member) => member.address.equals(node));
   }
 
   /* ---------------------------- Introspection --------------------------- */
