@@ -207,6 +207,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   remembered from an earlier release that no longer names a daemon retires
   on start.
 
+- **Remember-entities no longer forgets an entity that stopped without being
+  passivated** (#954). An entity that exhausts its restart budget, fails under
+  `stoppingStrategy`, or calls `stopSelf` stays in the durable registry, and a
+  failover restores it. Its shard re-creates it once the restart backoff
+  ends, without waiting for a message. Only a passivation removes an entity
+  from the registry. `EntityStopped` carries a new optional `reason`
+  (`'passivated' | 'unrequested'`), and `ShardConfig` a new `rememberEntities`
+  field; a report without a reason, from an older region, counts as
+  `'passivated'`.
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
