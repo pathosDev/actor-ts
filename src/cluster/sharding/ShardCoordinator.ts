@@ -2273,6 +2273,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // window between `HandOff` and `HandOffComplete` still would, and that one
     // would be just as wrongly forgotten.
     if (this.rebalanceInProgress.has(message.shardId)) return;
+    // Only a passivation forgets an entity (#954).  An unrequested stop — a
+    // failure past the restart budget, a failure under `stoppingStrategy`, a
+    // plain `stopSelf` — is not the system deciding the entity should go: its
+    // shard re-creates it at the end of the restart backoff, and the registry
+    // has to keep it for the failover that comes before then.  A report with
+    // no reason comes from a region predating the field and keeps the only
+    // meaning a stop had there.
+    if (message.reason === 'unrequested') return;
     this.applyRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
     this.persistRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
   }

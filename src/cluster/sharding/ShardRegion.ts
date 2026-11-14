@@ -3292,6 +3292,9 @@ export function shardConfigFor<TMessage>(config: ShardRegionConfig<TMessage>, sh
     entityRestartBackoffMaxMs: config.entityRestartBackoffMaxMs,
     entityRestartBackoffRandomFactor: config.entityRestartBackoffRandomFactor,
     entityRestartBackoffResetAfterMs: config.entityRestartBackoffResetAfterMs,
+    // So a shard re-creates a remembered entity that stopped unasked at the end
+    // of its backoff instead of waiting for a message (#954).
+    rememberEntities: config.rememberEntities,
   };
 }
 
