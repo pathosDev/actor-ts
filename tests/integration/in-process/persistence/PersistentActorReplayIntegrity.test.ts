@@ -233,6 +233,29 @@ describe('recovery over a journal that breaks its read contract (#122)', () => {
     await fixture.system.terminate();
   });
 
+  test('a journal that held one event and was compacted completely fails recovery (#1052 boundary)', async () => {
+    // The smallest head the refusal must catch: one event seen, none kept.
+    const fixture = makeSystem('replay-integrity-single-compacted', identity);
+    await seed(fixture.underlying, 'ledger-single-compacted', [4]);
+    await fixture.underlying.delete('ledger-single-compacted', 1);
+
+    const ledger = fixture.system.spawn(
+      () => new Ledger('ledger-single-compacted', (e) => fixture.failures.push(e), (t) => fixture.totals.push(t)),
+      'single-compacted',
+    );
+    ledger.tell({ kind: 'report' });
+
+    await awaitCondition(() => fixture.failures.length === 1, {
+      timeoutMs: 4_000,
+      label: 'recovery over a one-event journal compacted completely failed',
+    });
+    expect(fixture.failures[0]).toBeInstanceOf(JournalIntegrityError);
+    expect((fixture.failures[0] as JournalIntegrityError).sequenceNr).toBe(1);
+    expect(fixture.totals).toEqual([]);
+
+    await fixture.system.terminate();
+  });
+
   test('a well-behaved journal recovers and keeps persisting', async () => {
     // The control: the checks must be invisible on every legitimate path.
     const fixture = makeSystem('replay-integrity-control', identity);
