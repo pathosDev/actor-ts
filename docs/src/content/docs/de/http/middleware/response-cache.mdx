@@ -61,8 +61,8 @@ dort aufnimmst, bestimmt, was separat gecacht wird.  Gängige Muster:
 // Per-URL-path key:
 key: (req) => req.path,
 
-// Per-tenant:
-key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.path}`,
+// Pro Mandant — aus einem Claim, den JwtAuth verifiziert hat, nie aus einem Client-Header:
+key: (req) => `${String(jwtClaimsOf(req)?.tenant ?? 'public')}:${req.path}`,
 
 // Per-locale + content type:
 key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.path}`,

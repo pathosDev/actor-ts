@@ -9,7 +9,7 @@ returned function with the handler you want to protect.
 Excess requests get **429** with a `Retry-After` header.
 
 ```ts
-import { rateLimit } from 'actor-ts/http';
+import { Status, complete, path, post, rateLimit } from 'actor-ts/http';
 import { InMemoryCache } from 'actor-ts/cache';
 
 const limited = rateLimit({
@@ -19,6 +19,7 @@ const limited = rateLimit({
   key:      (request) => request.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
 });
 
+const apiHandler = () => complete(Status.OK, { ok: true });
 const routes = path('api', post(limited(apiHandler)));
 ```
 
@@ -230,26 +231,65 @@ Three good fits:
 ## Layered rate limits
 
 ```ts
+import { InMemoryCache } from 'actor-ts/cache';
+import {
+  JwtAuth,
+  JwtAuthOptions,
+  Status,
+  clientIpResolver,
+  complete,
+  concat,
+  get,
+  jwtClaimsOf,
+  path,
+  post,
+  rateLimit,
+  withMiddleware,
+} from 'actor-ts/http';
+
+const cache = new InMemoryCache();
+const clientIp = clientIpResolver(['10.0.0.0/8']);   // your load balancers
+const jwtOptions = JwtAuthOptions.create()
+  .withAlgorithms('RS256')
+  .withIssuer('https://auth.example.com/')
+  .withJwksUrl('https://auth.example.com/.well-known/jwks.json');
+
 // Different limits per handler:
 const apiLimited = rateLimit({
   cache, windowMs: 60_000, max: 1000,
-  key: (request) => request.headers['x-user-id'] ?? request.remoteAddress ?? 'anon',
+  key: (request) => {
+    // `sub` of a token JwtAuth verified — never a header the client sets.
+    const user = jwtClaimsOf(request)?.sub;
+    return user !== undefined ? `user:${user}` : `ip:${clientIp(request) ?? '<unresolved>'}`;
+  },
 });
 
 const loginLimited = rateLimit({
   cache, windowMs: 60_000, max: 10,
-  key: (request) => `login:${request.remoteAddress ?? 'unknown'}`,
+  key: (request) => `login:${clientIp(request) ?? '<unresolved>'}`,
 });
+
+const loginHandler = () => complete(Status.OK, { ok: true });
+const ordersHandler = () => complete(Status.OK, { orders: [] });
 
 const routes = concat(
   path('login',  post(loginLimited(loginHandler))),
-  path('orders', get(apiLimited(ordersHandler))),
+  // JwtAuth wraps the limiter, so the claims are verified before the key is read.
+  path('orders', withMiddleware(JwtAuth(jwtOptions), get(apiLimited(ordersHandler)))),
 );
 ```
 
 Stricter limits on sensitive handlers; more permissive on
 general traffic.  Compose by wrapping each handler with the
 matching limiter.
+
+A per-user key has to come from something a middleware **verified**.
+`request.headers['x-user-id']` is client input: an attacker rotates it
+for a fresh bucket per request, or sets it to a victim's id to spend
+that victim's budget.  `jwtClaimsOf(request)` is only set inside
+`JwtAuth`, so `JwtAuth` must wrap the limiter, as above; nested the
+other way round, the claims are not there yet and every request falls
+back to the IP bucket.
 
 import { Aside } from '@astrojs/starlight/components';
 

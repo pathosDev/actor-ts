@@ -43,8 +43,8 @@ export const DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH = 255;
  * for every one of those.
  *
  * The bound exists because the scope reaches the key from the same place
- * the header does.  `identity`'s own documented recipe reads a raw client
- * header, so a 64 KiB `x-account-id` and a two-character
+ * the header does.  `identity`'s documented recipe used to read a raw client
+ * header (it now reads verified JWT claims), so a 64 KiB `x-account-id` and a two-character
  * `Idempotency-Key` composed a 64 KiB cache key under a middleware whose
  * documented cap was 255 — the header was checked, the scope was
  * concatenated four lines later unchecked (#607).
@@ -169,16 +169,20 @@ export type IdempotencyOptionsType = {
    * same `Idempotency-Key` share one cache entry — fine for a public
    * endpoint, unsafe when the response is identity-specific (the second
    * caller would get the first caller's data / `Set-Cookie`).  Return the
-   * authenticated principal (user / tenant / API-key id), e.g.
-   * `identity: (request) => request.headers['x-account-id'] ?? 'anon'`.
+   * authenticated principal (user / tenant / API-key id) that a middleware
+   * **verified**, e.g. `identity: (request) => jwtClaimsOf(request)?.sub ??
+   * 'anonymous'` inside `JwtAuth`.  Never a raw header such as
+   * `x-account-id`: the client sets it, so a caller who names another
+   * account's id gets that account's scope — the replay this option exists
+   * to prevent.
    *
    * **Return an id, not free text.**  The result is concatenated into the
    * cache key, so it is held to the same two rules as the header value:
    * at most {@link maxScopeLength} characters, and no ASCII control
    * character or space.  Anything else is refused with 400 (#607) — which
-   * matters most for the recipe above, where the value is a raw client
-   * header and the client picks its size.  Deriving the scope from a
-   * validated session or token instead keeps the check inert.
+   * matters most where the value still reaches the key from client input
+   * and the client picks its size.  Deriving the scope from a validated
+   * session or token keeps the check inert.
    */
   readonly identity?: (request: HttpRequest) => string | Promise<string>;
 };

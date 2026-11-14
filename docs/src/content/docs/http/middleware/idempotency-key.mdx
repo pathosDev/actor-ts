@@ -81,7 +81,7 @@ type IdempotencyOptions = {
 | `maxKeyLength` | Longest accepted header value.  Default 255 (Stripe's cap); a longer key is refused with 400. |
 | `maxScopeLength` | Longest accepted `identity` result.  Default 255; a longer scope is refused with 400. |
 | `missingHeader` | What to do when the header is absent.  Default `'reject'` (400); set `'pass-through'` to run the handler without dedup when only some clients use idempotency. |
-| `identity` | Optional per-caller scope folded into the cache key so a cached, identity-specific response is never replayed to a different caller — e.g. `(req) => req.headers['x-account'] ?? 'anon'`.  Without it, two callers reusing the same key for the same method + path + query + body share one cached response; safe only for identity-agnostic endpoints (security audit HTTP-4).  **Return an id, not free text** — the result is held to the same two rules as the header value. |
+| `identity` | Optional per-caller scope folded into the cache key so a cached, identity-specific response is never replayed to a different caller — derive it from what a middleware **verified**, e.g. `(req) => jwtClaimsOf(req)?.sub ?? 'anonymous'` inside `JwtAuth`, never from a raw header such as `x-account`, which a caller can set to another account's id.  Without it, two callers reusing the same key for the same method + path + query + body share one cached response; safe only for identity-agnostic endpoints (security audit HTTP-4).  **Return an id, not free text** — the result is held to the same two rules as the header value. |
 
 The wrapper also stores a **SHA-256 fingerprint of the request**
 — method, path, query string and body — alongside each cached
@@ -129,12 +129,12 @@ half of the same composed key:
 idem:<scope>:<Idempotency-Key>
 ```
 
-That matters most for the recipe the `identity` row above shows — a raw
-client header, where the client picks the size.  A two-character
-`Idempotency-Key` with a 64 KiB `x-account` used to be accepted with 200
-and stored a 64 KiB cache key under a middleware whose documented cap is
-255.  Deriving the scope from a validated session or token instead keeps
-the check inert.
+That matters most for a scope read from client input, where the client
+picks the size.  A two-character `Idempotency-Key` with a 64 KiB
+`x-account` header as the scope used to be accepted with 200 and stored a
+64 KiB cache key under a middleware whose documented cap is 255.
+Deriving the scope from a validated session or token, as the `identity`
+row above does, keeps the check inert.
 
 The two caps are separate numbers rather than one cap over the composed
 key, so a tenant with a long id cannot spend an honest client's header

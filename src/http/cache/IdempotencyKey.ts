@@ -179,8 +179,8 @@ export function idempotent(options: IdempotencyOptions) {
       // passes both rules, so the check below costs that case nothing.
       const scope = identity ? await identity(request) : '';
       // The scope is the OTHER half of the key, and it reaches the cache from
-      // the same place the header does — `identity`'s own recipe reads a raw
-      // client header.  Checking only the header left a 255-character cap
+      // the same place the header does — an `identity` may still read client
+      // input.  Checking only the header left a 255-character cap
       // over one half of a key whose other half was unbounded (#607).
       const scopeRejection = keyRejectionReason(scope, maxScopeLength);
       if (scopeRejection !== undefined) {

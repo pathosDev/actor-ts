@@ -61,8 +61,8 @@ patterns:
 // Per-URL-path key:
 key: (req) => req.path,
 
-// Per-tenant:
-key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.path}`,
+// Per-tenant — from a claim JwtAuth verified, never a client-set header:
+key: (req) => `${String(jwtClaimsOf(req)?.tenant ?? 'public')}:${req.path}`,
 
 // Per-locale + content type:
 key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.path}`,

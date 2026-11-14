@@ -81,7 +81,7 @@ type IdempotencyOptions = {
 | `maxKeyLength` | Längster akzeptierter Header-Wert.  Default 255 (Stripes Schranke); ein längerer Key wird mit 400 abgelehnt. |
 | `maxScopeLength` | Längstes akzeptiertes `identity`-Ergebnis.  Default 255; ein längerer Scope wird mit 400 abgelehnt. |
 | `missingHeader` | Was tun, wenn der Header fehlt.  Default `'reject'` (400); auf `'pass-through'` setzen, um den Handler ohne Dedup laufen zu lassen, wenn nur manche Clients Idempotency nutzen. |
-| `identity` | Optionaler Scope pro Aufrufer, der in den Cache-Key gefaltet wird, damit eine gecachte, identitätsspezifische Response nie an einen anderen Aufrufer ausgeliefert wird — z. B. `(req) => req.headers['x-account'] ?? 'anon'`.  Ohne ihn teilen sich zwei Aufrufer mit gleichem Key + Methode + Pfad + Query + Body eine Response; nur für identitätsunabhängige Endpunkte sicher (security audit HTTP-4).  **Gib eine ID zurück, keinen Freitext** — das Ergebnis unterliegt denselben zwei Regeln wie der Header-Wert. |
+| `identity` | Optionaler Scope pro Aufrufer, der in den Cache-Key gefaltet wird, damit eine gecachte, identitätsspezifische Response nie an einen anderen Aufrufer ausgeliefert wird — leite ihn aus dem ab, was eine Middleware **verifiziert** hat, z. B. `(req) => jwtClaimsOf(req)?.sub ?? 'anonymous'` innerhalb von `JwtAuth`, nie aus einem rohen Header wie `x-account`, den ein Aufrufer auf die ID eines anderen Kontos setzen kann.  Ohne ihn teilen sich zwei Aufrufer mit gleichem Key + Methode + Pfad + Query + Body eine Response; nur für identitätsunabhängige Endpunkte sicher (security audit HTTP-4).  **Gib eine ID zurück, keinen Freitext** — das Ergebnis unterliegt denselben zwei Regeln wie der Header-Wert. |
 
 Der Wrapper speichert zusätzlich einen **SHA-256-Fingerprint des
 Requests** — Methode, Pfad, Query-String und Body — neben jeder
@@ -132,13 +132,13 @@ Hälfte desselben zusammengesetzten Keys:
 idem:<scope>:<Idempotency-Key>
 ```
 
-Das zählt vor allem für das Rezept aus der `identity`-Zeile oben — einen
-rohen Client-Header, bei dem der Client die Größe wählt.  Ein
-zweizeichiger `Idempotency-Key` mit einem 64-KiB-`x-account` wurde
-früher mit 200 akzeptiert und speicherte einen 64 KiB großen Cache-Key,
-unter einer Middleware mit dokumentierter Schranke 255.  Leitest du den
-Scope stattdessen aus einer validierten Session oder einem Token ab,
-bleibt die Prüfung wirkungslos.
+Das zählt vor allem für einen Scope aus Client-Eingabe, bei dem der
+Client die Größe wählt.  Ein zweizeichiger `Idempotency-Key` mit einem
+64-KiB-`x-account`-Header als Scope wurde früher mit 200 akzeptiert und
+speicherte einen 64 KiB großen Cache-Key, unter einer Middleware mit
+dokumentierter Schranke 255.  Leitest du den Scope aus einer validierten
+Session oder einem Token ab, wie die `identity`-Zeile oben, bleibt die
+Prüfung wirkungslos.
 
 Die beiden Schranken sind getrennte Zahlen statt einer Schranke über den
 zusammengesetzten Key, damit ein Mandant mit langer ID nicht das Budget
