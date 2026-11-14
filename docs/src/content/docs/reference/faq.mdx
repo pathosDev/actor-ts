@@ -334,8 +334,9 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
   Four common causes:
   - **The ref points at a stopped actor** — messages route to
     `/deadLetters` (check the system log).
-  - **The mailbox is full** with `reject` overflow — `tell` throws
-    `MailboxFullError` at the sender.  Catch it where you tell.
+  - **The mailbox is full** — a bounded mailbox sheds under its
+    overflow policy, and under `reject` each refused message is a
+    dead letter naming the full actor.  `tell` never throws for it.
   - **Recovery hasn't finished** for a `PersistentActor` — messages
     sent before `onRecoveryComplete` wait in the mailbox.  Slow
     recovery causes apparent delays.

@@ -349,8 +349,8 @@ describe('the dispatcher a system builds from actor-ts.dispatcher', () => {
 });
 
 /**
- * The seven leaves the coordinated-shutdown block carries about the pipeline
- * itself — six the extension applies, and `run-by-actor-system-terminate`,
+ * The eight leaves the coordinated-shutdown block carries about the pipeline
+ * itself — seven the extension applies, and `run-by-actor-system-terminate`,
  * which the system reads through the same reader (#1455).  The `phases` block
  * is not among them: it names the operator's own phases and ships no leaf, so
  * it is applied against the seeded graph by the extension and pinned by
@@ -360,6 +360,7 @@ describe('actor-ts.coordinated-shutdown', () => {
   test('the reference defaults are the shipped ones', () => {
     expectExactOptions(readCoordinatedShutdownOptionsFromConfig(reference), {
       defaultPhaseTimeoutMs: 5_000,
+      overallTimeoutMs: 30_000,
       exitProcess: false,
       exitCode: 0,
       terminateActorSystem: true,
@@ -373,6 +374,7 @@ describe('actor-ts.coordinated-shutdown', () => {
     const config = Config.parseString(`
       actor-ts.coordinated-shutdown {
         default-phase-timeout         = 250ms
+        overall-timeout               = 1500ms
         exit-process                  = true
         exit-code                     = 3
         terminate-actor-system        = false
@@ -384,6 +386,7 @@ describe('actor-ts.coordinated-shutdown', () => {
 
     expectExactOptions(readCoordinatedShutdownOptionsFromConfig(config), {
       defaultPhaseTimeoutMs: 250,
+      overallTimeoutMs: 1_500,
       exitProcess: true,
       exitCode: 3,
       terminateActorSystem: false,
@@ -403,6 +406,8 @@ describe('actor-ts.coordinated-shutdown', () => {
    */
   test.each<[string, CoordinatedShutdownConfiguration]>([
     ['default-phase-timeout = 250ms', { defaultPhaseTimeoutMs: 250 }],
+    ['overall-timeout = 250ms', { overallTimeoutMs: 250 }],
+    ['overall-timeout = 0s', { overallTimeoutMs: 0 }],
     ['exit-process = true', { exitProcess: true }],
     ['exit-code = 3', { exitCode: 3 }],
     ['terminate-actor-system = false', { terminateActorSystem: false }],
@@ -417,6 +422,12 @@ describe('actor-ts.coordinated-shutdown', () => {
 
   test('an absent block reads as nothing at all, not a bag of defaults', () => {
     expectExactOptions(readCoordinatedShutdownOptionsFromConfig(Config.empty()), {});
+  });
+
+  test('overall-timeout refuses a negative duration — 0 is how a run goes without a deadline', () => {
+    const config = Config.parseString('actor-ts.coordinated-shutdown.overall-timeout = -1s');
+
+    expect(() => readCoordinatedShutdownOptionsFromConfig(config)).toThrow(ConfigError);
   });
 
   test('exit-code is a status the operating system keeps: outside 0-255 the reader refuses it', () => {

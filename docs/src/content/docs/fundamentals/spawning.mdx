@@ -255,8 +255,8 @@ Bounds the mailbox, which is otherwise unbounded — so this is the call
 that introduces message loss.  `drop-head` applies unless you say
 otherwise: a full mailbox discards the **oldest** queued message to make
 room, without throwing.  Add `withMailboxOverflow('drop-new')` to
-discard the arriving message instead, or `'reject'` to throw
-`MailboxFullError` at the `tell` site so the sender feels the pressure.
+discard the arriving message instead, or `'reject'` to refuse it and
+route it to `system.deadLetters` — never by throwing at the `tell` site.
 
 ### `withMailbox`
 

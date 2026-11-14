@@ -66,7 +66,7 @@ something.
 | 2 | `service-unbind` | `system.http(...).bind(...)`, DevTools | Stop the HTTP server / gRPC server / WebSocket listener from accepting new connections. |
 | 3 | `service-requests-done` | — | Wait for in-flight requests to finish; abort the rest. |
 | 4 | `service-stop` | broker actors (MQTT, Kafka, NATS, AMQP, …) | Close client connections, release sockets. |
-| 5 | `before-cluster-shutdown` | — | Optional pre-cluster-leave hooks. |
+| 5 | `before-cluster-shutdown` | parallelism, when enabled | Optional pre-cluster-leave hooks.  Offloaded actors' worker systems terminate here, so each gets its `postStop` before any thread stops. |
 | 6 | `cluster-sharding-shutdown-region` | `Cluster.join(...)` | Tell the sharding region to hand off entities. |
 | 7 | `cluster-leave` | `Cluster.join(...)` | Issue a `Cluster.leave()` — gossip leaving status. |
 | 8 | `cluster-exiting` | — | Wait for the cluster to acknowledge the leave. |
@@ -266,9 +266,12 @@ A), put them in different phases with a `dependsOn`.
 
 ### Timeouts
 
-Each phase has a `timeoutMs` (default 5 s); each task is wrapped in
-a timeout race.  A task that doesn't finish in time is logged and
-either:
+Each phase has a `timeoutMs` (default 5 s, and 10 s for
+`actor-system-terminate` — the phase that drains and tears the system
+down); each task is wrapped in a timeout race.  A task that doesn't
+finish in time is **abandoned, not cancelled**: it keeps running, it is
+logged at ERROR with its phase and whatever else in that phase is still
+pending, and then either:
 
 - **Recovered from** (the phase continues, `recover: true` — the
   default).  The next phase starts.
@@ -297,6 +300,26 @@ either:
   same way before its exit; one whose terminator tore the system down was
   flushed by that teardown already.  The run is in flight until its exit,
   so a `terminate()` that arrives while those flushes run starts nothing.
+
+#### The overall deadline
+
+The phase budgets bound each phase; `overall-timeout` (default `30s`)
+bounds the run.  Once it passes, the run halts in whatever phase it is
+in — exactly as a `recover: false` failure halts it, with the same
+teardown or exit afterwards — and logs one ERROR naming that phase and
+every task still pending, including any an earlier budget abandoned.
+With `exit-process = on` that is the exit, with `1` where `exit-code`
+is `0`.
+
+An exit at the end of a run that *completed* waits for the tasks a
+phase budget abandoned before it exits — a journal flush cut off
+mid-write is worse than a second spent waiting for it — but never past
+the overall deadline, and what the deadline cuts off is named at ERROR
+before the exit.  So the longest a run can take is `overall-timeout`,
+whatever the phases add up to: it is the one number to size a
+Kubernetes grace period against
+([K8s PreStop integration](#k8s-prestop-integration)).  `0` sets no
+deadline.
 
 Override per phase:
 
@@ -338,7 +361,7 @@ are nested, and the inner one has to be the smaller:
 
 | Budget | Key | Default |
 | --- | --- | --- |
-| The whole `actor-system-terminate` phase | `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`, falling back to `…default-phase-timeout` | 5 s |
+| The whole `actor-system-terminate` phase | `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`, seeded with 10 s and never less than `…default-phase-timeout` | 10 s |
 | The drain inside it | `actor-ts.system.shutdown-drain-timeout` | 2 s |
 
 Raise the drain budget above the phase timeout and the phase is
@@ -425,8 +448,9 @@ In Kubernetes, the pod-shutdown sequence is:
 4. If the grace period runs out first — PreStop included — K8s sends SIGKILL.
 ```
 
-The grace period therefore has to cover the PreStop sleep **plus** every
-phase that has tasks, one after another — see
+The grace period therefore has to cover the PreStop sleep **plus** the
+pipeline — every phase that has tasks, one after another, and never more
+than `overall-timeout` (30 s by default) — see
 [sizing the grace period](/operations/deployment/kubernetes/#terminationgraceperiodseconds).
 
 The standard recipe:
@@ -606,9 +630,10 @@ process exits because nothing is keeping the loop alive.
   });
   ```
   Every task is bounded by the phase timeout (default 5s).  Beyond
-  that, the task is abandoned and a warning is logged.  Don't
-  trust a task to "wait as long as needed" — `setPhaseTimeout` to
-  the realistic max, or set `recover: false` to fail fast.
+  that, the task is abandoned — still running — and an error is
+  logged, and the run as a whole is bounded by `overall-timeout`.
+  Don't trust a task to "wait as long as needed" — `setPhaseTimeout`
+  to the realistic max, or set `recover: false` to fail fast.
 </Aside>
 
 <Aside type="caution" title="Calling `system.terminate()` directly">

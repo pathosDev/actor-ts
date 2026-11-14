@@ -32,7 +32,9 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
+import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { DeadLetter } from '../../../../src/SystemMessages.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
@@ -79,7 +81,8 @@ type BurstThenCloseCommand = {
 /**
  * The same burst to one connection through `tell`, keeping each refusal: the
  * frame numbers whose `tell` threw `MailboxFullError` go into `refused`, which
- * the test owns.  Then the connection's own `close()`.
+ * the test owns — and which stays empty since `reject` stopped throwing into
+ * the sender (#919).  Then the connection's own `close()`.
  */
 type TellCountingRefusalsCommand = {
   readonly kind: 'tell-counting-refusals';
@@ -210,6 +213,7 @@ function newSystem(name: string, config: ConfigObject): ActorSystem {
 }
 
 type BoundRoute = {
+  readonly system: ActorSystem;
   readonly hub: WebsocketServerRef<Out, In, HubCommand>;
   /** Hand the route one upgraded socket, as a backend does, and wait until the hub has it. */
   readonly connect: () => Promise<{ readonly id: string; readonly socket: ProbeSocket }>;
@@ -241,7 +245,7 @@ async function bindRoute(
     });
     return { id: connected[before]!, socket };
   };
-  return { hub, connect };
+  return { system, hub, connect };
 }
 
 /** Burst every connection in one hub turn, close them all, and wait for the close. */
@@ -284,19 +288,30 @@ describe('a route bounds its connection mailboxes (#1432)', () => {
 
   /*
    * `reject` writes what `drop-new` writes — the oldest frames — so the frames
-   * alone cannot tell the two apart, and `reply` and `broadcast` contain the
-   * refusal so that it looks like `drop-new` there too.  What only `reject`
-   * does is throw `MailboxFullError` out of a `connection.tell()` an
-   * application makes itself, on its own stack, for every frame over the
-   * bound — which is what this case counts.
+   * alone cannot tell the two apart.  What only `reject` does is dead-letter
+   * every frame over the bound, because its queue's `deadLetterDrops`
+   * defaults to on — and it does so without throwing out of a
+   * `connection.tell()` an application makes itself (#919), which used to
+   * fail whoever sent the frame.  Both halves are counted here.
    */
-  test('a reject bound refuses each frame over it on the caller\'s stack, and close() still closes the connection', async () => {
+  test('a reject bound dead-letters each frame over it without throwing, and close() still closes the connection', async () => {
     const routeOptions = WebsocketRouteOptions.create<Out, In>()
       .withConnectionMailboxCapacity(2)
       .withConnectionMailboxOverflow('reject');
     const route = await bindRoute('ws-connection-bound-reject', {}, routeOptions);
     const { id, socket } = await route.connect();
     const refused: number[] = [];
+    const letters: unknown[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter.message); }
+    }
+    route.system.spawn(Listener, 'dead-letter-listener');
+    await awaitCondition(() => subscribed.value, { timeoutMs: 4_000, label: 'the dead-letter listener subscribed' });
 
     route.hub.tell({ kind: 'tell-counting-refusals', id, frames: BURST, code: 1000, reason: 'goodbye', refused });
 
@@ -304,7 +319,9 @@ describe('a route bounds its connection mailboxes (#1432)', () => {
       timeoutMs: 4_000,
       label: 'close() closed the bounded connection',
     });
-    expect(refused).toEqual([2, 3, 4, 5]);
+    await awaitCondition(() => letters.length >= 4, { timeoutMs: 4_000, label: 'the refused frames were dead-lettered' });
+    expect(refused).toEqual([]);
+    expect(letters).toEqual([2, 3, 4, 5].map((n) => ({ kind: 'out', message: { kind: 'pong', n } })));
     expect(socket.frameNumbers).toEqual([0, 1]);
     expect(socket.closeCalls).toEqual([{ code: 1000, reason: 'goodbye' }]);
   });

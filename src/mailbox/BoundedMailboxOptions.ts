@@ -7,8 +7,30 @@ export type BoundedMailboxOverflow =
   | 'drop-head'
   /** Drop the message being enqueued. */
   | 'drop-new'
-  /** Throw a MailboxFullError — caller can surface it. */
+  /**
+   * Refuse the message being enqueued and never lose it silently: it is
+   * reported as `drop-new` and dead-lettered, because `deadLetterDrops`
+   * defaults to on under this policy.  Nothing is thrown at the `tell` —
+   * the sender is never failed for a receiver's full queue (#919).  A
+   * replay that does not fit (`unstashAll()`) is refused whole with
+   * `MailboxFullError` on the replaying actor's own stack.
+   */
   | 'reject';
+
+/**
+ * Built-in default for {@link BoundedMailboxOptionsType.overflow}, and for
+ * `ActorOptionsType.mailboxOverflow` — one default, whoever builds the
+ * mailbox (#919).  `drop-head` discards the oldest queued message when a new
+ * one arrives on a full mailbox — the right shape for telemetry-style
+ * workloads where stale messages are worthless and the freshest snapshot is
+ * the only thing that matters.
+ *
+ * `BoundedMailbox` used to default to `reject` when constructed by hand while
+ * the cell's capacity-built queue defaulted to this, so opting into a bounded
+ * mailbox through `withMailbox` silently changed the failure mode — at the
+ * time from "lose messages" to "throw into the sender" (#919).
+ */
+export const DEFAULT_MAILBOX_OVERFLOW: BoundedMailboxOverflow = 'drop-head';
 
 /** Plain options-object shape accepted by a {@link BoundedMailbox}. */
 export type BoundedMailboxOptionsType = {
@@ -31,7 +53,10 @@ export type BoundedMailboxOptionsType = {
   readonly onDrop?: MailboxDropObserver;
   /**
    * Route every dropped envelope to `system.deadLetters`, so an overflow
-   * leaves a forensic record and not only a counter (#773).  Default `false`.
+   * leaves a forensic record and not only a counter (#773).  Default `false`,
+   * except under `overflow: 'reject'`, where it defaults to `true` — a
+   * refusal that left no record would make `reject` the same policy as
+   * `drop-new` (#919).  An explicit `false` is honoured either way.
    *
    * Opt-in rather than always-on because the cost lands in the worst
    * possible place: the drop happens on the sender's stack, and
@@ -74,7 +99,7 @@ export class BoundedMailboxOptionsBuilder extends OptionsBuilder<BoundedMailboxO
     return this.set('capacity', capacity);
   }
 
-  /** What to do when a message arrives on a full mailbox.  Default `reject`. */
+  /** What to do when a message arrives on a full mailbox.  Default `drop-head`. */
   withOverflow(overflow: BoundedMailboxOverflow): this {
     return this.set('overflow', overflow);
   }
@@ -84,7 +109,7 @@ export class BoundedMailboxOptionsBuilder extends OptionsBuilder<BoundedMailboxO
     return this.set('onDrop', onDrop);
   }
 
-  /** Dead-letter each dropped envelope instead of only counting it.  Default `false`. */
+  /** Dead-letter each dropped envelope instead of only counting it.  Default `false`, `true` under `reject`. */
   withDeadLetterDrops(deadLetterDrops: boolean): this {
     return this.set('deadLetterDrops', deadLetterDrops);
   }

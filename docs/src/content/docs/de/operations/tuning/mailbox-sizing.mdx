@@ -85,9 +85,11 @@ const writerOptions = ActorOptions.create()
 const slowWriter = system.spawnAnonymous(SlowWriter, writerOptions);
 ```
 
-Bounde auf den Worst-Case-akzeptablen Puffer. `reject` propagiert
-Backpressure zum Sender — er sieht `MailboxFullError` und passt
-sich an (Retry, Drop, Alert).
+Bounde auf den Worst-Case-akzeptablen Puffer. `reject` lehnt ab, was
+nicht passt, und macht es samt Sender zum Dead Letter, sodass eine
+Ablehnung nie still ist — Gegendruck erzeugt es aber nicht: `tell`
+wirft nie, und ein Producer, der langsamer werden muss, beobachtet
+`DeadLetter` auf dem Event-Stream oder fragt per `ask`, statt zu tellen.
 
 ### 2. Telemetrie-artige Actors (veraltete Daten sind falsch)
 
@@ -264,8 +266,8 @@ Worst-Case-Latenz = 1000 / 100 = 10s     # bei voller Queue
 ```
 
 Wenn 10 Sekunden Queue okay sind, ist Kapazität 1000 fein. Wenn
-nicht, Kapazität reduzieren oder akzeptieren, dass Producer
-`MailboxFullError` sehen.
+nicht, Kapazität reduzieren oder akzeptieren, dass Ablehnungen als
+Dead Letters auftauchen.
 
 ## Die Metriken lesen
 
@@ -315,8 +317,8 @@ Beobachte:
   Actor, der seine Arbeit tut. Für Drop-Zahlen pro Instanz nimm ein
   eigenes `onDrop`; es bekommt neben dem Grund auch den verworfenen
   Envelope, kann also sagen *was* verloren ging und nicht nur wie viel.
-- **`MailboxFullError`-Rate** beim Sender — taucht meist als
-  Supervisor-Restarts des sendenden Actors auf.
+- **Dead Letters** einer `reject`-Schranke — jeder nennt die
+  abgelehnte Nachricht, ihren Sender und den vollen Actor.
 
 Dieselbe 10 000er-Schwelle erzeugt eine Log-Warnung, wiederholt bei
 jeder Verdopplung, unabhängig davon ob Metriken aktiv sind. Auf diese
@@ -391,13 +393,13 @@ konstruierst — `withMailboxCapacity` hat keine Tür dorthin.
 
 | Policy | Wann |
 | --- | --- |
-| **`reject`** | Backpressure schlägt zum Sender durch. Der Sender muss handeln. |
+| **`reject`** | Jede Ablehnung nachweisbar — abgelehnt und zum Dead Letter gemacht. |
 | **`drop-head`** | Telemetrie / Metriken — Neueste gewinnt. |
 | **`drop-new`** | Kritische Arbeit — Eingereihtes behalten, Eingehendes droppen. |
 
 Wähle nach **der richtigen Antwort auf Overflow**:
 
-- "Sender soll retryen / alerten" → `reject`.
+- "Jeder Verlust muss erklärbar sein" → `reject`.
 - "Veraltete Daten sind falsch" → `drop-head`.
 - "Eingereihte Arbeit ist wertvoll" → `drop-new`.
 
@@ -457,7 +459,7 @@ const workerOptions = ActorOptions.create<Message>()
 ```
 
 Die Policy-Menge ist `'drop-lowest-priority'` / `'drop-new'` /
-`'reject'`, per Default `reject`. `drop-head` fehlt mit Absicht: der
+`'reject'`, per Default `drop-lowest-priority`. `drop-head` fehlt mit Absicht: der
 Kopf einer Priority-Queue ist die Nachricht, die du als wichtigste
 bezeichnet hast. `drop-lowest-priority` wirft stattdessen vom anderen
 Ende ab — das ist die Variante von "Last abwerfen", für die eine
@@ -481,7 +483,7 @@ PriorityMailbox-Oberfläche.
 ## Mailbox + Backpressure-Design
 
 ```
-producer  →  reject Backpressure  →  Sender verlangsamt sich
+producer  →  reject                →  Ablehnung als Dead Letter; Producer beobachtet DeadLetter
 producer  →  drop-head             →  Producer macht weiter; Reader sieht das Neueste
 producer  →  drop-new              →  Producer macht weiter; Reader verarbeitet das Älteste
 ```
@@ -553,7 +555,7 @@ Protokoll-Design.
   ```ts
   new BoundedMailbox({ capacity: 10 });   // ✗ keine Burst-Toleranz
   ```
-  Kapazitäten unter der natürlichen Burst-Größe schaden — `reject`
+  Kapazitäten unter der natürlichen Burst-Größe schaden — die Policy
   feuert bei normalem Traffic. Starte bei ~10× der Steady-State-Ankunftsrate
   über dein Verarbeitungsfenster.
 </Aside>

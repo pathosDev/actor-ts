@@ -506,8 +506,8 @@ backlog is handled.  Four things it will not wait for:
   that keeps producing new work while draining — a self-tell loop, a
   rally between two actors — never goes quiet, so only the budget ends
   it.  Raise the budget, and raise
-  `actor-ts.coordinated-shutdown.default-phase-timeout` with it if you
-  shut down through the pipeline.
+  `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`
+  (10 s by default) with it if you shut down through the pipeline.
 - **The mailbox was parked.**  [`context.throttle(...)`](/fundamentals/throttling/)
   and a supervisor-suspended mailbox both count as quiet, because neither
   drains at a rate a shutdown can wait for.  Cancel the throttle before

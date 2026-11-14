@@ -344,10 +344,12 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * Transmit one in-flight send, with its retransmit armed first.
    *
    * The timer is the at-least-once guarantee, and the tell can throw — a
-   * bounded mailbox with the `reject` overflow policy throws
-   * `MailboxFullError` at the sender.  Armed after the tell, a throw on a
-   * retransmit skipped the re-arm, and that seq was never sent again: it held
-   * its window slot until the producer stopped (#1230).
+   * bounded mailbox with the `reject` overflow policy threw
+   * `MailboxFullError` at the sender until #919, and a remote transport or a
+   * caller's own `Mailbox` subclass may still throw anything.  Armed after
+   * the tell, a throw on a retransmit skipped the re-arm, and that seq was
+   * never sent again: it held its window slot until the producer stopped
+   * (#1230).
    *
    * What a throw does still depends on which transmission it hit.  The first
    * comes from {@link dispatch}, on this actor's turn, so a throw there faults

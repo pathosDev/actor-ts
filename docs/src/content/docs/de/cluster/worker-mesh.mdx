@@ -305,7 +305,7 @@ geschriebenes Bootstrap.
 | `withRestartMinBackoffMs(ms)` | Wartezeit vor dem ersten Respawn eines abgestürzten Slots.  Default `200`. |
 | `withRestartMaxBackoffMs(ms)` | Obergrenze für die Respawn-Wartezeit, die pro Versuch verdoppelt wird.  Default `10000`. |
 | `withRestartRandomFactor(f)` | ±-Jitter-Anteil auf jede Respawn-Wartezeit, in `[0, 1]`.  Default `0.2`. |
-| `withMaxRestarts(n)` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` für unbegrenzt.  Default `10`. |
+| `withMaxRestarts(n)` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` für unbegrenzt — das hebt die Obergrenze auf, nicht den Backoff: Jeder Respawn wartet weiterhin doppelt so lange wie der vorige, bis zum Maximum.  Default `10`. |
 | `withRestartWindowMs(ms)` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück.  Default `60000`. |
 | `withOnWorkerPermanentlyDown(fn)` | Wird einmal pro Slot aufgerufen, dessen Restart-Budget erschöpft ist.  Default: eine `ERROR`-Zeile über den Logger des Pools. |
 | `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Ein eigenes implementiert `WorkerBackend`, liefert ein `WorkerLike` (beide aus `actor-ts/worker` exportiert) und deklariert `containsWorkerErrors`; siehe [Eigene Backends](#eigene-backends).  Default: erkannt. |

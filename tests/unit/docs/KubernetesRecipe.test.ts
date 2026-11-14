@@ -1,7 +1,11 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_PHASE_TIMEOUT_MS } from '../../../src/Constants.js';
+import {
+  DEFAULT_ACTOR_SYSTEM_TERMINATE_TIMEOUT_MS,
+  DEFAULT_PHASE_TIMEOUT_MS,
+  DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS,
+} from '../../../src/Constants.js';
 import { Phases } from '../../../src/CoordinatedShutdown.js';
 import { endpointsPath } from '../../../src/discovery/KubernetesApiSeedProvider.js';
 
@@ -27,10 +31,11 @@ import { endpointsPath } from '../../../src/discovery/KubernetesApiSeedProvider.
  *   variable the manifest sets is read by the sample or by `src/`;
  * - the service name the sample passes to the provider is the headless
  *   Service the manifest defines;
- * - `terminationGracePeriodSeconds` covers the `preStop` sleep plus one
- *   phase timeout for every row of the page's phase table, the table names
- *   only canonical phases and at least the ones the framework wires for the
- *   page's app, and no other value of the setting is quoted as the recipe's.
+ * - `terminationGracePeriodSeconds` covers the `preStop` sleep plus the
+ *   pipeline's overall deadline, the phases in the page's table fit under
+ *   that deadline at their default budgets (#920), the table names only
+ *   canonical phases and at least the ones the framework wires for the page's
+ *   app, and no other value of the setting is quoted as the recipe's.
  *
  * What this cannot see: a task the page's app registers that the table does
  * not list, and whether a phase the table lists really holds a task.
@@ -158,14 +163,19 @@ describe('Kubernetes recipe (#1012, #1013)', () => {
       expect(env.get(variable)).toBe(metadataName(headless[0]!));
     });
 
-    test(`${page.language}: the grace period covers preStop plus every phase in the table`, () => {
+    test(`${page.language}: the grace period covers preStop plus the overall deadline, and the table fits under it`, () => {
       const grace = Number(/terminationGracePeriodSeconds: (\d+)/.exec(statefulSet)![1]);
       const preStop = Number(/"sleep (\d+)"/.exec(statefulSet)![1]);
       const rows = phaseTableRows(text);
       const canonical: ReadonlyArray<string> = Object.values(Phases);
       expect(rows.filter((phase) => !canonical.includes(phase))).toEqual([]);
       expect(WIRED_FOR_THE_PAGE_APP.filter((phase) => !rows.includes(phase))).toEqual([]);
-      expect(grace).toBeGreaterThanOrEqual(preStop + rows.length * (DEFAULT_PHASE_TIMEOUT_MS / 1000));
+      // The run never outlasts `overall-timeout`, so that — not a sum of phase
+      // budgets — is what the grace period has to hold beside `preStop`.
+      expect(grace).toBeGreaterThanOrEqual(preStop + DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS / 1000);
+      const budgetOf = (phase: string): number =>
+        phase === Phases.ActorSystemTerminate ? DEFAULT_ACTOR_SYSTEM_TERMINATE_TIMEOUT_MS : DEFAULT_PHASE_TIMEOUT_MS;
+      expect(rows.reduce((sum, phase) => sum + budgetOf(phase), 0)).toBeLessThanOrEqual(DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS);
     });
 
     test(`${page.language}: the coordinated-shutdown page orders PreStop before SIGTERM, as this page does`, () => {

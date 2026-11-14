@@ -1,6 +1,6 @@
 import { match } from 'ts-pattern';
 import type { Envelope } from '../internal/Mailbox.js';
-import { DroppingMailbox, MailboxFullError } from './DroppingMailbox.js';
+import { DroppingMailbox, MailboxFullError, deadLetterDropsFor } from './DroppingMailbox.js';
 import {
   PriorityMailboxOptionsValidator,
   type PriorityMailboxOptions,
@@ -105,14 +105,15 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
   constructor(options: PriorityMailboxOptions<T>) {
     // Read straight off the argument rather than from `settings`: the base
     // owns the field and has to be constructed before `settings` exists.
-    super((options as Partial<PriorityMailboxOptionsType<T>>).deadLetterDrops);
+    super(deadLetterDropsFor(options as Partial<PriorityMailboxOptionsType<T>>));
     const settings = { ...(options as Partial<PriorityMailboxOptionsType<T>>) };
     new PriorityMailboxOptionsValidator<T>().validate(settings);
     this.priorityFor = settings.priorityFor!;
     this.capacity = settings.capacity;
-    // `reject` for the same reason `BoundedMailbox` defaults to it: naming a
-    // capacity says how much you will hold, not what you are willing to lose.
-    this.overflow = settings.overflow ?? 'reject';
+    // This queue's counterpart of the `drop-head` every bounded FIFO queue
+    // defaults to: a full queue gives up the message furthest from delivery.
+    // `reject` was the default once, back when it threw into the sender (#919).
+    this.overflow = settings.overflow ?? 'drop-lowest-priority';
     this.onPriorityError = settings.onPriorityError;
     // The caller's hook is just the first observer — see `DroppingMailbox`.
     if (settings.onDrop !== undefined) this.observeDrops(settings.onDrop);
@@ -126,7 +127,9 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
       match(this.overflow)
         .with('drop-lowest-priority', () => this.shedLeastImportant(envelope))
         .with('drop-new', () => this.reportDrop('drop-new', envelope))
-        .with('reject', () => { throw new MailboxFullError(capacity); })
+        // Refused, not thrown into the sender, and dead-lettered by the
+        // `deadLetterDrops` default `reject` gets (#919).
+        .with('reject', () => this.reportDrop('drop-new', envelope))
         .exhaustive();
       return;
     }

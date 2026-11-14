@@ -1,9 +1,10 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions, type ActorSystemOptionsType } from '../../../src/ActorSystemOptions.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { CoordinatedShutdownId } from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedStartupId } from '../../../src/CoordinatedStartup.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -17,6 +18,7 @@ import { DeadLetter } from '../../../src/SystemMessages.js';
 import { TestProbe } from '../../../src/testkit/TestProbe.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { runWorkerMeshNode, type ModuleImporter, type WorkerMeshInitData } from '../../../src/worker/WorkerMeshBootstrap.js';
+import { WorkerMesh } from '../../../src/worker/WorkerMesh.js';
 import type { WorkerNodeContext } from '../../../src/worker/WorkerNode.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { FakeWorkerBackend, hostMeshNode } from '../worker/__fixtures__/InMemoryWorkerThread.js';
@@ -55,6 +57,8 @@ type RigOptions = {
   readonly workersFromConfig?: boolean;
   /** Persistence wired on the main thread only — the workers inherit its config, never its code. */
   readonly persistence?: NonNullable<ActorSystemOptionsType['persistence']>;
+  /** A worker's `terminate()` stops it the way a thread stops — see `hostMeshNode`'s `hardStop`. */
+  readonly hardStop?: boolean;
 };
 
 const realImport: ModuleImporter = (href) => import(href) as Promise<Record<string, unknown>>;
@@ -62,7 +66,10 @@ const realImport: ModuleImporter = (href) => import(href) as Promise<Record<stri
 function rig(options: RigOptions = {}): Rig {
   const importer = options.importer ?? realImport;
   const hosted: Array<Promise<{ readonly system: ActorSystem }>> = [];
-  const backend = new FakeWorkerBackend({ onSpawn: (worker) => { hosted.push(hostMeshNode(worker, importer).node); } });
+  const hostOptions = { hardStop: options.hardStop ?? false };
+  const backend = new FakeWorkerBackend({
+    onSpawn: (worker) => { hosted.push(hostMeshNode(worker, importer, hostOptions).node); },
+  });
   const base = ParallelismOptions.create().withModule(ACTORS).withBackend(backend);
   const parallelism = (options.configure ?? ((o) => o))(options.workersFromConfig ? base : base.withWorkers(2));
   const systemOptions = ActorSystemOptions.create()
@@ -371,6 +378,94 @@ describe('ParallelismExtension — actors on workers from config alone (#1563)',
     }
     expect(stopped.slice(before)).toContain('actor-ts://para/user/lifecycle');
     expect(r.backend.spawned.every((worker) => worker.terminated)).toBe(true);
+  }, 20_000);
+
+  /**
+   * #1754 — the pipeline used to stop the threads in `cluster-leave`, through
+   * `worker-mesh-terminate`, long before the termination prelude that gives
+   * each worker system its orderly `terminate()`.  The rig's default worker
+   * runs its hosted system's `terminate()` on a hard stop too, so it could not
+   * tell; `hardStop` makes a stop lose `postStop`, as a real thread's does.
+   */
+  const pipelineCases: Array<[string, (system: ActorSystem) => Promise<unknown>]> = [
+    ['CoordinatedShutdown.run()', (system) => system.extension(CoordinatedShutdownId).run()],
+    ['terminate({ runCoordinatedShutdown: true })', (system) => system.terminate({ runCoordinatedShutdown: true })],
+    // The control: the bare teardown never reached `cluster-leave`, so it was
+    // right before the fix — and it proves the hard-stopping rig is not what
+    // loses `postStop` in the two cases above.
+    ['a bare terminate()', (system) => system.terminate()],
+  ];
+  for (const [route, shutDown] of pipelineCases) {
+    test(`${route} on a hard-stopping backend still gives an offloaded actor its postStop (#1754)`, async () => {
+      const r = rig({ hardStop: true, name: 'para-hard' });
+      const before = stopped.length;
+      try {
+        const ref = r.system.spawn(Lifecycle, 'lifecycle');
+        await r.system.extension(ParallelismExtensionId).whenReady();
+        await awaitCondition(() => (ref as PendingRemoteActorRef).isResolved, { timeoutMs: 12_000, label: 'spawn acknowledged' });
+
+        await shutDown(r.system);
+
+        expect(stopped.slice(before)).toContain('actor-ts://para-hard/user/lifecycle');
+        expect(r.backend.spawned.every((worker) => worker.terminated)).toBe(true);
+      } finally {
+        await r.system.terminate();
+        for (const hosted of r.hosted) {
+          const node = await hosted.catch(() => null);
+          if (node !== null) await node.system.terminate();
+        }
+      }
+    }, 20_000);
+  }
+
+  /**
+   * The orderly shutdown is run once and shared between its two doors.  That
+   * only shows once a phase budget abandons the pipeline task: the prelude in
+   * the last phase then calls it a second time while the first run is still
+   * waiting on its acknowledgments.  Joining that run, the teardown waits for
+   * its end — the hand-off to `mesh.terminate()` — and `run()` resolves after
+   * it, on a system not yet terminated when it happens.  A second, fresh run
+   * finds the mesh already taken and returns at once, so the teardown races
+   * ahead and the first run's hand-off lands after `run()` has resolved.
+   *
+   * The acknowledgments are withheld so the first run is still in flight by
+   * then whatever the machine's speed; its own budget is the drain timeout
+   * plus a second, so the drain is shortened to keep the case quick.
+   */
+  test('a pipeline task its phase budget abandons is joined by the prelude, not started a second time (#1754)', async () => {
+    const r = rig({
+      hardStop: true,
+      name: 'para-abandoned',
+      config: {
+        system: { 'shutdown-drain-timeout': '100ms' },
+        'coordinated-shutdown': { phases: { 'before-cluster-shutdown': { timeout: '20ms' } } },
+      },
+    });
+    const handOffs: boolean[] = [];
+    const realTerminate = WorkerMesh.prototype.terminate;
+    const terminateSpy = spyOn(WorkerMesh.prototype, 'terminate').mockImplementation(function (this: WorkerMesh) {
+      handOffs.push(r.system.isTerminated);
+      return realTerminate.call(this);
+    });
+    try {
+      const ref = r.system.spawn(Lifecycle, 'lifecycle');
+      const extension = r.system.extension(ParallelismExtensionId);
+      await extension.whenReady();
+      await awaitCondition(() => (ref as PendingRemoteActorRef).isResolved, { timeoutMs: 12_000, label: 'spawn acknowledged' });
+      // No worker's acknowledgment lands, so the first run waits out its budget.
+      (extension as unknown as { onWorkerTerminated: () => void }).onWorkerTerminated = () => {};
+
+      await r.system.extension(CoordinatedShutdownId).run();
+
+      expect(handOffs).toEqual([false]);
+    } finally {
+      terminateSpy.mockRestore();
+      await r.system.terminate();
+      for (const hosted of r.hosted) {
+        const node = await hosted.catch(() => null);
+        if (node !== null) await node.system.terminate();
+      }
+    }
   }, 20_000);
 
   test('terminate() before the mesh is up still tears the workers down and fails what was waiting', async () => {

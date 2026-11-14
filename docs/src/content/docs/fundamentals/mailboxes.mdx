@@ -84,7 +84,8 @@ and you can say which messages are safe to lose:
   `drop-head` keeps the queue fresh.
 - An **admission point** in front of an expensive pipeline, where you
   would rather refuse work than queue it.  `drop-new` keeps what you
-  already accepted, `reject` tells the sender to back off.
+  already accepted, `reject` refuses the arrival and records it as a
+  dead letter.
 - Any actor exposed to a producer you do not control, where an
   unbounded queue is a denial-of-service surface.  Read the third bullet
   with the first two: it says where a bound is *worth* considering, not
@@ -121,8 +122,8 @@ and `.overflow`.  The spawn site always wins; the entry decides for the
 paths it names, and the block for every other actor that said nothing.
 
 The three policies and how to choose between them are covered under
-[`BoundedMailbox`](#boundedmailbox) below — including why `reject` fails
-the *sender* rather than the slow actor.
+[`BoundedMailbox`](#boundedmailbox) below — including why `reject` never
+throws into the sender.
 
 Drops from a capacity you set are counted by
 `actor_mailbox_dropped_total`, labelled with the actor's class and the
@@ -345,15 +346,18 @@ Three policies:
 | --- | --- |
 | `'drop-head'` | Dequeue the *oldest* message in the queue, discard it, enqueue the new one.  Newest messages always make it in. |
 | `'drop-new'` | Discard the *incoming* message.  The old queue is preserved unchanged. |
-| `'reject'` | Throw `MailboxFullError` at the `tell` site.  Caller surfaces the backpressure. |
+| `'reject'` | Refuse the *incoming* message and route it to `system.deadLetters`, with its sender.  Nothing is thrown at the `tell` site. |
 
-Which one you get when you name none depends on which door you came
-through, and the difference is deliberate: constructing a
-`BoundedMailbox` yourself defaults to **`reject`**, because you built a
-bound and nothing else can be assumed about what is safe to lose.
-`withMailboxOverflow` defaults to **`drop-head`**, the policy that suits
-the workloads people actually reach for a bound to protect.  Name the
-policy either way and the question does not arise.
+Whichever door you come through, a policy you do not name is
+**`drop-head`**: constructing a `BoundedMailbox` yourself and
+`withMailboxCapacity` without `withMailboxOverflow` behave the same.
+
+What sets `reject` apart from `drop-new` is the record.  Both keep the
+queue as it is and lose the arrival, but `reject` turns
+`deadLetterDrops` on by default, so every refusal reaches
+`system.deadLetters` — and the event stream — with its sender and the
+message.  Passing `deadLetterDrops: false` explicitly makes it the same
+policy as `drop-new`.
 
 The options are validated at construction: a missing or non-positive
 `capacity` and an unknown overflow policy throw `OptionsError`.
@@ -373,9 +377,9 @@ Picking between them is a backpressure-vs-loss trade-off:
   latest snapshot is the only thing that matters.
 - **`drop-new`** = "first wins."  Right for command-streams where
   re-ordering is unacceptable and dropping a late arrival is OK.
-- **`reject`** = "let the sender deal with it."  Right when the
-  sender has a meaningful backoff response (retry, route to a
-  different actor, return 503 from an HTTP handler).
+- **`reject`** = "refuse, and never silently."  Right when every
+  refused message has to be explainable afterwards — a command stream,
+  a delivery confirmation — and you watch dead letters for it.
 
 `droppedCount` on the mailbox instance tracks how many messages
 have been discarded — useful to wire into a metrics gauge so you
@@ -383,15 +387,14 @@ notice when the bound is hit.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`reject` and the calling actor">
-  `reject` throws at the **`tell` call site**.  If actor A
-  `tell`s B and B's mailbox is full with the `reject` policy,
-  the throw lands inside A's `onReceive` — caught by A's
-  supervisor, not B's.  That's usually fine (the supervisor for
-  A decides how A handles the unreachability), but it means
-  "B's mailbox is overflowing" surfaces as "A keeps restarting,"
-  which can confuse triage.  Wire a metric on `droppedCount`
-  rather than relying on supervisor logs to catch it.
+<Aside type="note" title="`reject` and the calling actor">
+  `tell` never throws, whatever the policy.  Until v0.19 `reject`
+  threw `MailboxFullError` at the `tell` call site, so when actor A
+  told B and B's queue was full the throw landed inside A's
+  `onReceive`, and A was restarted because B was slow.  A refusal is
+  a dead letter now; a sender that needs to know subscribes to
+  `DeadLetter` on the event stream, and `droppedCount` and
+  `actor_mailbox_dropped_total` count it either way.
 </Aside>
 
 ## `PriorityMailbox`
@@ -468,8 +471,8 @@ Both halves matter:
   configuration: it has nothing to do about a broken `priorityFor` and no
   way to tell that from a failure of its own.  An escaping throw landed
   in the sender's `onReceive` and got the **sender** restarted — the same
-  confusion the `reject` caution above describes, for a bug that has
-  nothing to do with the sender at all.
+  confusion `reject` used to cause before it stopped throwing, for a bug
+  that has nothing to do with the sender at all.
 
 `±Infinity` is a *ranking*, not a failure: `-Infinity` means "ahead of
 everything", `+Infinity` means "behind everything", and both are ordered
@@ -537,14 +540,15 @@ const workerOptions = ActorOptions.create<Message>()
 ```
 
 The policies are `'drop-lowest-priority'`, `'drop-new'` and `'reject'`, and
-`reject` is what you get when you name a capacity without one — naming a
-capacity says how much you will hold, not what you are willing to lose.
+`drop-lowest-priority` is what you get when you name a capacity without
+one — this queue's counterpart of the `drop-head` every FIFO bound
+defaults to.
 
 | Policy | What happens on overflow |
 | --- | --- |
 | `'drop-lowest-priority'` | Discard the message furthest from delivery — the lowest-priority one, and among equals the one that arrived last.  The arriving message competes on the same terms, so a message ranked below the whole backlog is the one that goes. |
 | `'drop-new'` | Discard the *incoming* message, whatever priority it was given. |
-| `'reject'` | Throw `MailboxFullError` at the `tell` site. |
+| `'reject'` | Refuse the *incoming* message and dead-letter it.  Nothing is thrown at the `tell` site. |
 
 `drop-head` is deliberately **not** offered here.  On a FIFO queue it means
 "discard the stalest", which works because arrival order is the only order
@@ -647,13 +651,13 @@ it.
 
 A `capacity` bounds the **ordinary** class only, and the three
 `BoundedMailbox` policies — `'drop-head'`, `'drop-new'`, `'reject'` — act
-on it alone.  A control message is never shed, never refused, never
-counted as a drop and never makes `reject` throw: the flood a bound sheds
-is the traffic the control message is there to overtake.  So the capacity
-is a ceiling on the ordinary class, and the control class is bounded by
-whatever sends it — which is one more reason to keep the predicate to the
-few kinds that need to overtake.  Named without a policy, a capacity means
-`reject`, as on every mailbox you construct yourself.
+on it alone.  A control message is never shed, never refused and never
+counted as a drop: the flood a bound sheds is the traffic the control
+message is there to overtake.  So the capacity is a ceiling on the
+ordinary class, and the control class is bounded by whatever sends it —
+which is one more reason to keep the predicate to the few kinds that need
+to overtake.  Named without a policy, a capacity means `drop-head`, as on
+every bounded FIFO queue.
 
 `unstashAll()` puts each message back at the head of its own class, and
 the ordinary half meets the bound the way a `BoundedMailbox` replay does.
@@ -867,7 +871,8 @@ alternative in four situations:
 1. **Producer/consumer mismatch.**  The producer can emit faster
    than the consumer can drain.  Bound the consumer's mailbox;
    pick an overflow policy that matches the workload (drop-head
-   for telemetry, reject for HTTP-driven backpressure).
+   for telemetry, reject where every refused message has to be on
+   record).
 2. **Latency budget per kind.**  Some messages must be handled in
    tens of milliseconds (user-facing requests), others can wait
    minutes (background reconciliation).  Priority mailbox; the

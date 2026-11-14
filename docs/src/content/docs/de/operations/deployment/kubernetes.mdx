@@ -85,7 +85,7 @@ spec:
         app: actor-ts
     spec:
       serviceAccountName: actor-ts
-      terminationGracePeriodSeconds: 45   # preStop 10 s + 5 Phasen × 5 s + Reserve
+      terminationGracePeriodSeconds: 45   # preStop 10 s + overall-timeout 30 s + Reserve
       containers:
         - name: app
           image: ghcr.io/your-org/your-app:1.2.3
@@ -206,10 +206,20 @@ wird; sie deckt also den `preStop`-Hook **und** alles nach SIGTERM ab.
 Ist sie abgelaufen, schickt K8s SIGKILL. Was SIGTERM startet, ist der
 [Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/): zwölf
 Phasen, die **nacheinander** laufen, jede mit eigenem Timeout
-(`actor-ts.coordinated-shutdown.default-phase-timeout`, 5 s). Eine
-Phase ohne Task wird kostenlos übersprungen, das Budget ist also
-`preStop + Σ(Timeouts der Phasen, die Tasks haben)`. Für die App auf
-dieser Seite:
+(`actor-ts.coordinated-shutdown.default-phase-timeout`, 5 s, und 10 s
+für `actor-system-terminate`) — und der Lauf als Ganzes begrenzt durch
+`actor-ts.coordinated-shutdown.overall-timeout`, 30 s. Diese Frist ist
+die Zahl, gegen die die Grace-Period bemessen wird:
+`preStop + overall-timeout + Reserve`, für dieses Manifest also
+`10 s + 30 s + 5 s = 45 s`. Danach hält der Lauf in der Phase an, die er
+erreicht hat, und loggt die noch offenen Tasks auf Error-Level — der Pod
+bekommt also nie mitten in einer Phase SIGKILL, die niemand eingeplant
+hat.
+
+Ob die Phasen unter die Frist passen, ist die andere Hälfte. Eine
+Phase ohne Task wird kostenlos übersprungen, die Pipeline braucht also
+`Σ(Timeouts der Phasen, die Tasks haben)`. Für die App auf dieser
+Seite:
 
 | Phase | Wer den Task registriert | Worst Case |
 | --- | --- | --- |
@@ -217,22 +227,26 @@ dieser Seite:
 | `service-requests-done` | dein Request-Drain, falls du einen registrierst | 5 s |
 | `cluster-sharding-shutdown-region` | `Cluster.join` | 5 s |
 | `cluster-leave` | `Cluster.join` | 5 s |
-| `actor-system-terminate` | der eingebaute Terminator | 5 s |
+| `actor-system-terminate` | der eingebaute Terminator | 10 s |
 
-Das sind `10 s + 5 × 5 s = 35 s`, und 45 lassen zehn Sekunden Reserve.
-Die Tasks innerhalb einer Phase laufen parallel, der zweite `bind()`
-kostet also nichts extra — aber jede **weitere Phase**, die einen Task
-bekommt, addiert ihren Timeout:
+Das sind `4 × 5 s + 10 s = 30 s` — genau die Frist. Die Tasks innerhalb
+einer Phase laufen parallel, der zweite `bind()` kostet also nichts
+extra — aber jede **weitere Phase**, die einen Task bekommt, addiert
+ihren Timeout, und jenseits von 30 s schneidet die Frist den Lauf ab
+statt der Grace-Period:
 
 - Broker-Actors schließen ihre Verbindungen in `service-stop`, ebenso
   der Offload-Pool bei eingeschalteter Parallelität — **+5 s**;
+- bei eingeschalteter Parallelität terminieren die Systeme der Worker in
+  `before-cluster-shutdown` — **+5 s**;
 - eine Dead-Letter-Queue (`actor-ts.dead-letters.store` nicht `off`)
   flusht in `before-actor-system-terminate` — **+5 s**;
 - jede Phase, in die du selbst registrierst — **+5 s**, oder ihr
   eigener `timeout`, wenn du einen setzt.
 
-Ist die Grace-Period von der Plattform vorgegeben, dreh das
-Phasen-Budget herunter statt die Grace-Period hoch:
+Wächst die Summe über die Frist, erhöhe `overall-timeout` und die
+Grace-Period zusammen. Ist die Grace-Period von der Plattform
+vorgegeben, dreh das Phasen-Budget herunter statt die Frist hoch:
 
 ```hocon
 actor-ts.coordinated-shutdown {
@@ -529,10 +543,9 @@ import { Aside } from '@astrojs/starlight/components';
   Wenn der Shutdown länger braucht, schickt K8s mittendrin SIGKILL —
   der Cluster bekommt kein sauberes Leave, Journals werden nicht
   geflusht, in-flight Requests gekillt. Die Grace-Period muss den
-  `preStop`-Sleep **plus** die Pipeline abdecken, und der Worst Case
-  der Pipeline ist `default-phase-timeout` (5 s) mal der Anzahl der
-  Phasen, die tatsächlich Tasks haben — nicht mal zwölf, denn eine
-  leere Phase ist ein No-Op, der nichts kostet. Die Rechnung für das
+  `preStop`-Sleep **plus** die Pipeline abdecken, und die Pipeline
+  läuft nie länger als `overall-timeout` (Default 30 s) — bemiss die
+  Grace-Period daran, nicht an den Phasen. Die Rechnung für das
   Manifest dieser Seite steht unter
   [`terminationGracePeriodSeconds`](#terminationgraceperiodseconds).
 </Aside>

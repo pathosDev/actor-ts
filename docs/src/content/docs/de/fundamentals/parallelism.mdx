@@ -140,7 +140,13 @@ herunterfährt.  Er terminiert zuerst das System jedes Workers — sodass ein
 ausgelagerter Actor sein `postStop` bekommt wie ein lokaler —, wartet auf
 sie (begrenzt durch dasselbe `shutdown-drain-timeout`, das die Worker
 nutzen, plus eine Sekunde), und stoppt dann die Threads und die eigenen
-Actors des Main-Threads.
+Actors des Main-Threads.  Die
+[Coordinated-Shutdown-Pipeline](/de/fundamentals/coordinated-shutdown/),
+die ein SIGTERM ausführt, hält dasselbe Versprechen: Sie fährt die Systeme
+der Worker in `before-cluster-shutdown` herunter, nachdem die
+Service-Schicht gestoppt ist und bevor `cluster-leave` einen Thread
+stoppt — eine Nachricht, die ein Actor des Main-Threads danach an einen
+ausgelagerten schickt, wird also zum Dead Letter.
 
 ## Drei Grenzen, jede mit einem lauten Fehler
 

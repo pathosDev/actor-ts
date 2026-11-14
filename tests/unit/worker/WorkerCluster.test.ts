@@ -970,6 +970,66 @@ describe('WorkerCluster — what the pool reports (#1276)', () => {
     }
   });
 
+  /**
+   * The delay each granted restart announced, in order — read off the warn
+   * line, which quotes it before the timer is armed.
+   */
+  const announcedDelays = (logger: RecordingLogger): number[] =>
+    messagesAt(logger, 'warn')
+      .map((m) => /respawning worker 0 \(.*\) in (\d+) ms/.exec(m))
+      .filter((found): found is RegExpExecArray => found !== null)
+      .map((found) => Number(found[1]));
+
+  /** Crash the live incarnation of slot 0 and wait for its replacement. */
+  const crashAndAwaitRespawn = async (backend: FakeWorkerBackend): Promise<void> => {
+    const before = backend.spawned.length;
+    backend.spawned[before - 1]!.simulateCrash(1);
+    await awaitCondition(() => backend.spawned.length > before, {
+      label: 'the crashed slot was respawned',
+      timeoutMs: 5_000,
+    });
+  };
+
+  test('under an unlimited budget the respawn delay still doubles (#1255)', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend)
+      .withMaxRestarts(-1)
+      .withRestartMaxBackoffMs(16);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      for (let crash = 0; crash < 6; crash++) await crashAndAwaitRespawn(backend);
+      // `min × 2^n`, clamped at the ceiling — the same curve a bounded budget
+      // walks.  Pinning the exponent input yields `[2, 2, 2, 2, 2, 2]`.
+      expect(announcedDelays(logger)).toEqual([2, 4, 8, 16, 16, 16]);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('under an unlimited budget a slot that outlived the window restarts from the minimum again (#1255)', async () => {
+    let offsetMs = 0;
+    const realNow = Date.now.bind(Date);
+    // `RestartBudget` reads the system clock; moving it is how the window
+    // passes without a test that waits it out.
+    const clock = spyOn(Date, 'now').mockImplementation(() => realNow() + offsetMs);
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend)
+      .withMaxRestarts(-1)
+      .withRestartWindowMs(1_000);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      for (let crash = 0; crash < 3; crash++) await crashAndAwaitRespawn(backend);
+      offsetMs += 5_000;
+      await crashAndAwaitRespawn(backend);
+      expect(announcedDelays(logger)).toEqual([2, 4, 8, 2]);
+    } finally {
+      clock.mockRestore();
+      await cluster.terminate();
+    }
+  });
+
   test('an error event is reported at error with the failure text inside the line', async () => {
     const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     const logger = new RecordingLogger();

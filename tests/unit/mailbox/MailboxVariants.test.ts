@@ -75,11 +75,13 @@ describe('BoundedMailbox — overflow policies', () => {
     expect(mbox.droppedCount).toBe(2);
   });
 
-  test('reject throws MailboxFullError (default)', () => {
-    const mbox = new BoundedMailbox<string>({ capacity: 2 });
+  test('reject refuses the arrival without throwing, and counts it (#919)', () => {
+    const mbox = new BoundedMailbox<string>({ capacity: 2, overflow: 'reject' });
     mbox.enqueue({ message: 'a', sender: null });
     mbox.enqueue({ message: 'b', sender: null });
-    expect(() => mbox.enqueue({ message: 'c', sender: null })).toThrow(MailboxFullError);
+    expect(() => mbox.enqueue({ message: 'c', sender: null })).not.toThrow();
+    expect(mbox.drainUser().map(e => e.message)).toEqual(['a', 'b']);
+    expect(mbox.droppedCount).toBe(1);
   });
 
   test('capacity < 1 throws in constructor', () => {
@@ -101,7 +103,7 @@ describe('BoundedMailbox — overflow policies', () => {
   });
 
   test('reject refuses an unstash that does not fit, whole', () => {
-    const mbox = new BoundedMailbox<string>({ capacity: 2 });
+    const mbox = new BoundedMailbox<string>({ capacity: 2, overflow: 'reject' });
     for (const s of ['a', 'b']) mbox.enqueue({ message: s, sender: null });
     expect(() => mbox.prependUser([{ message: 's1', sender: null }])).toThrow(MailboxFullError);
     // Nothing admitted, nothing counted — the caller still owns the batch.
@@ -300,12 +302,22 @@ describe('PriorityMailbox — capacity and overflow', () => {
     expect(mbox.droppedCount).toBe(1);
   });
 
-  test('reject is the default once a capacity is named', () => {
+  test('drop-lowest-priority is the default once a capacity is named (#919)', () => {
     const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n, capacity: 2 });
     mbox.enqueue({ message: 1, sender: null });
     mbox.enqueue({ message: 2, sender: null });
-    expect(() => mbox.enqueue({ message: 0, sender: null })).toThrow(MailboxFullError);
-    expect(mbox.droppedCount).toBe(0);   // refusing is not dropping
+    mbox.enqueue({ message: 0, sender: null });
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([0, 1]);
+    expect(mbox.droppedCount).toBe(1);
+  });
+
+  test('reject refuses the arrival whatever its priority, without throwing (#919)', () => {
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n, capacity: 2, overflow: 'reject' });
+    mbox.enqueue({ message: 1, sender: null });
+    mbox.enqueue({ message: 2, sender: null });
+    expect(() => mbox.enqueue({ message: 0, sender: null })).not.toThrow();
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([1, 2]);
+    expect(mbox.droppedCount).toBe(1);
   });
 
   test('the bound holds while the actor is suspended — #407 parity', () => {
@@ -741,7 +753,7 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     await kit.system.terminate();
   });
 
-  test('withMailboxOverflow reaches the mailbox — reject throws at the tell site', async () => {
+  test('withMailboxOverflow reaches the mailbox — reject refuses without throwing at the tell site', async () => {
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -758,9 +770,14 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     const ref = kit.system.spawnAnonymous(Slow, options);
 
     // Capacity 2 and a handler that will not keep up: the third tell finds a
-    // full mailbox.  `reject` surfaces synchronously at the sender rather
-    // than discarding quietly, which is the whole reason to choose it.
-    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).toThrow(MailboxFullError);
+    // full mailbox.  `reject` refuses it on a queue that dead-letters its
+    // refusals — that, and not a throw into the sender, is what it buys over
+    // a quiet drop (#919).
+    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).not.toThrow();
+    const mailbox = (ref as unknown as { getCell(): { _mailboxForTest(): unknown } })
+      .getCell()._mailboxForTest() as BoundedMailbox<number>;
+    expect(mailbox.droppedCount).toBeGreaterThan(0);
+    expect(mailbox.deadLetterDrops).toBe(true);
     await kit.system.terminate();
   });
 
@@ -1099,15 +1116,18 @@ describe('actor-ts.mailbox.default — the global bound (#862)', () => {
   });
 
   test('the configured overflow policy is the one the bound uses', async () => {
-    // `reject` is the observable policy: it surfaces at the sender instead of
-    // discarding quietly, so this proves the STRING travelled from HOCON into
-    // the mailbox.  A `drop-head` assertion could not tell the configured
+    // `reject` is the observable policy: it dead-letters its refusals instead
+    // of discarding quietly, so this proves the STRING travelled from HOCON
+    // into the mailbox.  A `drop-head` assertion could not tell the configured
     // policy apart from the built-in one, which is the same value.
     const kit = kitWithMailboxDefault('mbox-global-overflow', { capacity: 2, overflow: 'reject' });
     arm();
     const ref = kit.system.spawnAnonymous(Latched);
 
-    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).toThrow(MailboxFullError);
+    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).not.toThrow();
+    const bounded = mailboxOf(ref) as BoundedMailbox<number>;
+    expect(bounded.droppedCount).toBeGreaterThan(0);
+    expect(bounded.deadLetterDrops).toBe(true);
 
     release();
     await kit.system.terminate();

@@ -144,7 +144,7 @@ Place this at the project root.  The framework auto-loads it on
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `system.name` | `"default"` | System name — used in actor paths and cluster identification.  Applies when `ActorSystem.create()` is called without a name; an explicit `create('billing')` wins. |
-| `system.shutdown-drain-timeout` | `2s` | How long `terminate()` lets the actors under `/user` finish queued work before the stop cascade starts.  Returns as soon as the tree is quiet, so an idle system pays a tick.  Keep it under `coordinated-shutdown.default-phase-timeout`; `0` disables draining. |
+| `system.shutdown-drain-timeout` | `2s` | How long `terminate()` lets the actors under `/user` finish queued work before the stop cascade starts.  Returns as soon as the tree is quiet, so an idle system pays a tick.  Keep it under the `actor-system-terminate` phase budget (`10s` unless set); `0` disables draining. |
 
 ### `actor-ts.logger`
 
@@ -3097,7 +3097,8 @@ other phases still are.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `coordinated-shutdown.default-phase-timeout` | `5s` | Default per-phase timeout.  A phase that overruns it is abandoned so the next one still runs. |
+| `coordinated-shutdown.default-phase-timeout` | `5s` | Default per-phase timeout.  A task that overruns it is abandoned — logged at error, still running — so the next phase still runs.  `actor-system-terminate` is seeded with `10s` instead, never less than this. |
+| `coordinated-shutdown.overall-timeout` | `30s` | Bound on a whole run — the number to size a grace period against.  Past it the run halts in its phase, logs the pending tasks at error, and `exit-process` exits with `1` where `exit-code` is `0`; an exit also waits no longer than this for abandoned tasks.  `0` sets no deadline. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Whether the built-in terminator task tears the actor system down in the final phase. |
 | `coordinated-shutdown.exit-process` | `false` | Whether to call `process.exit(exit-code)` once a run ends.  A run that a phase with `recover = false` halts exits at the halt, in place of the teardown it would otherwise get, and with `1` where `exit-code` is `0`. |
 | `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup.  A run for a failed startup, a run for a node that could not join (`ClusterJoinUnsuccessfulReason`: the join give-up, a failed `Cluster.bootstrap` readiness wait or refusal), and a run that a phase with `recover = false` halts, exit `1` where this is `0`, so none of them reads as a clean stop. |
@@ -3324,7 +3325,7 @@ ports, roles and restart pacing are the `worker-mesh.*` and
 | `worker-cluster.restart-min-backoff` | `200ms` | Delay before the first respawn of a crashed slot. |
 | `worker-cluster.restart-max-backoff` | `10s` | Ceiling for the respawn delay, which doubles per attempt. |
 | `worker-cluster.restart-random-factor` | `0.2` | ± jitter fraction on each respawn delay, in `[0, 1]`. |
-| `worker-cluster.max-restarts` | `10` | Restarts granted per slot inside the window before it is retired; `-1` restarts forever. |
+| `worker-cluster.max-restarts` | `10` | Restarts granted per slot inside the window before it is retired; `-1` restarts forever, with the backoff still growing to `restart-max-backoff`. |
 | `worker-cluster.restart-window` | `60s` | Sliding window the restart budget counts over; `0` never resets the tally. |
 
 The four duration keys drop the `Ms` suffix their options-object fields carry
