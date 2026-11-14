@@ -57,6 +57,9 @@ here's the original response."  No double charge.
 type IdempotencyOptions = {
   cache:          Cache;
   ttlMs?:         number;                              // default 24h
+  lockTtlMs?:     number;                              // default 60s
+  onHandlerError?: 'retain' | 'release';               // default 'retain'
+  cacheStatuses?:  ReadonlyArray<number>;              // default: all but 5xx, 408, 429
   headerName?:    string;                              // default 'idempotency-key'
   keyPrefix?:     string;                              // default 'idem:'
   maxKeyLength?:   number;                             // default 255
@@ -69,7 +72,10 @@ type IdempotencyOptions = {
 | Field | Purpose |
 | --- | --- |
 | `cache` | Backing store.  Redis is required for multi-pod.  **Give it its own instance** — see the caution below. |
-| `ttlMs` | How long to remember each key.  Default 24 hours. |
+| `ttlMs` | How long to remember each finished request's response.  Default 24 hours. |
+| `lockTtlMs` | How long the claim on an in-flight key lives.  Default 60 seconds.  Also the longest a handler can run and stay exclusive — see [in-flight handling](#in-flight-handling). |
+| `onHandlerError` | What a **thrown** handler leaves behind: `'retain'` (default) records the failure, `'release'` frees the key for a retry.  See [what gets cached](#what-gets-cached). |
+| `cacheStatuses` | Statuses whose responses are recorded; any other status frees the key.  Default: every status except 5xx, 408 and 429. |
 | `headerName` | Customize the header name (case-insensitive match).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-key namespace.  Default `'idem:'` so multiple idempotency wrappers in the same Redis don't collide. |
 | `maxKeyLength` | Longest accepted header value.  Default 255 (Stripe's cap); a longer key is refused with 400. |
@@ -154,13 +160,43 @@ requests with the same key get an identical response — same
 status, headers, body.
 
 For **error responses**, what counts is whether the handler
-**returns** or **throws**.  A *returned* response is cached
-unconditionally — a 4xx or 5xx replays on retry exactly like a
-2xx, so a "payment failed" reply isn't re-processed into a
-"payment succeeded".  A handler that *throws* instead drops its
-in-flight claim, leaving the key free so the client can retry
-and re-run the handler.  There's no option to choose which
-statuses get cached.
+**returns** or **throws**.
+
+A *returned* response is recorded when its status is in
+`cacheStatuses` — by default every status except **5xx, 408 and
+429**.  A 400, 404 or "payment declined" 402 is the answer to that
+request and replays on retry exactly like a 2xx, so it is not
+re-processed into a different outcome.  The three excluded families
+are the ones that mean "not now, try again": a downstream 503 used
+to be pinned under the key for the full `ttlMs`, replayed to the
+client that was retrying exactly as told.  Now such a response frees
+the key and the retry runs the handler.  A handler returning one of
+those statuses is asserting the request is safe to retry — return
+them only from a point where nothing has been applied.
+
+A handler that *throws* is different, because nothing tells the
+middleware how far it got.  A payment handler that captured the
+charge and then failed on the receipt e-mail has done the one thing
+idempotency exists to do only once.  So by default
+(`onHandlerError: 'retain'`) the failure is **recorded**: the
+original caller gets the error the framework renders for a throw,
+and every retry with that key is answered **500** without the
+handler running —
+
+```json
+{ "error": "an earlier request with this idempotency-key failed after it may have applied side effects; it is not run again — reconcile, then retry with a new key" }
+```
+
+— for the rest of `ttlMs`.  The client checks what happened (the
+payment provider, its own order list) and, if the operation is still
+wanted, sends it again under a **new** key.  The record keeps its
+fingerprint, so a different request under the same key is still a
+422.
+
+`onHandlerError: 'release'` frees the key instead, so a retry runs
+the handler again.  Use it only for a handler that is
+**all-or-nothing** — one database transaction that either commits or
+rolls back — where a throw guarantees nothing was applied.
 
 ## Per-tenant scoping
 
@@ -259,8 +295,28 @@ The client retries after a short backoff; once the first request has
 completed and cached its response, the retry replays that stored
 response.  Failing fast (rather than holding the second connection
 open for the handler's whole runtime) also means there is no
-cross-pod lock to coordinate — the in-flight marker lives in the same
-cache as the cached responses.
+cross-pod lock to coordinate — the claim lives in the same cache as
+the cached responses.
+
+The claim has its **own lifetime, `lockTtlMs`** (60 seconds by
+default), separate from the 24-hour `ttlMs` of a finished record.
+That lifetime is the only thing that frees a key whose worker died
+mid-handler — an evicted pod, an OOM kill, a deploy — and with the
+record's TTL in that role a crash used to answer every retry 409 for
+a day.  Now the claim lapses in a minute, and the retry after it runs
+the handler, because nothing recorded that the first attempt
+finished.
+
+**Size `lockTtlMs` above your slowest handler**, and treat it as that
+handler's timeout: a handler still running when its claim lapses can
+be joined by a retry.  That overrun is caught on the way out but not
+prevented.  The claim holds a random token rather than a shared
+marker, and the late finisher writes or deletes only while its own
+token is still there.  So it neither stores its response over the
+retry's claim nor deletes it — its response still reaches its own
+caller, and the key stays with the retry, whose record is the one
+that replays.  Before that check, a late throw deleted the retry's
+claim and let a third request run alongside it.
 
 import { Aside } from '@astrojs/starlight/components';
 

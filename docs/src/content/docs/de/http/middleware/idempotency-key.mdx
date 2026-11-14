@@ -57,6 +57,9 @@ hier ist die ursprüngliche Response."  Keine Doppelbuchung.
 type IdempotencyOptions = {
   cache:          Cache;
   ttlMs?:         number;                              // Default 24 h
+  lockTtlMs?:     number;                              // Default 60 s
+  onHandlerError?: 'retain' | 'release';               // Default 'retain'
+  cacheStatuses?:  ReadonlyArray<number>;              // Default: alle außer 5xx, 408, 429
   headerName?:    string;                              // Default 'idempotency-key'
   keyPrefix?:     string;                              // Default 'idem:'
   maxKeyLength?:   number;                             // Default 255
@@ -69,7 +72,10 @@ type IdempotencyOptions = {
 | Feld | Zweck |
 | --- | --- |
 | `cache` | Backing-Store.  Redis ist für Multi-Pod nötig.  **Gib ihm eine eigene Instanz** — siehe die Warnung unten. |
-| `ttlMs` | Wie lange jeder Key gemerkt wird.  Default 24 Stunden. |
+| `ttlMs` | Wie lange die Response eines abgeschlossenen Requests gemerkt wird.  Default 24 Stunden. |
+| `lockTtlMs` | Wie lange der Anspruch auf einen Key in flight lebt.  Default 60 Sekunden.  Zugleich die längste Laufzeit, die ein Handler exklusiv bleibt — siehe [In-Flight-Behandlung](#in-flight-behandlung). |
+| `onHandlerError` | Was ein **werfender** Handler hinterlässt: `'retain'` (Default) zeichnet den Fehler auf, `'release'` gibt den Key für einen Retry frei.  Siehe [was gecacht wird](#was-gecacht-wird). |
+| `cacheStatuses` | Statuscodes, deren Responses aufgezeichnet werden; jeder andere Status gibt den Key frei.  Default: jeder Status außer 5xx, 408 und 429. |
 | `headerName` | Header-Namen anpassen (case-insensitive).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-Key-Namespace.  Default `'idem:'`, damit mehrere Idempotency-Wrapper im selben Redis nicht kollidieren. |
 | `maxKeyLength` | Längster akzeptierter Header-Wert.  Default 255 (Stripes Schranke); ein längerer Key wird mit 400 abgelehnt. |
@@ -158,14 +164,46 @@ Requests mit demselben Key bekommen eine identische Response —
 gleicher Status, gleiche Header, gleicher Body.
 
 Bei **Fehler-Responses** kommt es darauf an, ob der Handler
-**etwas zurückgibt** oder **wirft**.  Eine *zurückgegebene*
-Response wird bedingungslos gecacht — eine 4xx oder 5xx wird beim
-Retry genauso abgespielt wie eine 2xx, damit ein "Payment
-fehlgeschlagen" nicht zu einem "Payment erfolgreich" wird.  Ein
-Handler, der stattdessen *wirft*, verwirft seinen In-Flight-
-Anspruch und lässt den Key frei, sodass der Client erneut
-versuchen und den Handler nochmals ausführen kann.  Es gibt keine
-Option, um auszuwählen, welche Statuscodes gecacht werden.
+**etwas zurückgibt** oder **wirft**.
+
+Eine *zurückgegebene* Response wird aufgezeichnet, wenn ihr Status
+in `cacheStatuses` liegt — per Default jeder Status außer **5xx, 408
+und 429**.  Ein 400, 404 oder ein "Payment abgelehnt"-402 ist die
+Antwort auf genau diesen Request und wird beim Retry genauso
+abgespielt wie eine 2xx, damit daraus kein anderes Ergebnis wird.
+Die drei ausgenommenen Familien sind die, die "jetzt nicht, später
+nochmal" bedeuten: Ein 503 eines nachgelagerten Dienstes wurde früher
+für die volle `ttlMs` unter dem Key festgehalten und genau dem Client
+vorgespielt, der vorschriftsmäßig wiederholte.  Jetzt gibt so eine
+Response den Key frei, und der Retry führt den Handler aus.  Ein
+Handler, der einen dieser Status zurückgibt, versichert damit, dass
+der Request gefahrlos wiederholt werden kann — gib sie nur an einer
+Stelle zurück, an der noch nichts angewendet wurde.
+
+Ein Handler, der *wirft*, ist etwas anderes, denn nichts sagt der
+Middleware, wie weit er gekommen ist.  Ein Payment-Handler, der die
+Zahlung eingezogen hat und dann an der Quittungs-E-Mail scheitert,
+hat genau das getan, was Idempotenz nur einmal geschehen lassen soll.
+Per Default (`onHandlerError: 'retain'`) wird der Fehler deshalb
+**aufgezeichnet**: Der ursprüngliche Aufrufer bekommt den Fehler, den
+das Framework für einen Wurf rendert, und jeder Retry mit diesem Key
+bekommt **500**, ohne dass der Handler läuft —
+
+```json
+{ "error": "an earlier request with this idempotency-key failed after it may have applied side effects; it is not run again — reconcile, then retry with a new key" }
+```
+
+— für den Rest der `ttlMs`.  Der Client prüft, was passiert ist (beim
+Zahlungsanbieter, in seiner eigenen Bestellliste), und schickt die
+Operation, wenn sie noch gewollt ist, unter einem **neuen** Key.  Der
+Eintrag behält seinen Fingerprint, ein anderer Request unter demselben
+Key ist also weiterhin ein 422.
+
+`onHandlerError: 'release'` gibt den Key stattdessen frei, sodass ein
+Retry den Handler erneut ausführt.  Nutze das nur für einen Handler,
+der **ganz oder gar nicht** wirkt — eine einzige Datenbanktransaktion,
+die committet oder zurückrollt —, bei dem ein Wurf garantiert, dass
+nichts angewendet wurde.
 
 ## Scoping pro Mandant
 
@@ -265,8 +303,31 @@ Request abgeschlossen ist und seine Response gecacht hat, spielt der
 Retry diese gespeicherte Response ab.  Das schnelle Ablehnen (statt
 die zweite Verbindung über die gesamte Handler-Laufzeit offen zu
 halten) bedeutet außerdem, dass es keinen Cross-Pod-Lock zu
-koordinieren gibt — der In-Flight-Marker liegt im selben Cache wie
-die gecachten Responses.
+koordinieren gibt — der Anspruch liegt im selben Cache wie die
+gecachten Responses.
+
+Der Anspruch hat eine **eigene Lebensdauer, `lockTtlMs`** (per
+Default 60 Sekunden), getrennt von der 24-stündigen `ttlMs` eines
+abgeschlossenen Eintrags.  Diese Lebensdauer ist das Einzige, was
+einen Key freigibt, dessen Worker mitten im Handler gestorben ist —
+ein verdrängter Pod, ein OOM-Kill, ein Deploy —, und mit der TTL des
+Eintrags in dieser Rolle beantwortete ein Absturz früher jeden Retry
+einen Tag lang mit 409.  Jetzt läuft der Anspruch nach einer Minute
+ab, und der Retry danach führt den Handler aus, weil nichts
+aufgezeichnet hat, dass der erste Versuch fertig wurde.
+
+**Bemiss `lockTtlMs` größer als Deinen langsamsten Handler** und
+behandle sie als dessen Timeout: Zu einem Handler, der noch läuft,
+wenn sein Anspruch abläuft, kann sich ein Retry gesellen.  Dieser
+Überlauf wird auf dem Rückweg erkannt, aber nicht verhindert.  Der
+Anspruch enthält ein zufälliges Token statt eines gemeinsamen
+Markers, und der verspätete Handler schreibt oder löscht nur,
+solange sein eigenes Token noch dort liegt.  Er speichert seine
+Response also weder über den Anspruch des Retrys noch löscht er ihn —
+seine Response erreicht trotzdem seinen eigenen Aufrufer, und der Key
+bleibt beim Retry, dessen Eintrag abgespielt wird.  Vor dieser Prüfung
+löschte ein verspäteter Wurf den Anspruch des Retrys und ließ einen
+dritten Request parallel dazu laufen.
 
 import { Aside } from '@astrojs/starlight/components';
 
