@@ -65,9 +65,9 @@ du etwas registrierst.
 
 | # | Phasen-Name | Verdrahtet | Typische Tasks |
 | --- | --- | --- | --- |
-| 1 | `before-service-unbind` | — | Letzte Ankündigungen, bevor der Server keine Verbindungen mehr akzeptiert. |
+| 1 | `before-service-unbind` | die Health-Check-Registry | Letzte Ankündigungen, bevor der Server keine Verbindungen mehr akzeptiert.  `/ready` wird hier zu `503`. |
 | 2 | `service-unbind` | `system.http(...).bind(...)`, DevTools | HTTP-Server / gRPC-Server / WebSocket-Listener stoppen, neue Verbindungen anzunehmen. |
-| 3 | `service-requests-done` | — | Auf das Ende laufender Requests warten; den Rest abbrechen. |
+| 3 | `service-requests-done` | `system.http(...).bind(...)` | Auf das Ende laufender Requests warten, höchstens `actor-ts.http.shutdown-grace-period` (4 s); den Rest abbrechen. |
 | 4 | `service-stop` | Broker-Actors (MQTT, Kafka, NATS, AMQP, …) | Client-Verbindungen schließen, Sockets freigeben. |
 | 5 | `before-cluster-shutdown` | Parallelität, wenn eingeschaltet | Optionale Pre-Cluster-Leave-Hooks.  Die Worker-Systeme ausgelagerter Actors terminieren hier, sodass jeder sein `postStop` bekommt, bevor ein Thread gestoppt wird. |
 | 6 | `cluster-sharding-shutdown-region` | `Cluster.join(...)` | Der Sharding-Region sagen, Entitäten zu übergeben. |

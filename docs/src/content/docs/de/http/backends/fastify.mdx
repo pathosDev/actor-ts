@@ -278,8 +278,11 @@ Querschnittsthemen.  Sie komponieren sauber.
 ```
 
 `Fastify.close()` wartet auf den Abschluss laufender Requests,
-bevor es resolved — passt zur `service-unbind`-Phase des
-[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/).
+bevor es resolved — passt zum
+[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/):
+`service-unbind` nimmt keine Verbindungen mehr an, und
+`service-requests-done` wartet auf die laufenden Requests, höchstens
+`actor-ts.http.shutdown-grace-period` (4 s), auf jedem Backend gleich.
 
 ## Gebündelte Dependency
 

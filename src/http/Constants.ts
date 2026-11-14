@@ -198,3 +198,19 @@ export const MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS = 86_400;
  * HTTP/1.1 fallback holds both too.  Below it both are reported not in effect.
  */
 export const DENO_NODE_HTTP_TIMEOUTS_SINCE = '2.7.13';
+
+/**
+ * How long `unbind()` lets requests in flight finish before it forces their
+ * connections closed, when neither its caller nor
+ * `actor-ts.http.shutdown-grace-period` names a window (#997).
+ *
+ * Sized against the shutdown pipeline it runs in, not against a convention.
+ * The drain is a `service-requests-done` task, and that phase's budget is
+ * `default-phase-timeout`, 5 s: a window of 4 s ends with a second left in the
+ * phase for the forced close, so a drain that has to force does not also time
+ * the phase out.  The phase was already counted in the Kubernetes recipe's
+ * arithmetic — four 5 s phases and the 10 s terminator make the 30 s
+ * `overall-timeout` — so the default adds nothing to a run's worst case.  It
+ * was `0` before, which severed every request in flight on a rolling deploy.
+ */
+export const DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS = 4_000;

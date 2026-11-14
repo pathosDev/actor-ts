@@ -7,7 +7,7 @@ import { pipeline, Readable } from 'node:stream';
 import { match } from 'ts-pattern';
 import { detectRuntime } from '../../runtime/Detect.js';
 import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
-import { nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
+import { closeIdleConnectionsWhileDraining, nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
@@ -18,6 +18,7 @@ import {
   bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
+  drainWindowOf,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -428,6 +429,14 @@ export class ExpressBackend implements HttpServerBackend {
     const headerCap = serverOptions?.maxHeaderBytes;
     const server = serverFor(this.app, serverOptions?.tls, headerCap);
     this.server = server;
+    // The forced half of `unbind()` destroys these itself: on bun 1.4.2
+    // `closeAllConnections()` left a connection with a request in flight
+    // open, so `unbind(0)` let it finish — the very wait `0` rules out (#997).
+    const connections = new Set<Socket>();
+    server.on('connection', (socket: Socket) => {
+      connections.add(socket);
+      socket.once('close', () => connections.delete(socket));
+    });
     const actualPort = await new Promise<number>((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => {
@@ -472,14 +481,20 @@ export class ExpressBackend implements HttpServerBackend {
         await new Promise<void>((resolve) => {
           let done = false;
           const finish = (): void => { if (!done) { done = true; resolve(); } };
-          const grace = gracePeriodMs && gracePeriodMs > 0 ? gracePeriodMs : 1000;
+          const grace = drainWindowOf(gracePeriodMs);
           // Bound the wait — on some runtimes (Bun) close() can hang after
           // WS upgrades even once sockets are terminated.  This one-shot
           // timer is intentionally NOT unref'd: it must fire to guarantee
           // unbind resolves; it clears itself once close() or the deadline
           // wins, so it never keeps the process alive afterwards.
-          const hard = setTimeout(() => { try { srv.closeAllConnections?.(); } catch { /* best-effort */ } finish(); }, grace);
-          srv.close(() => { clearTimeout(hard); finish(); });
+          const stopSweep = grace > 0 ? closeIdleConnectionsWhileDraining(srv) : () => { /* forced at once */ };
+          const hard = setTimeout(() => {
+            stopSweep();
+            try { srv.closeAllConnections?.(); } catch { /* best-effort */ }
+            for (const socket of connections) socket.destroy();
+            finish();
+          }, grace);
+          srv.close(() => { clearTimeout(hard); stopSweep(); finish(); });
         });
       },
     };

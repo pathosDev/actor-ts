@@ -70,8 +70,29 @@ export interface ServerBinding {
    * that reported one.  Every shipped backend reports.
    */
   readonly serverOptionsReport?: ServerOptionsReport;
-  /** Stop the server; waits up to `gracePeriodMs` for in-flight requests. */
+  /**
+   * Stop the server: stop accepting at once, wait up to `gracePeriodMs` for
+   * the requests in flight to finish, then force whatever is still open.
+   * `0`, or no value, forces at once — the same on every shipped backend,
+   * through {@link drainWindowOf} (#997).  The binding `HttpExtension.bind`
+   * returns supplies `actor-ts.http.shutdown-grace-period` when the caller
+   * names no window.
+   */
   unbind(gracePeriodMs?: number): Promise<void>;
+}
+
+/**
+ * The drain window a backend's `unbind(gracePeriodMs)` waits for requests in
+ * flight before it forces their connections: the value when it is a positive
+ * finite number, `0` — force at once — otherwise.
+ *
+ * One function so that one value means one thing.  The three backends used to
+ * read it three ways: Fastify and Hono forced at `0`, Express substituted a
+ * hidden second for it, so switching backends silently changed what a
+ * shutdown did to a request in flight (#997).
+ */
+export function drainWindowOf(gracePeriodMs: number | undefined): number {
+  return gracePeriodMs !== undefined && Number.isFinite(gracePeriodMs) && gracePeriodMs > 0 ? gracePeriodMs : 0;
 }
 
 /**

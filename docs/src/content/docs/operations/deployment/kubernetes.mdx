@@ -218,13 +218,17 @@ with no task is skipped at no cost, so the pipeline needs
 
 | Phase | Who registers the task | Worst case |
 | --- | --- | --- |
-| `service-unbind` | both `bind()` calls | 5 s |
-| `service-requests-done` | your request drain, if you register one | 5 s |
+| `before-service-unbind` | the health-check registry — `/ready` turns `503` | 0 s, it returns at once |
+| `service-unbind` | both `bind()` calls — stop accepting | 5 s |
+| `service-requests-done` | both `bind()` calls — the drain, up to `actor-ts.http.shutdown-grace-period` (4 s) | 5 s |
 | `cluster-sharding-shutdown-region` | `Cluster.join` | 5 s |
 | `cluster-leave` | `Cluster.join` | 5 s |
 | `actor-system-terminate` | the built-in terminator | 10 s |
 
-That is `4 × 5 s + 10 s = 30 s` — exactly the deadline.  The tasks
+That is `4 × 5 s + 10 s = 30 s` — exactly the deadline.  A phase's
+budget is what a task that hangs can take; the readiness task returns
+the moment it runs, so it costs nothing.  The drain's 4 s sits inside
+its phase's 5 s, leaving a second for the forced close.  The tasks
 inside one phase run in parallel, so the second `bind()` costs nothing
 extra — but every **further phase** that gets a task adds its timeout,
 and past 30 s the deadline cuts the run short instead of the grace
@@ -292,7 +296,9 @@ expose these endpoints.
 - **`/ready`** — "should a load balancer send this pod traffic?"
   Already gated on the framework's own checks: `cluster-membership`
   (this node is `up`) and `cluster-transport` (it is not cut off
-  from every peer), plus `startup` while startup tasks run.  To keep
+  from every peer), plus `startup` while startup tasks run, and
+  `shutdown` from the moment a shutdown begins — `503` while the pod
+  drains, until the listener closes.  To keep
   a node out of rotation until its shard regions are registered, name
   the types in `actor-ts.sharding.healthcheck.names` (see
   [the built-in checks](/observability/management/health-checks/#the-built-in-checks)).
@@ -393,6 +399,7 @@ Four pieces in order:
    blocks, then runs the pipeline and resolves when the system is
    down.  There is no separate teardown step to write: both `bind()`
    calls registered their unbind in the `service-unbind` phase and
+   their drain in `service-requests-done`, and
    `Cluster.join` registered the leave in `cluster-leave`, so the pod
    drops out of the Service endpoints and out of the cluster before
    the actors stop.
@@ -492,9 +499,12 @@ For each pod, in order (StatefulSet) or arbitrary (Deployment):
 2. **10-second LB drain**.
 3. SIGTERM lands.
 4. Coordinated-shutdown runs:
+   - Turn `/ready` to `503` (`before-service-unbind`, wired by the
+     health-check registry).
    - Stop accepting new HTTP requests (`service-unbind`, wired by
      `bind()`).
-   - Drain in-flight requests (`service-requests-done`, yours).
+   - Drain in-flight requests (`service-requests-done`, wired by
+     `bind()`, up to `actor-ts.http.shutdown-grace-period`).
    - Close broker connections (`service-stop`, wired by each broker
      actor).
    - Hand this node's shards off (`cluster-sharding-shutdown-region`,

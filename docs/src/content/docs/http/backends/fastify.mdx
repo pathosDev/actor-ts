@@ -266,8 +266,10 @@ concerns.  They compose cleanly.
 
 `Fastify.close()` waits for in-flight requests to complete
 before resolving — pairs with
-[coordinated shutdown](/fundamentals/coordinated-shutdown/)'s
-`service-unbind` phase.
+[coordinated shutdown](/fundamentals/coordinated-shutdown/):
+`service-unbind` stops accepting, and `service-requests-done` waits
+for the requests in flight, up to `actor-ts.http.shutdown-grace-period`
+(4 s), the same on every backend.
 
 ## Bundled dependency
 

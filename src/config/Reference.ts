@@ -1538,10 +1538,13 @@ actor-ts {
 
   http {
     backend = "fastify"   # fastify | express | hono
-    # In-flight drain window for unbind() before connections are forced.
-    # 0 keeps the historical behaviour (force immediately); raise it if you
-    # want in-flight requests to finish on shutdown.
-    shutdown-grace-period = 0ms
+    # How long unbind() lets requests in flight finish before it forces their
+    # connections closed -- the same on every backend; 0 forces at once.  On
+    # shutdown the server stops accepting in service-unbind, /ready has gone
+    # 503 a phase earlier, and the drain is a service-requests-done task, so
+    # keep this under that phase's budget (default-phase-timeout, 5s): 4s
+    # leaves a second for the forced close.
+    shutdown-grace-period = 4s
 
     # Connection-level bounds for the server itself -- the listening socket a
     # bind() opens, not a route on it.  withServerOptions(...) wins per field,
@@ -3129,8 +3132,10 @@ actor-ts {
     # get.
     exit-code = 0
 
-    # Framework components register their own teardown in the pipeline: the
-    # HTTP server unbinds in service-unbind, broker actors close their
+    # Framework components register their own teardown in the pipeline:
+    # readiness turns red in before-service-unbind, the HTTP server stops
+    # accepting in service-unbind and drains in service-requests-done, broker
+    # actors close their
     # connections in service-stop, a joined cluster leaves in cluster-leave,
     # DevTools detaches with the rest of the service layer.  Set false to keep
     # the phases and register everything yourself -- for an embedder that owns

@@ -1521,7 +1521,7 @@ diesen Node nicht auf.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
-| `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
+| `http.shutdown-grace-period` | `4s` | Wie lange `unbind()` laufende Requests zu Ende gehen lässt, bevor ihre Verbindungen erzwungen geschlossen werden — auf Fastify, Express und Hono gleich.  `0` erzwingt sofort.  Beim Shutdown ist der Drain ein Task in `service-requests-done`; halte den Wert also unter dem Budget dieser Phase (`default-phase-timeout`, `5s`).  `/ready` antwortet ab dem Start der Pipeline mit `503`. |
 | `http.server` | *(siehe unten)* | Verbindungsschranken für den lauschenden Socket selbst. |
 | `http.cors` | *(siehe unten)* | Pro-Route-Defaults für die [`cors()`](/de/http/middleware/cors/)-Direktive. |
 | `http.hsts` | *(siehe unten)* | Die Policy, die die Middleware [`hsts()`](/de/http/middleware/security-headers/) sendet. |
@@ -1537,9 +1537,18 @@ Ein unbekannter Name lässt `bind()` mit einem `ConfigError` scheitern,
 statt still auf Fastify zurückzufallen.  Express und Hono sind optionale
 Peer-Dependencies und werden nur importiert, wenn du sie benennst.
 
-Die Grace Period ist per Default `0` — sofort erzwingen —, weil `unbind()`
-genau das in der Praxis immer getan hat.  Erhöhe sie, wenn in-flight
-Requests fertig werden sollen.
+Die Grace Period ist per Default `4s`, und sie bedeutet auf jedem Backend
+dasselbe: `unbind()` nimmt sofort keine Verbindungen mehr an, lässt die
+laufenden Requests bis zu dieser Dauer zu Ende gehen und erzwingt dann, was
+noch offen ist; `0` erzwingt sofort.  Bei einem Coordinated Shutdown nimmt
+der Server in `service-unbind` keine Verbindungen mehr an und läuft in
+`service-requests-done` leer, und `/ready` antwortet seit
+`before-service-unbind` mit `503`.  Die 4 s liegen in den 5 s Budget dieser
+Phase, mit einer Sekunde für das erzwungene Schließen — erhöhe den
+`timeout` der Phase zusammen mit der Grace Period.  Bis v0.19 war der
+Default `0`, was bei einem Rolling Deploy jeden laufenden Request kappte,
+und Express wartete stillschweigend eine Sekunde, wo die anderen es nicht
+taten.
 
 Meist ist sie eine Obergrenze und keine Wartezeit: `unbind()` kehrt zurück,
 sobald der Server tatsächlich geschlossen ist.  Wo das `close()` eines

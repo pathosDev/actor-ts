@@ -17,6 +17,7 @@ import {
   bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
+  drainWindowOf,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -485,20 +486,24 @@ export class HonoBackend implements HttpServerBackend {
         const srv = this.server;
         if (!srv) return;
         this.server = null;
-        if (gracePeriodMs && gracePeriodMs > 0) {
+        const grace = drainWindowOf(gracePeriodMs);
+        if (grace > 0) {
           // Race a graceful stop against the grace window — whichever wins
           // first resolves.  After the window we force-close regardless.
+          // A graceful stop only drains if the runner's promise waits for the
+          // requests in flight: Bun's used to resolve at once, so the force
+          // below cut them with any window (#997).
+          let timer: ReturnType<typeof setTimeout> | undefined;
           await Promise.race([
             srv.stop(true),
             new Promise<void>((resolve) => {
-              const timer = setTimeout(() => resolve(), gracePeriodMs);
+              timer = setTimeout(() => resolve(), grace);
               (timer as { unref?: () => void }).unref?.();
             }),
           ]);
-          await srv.stop(false); // force any still-active connections
-          return;
+          clearTimeout(timer);
         }
-        await srv.stop(false);
+        await srv.stop(false); // force any still-active connections
       },
     };
   }

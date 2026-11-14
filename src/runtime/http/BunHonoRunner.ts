@@ -11,8 +11,10 @@ import type {
 /**
  * Bun implementation — `Bun.serve({ hostname, port, fetch })`.
  *
- * Graceful stop calls `server.stop(false)` which lets in-flight requests
- * finish.  Non-graceful calls `server.stop(true)` which kicks active
+ * Graceful stop awaits `server.stop(false)`, whose promise settles once the
+ * requests in flight have finished — not awaiting it, as this runner once
+ * did, made every grace window on this pair zero (#997).
+ * Non-graceful calls `server.stop(true)`, which kicks active
  * connections immediately.
  *
  * WebSocket support uses `createBunWebSocket()` from `hono/bun`, whose
@@ -81,7 +83,7 @@ export class BunHonoRunner implements HonoServerRunner {
         ...(idle.heldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: idle.heldAtCeilingMs } : {}),
         ...(idle.earliestCutMs !== undefined ? { idleTimeoutEarliestCutMs: idle.earliestCutMs } : {}),
       },
-      async stop(graceful: boolean): Promise<void> { server.stop(!graceful); },
+      async stop(graceful: boolean): Promise<void> { await server.stop(!graceful); },
     };
   }
 
@@ -245,7 +247,8 @@ export function bunSupportsHttp2(version: string): boolean {
 interface BunServer {
   readonly port: number;
   readonly hostname: string;
-  stop(forceCloseConnections?: boolean): void;
+  /** Resolves once every connection has closed — after the requests in flight, unless forced (bun >= 1.1). */
+  stop(forceCloseConnections?: boolean): void | Promise<void>;
 }
 
 /**

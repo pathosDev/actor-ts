@@ -9,6 +9,7 @@ import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
 import type { HttpServerBackend, ListenerProtocol, ServerBinding, ServerOptionsReport } from './backend/HttpServerBackend.js';
+import { DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS } from './Constants.js';
 import { HttpClient } from './HttpClient.js';
 import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
 import {
@@ -395,7 +396,11 @@ export class HttpExtension implements Extension {
         // Read once at bind time, not per unbind: the shutdown path is the
         // caller that never passes one, and it must not depend on config
         // being reachable while the system is already tearing down.
-        const configuredGracePeriodMs = readHttpShutdownGracePeriodFromConfig(system.config);
+        // An unset key — a config built without the reference layer — drains
+        // for the built-in window, never for none (#997).
+        const configuredGracePeriodMs = readHttpShutdownGracePeriodFromConfig(system.config)
+          ?? DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS;
+        const drainTaskName = `http-drain-${raw.host}:${raw.port}`;
         const binding: ServerBinding = {
           host: raw.host,
           port: raw.port,
@@ -407,26 +412,34 @@ export class HttpExtension implements Extension {
                 tracker.closeAll(1001, 'server shutting down');
                 tracker.terminateAll();
                 await backendUnbind;
-                // The task is named after the address, so leaving it
+                // The tasks are named after the address, so leaving them
                 // behind made re-binding that address impossible: the
                 // next `bind()` collided with a task for a server that
                 // no longer exists.
-                system.extension(CoordinatedShutdownId)
-                  .removeTask(Phases.ServiceUnbind, shutdownTaskName);
+                const shutdown = system.extension(CoordinatedShutdownId);
+                shutdown.removeTask(Phases.ServiceUnbind, shutdownTaskName);
+                shutdown.removeTask(Phases.ServiceRequestsDone, drainTaskName);
               })();
             }
             return unbindOnce;
           },
         };
-        // Auto-register with CoordinatedShutdown's ServiceUnbind phase so
-        // operator-triggered shutdown (SIGTERM, cluster-leave, etc.) closes
-        // the server before the rest of the pipeline tears down the system.
-        // Opt out with `actor-ts.coordinated-shutdown.auto-register-tasks`.
-        system.extension(CoordinatedShutdownId).addFrameworkTask(
-          Phases.ServiceUnbind,
-          shutdownTaskName,
-          () => binding.unbind(),
-        );
+        // Auto-register with CoordinatedShutdown so an operator-triggered
+        // shutdown (SIGTERM, cluster-leave, etc.) closes the server before the
+        // rest of the pipeline tears down the system, in the two phases that
+        // exist for it (#997): `service-unbind` stops accepting — the task
+        // starts the unbind and returns, so the phase does not hold the
+        // pipeline for the drain — and `service-requests-done` waits for the
+        // requests in flight, up to the grace period.  Readiness has gone
+        // 503 a phase earlier (see HealthCheckExtension).  Opt out with
+        // `actor-ts.coordinated-shutdown.auto-register-tasks`.
+        const shutdown = system.extension(CoordinatedShutdownId);
+        shutdown.addFrameworkTask(Phases.ServiceUnbind, shutdownTaskName, () => {
+          // The rejection is reported by the drain task, which awaits the
+          // same promise.
+          binding.unbind().catch(() => { /* reported in service-requests-done */ });
+        });
+        shutdown.addFrameworkTask(Phases.ServiceRequestsDone, drainTaskName, () => binding.unbind());
         system.log.info(`HTTP server bound on ${binding.host}:${binding.port} (${active.name})`);
         system.log.debug(
           `[http] ${httpRoutes.length} route(s) + ${wsRoutes.length} websocket route(s) registered`,

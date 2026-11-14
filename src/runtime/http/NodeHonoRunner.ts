@@ -80,8 +80,12 @@ export class NodeHonoRunner implements HonoServerRunner {
                 resolve();
               }, 0)
             : null;
+          const stopSweep = graceful
+            ? closeIdleConnectionsWhileDraining(server as { closeIdleConnections?: () => void })
+            : () => { /* a forced stop closes everything at once */ };
           server.close(() => {
             if (timer) clearTimeout(timer);
+            stopSweep();
             resolve();
           });
         });
@@ -242,6 +246,36 @@ export type NodeTlsServerFields = {
   requestCert?: boolean;
   rejectUnauthorized?: boolean;
 };
+
+/**
+ * How often a draining `node:http` server closes the keep-alive connections
+ * that have gone idle since it stopped accepting.
+ */
+const DRAIN_IDLE_SWEEP_MS = 50;
+
+/**
+ * Close, while a `node:http` server drains, each keep-alive connection as soon
+ * as its last request is answered; returns the function that stops it.
+ *
+ * `server.close()` closes the connections idle at that moment and no others,
+ * so a connection whose request was in flight stays open once it is answered,
+ * idle, until the client hangs up or the drain window ends and forces it.  A
+ * shutdown therefore took the whole grace period whenever a keep-alive client
+ * had a request in flight — 4.8 s for an 800 ms request on node v26 under the
+ * 4 s default (#997).  A runtime without `closeIdleConnections` gets nothing
+ * here, and the window still bounds it.
+ *
+ * @internal — exported for `FastifyBackend` and `ExpressBackend`.
+ */
+export function closeIdleConnectionsWhileDraining(server: { closeIdleConnections?: () => void }): () => void {
+  const closeIdle = server.closeIdleConnections;
+  if (typeof closeIdle !== 'function') return () => { /* nothing armed */ };
+  const timer = setInterval(() => {
+    try { closeIdle.call(server); } catch { /* best-effort */ }
+  }, DRAIN_IDLE_SWEEP_MS);
+  (timer as { unref?: () => void }).unref?.();
+  return () => clearInterval(timer);
+}
 
 /**
  * The `node:tls` server options a {@link HonoServeTls} asks for — the one
