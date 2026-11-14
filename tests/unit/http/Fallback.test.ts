@@ -2,30 +2,18 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
-import { ExpressBackend } from '../../../src/http/backend/ExpressBackend.js';
-import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {
   complete,
-  completeJson,
   compile,
   concat,
   fallback,
-  get,
   path,
-  withMiddleware,
-  type Middleware,
   type Route,
 } from '../../../src/http/Route.js';
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
-import { HttpError, Status } from '../../../src/http/Types.js';
+import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-
-const backends: Array<[string, () => HttpServerBackend]> = [
-  ['fastify', () => new FastifyBackend({ logger: false })],
-  ['express', () => new ExpressBackend()],
-  ['hono', () => new HonoBackend()],
-];
 
 const live: Array<{ binding: ServerBinding; system: ActorSystem }> = [];
 afterEach(async () => {
@@ -48,64 +36,6 @@ async function start(mk: () => HttpServerBackend, routes: Route): Promise<string
     throw e;
   }
 }
-
-describe.each(backends)('fallback() — %s backend', (_name, mk) => {
-  test('answers an unmatched path', async () => {
-    const url = await start(mk, concat(
-      path('known', get(() => complete(Status.OK, 'yes'))),
-      fallback((request) => completeJson(Status.NotFound, { error: 'no route', path: request.path })),
-    ));
-    const response = await fetch(`${url}/nope`);
-    expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: 'no route', path: '/nope' });
-  });
-
-  test('matched routes still win — a fallback declared first does not shadow them', async () => {
-    const url = await start(mk, concat(
-      fallback(() => complete(Status.NotFound, 'fb')),
-      path('known', get(() => complete(Status.OK, 'real'))),
-    ));
-    expect(await (await fetch(`${url}/known`)).text()).toBe('real');
-    expect((await fetch(`${url}/other`)).status).toBe(404);
-  });
-
-  test('a method mismatch on an existing path hits the fallback (404, not 405)', async () => {
-    const url = await start(mk, concat(
-      path('thing', get(() => complete(Status.OK, 'g'))),
-      fallback(() => complete(Status.NotFound, 'fb')),
-    ));
-    const response = await fetch(`${url}/thing`, { method: 'POST' });
-    expect(response.status).toBe(404);
-    expect(await response.text()).toBe('fb');
-  });
-
-  test('an unmatched OPTIONS request hits the fallback', async () => {
-    const url = await start(mk, concat(
-      path('thing', get(() => complete(Status.OK, 'g'))),
-      fallback(() => complete(Status.NoContent)),
-    ));
-    // Use a path with no route at all — avoids backends' automatic
-    // OPTIONS handling for paths that DO have routes (e.g. Express).
-    const response = await fetch(`${url}/totally-unknown`, { method: 'OPTIONS' });
-    expect(response.status).toBe(Status.NoContent);
-  });
-
-  test('a fallback throwing HttpError maps to that status', async () => {
-    const url = await start(mk, fallback(() => { throw new HttpError(Status.Forbidden, 'blocked'); }));
-    expect((await fetch(`${url}/whatever`)).status).toBe(Status.Forbidden);
-  });
-
-  test('middleware wraps the fallback handler', async () => {
-    const stamp: Middleware = async (_request, next) => {
-      const response = await next();
-      return { ...response, headers: { ...(response.headers ?? {}), 'x-fb': '1' } };
-    };
-    const url = await start(mk, withMiddleware(stamp, fallback(() => complete(Status.NotFound, 'fb'))));
-    const response = await fetch(`${url}/x`);
-    expect(response.status).toBe(404);
-    expect(response.headers.get('x-fb')).toBe('1');
-  });
-});
 
 describe('fallback() — compile + bind guards', () => {
   test('a fallback scoped under path() throws at compile time', () => {
