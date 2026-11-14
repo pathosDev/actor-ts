@@ -11,6 +11,10 @@
 import type { Journal } from '../../../../../src/persistence/Journal.js';
 import { JournalConcurrencyError } from '../../../../../src/persistence/JournalTypes.js';
 import { offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
+import {
+  FaultInjectingJournal,
+  FaultInjectingJournalOptions,
+} from '../../../../../src/testkit/index.js';
 import { assert, assertEqual, expectThrows } from './Assert.js';
 import { closeQuietly, type ContractScenario, type JournalHarness } from './Types.js';
 
@@ -535,6 +539,43 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           assertEqual(ids.filter((id) => id === first).length, 1, 'ids are distinct');
         } finally {
           await closeQuietly(journal);
+        }
+      },
+    },
+    {
+      name: 'an append whose acknowledgement was lost is committed once, and its retry is refused as a conflict',
+      async run(harness) {
+        // The write lands and the caller is told it failed — a timeout after
+        // the commit (#1024).  A caller that retries at the same expected
+        // sequence must be refused by the conditional write, not handed a
+        // second copy of the batch: that is the property every recovery and
+        // every `PersistentActor` restart leans on, and only the backend can
+        // provide it.
+        const inner = await harness.make();
+        const journalFaults = FaultInjectingJournalOptions.create()
+          .withFailOn('append')
+          .withFailOnce()
+          .withFailurePoint('after-operation');
+        const journal = new FaultInjectingJournal(inner, journalFaults);
+        const persistenceId = harness.pid('lost-acknowledgement');
+        try {
+          await expectThrows(
+            () => journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }], 0),
+            'InjectedFaultError',
+            'the scripted append',
+          );
+          await expectThrows(
+            () => journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }], 0),
+            'JournalConcurrencyError',
+            'retrying the committed append at the old head',
+          );
+          assertEqual(await journal.highestSeq(persistenceId), 2, 'highestSeq counts the committed batch once');
+          const stored = await journal.read<string>(persistenceId, 1);
+          assertEqual(stored.map((e) => e.event), ['e1', 'e2'], 'the batch is stored exactly once');
+          const next = await journal.append(persistenceId, [{ event: 'e3' }], 2);
+          assertEqual(next.map((e) => e.sequenceNr), [3], 'an append at the re-read head continues the stream');
+        } finally {
+          await closeQuietly(inner);
         }
       },
     },
