@@ -15,6 +15,7 @@ import {
   stoppingStrategy,
   type SupervisorStrategy,
 } from '../../src/Supervision.js';
+import { TestKit } from '../../src/testkit/TestKit.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 import { systemFixture } from './__shared__/SystemFixture.js';
 
@@ -51,17 +52,6 @@ describe('OneForOneStrategy', () => {
     const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3, withinTimeRangeMs: 1000 });
     expect(strategy.maxRetries).toBe(3);
     expect(strategy.withinTimeRangeMs).toBe(1000);
-  });
-});
-
-describe('AllForOneStrategy', () => {
-  test('scope is all-for-one', () => {
-    expect(new AllForOneStrategy(() => Directive.Restart).scope).toBe('all-for-one');
-  });
-  test('accepts options identical to OneForOne', () => {
-    const strategy = new AllForOneStrategy(() => Directive.Stop, { maxRetries: 5, withinTimeRangeMs: 500 });
-    expect(strategy.maxRetries).toBe(5);
-    expect(strategy.withinTimeRangeMs).toBe(500);
   });
 });
 
@@ -557,5 +547,173 @@ describe('the restart allowance means the same thing in both implementations', (
     while (budget.registerRestart()) granted++;
 
     expect(granted).toBe(strategy.maxRetries);
+  });
+});
+
+/**
+ * `all-for-one` widens a failure from the child that threw to every sibling
+ * (#1019).  Until these cases existed the strategy was only ever constructed
+ * and read back, so replacing the scope check in `ActorCell.onFailure` with
+ * `false` — which silently turns `AllForOneStrategy` into `OneForOneStrategy`
+ * — left every supervision test green.  An all-for-one group is chosen
+ * because its siblings share state a partial restart would corrupt, so the
+ * fan-out is the whole point of the strategy.
+ */
+describe('AllForOneStrategy fans a failure out to every sibling', () => {
+  const sys = systemFixture('supervision-all-for-one');
+
+  /** Counts constructions per child name; `fail` throws, anything else is ignored. */
+  class Sibling extends Actor<string> {
+    constructor(private readonly starts: Map<string, number>) { super(); }
+    override preStart(): void {
+      const name = this.context.self.path.name;
+      this.starts.set(name, (this.starts.get(name) ?? 0) + 1);
+    }
+    override onReceive(message: string): void {
+      if (message === 'fail') throw new FooError();
+    }
+  }
+
+  const SIBLINGS = ['first', 'second', 'third'] as const;
+
+  /** A parent over three siblings, failing only the one named in its message. */
+  function parentClass(strategy: SupervisorStrategy, starts: Map<string, number>) {
+    return class Parent extends Actor<string> {
+      override supervisorStrategy(): SupervisorStrategy { return strategy; }
+      override preStart(): void {
+        for (const name of SIBLINGS) this.context.spawn(() => new Sibling(starts), name);
+      }
+      override onReceive(childName: string): void {
+        this.context.child(childName).forEach((child) => child.tell('fail' as never));
+      }
+    };
+  }
+
+  test('Restart: one failing child restarts all three', async () => {
+    const starts = new Map<string, number>();
+    const strategy = new AllForOneStrategy(() => Directive.Restart);
+    const parent = sys().spawn(parentClass(strategy, starts), 'all-for-one-restart');
+    await awaitCondition(() => SIBLINGS.every((name) => starts.get(name) === 1), {
+      label: 'all three siblings started',
+    });
+
+    parent.tell('second');
+
+    await awaitCondition(() => SIBLINGS.every((name) => starts.get(name) === 2), {
+      label: 'every sibling was rebuilt, not only the one that failed',
+    });
+  });
+
+  test('Stop: one failing child stops all three', async () => {
+    const starts = new Map<string, number>();
+    const seen: string[] = [];
+    const probe = sys().spawn(() => new LifecycleCollector(seen), 'all-for-one-stop-collector');
+    sys().eventStream.subscribe(probe, ActorStopped);
+    const strategy = new AllForOneStrategy(() => Directive.Stop);
+    const parent = sys().spawn(parentClass(strategy, starts), 'all-for-one-stop');
+    await awaitCondition(() => SIBLINGS.every((name) => starts.get(name) === 1), {
+      label: 'all three siblings started',
+    });
+
+    parent.tell('first');
+
+    await awaitCondition(
+      () => SIBLINGS.every((name) => seen.includes(`ActorStopped:${name}`)),
+      { label: 'every sibling was stopped, not only the one that failed' },
+    );
+  });
+
+  test('the same group under OneForOneStrategy restarts only the failing child', async () => {
+    // The control: without it, a cell that restarted every child on any
+    // strategy would pass the Restart case above.
+    const starts = new Map<string, number>();
+    const strategy = new OneForOneStrategy(() => Directive.Restart);
+    const parent = sys().spawn(parentClass(strategy, starts), 'one-for-one-control');
+    await awaitCondition(() => SIBLINGS.every((name) => starts.get(name) === 1), {
+      label: 'all three siblings started',
+    });
+
+    parent.tell('third');
+
+    await awaitCondition(() => starts.get('third') === 2, { label: 'the failing child restarted' });
+    expect(starts.get('first')).toBe(1);
+    expect(starts.get('second')).toBe(1);
+  });
+});
+
+/**
+ * The parent's restart budget is a *rate*, not a lifetime quota (#1019): the
+ * budget prunes failures older than `withinTimeRangeMs` before counting.  The
+ * prune is tested on `RestartBudget` directly above; these cases cross the
+ * window through a real parent, on the system's virtual clock, which is what
+ * proves the cell hands its budget `system.clock` rather than leaving it on
+ * the wall clock (#1424).
+ *
+ * The allowance is `maxRetries` restarts — `RestartBudget`'s reading, which
+ * the cell has delegated to since the two implementations were unified; see
+ * "the restart allowance means the same thing in both implementations".
+ */
+describe('the parent restart budget slides over withinTimeRangeMs', () => {
+  class AlwaysFails extends Actor<string> {
+    constructor(private readonly starts: { count: number }) { super(); }
+    override preStart(): void { this.starts.count++; }
+    override onReceive(): void { throw new FooError(); }
+  }
+
+  const strategy = new OneForOneStrategy(
+    () => Directive.Restart,
+    { maxRetries: 2, withinTimeRangeMs: 1_000 },
+  );
+
+  test('failures spaced beyond the window never exhaust the allowance', async () => {
+    const { kit } = TestKit.withManualScheduler('supervision-window-spaced');
+    try {
+      const starts = { count: 0 };
+      const ref = kit.system.spawn(() => new AlwaysFails(starts), 'spaced', { supervisorStrategy: strategy });
+
+      ref.tell('fail');
+      ref.tell('fail');
+      await awaitCondition(() => starts.count === 3, { label: 'both restarts in the first window were granted' });
+
+      // Both recorded restarts age out of the window, so the allowance is
+      // whole again — a crash every ten minutes must not exhaust a per-second
+      // budget.  On the wall clock this second would never pass.
+      await kit.advance(1_001);
+      ref.tell('fail');
+      ref.tell('fail');
+      await awaitCondition(() => starts.count === 5, {
+        label: 'the two restarts after the window were granted as well',
+      });
+    } finally {
+      await kit.shutdown();
+    }
+  });
+
+  test('the same number of failures inside the window stops the child', async () => {
+    const { kit } = TestKit.withManualScheduler('supervision-window-inside');
+    try {
+      const starts = { count: 0 };
+      const seen: string[] = [];
+      const probe = kit.system.spawn(() => new LifecycleCollector(seen), 'collector');
+      kit.system.eventStream.subscribe(probe, ActorStopped);
+      const ref = kit.system.spawn(() => new AlwaysFails(starts), 'inside', { supervisorStrategy: strategy });
+
+      ref.tell('fail');
+      await awaitCondition(() => starts.count === 2, { label: 'the first restart was granted' });
+      await kit.advance(500);
+      ref.tell('fail');
+      await awaitCondition(() => starts.count === 3, { label: 'the second restart was granted' });
+      // 999 ms after the first failure: still inside the window, so this is
+      // the third failure counted against `maxRetries: 2`.
+      await kit.advance(499);
+      ref.tell('fail');
+
+      await awaitCondition(() => seen.includes('ActorStopped:inside'), {
+        label: 'the third failure inside the window spent the allowance and stopped the child',
+      });
+      expect(starts.count).toBe(3);
+    } finally {
+      await kit.shutdown();
+    }
   });
 });

@@ -254,16 +254,19 @@ new OneForOneStrategy(
 Jenseits der Grenze gibt der Supervisor das Restarten auf, und die
 betroffenen Kinder werden stattdessen **gestoppt**.  Genau das
 durchbricht unendliche Restart-Loops — ein Kind, das permanent auf
-einem dauerhaft-kaputten Zustand crasht.  Beachte: der Zähler auf
-der Parent-Seite schließt den auslösenden Fehler mit ein,
-`maxRetries: 10` toleriert also elf Restarts, bevor der zwölfte
-Fehler das Kind stoppt.
+einem dauerhaft-kaputten Zustand crasht.  Gezählt wird wörtlich:
+`maxRetries: 10` gewährt zehn Restarts innerhalb des Fensters, und
+der elfte Fehler darin stoppt das Kind.  Ein Fehler, der älter als
+`withinTimeRangeMs` ist, zählt nicht mehr — ein Kind, das alle zehn
+Minuten einmal crasht, erschöpft ein Budget pro Minute also nie.
+Das Fenster wird an `system.clock` gemessen, sodass ein Test unter
+einem `ManualScheduler` es durch Vorstellen der virtuellen Zeit
+überschreitet statt durch Schlafen.
 
-<Aside type="caution" title="Der typed-Wrapper zählt anders">
+<Aside type="caution" title="Der typed-Wrapper eskaliert stattdessen">
   [`Behaviors.supervise(...).onFailure(strategy)`](/de/typed/behaviors/)
-  beachtet dieselben zwei Knöpfe, liest `maxRetries` aber wörtlich —
-  `maxRetries: 10` gewährt zehn Restarts — und **eskaliert** jenseits
-  der Grenze, statt zu stoppen.  Das muss so sein: der typed-Wrapper
+  beachtet dieselben zwei Knöpfe und gewährt dieselben `maxRetries`
+  Restarts, **eskaliert** jenseits der Grenze aber, statt zu stoppen.  Das muss so sein: der typed-Wrapper
   sitzt *innerhalb* des fehlschlagenden Actors, nicht in einem
   Parent, der den Tod beobachten könnte; ein Stopp dort würde den
   Fehler verwerfen, ohne dass es weiter oben jemand erführe.  Die
