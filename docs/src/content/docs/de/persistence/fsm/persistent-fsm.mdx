@@ -151,8 +151,11 @@ transitions: FsmTransitionMap<State, Command, Event, Data> = {
 `event` nimmt drei Formen an: ein **Literal** (`{ kind: 'submitted' }`),
 eine **Funktion** `(command, data) => Event` oder — für mehrere Events
 pro Command (#66) — ein **Array** oder eine Funktion, die eines
-zurückgibt.  Array-Events persistieren atomar in einem einzigen
-`persistAll`, `applyEvent` läuft einmal pro Event, und nur der **finale**
+zurückgibt.  Array-Events persistieren in einem einzigen `persistAll` —
+atomar auf einem Journal, das Batches atomar anhängt, und auf D1, MongoDB
+und Cassandra abgelehnt, solange
+[`allow-non-atomic-batch-append`](/de/persistence/overview/#austauschbare-backends)
+aus ist.  `applyEvent` läuft einmal pro Event, und nur der **finale**
 Zustand nach dem Replay wird gegen `next` geprüft.  Ein leeres Array ist
 ein No-op (nichts persistiert, kein Übergang).  `tagsFor` wird ebenfalls
 einmal pro Event gefragt — ein Übergang, der unterschiedlich geformte

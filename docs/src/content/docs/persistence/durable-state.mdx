@@ -243,21 +243,25 @@ try {
   await this.persist(next);
 } catch (e) {
   if (e instanceof DurableStateConcurrencyError) {
-    // Another writer beat us — reload and retry, or surface to the user.
+    // Another writer beat us — this.state is already reloaded: retry, or surface to the user.
   }
 }
 ```
 
 When two writers update the same `persistenceId` concurrently, the
 store's revision check rejects the second one with
-`DurableStateConcurrencyError`.  Strategies:
+`DurableStateConcurrencyError`.  Before the error reaches your handler,
+the actor re-reads the record, so `this.state` and `this.revision` are
+the store's current ones and the next `persist` can succeed.  The error
+is still thrown, because the value you tried to write was computed from
+state that was already stale.  Strategies:
 
 - **Avoid the problem** — make sure only one actor at a time writes
   to a given `persistenceId`.  This is usually trivial: each `cart-user-42`
   has one actor, on one node (via sharding or singleton).
-- **Reload and retry** — catch the error, reload state, recompute
-  the new value, persist again.  Works when the operation is
-  idempotent.
+- **Retry** — catch the error, recompute the new value from the
+  already reloaded `this.state`, persist again.  Works when the
+  operation is idempotent.
 - **Surface to caller** — reply with an error; let the caller decide
   whether to retry.
 

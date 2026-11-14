@@ -56,6 +56,27 @@ export const DEFAULT_RECOVERY_TIMEOUT_MS = 30_000;
 export const DEFAULT_SNAPSHOT_IS_OPTIONAL = false;
 
 /**
+ * Built-in default for
+ * {@link PersistenceBehaviorOptionsType.allowFullyCompactedRecovery}, published
+ * as `actor-ts.persistence.allow-fully-compacted-recovery` (#1052).
+ *
+ * `false` — a journal that has seen events, kept none of them and has no
+ * snapshot covering them fails the recovery with `JournalIntegrityError`, the
+ * same verdict a compacted prefix gets (#122).
+ */
+export const DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY = false;
+
+/**
+ * Built-in default for
+ * {@link PersistenceBehaviorOptionsType.allowNonAtomicBatchAppend}, published
+ * as `actor-ts.persistence.allow-non-atomic-batch-append` (#959).
+ *
+ * `false` — a multi-event `persistAll` against a journal that declares
+ * `atomicBatchAppend: false` is refused before anything is written.
+ */
+export const DEFAULT_ALLOW_NON_ATOMIC_BATCH_APPEND = false;
+
+/**
  * Built-in default for {@link PersistenceBehaviorOptionsType.journalBreaker},
  * published as `actor-ts.persistence.journal-breaker`.
  *
@@ -146,6 +167,34 @@ export type PersistenceBehaviorOptionsType = {
    */
   readonly snapshotIsOptional: boolean;
   /**
+   * Recover a `PersistentActor` whose journal was compacted completely — it
+   * has seen events, holds none of them, and no snapshot covers them — as
+   * `initialState()`, instead of failing the recovery (#1052).
+   *
+   * Off, such a recovery fails with `JournalIntegrityError` through
+   * `onRecoveryFailure`: the state those events produced is gone, and
+   * starting from empty would answer every later command from a state that
+   * never existed — the same reason a compacted *prefix* already fails
+   * (#122).  On, the actor starts empty and resumes its sequence at the
+   * journal's high-water mark, so its next `persist` lines up with what the
+   * journal remembers (#628).  Turn it on only where losing the state is
+   * intended, for a stream compacted without a snapshot on purpose.
+   */
+  readonly allowFullyCompactedRecovery: boolean;
+  /**
+   * Let a `PersistentActor` hand a multi-event `persistAll` to a journal that
+   * declares `atomicBatchAppend: false` — D1, MongoDB, Cassandra — instead of
+   * refusing it with `NonAtomicBatchAppendError` (#959).
+   *
+   * Off, the batch is refused before anything is written, so the caller's
+   * error means nothing was committed.  On, the batch is written, and a
+   * failure partway through can commit a prefix: `persistAll` rejects, its
+   * callback does not run, the actor's state stays behind the journal, and
+   * the next recovery adopts the prefix as history.  Single-event `persist`
+   * is atomic on every backend and is never refused.
+   */
+  readonly allowNonAtomicBatchAppend: boolean;
+  /**
    * `CircuitBreakerExtension` id the journal is called through, or `""` for
    * no breaker at all.
    *
@@ -208,6 +257,16 @@ export class PersistenceBehaviorOptionsBuilder extends OptionsBuilder<Persistenc
     return this.set('snapshotIsOptional', snapshotIsOptional);
   }
 
+  /** Recover a completely compacted journal with no snapshot as the initial state instead of failing. */
+  withAllowFullyCompactedRecovery(allowFullyCompactedRecovery: boolean): this {
+    return this.set('allowFullyCompactedRecovery', allowFullyCompactedRecovery);
+  }
+
+  /** Allow a multi-event `persistAll` on a journal that cannot append a batch atomically. */
+  withAllowNonAtomicBatchAppend(allowNonAtomicBatchAppend: boolean): this {
+    return this.set('allowNonAtomicBatchAppend', allowNonAtomicBatchAppend);
+  }
+
   /** Circuit-breaker id the journal is called through; `""` disables it. */
   withJournalBreaker(journalBreaker: string): this {
     return this.set('journalBreaker', journalBreaker);
@@ -256,7 +315,7 @@ export class PersistenceBehaviorOptionsValidator extends OptionsValidator<Persis
  *
  * The plugin sub-blocks of the same HOCON block (`journal`, `snapshot-store`,
  * `durable-state`) are not touched here — a plugin block is read by the
- * backend that owns it, and these six leaves sit *directly* under
+ * backend that owns it, and the behaviour leaves sit *directly* under
  * `actor-ts.persistence` where no plugin id can be, so the "that block is
  * exclusively plugin-id namespaces" reading of the path stays true one level
  * down.
@@ -281,6 +340,12 @@ export function readPersistenceBehaviorOptionsFromConfig(
   }
   if (config.hasPath(keys.snapshotIsOptional)) {
     out.snapshotIsOptional = config.getBoolean(keys.snapshotIsOptional);
+  }
+  if (config.hasPath(keys.allowFullyCompactedRecovery)) {
+    out.allowFullyCompactedRecovery = config.getBoolean(keys.allowFullyCompactedRecovery);
+  }
+  if (config.hasPath(keys.allowNonAtomicBatchAppend)) {
+    out.allowNonAtomicBatchAppend = config.getBoolean(keys.allowNonAtomicBatchAppend);
   }
   if (config.hasPath(keys.journalBreaker)) {
     out.journalBreaker = config.getString(keys.journalBreaker);

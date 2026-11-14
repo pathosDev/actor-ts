@@ -346,6 +346,12 @@ das Einzige gewesen, was eine Transaktion gebracht hätte.
   der nächste Append setzt beim neuen Head fort, die Recovery ist also
   konsistent — aber der Fehler des Callers garantiert nicht „nichts wurde
   geschrieben".  Einzel-Event-Appends, der Normalfall, sind ohnehin atomar.
+
+  Deshalb erklärt das Journal `atomicBatchAppend: false`, und ein `persistAll`
+  mit mehr als einem Event wird mit `NonAtomicBatchAppendError` abgelehnt,
+  bevor etwas geschrieben ist — es sei denn,
+  `actor-ts.persistence.allow-non-atomic-batch-append = on` nimmt das
+  Präfix-Risiko in Kauf; siehe [austauschbare Backends](/de/persistence/overview/#austauschbare-backends).
 </Aside>
 
 ## Tag-Queries

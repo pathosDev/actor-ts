@@ -316,6 +316,8 @@ const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>>
   {
     label: 'PostgresJournal',
     pid: namespacer('pg'),
+    // The fake accepts BEGIN / ROLLBACK and models neither (#959); the live suite runs that scenario.
+    capabilities: { transactionRollback: false },
     make: async () => {
       const journalOptions = PostgresJournalOptions.create()
         .withPool(new FakePgPool());
@@ -332,6 +334,8 @@ const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>>
   {
     label: 'LibSqlJournal',
     pid: namespacer('libsql'),
+    // The fake accepts BEGIN / ROLLBACK and models neither (#959); the live suite runs that scenario.
+    capabilities: { transactionRollback: false },
     make: async () => {
       const journalOptions = LibSqlJournalOptions.create()
         .withClient(new FakeLibSqlClient());
@@ -389,6 +393,8 @@ const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>>
   {
     label: 'MsSqlJournal',
     pid: namespacer('mssql'),
+    // The fake accepts BEGIN / ROLLBACK and models neither (#959); the live suite runs that scenario.
+    capabilities: { transactionRollback: false },
     make: async () => {
       const journalOptions = MsSqlJournalOptions.create()
         .withPool(new FakeMsSqlPool());
@@ -402,6 +408,8 @@ const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>>
   {
     label: 'MariaDbJournal',
     pid: namespacer('mariadb'),
+    // The fake accepts BEGIN / ROLLBACK and models neither (#959); the live suite runs that scenario.
+    capabilities: { transactionRollback: false },
     make: async () => {
       const journalOptions = MariaDbJournalOptions.create()
         .withPool(new FakeMariaDbPool());

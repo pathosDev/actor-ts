@@ -327,6 +327,12 @@ through contention — which is the only thing a transaction would have bought.
   continues from the new head, so recovery is consistent — but the caller's
   error does not guarantee "nothing was written".  Single-event appends, the
   common case, are atomic outright.
+
+  So the journal declares `atomicBatchAppend: false`, and a `persistAll` of
+  more than one event is refused with `NonAtomicBatchAppendError` before
+  anything is written, unless
+  `actor-ts.persistence.allow-non-atomic-batch-append = on` accepts the
+  prefix risk — see [pluggable backends](/persistence/overview/#pluggable-backends).
 </Aside>
 
 ## Tag queries

@@ -378,6 +378,27 @@ den auch andere schreiben können.  Der Replay wirft dann
 `JournalIntegrityError`, statt zu falten; siehe [was der Replay
 ablehnt](/de/persistence/persistent-actor/#was-der-replay-ablehnt).
 
+Ein Journal erklärt außerdem als `atomicBatchAppend`, ob ein `append`
+mit mehreren Events ganz oder gar nicht geschieht.  Ein einzelnes Event
+ist überall atomar; ein Batch nur dort, wo das Backend ihn als eine
+Einheit festschreibt:
+
+| Atomare Batch-Appends | Journals |
+| --- | --- |
+| ja (`atomicBatchAppend: true`) | In-Memory, SQLite, PostgreSQL, MariaDB, SQL Server, libSQL, DynamoDB |
+| nein (`atomicBatchAppend: false`) | D1 (keine Transaktion), MongoDB (keine, damit ein Standalone-`mongod` funktioniert), Cassandra (ein unlogged Batch pro Partition) |
+
+Auf einem `false`-Journal kann ein Fehler mitten im Batch ein
+festgeschriebenes Präfix hinterlassen, während dem Aufrufer gesagt
+wird, der Batch sei gescheitert.  Deshalb wird `persistAll` mit mehr
+als einem Event dort mit `NonAtomicBatchAppendError` abgelehnt, bevor
+etwas geschrieben ist.
+`actor-ts.persistence.allow-non-atomic-batch-append = on` nimmt das Risiko stattdessen in Kauf: Ein abgelehnter Batch kann
+dann ein Präfix festgeschrieben haben, sein Callback läuft nicht, der
+State des Actors bleibt hinter dem Journal zurück, und die nächste
+Recovery übernimmt das Präfix.  Ein eigenes Journal, das nichts
+erklärt, gilt als unbekannt und wird nie abgelehnt.
+
 Ein Store, der sich mit etwas verbindet, sollte außerdem das
 optionale `start?()` implementieren: jetzt öffnen statt bei der
 ersten Operation, damit das Warm-up des Systems beim Booten — siehe

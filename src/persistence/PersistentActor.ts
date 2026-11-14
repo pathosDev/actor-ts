@@ -5,6 +5,7 @@ import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import type { Journal } from './Journal.js';
 import { JournalConcurrencyError } from './JournalTypes.js';
 import type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
+import { NonAtomicBatchAppendError } from './PersistenceCapabilities.js';
 import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
 import type {
   CompressionConfig,
@@ -15,6 +16,7 @@ import type {
 import type { SnapshotStore } from './SnapshotStore.js';
 import {
   foldReplayHistory,
+  JournalIntegrityError,
   loadReplaySnapshot,
   readReplayHistory,
   type ReplayHistory,
@@ -545,7 +547,39 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     //
     // For a new actor `highestSeq` is 0, so this costs one query only when
     // there was nothing to replay anyway.
-    return { history, sequenceNr: await this._journal.highestSeq(this.persistenceId) };
+    const head = await this._journal.highestSeq(this.persistenceId);
+    if (head > 0 && !this._persistence.behavior.allowFullyCompactedRecovery) {
+      throw this.fullyCompactedJournalError(head);
+    }
+    return { history, sequenceNr: head };
+  }
+
+  /**
+   * A journal that has seen `head` events and kept none of them, with no
+   * snapshot covering them (#1052).
+   *
+   * The same verdict #122 gives a compacted *prefix*: the state those events
+   * produced is gone, and folding nothing onto `initialState()` would hand
+   * `onCommand` a state that never existed.  Total loss had slipped past that
+   * check only because a history with no events has nothing to iterate — which
+   * also made the loud path trivially bypassable by deleting one row more.
+   *
+   * Raised here rather than in `replayState`, beside the #628 high-water
+   * probe, because only actor recovery asks about *now*: the DevTools
+   * time-travel panel shares `replayState` and must keep answering for a
+   * point in history.  `actor-ts.persistence.allow-fully-compacted-recovery`
+   * restores the empty restart, with #628's sequence clamp, for a system
+   * that compacts without a snapshot on purpose.
+   */
+  private fullyCompactedJournalError(head: number): JournalIntegrityError {
+    return new JournalIntegrityError(
+      `[persistence] '${this.persistenceId}' journal was compacted completely: it has seen events up to `
+      + `sequenceNr=${head}, holds none of them, and no snapshot covers them, so the state cannot be `
+      + 'reconstructed (compact only past a snapshot, or set '
+      + 'actor-ts.persistence.allow-fully-compacted-recovery = on to start from the initial state)',
+      this.persistenceId,
+      head,
+    );
   }
 
   /**
@@ -620,12 +654,33 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     await this.persistAll([event], afterPersist);
   }
 
-  /** Persist several events atomically.  Must also be awaited in onCommand. */
+  /**
+   * Persist several events as one journal append.  Must also be awaited in
+   * onCommand.
+   *
+   * **Atomic only where the journal says so (#959).**  On a journal that
+   * declares `atomicBatchAppend: true` the batch commits whole or not at all.
+   * On one that declares `false` — D1, MongoDB, Cassandra — a failure partway
+   * through can commit a prefix, so a batch of more than one event is
+   * refused with `NonAtomicBatchAppendError` before anything is written,
+   * unless `actor-ts.persistence.allow-non-atomic-batch-append` is on.  With
+   * that on, a rejected batch may still have committed a prefix:
+   * `afterPersist` does not run, `state` and `lastSequenceNr` stay *behind*
+   * the journal, and the next recovery adopts the prefix as history.  A
+   * journal that declares nothing is unknown and never refused.
+   */
   protected async persistAll(
     events: ReadonlyArray<Event>,
     afterPersist?: (state: State) => void | Promise<void>,
   ): Promise<void> {
     if (events.length === 0) { await afterPersist?.(this._state); return; }
+    if (
+      events.length > 1
+      && this._journal.atomicBatchAppend === false
+      && !this._persistence.behavior.allowNonAtomicBatchAppend
+    ) {
+      throw new NonAtomicBatchAppendError(this._journal.constructor.name, this.persistenceId, events.length);
+    }
     // Refuse before writing rather than after: the whole point of the lease is
     // that a non-owner never becomes a writer, so its side effects never fire
     // a second time (#1166).

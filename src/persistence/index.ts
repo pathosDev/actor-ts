@@ -18,6 +18,8 @@ export type { SnapshotPolicy } from './PersistentActor.js';
 // built-in defaults, and what `reference.conf` publishes under
 // `actor-ts.persistence`, the startup switch as `auto-start`.
 export {
+  DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
+  DEFAULT_ALLOW_NON_ATOMIC_BATCH_APPEND,
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
   DEFAULT_PERSISTENCE_AUTO_START,
@@ -42,7 +44,7 @@ export type { PersistenceOptionField, PersistenceOptionSupport } from './Persist
 // Exported as a class for the same reason `StorageLocalityError` is: a caller
 // that catches an unhonourable encryption/integrity request discriminates on
 // the class, and `error.name === '…'` breaks on any rewording (#960).
-export { UnsupportedPersistenceOptionError } from './PersistenceCapabilities.js';
+export { NonAtomicBatchAppendError, UnsupportedPersistenceOptionError } from './PersistenceCapabilities.js';
 export type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
 export { JournalConcurrencyError, JournalError } from './JournalTypes.js';
 // The two integrity failures a recovery can raise.  Exported because

@@ -307,6 +307,16 @@ lässt sich nicht rekonstruieren, und den überlebenden Rest auf
 über einen Snapshot hinaus** — genau dafür behält
 `deleteHistory(seq)` den Snapshot bei `seq`.
 
+Das gilt auch, wenn *nichts* überlebt: Ein Journal, das Events
+gesehen hat, keines davon mehr hält und keinen abdeckenden Snapshot
+hat, lässt die Recovery ebenfalls mit `JournalIntegrityError`
+scheitern, statt bei `initialState()` zu beginnen.  Ein System, das
+absichtlich ohne Snapshot kompaktiert — der Zustand soll vergessen
+werden —, setzt
+`actor-ts.persistence.allow-fully-compacted-recovery = on`; der Actor startet dann leer und setzt seine Sequenz an der
+Hochwassermarke des Journals fort, sodass sein nächstes `persist`
+weiterhin zu dem passt, woran sich das Journal erinnert.
+
 Das [Time-Travel-Panel](/de/observability/devtools/time-travel/) der
 DevTools teilt sich diesen Replay-Code, klinkt sich beim letzten
 Punkt aber aus.  Es fragt, wie der State *in der Vergangenheit*
