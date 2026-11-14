@@ -1473,9 +1473,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * this second half a throttled actor could not be stopped, suspended or
    * supervised until its pause elapsed, which would trade the spin for an
    * unresponsive lifecycle.
+   *
+   * A cell that is not `running` is parked the same way, for the same
+   * reason: `run()` dequeues a user message only while `running`, so a user
+   * queue anywhere else is work no turn can make progress on.  Without this
+   * a `terminating` parent with one message still queued re-scheduled itself
+   * from `run()`'s `finally` until its last child had stopped — 123 683 empty
+   * turns in 300 ms behind one slow `postStop` (#915).  Its user queue goes to
+   * dead letters in `finalizeTermination`; the `childTerminated` it is waiting
+   * for is a system command and still earns its turn.
    */
   private hasDispatchableWork(): boolean {
-    if (this._throttleResumeTimer) return this.mailbox.hasSystemMessages();
+    if (this.state !== 'running' || this._throttleResumeTimer) return this.mailbox.hasSystemMessages();
     return this.mailbox.hasMessages();
   }
 

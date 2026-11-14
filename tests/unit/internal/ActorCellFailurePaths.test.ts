@@ -113,3 +113,55 @@ describe('an actor whose constructor throws is stopped, not left suspended (#914
     expect(await childCount(parent)).toBe(0);
   });
 });
+
+/* ------------------------------------ #915 ----------------------------------- */
+
+describe('a terminating actor with a queued message does not spin the dispatcher (#915)', () => {
+  test('dispatcher executions during a slow child stop stay O(1)', async () => {
+    const system = quietSystem('terminating-no-spin');
+    const letters = collectDeadLetters(system);
+    let executions = 0;
+    const counting: Dispatcher = {
+      id: 'counting',
+      execute(task) {
+        executions++;
+        setImmediate(() => { void task(); });
+      },
+    };
+
+    let childStarted = false;
+    let childStopped = false;
+    class SlowChild extends Actor<string> {
+      override preStart(): void { childStarted = true; }
+      override onReceive(): void {}
+      override async postStop(): Promise<void> {
+        // The fixture for the whole case: a child that takes this long to stop
+        // is what keeps its parent in `terminating` with a message queued.
+        await sleep(150);
+        childStopped = true;
+      }
+    }
+    let parentStopped = false;
+    class Parent extends Actor<unknown> {
+      override preStart(): void { this.context.spawn(SlowChild, 'slow'); }
+      override onReceive(): void {}
+      override postStop(): void { parentStopped = true; }
+    }
+
+    const parent = system.spawn(Parent, 'parent', { dispatcher: counting });
+    await awaitCondition(() => childStarted, { label: 'the parent and its slow child started' });
+    // Lets the parent's start-up turns settle, so the count below is teardown only.
+    await sleep(20);
+    const before = executions;
+
+    parent.tell(PoisonPill.instance);
+    parent.tell('late');
+
+    await awaitCondition(() => parentStopped, { label: 'the parent finished stopping after its slow child' });
+    expect(childStopped).toBe(true);
+    // A handful: the PoisonPill turn, the `childTerminated` turn, and the one
+    // `late` itself schedules.  The spin measured ~120 000 in 300 ms.
+    expect(executions - before).toBeLessThan(20);
+    expect(letters).toContain('late');
+  });
+});
