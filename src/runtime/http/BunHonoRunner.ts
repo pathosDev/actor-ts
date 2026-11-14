@@ -108,10 +108,28 @@ export class BunHonoRunner implements HonoServerRunner {
       // application-level `maxFrameBytes` check ever sees the frame (#586).
       // Past the cap Bun drops the connection rather than sending a policy
       // close, so the peer observes 1006 and not the app layer's clean 1009.
-      serveOptions: { websocket: { ...websocket, maxPayloadLength: maxFrameBytes } },
+      //
+      // `pong` is added beside Hono's handlers: Bun reports a pong only to the
+      // server-level handler, and Hono's bag has none, so without it the
+      // server heartbeat could ping a Bun socket but never hear it answer
+      // (#651).  Hono keeps the events its `upgradeWebSocket` built on
+      // `ws.data.events`, which is where the backend's `onPong` lives.
+      serveOptions: {
+        websocket: { ...websocket, maxPayloadLength: maxFrameBytes, pong: deliverBunPong },
+      },
       transportFrameCapBytes: maxFrameBytes,
     };
   }
+}
+
+/**
+ * `Bun.serve`'s `websocket.pong` handler: hand the pong to the events Hono's
+ * `upgradeWebSocket` stored on the socket (#651).  Defensive about the shape,
+ * since `ws.data` is Hono's and nothing here owns it.
+ */
+function deliverBunPong(ws: unknown): void {
+  const events = (ws as { data?: { events?: { onPong?: unknown } } } | null)?.data?.events;
+  if (typeof events?.onPong === 'function') (events.onPong as () => void).call(events);
 }
 
 /** The release that added `http2` to `Bun.serve`. */

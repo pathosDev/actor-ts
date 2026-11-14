@@ -607,8 +607,9 @@ describe("the WebSocket hub's accept and connected ride the control lane (#1431)
     for (let n = 1; n <= 10; n++) x.socket.emit(n);
     x.socket.hangUp();
     // The connection actor reports the close from its `postStop`, a turn or two
-    // after the hang-up; wait for it to be queued behind the frames.
-    await awaitCondition(() => (h.hub as LocalActorRef<HubMessage>).getCell().mailboxSize === 11, {
+    // after the hang-up; wait for it to be queued behind the frames, followed
+    // by the hub's own stop notice for that actor (#986).
+    await awaitCondition(() => (h.hub as LocalActorRef<HubMessage>).getCell().mailboxSize === 12, {
       timeoutMs: 4_000,
       label: 'the disconnect was queued behind the frames',
     });

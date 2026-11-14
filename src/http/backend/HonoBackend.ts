@@ -30,7 +30,11 @@ import type {
   ServerListenOptions,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import { bufferWebsocketEvents } from '../websocket/SocketAdapter.js';
+import {
+  bufferWebsocketEvents,
+  runtimeSocketPingOf,
+  subscribeRuntimeSocketPong,
+} from '../websocket/SocketAdapter.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
@@ -602,6 +606,13 @@ export class HonoBackend implements HttpServerBackend {
         get terminate() {
           return terminateOf(ws?.raw);
         },
+        // The server heartbeat's ping (#651): Bun's `ServerWebSocket` and
+        // `ws`'s `WebSocket` have one, Deno's standard `WebSocket` does not.
+        // Their pongs come back through `onOpen`'s subscription below (`ws`)
+        // and through the runner's `pong` handler (Bun).
+        get ping() {
+          return runtimeSocketPingOf(ws?.raw);
+        },
         remoteAddress: adapted.remoteAddress,
         get protocol() {
           return ws?.protocol;
@@ -610,8 +621,10 @@ export class HonoBackend implements HttpServerBackend {
       return {
         onOpen: (_evt, wsContext) => {
           ws = wsContext;
+          subscribeRuntimeSocketPong(wsContext.raw, () => events.onPong());
           reg.onConnection(adapted, adapter);
         },
+        onPong: () => events.onPong(),
         onMessage: (evt, wsContext) => {
           ws = wsContext;
           events.onMessage(coerceWebsocketData(evt.data));

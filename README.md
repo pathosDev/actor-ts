@@ -104,7 +104,8 @@ A short tour of what's in the box:
   backends, response caching, rate-limiting, idempotency-key dedup.  Typed
   **WebSocket** routes: `websocket(path, actorRef)` binds a
   `WebsocketServerActor` (typed messages, `reply` / `broadcast`,
-  connect/disconnect hooks); `WebsocketClientActor` is the reconnecting
+  connect/disconnect hooks, a server heartbeat that reaps half-open
+  peers); `WebsocketClientActor` is the reconnecting
   client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
   a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
   Basic auth, JWT auth, request-id, timeout); HTML-escaping helpers; and

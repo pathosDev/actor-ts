@@ -192,10 +192,10 @@ Broker-Adapter (`KafkaActor`, `MqttActor`, `NatsActor`, `AmqpActor`,
 `JetStreamActor`, `RedisStreamsActor`, `SseActor`, `EmailBridgeActor`), die
 TCP- und UDP-Socket-Actors sowie den gRPC-Client und -Server. Von dir
 gespawnt liegen sie innerhalb der Schranke wie alles andere, was du spawnst.
-Das Accept-Kommando, das Signal `websocket-connected` und das Close-Kommando
-überstehen sie (siehe oben), der restliche Verkehr eines Hubs nicht — seine
-Frames und das Signal `websocket-disconnected` werden abgeworfen wie jede
-andere Nachricht; siehe die Warnung am Ende dieser Seite.
+Das Accept-Kommando, die Signale `websocket-connected` und
+`websocket-disconnected` und das Close-Kommando überstehen sie (siehe oben),
+der restliche Verkehr eines Hubs nicht — seine Frames werden abgeworfen wie
+jede andere Nachricht; siehe die Warnung am Ende dieser Seite.
 
 ### 5. Ein Actor oder eine Familie, aus der Config
 
@@ -513,17 +513,18 @@ Protokoll-Design.
   einen Delivery-Producer, einen WebSocket-Hub — und der verworfene
   Envelope ist eine Kontrollnachricht. Genau das soll der unbounded
   Default verhindern, und eine globale Kapazität stellt es wieder her.
-  Vier Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
+  Fünf Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
   eines Death-Watch-Subscribers, das Kommando, das den Actor einer
-  WebSocket-Verbindung spawnt, das Signal `websocket-connected`, das
-  dieser Actor einem Hub mit seiner Default-Queue meldet, und das `close`
-  eben dieser Verbindung — alle vier überstehen jede Schranke.  Ein
-  begrenzter Hub kann also keinen Socket mehr stranden lassen, dessen
-  Handshake schon fertig war, und keinen Client bedienen, den er nie in
-  `clients` führt, und eine begrenzte Verbindung kann `closeAll()` nicht
-  in einen Peer verwandeln, der verbunden bleibt.  Alles andere in deinem
-  Protokoll, einschließlich des restlichen Verkehrs dieses Hubs — seiner
-  Frames und `websocket-disconnected` —, bleibt deine Beurteilung.
+  WebSocket-Verbindung spawnt, die Signale `websocket-connected` und
+  `websocket-disconnected`, die dieser Actor seinem Hub meldet, und das
+  `close` eben dieser Verbindung — alle fünf überstehen jede Schranke.
+  Ein begrenzter Hub kann also keinen Socket mehr stranden lassen, dessen
+  Handshake schon fertig war, keinen Client bedienen, den er nie in
+  `clients` führt, und keinen weiter führen, der längst weg ist, und eine
+  begrenzte Verbindung kann `closeAll()` nicht in einen Peer verwandeln,
+  der verbunden bleibt.  Alles andere in deinem Protokoll, einschließlich
+  des restlichen Verkehrs dieses Hubs — seiner Frames —, bleibt deine
+  Beurteilung.
 
   `actor-ts.mailbox.default.capacity` nimmt die eigenen Actors des
   Frameworks für dich aus, der Delivery-Producer, die Shard-Regions und

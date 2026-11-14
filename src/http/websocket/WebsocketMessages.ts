@@ -110,11 +110,26 @@ export function websocketInvalidSignal<TOut>(
 }
 
 /** Lifecycle/data signals delivered to a hub actor's mailbox. */
+/**
+ * The hub's own death-watch notice for one connection actor (#986), registered
+ * with `watchWith` when the hub spawns it.  It arrives after everything that
+ * actor reported — its `postStop` posts `disconnected` before the cell notifies
+ * watchers, and both take the tail of the hub's user lane — so a `disconnected`
+ * still queued is handled first, and a client still in `clients` when this
+ * arrives is one whose `disconnected` was lost.  Built only by the hub, which
+ * recognises the objects it built; a body that spells the kind is not one.
+ */
+export type WebsocketConnectionStoppedSignal = {
+  readonly kind: 'websocket-connection-stopped';
+  readonly id: string;
+};
+
 export type WebsocketServerSignal<TOut, TIn> =
   | WebsocketConnectedSignal<TOut>
   | WebsocketDataSignal<TOut, TIn>
   | WebsocketDisconnectedSignal<TOut>
-  | WebsocketInvalidSignal<TOut>;
+  | WebsocketInvalidSignal<TOut>
+  | WebsocketConnectionStoppedSignal;
 
 /**
  * Full mailbox type of a hub actor: the accept command, the internal
