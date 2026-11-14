@@ -300,11 +300,11 @@ function warningsNaming(log: RecordingLogger, address: NodeAddress): string[] {
 }
 
 /** A socket that records what was written to it and whether it was closed, either way. */
-function closableSocket(): { writes: Uint8Array[]; closed: boolean; write(data: Uint8Array): void; end(): void; destroy(): void } {
+function closableSocket(): { writes: Uint8Array[]; closed: boolean; write(data: Uint8Array): boolean; end(): void; destroy(): void } {
   return {
     writes: [],
     closed: false,
-    write(data: Uint8Array): void { this.writes.push(data); },
+    write(data: Uint8Array): boolean { this.writes.push(data); return true; },
     end(): void { this.closed = true; },
     destroy(): void { this.closed = true; },
   };

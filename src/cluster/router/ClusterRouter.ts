@@ -40,7 +40,9 @@ import { isMailboxDepthReport, routeeFullPath, type MailboxDepthReportMessage } 
  * if no role is given) is materialised as a `RemoteActorRef` pointing
  * at `routeePath`.  Self-routing goes through the same `RemoteActorRef`
  * — the cluster transport handles loopback, so behaviour is identical
- * to a remote routee.  Order is deterministic (`upMembers()` sorts by
+ * to a remote routee.  Every shipped transport does, `TcpTransport`
+ * included since #1813; a custom one must too, or the local node's
+ * share is lost.  Order is deterministic (`upMembers()` sorts by
  * address), so round-robin counters stay sane across rebuilds.
  *
  * **Empty set.**  If no member matches the role (or the cluster is

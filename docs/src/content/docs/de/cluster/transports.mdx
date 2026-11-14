@@ -94,9 +94,10 @@ nicht der teure Teil.  Quelle ist `benchmarks/cluster/tcp-message-cost.ts`,
 der einzige Benchmark, der diesen Transport überhaupt übt: der
 Framing-Round-Trip braucht `TcpTransport` über Loopback, wie die Grenzen des
 In-Memory-Transports weiter unten sagen, und der ferne Node läuft auf einem
-eigenen Thread, weil zwei Nodes auf einer Event-Loop das Ende eines Bursts an
-die Loopback-Puffer verlieren (#931) — der Benchmark prüft jeden Batch, das
-wird also ein Throw und keine Zahl.
+eigenen Thread, weil zwei Nodes auf einer Event-Loop nicht lesen können,
+während ein Burst geschrieben wird — ein Burst, der länger ist als
+`outbound-queue-size`, verliert seine ältesten Frames an diese Grenze (#931).
+Der Benchmark prüft jeden Batch, das wird also ein Throw und keine Zahl.
 
 ### Runtime-Backends
 
@@ -118,16 +119,30 @@ Runtime. Auf Bun nutzen die Dials des Transports allerdings nicht
 `Bun.connect` lässt sich nicht abbrechen — sie laufen deshalb über Buns eigenes
 `node:net` / `node:tls`, das es kann. Der Listener bleibt bei `Bun.listen`.
 
-Auf Bun puffern die beiden Enden einer Verbindung deshalb nicht gleich — die
-Hälfte von #931, die auf die wählende Seite fällt. Die Seite, die gewählt hat,
-schreibt über `node:net`, das alles im Speicher hält, was der Peer gerade nicht
-abnehmen kann, ohne Grenze; ein Socket, den `Bun.listen` angenommen hat,
-schreibt nativ, und natives Bun verwirft, was der Kernel nicht annimmt — der
-Decoder des Empfängers liest den Rest des Streams dann ab der Mitte eines
-Frames. Auf Node und Deno puffern beide Enden. Keine Runtime bremst den
-Sender — `TcpSocketLike.write` meldet nichts —, ein Peer, der nicht mehr liest,
-lässt also an einem Ende den Heap wachsen und bricht am anderen den Stream,
-und die Grenze, die beides stoppt, ist Sache von #931.
+#### Backpressure
+
+Jedes Backend hält, was der Kernel noch nicht annimmt, und sagt es auch:
+`TcpSocketLike.write` antwortet `false`, sobald ein Socket mehr hält als die
+High-Water-Mark seiner Runtime, und `onDrain` des Backends meldet, wann er
+wieder mehr annehmen kann (#931). `TcpTransport` hört bei diesem `false` auf,
+an den Peer zu schreiben, und hält für ihn höchstens `outbound-queue-size`
+ganze Frames — dieselbe Grenze und dieselbe Drop-Oldest-Policy wie der Puffer
+vor dem Handshake —, die er beim Drain in Reihenfolge schreibt. Ein Frame wird
+nie abgeschnitten: Ein Peer, der nicht mehr liest, sieht einen Frame-Strom mit
+Lücken, und dieser Node loggt eine WARN, wenn eine Backpressure-Episode zu
+verwerfen beginnt, und eine mit der Zahl der verworfenen Frames, wenn der
+Socket wieder abläuft. Ein geordnetes Schließen (`disconnect`, `shutdown`)
+schreibt das Gehaltene vor seinem FIN, damit die `leave`-Frames, die
+`Cluster.leave` kurz vor dem Herunterfahren sendet, nicht hinter einem
+langsamen Leser verloren gehen.
+
+Vor 0.19 bremste nichts den Sender, und die beiden Enden einer
+Bun-Verbindung versagten unterschiedlich: Die Seite, die gewählt hat, schreibt
+über `node:net`, das ohne Grenze hielt, was der Peer nicht abnehmen konnte, und
+ein Socket, den `Bun.listen` angenommen hat, schrieb nativ und verwarf, was der
+Kernel nicht annahm — der Decoder des Empfängers las den Rest des Streams dann
+ab der Mitte eines Frames, und die Verbindung wurde getrennt. Node und Deno
+pufferten an beiden Enden ohne Grenze.
 
 ### Optionales TLS
 

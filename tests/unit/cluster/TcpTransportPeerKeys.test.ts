@@ -1,29 +1,33 @@
 /**
- * #1476 — a connection that goes gives back every `byPeer` key it holds, not
- * just the two it can name.
+ * The `byPeer` keys a connection holds, and the one identity it may hold.
  *
- * A connection is registered under the address a dial was opened to and under
- * each identity a handshake frame announced on it.  The release walked `peer`
- * and `targetKey` only — the identity announced last and the dialled address —
- * so a connection that announced more than one identity left the earlier ones
- * mapped to a connection that was closed.  A `send` to such an address then
- * went into the closed connection instead of a new dial, and the real peer's
- * `hello` under it was turned away, because another connection still seemed
- * to hold the address.
+ * #1476 — a connection that goes gives back every key it holds, not just the
+ * one it was asked to give back.  A dial is registered under the address it
+ * was opened to and under the identity its peer announced in the `hello-ack`
+ * — two different keys whenever a seed is written as a name the peer does not
+ * advertise itself as — and a release that remembered only one of them left
+ * the other mapped to a closed connection: a `send` to it went into that
+ * connection instead of a new dial, and the real peer's `hello` under it was
+ * turned away as a claim on an address another connection still held.
  *
- * Every case announces three identities on one connection, so a release that
- * remembers any fixed pair of keys — the one asked for, the first, the last —
- * still leaves one behind.  Driven through the transport's private seams with
- * recording sockets, the shape `TcpTransportOutboundDial.test.ts` uses: what is
- * under test is the bookkeeping, and no runtime socket event is involved.
+ * #1814 — a connection keeps one peer identity for its lifetime.  A second
+ * handshake frame naming a different identity used to be taken: the
+ * connection was registered under the new address as well, every later frame
+ * was handed to the cluster as coming from it, and `peers()` listed only the
+ * newest.  It is refused now, and the connection dropped; a repeated frame
+ * naming the same identity changes nothing.
+ *
+ * Driven through the transport's private seams with recording sockets, the
+ * shape `TcpTransportOutboundDial.test.ts` uses: what is under test is the
+ * bookkeeping, and no runtime socket event is involved.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { NoopLogger } from '../../../src/Logger.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame, FrameDecoder } from '../../../src/cluster/Protocol.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import type { TcpSocketHandlers, TcpSocketLike } from '../../../src/runtime/tcp/TcpBackend.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 
 /** A socket that records what was written to it and how it was closed. */
 type RecordingSocket = TcpSocketLike & {
@@ -37,7 +41,7 @@ function recordingSocket(): RecordingSocket {
     writes: [],
     ended: false,
     destroyed: false,
-    write(data: Uint8Array): void { this.writes.push(data); },
+    write(data: Uint8Array): boolean { this.writes.push(data); return true; },
     end(): void { this.ended = true; },
     destroy(): void { this.destroyed = true; },
   };
@@ -83,11 +87,12 @@ function openingDialer(transport: TcpTransport): Dial[] {
 }
 
 const self = new NodeAddress('sim', '10.0.0.100', 5_000, 'test-run');
-/** The three identities one connection announces, in this order. */
+/** The identity a connection announces. */
 const first = new NodeAddress('sim', '10.0.0.1', 5_000, 'test-run');
+/** A different identity, announced afterwards on the same connection. */
 const second = new NodeAddress('sim', '10.0.0.2', 5_000, 'test-run');
-const third = new NodeAddress('sim', '10.0.0.3', 5_000, 'test-run');
-const IDENTITIES = [first, second, third] as const;
+/** A dial target that names neither identity, as a seed written as a DNS name does not. */
+const dialled = new NodeAddress('sim', 'seed.internal', 5_000, 'test-run');
 
 const transports: TcpTransport[] = [];
 
@@ -95,27 +100,37 @@ afterEach(async () => {
   for (const transport of transports.splice(0)) await transport.shutdown();
 });
 
-function startTransport(): { transport: TcpTransport; dials: Dial[] } {
-  const transport = new TcpTransport(self, new NoopLogger());
+function startTransport(): { transport: TcpTransport; dials: Dial[]; log: RecordingLogger } {
+  const log = new RecordingLogger();
+  const transport = new TcpTransport(self, log);
   transports.push(transport);
-  return { transport, dials: openingDialer(transport) };
+  return { transport, dials: openingDialer(transport), log };
 }
 
 function handshake(kind: 'hello' | 'hello-ack', address: NodeAddress): Uint8Array {
   return encodeFrame({ kind, wireVersion: 2, minWireVersion: 2, self: address.toJSON() });
 }
 
-/** An accepted socket that announces every identity in `IDENTITIES`, one `hello` each. */
-function inboundAnnouncingAll(transport: TcpTransport): RecordingSocket {
+/** An accepted socket that has announced `identity`. */
+function inboundAnnouncing(transport: TcpTransport, identity: NodeAddress): RecordingSocket {
   const socket = recordingSocket();
   internals(transport).attachInbound(socket);
-  for (const identity of IDENTITIES) internals(transport).onData(socket, handshake('hello', identity));
+  internals(transport).onData(socket, handshake('hello', identity));
   return socket;
 }
 
-const keysOf = (transport: TcpTransport): string[] => [...internals(transport).byPeer.keys()].sort();
+/** A dial to {@link dialled}, acknowledged by a peer announcing `identity`. */
+async function dialAcknowledgedAs(transport: TcpTransport, dials: Dial[], identity: NodeAddress): Promise<Dial> {
+  transport.send(dialled, heartbeat(1));
+  // The transport installs the socket once `connect` resolves, as it would
+  // have before any byte arrives on a real one.
+  await Promise.resolve();
+  const dial = dials.at(-1)!;
+  dial.handlers.onData(dial.socket, handshake('hello-ack', identity));
+  return dial;
+}
 
-const identityKeys = (): string[] => IDENTITIES.map(String).sort();
+const keysOf = (transport: TcpTransport): string[] => [...internals(transport).byPeer.keys()].sort();
 
 /** Every frame written to `socket`, decoded in order. */
 function framesWritten(socket: RecordingSocket): WireMessage[] {
@@ -127,56 +142,136 @@ function heartbeat(seq: number): WireMessage {
   return { kind: 'heartbeat', from: self.toJSON(), seq, ts: seq };
 }
 
-describe('an inbound connection gives back every identity it announced (#1476)', () => {
-  test('the three identities are three keys on one peer while it lives', () => {
-    // The precondition the cases below rest on: a second `hello` on an
-    // established connection is taken, and adds a key rather than moving one.
-    const { transport } = startTransport();
-    inboundAnnouncingAll(transport);
+const warnings = (log: RecordingLogger): string[] =>
+  log.records.filter((record) => record.level === 'warn').map((record) => record.message);
 
-    expect(keysOf(transport)).toEqual(identityKeys());
-    expect(transport.peers().map(String)).toEqual([third.toString()]);
+describe('an inbound connection keeps the one identity it announced (#1814)', () => {
+  test('a second hello naming a different identity drops the connection', async () => {
+    const { transport, log } = startTransport();
+    const socket = inboundAnnouncing(transport, first);
+
+    internals(transport).onData(socket, handshake('hello', second));
+
+    expect(socket.destroyed).toBe(true);
+    expect(keysOf(transport)).toEqual([]);
+    expect(transport.peers()).toEqual([]);
+    expect(warnings(log).filter((line) => line.startsWith('hello refused: the connection already belongs to')))
+      .toHaveLength(1);
   });
 
-  test('disconnect(first identity) leaves none of them behind', () => {
+  test('nothing after the refused hello reaches the handler as either identity', async () => {
     const { transport } = startTransport();
-    inboundAnnouncingAll(transport);
+    const delivered: string[] = [];
+    transport.setHandler((from) => { delivered.push(from.toString()); });
+    const socket = inboundAnnouncing(transport, first);
 
-    transport.disconnect(first);
+    internals(transport).onData(socket, handshake('hello', second));
+    internals(transport).onData(socket, encodeFrame(heartbeat(2)));
+
+    expect(delivered).toEqual([]);
+  });
+
+  test('a repeated hello naming the same identity changes nothing', async () => {
+    const { transport, log } = startTransport();
+    const delivered: string[] = [];
+    transport.setHandler((from) => { delivered.push(from.toString()); });
+    const socket = inboundAnnouncing(transport, first);
+
+    internals(transport).onData(socket, handshake('hello', first));
+    internals(transport).onData(socket, encodeFrame(heartbeat(2)));
+
+    expect(socket.destroyed).toBe(false);
+    // Answered once: the repeat is ignored, not handshaken a second time.
+    expect(framesWritten(socket).map((frame) => frame.kind)).toEqual(['hello-ack']);
+    expect(keysOf(transport)).toEqual([first.toString()]);
+    expect(transport.peers().map(String)).toEqual([first.toString()]);
+    expect(delivered).toEqual([first.toString()]);
+    expect(warnings(log)).toEqual([]);
+  });
+});
+
+describe('a dial keeps the one identity its peer acknowledged with (#1814)', () => {
+  test('a second hello-ack naming a different identity drops the dial', async () => {
+    const { transport, dials, log } = startTransport();
+    const dial = await dialAcknowledgedAs(transport, dials, first);
+    expect(keysOf(transport)).toEqual([dialled.toString(), first.toString()].sort());
+
+    dial.handlers.onData(dial.socket, handshake('hello-ack', second));
+
+    expect(dial.socket.destroyed).toBe(true);
+    expect(keysOf(transport)).toEqual([]);
+    expect(transport.peers()).toEqual([]);
+    expect(warnings(log).filter((line) => line.startsWith('hello-ack refused: the connection already belongs to')))
+      .toHaveLength(1);
+  });
+
+  test('a hello naming a different identity on an acknowledged dial drops it too', async () => {
+    const { transport, dials } = startTransport();
+    const dial = await dialAcknowledgedAs(transport, dials, first);
+
+    dial.handlers.onData(dial.socket, handshake('hello', second));
+
+    expect(dial.socket.destroyed).toBe(true);
+    expect(keysOf(transport)).toEqual([]);
+  });
+
+  test('a repeated hello-ack naming the same identity changes nothing', async () => {
+    const { transport, dials, log } = startTransport();
+    const dial = await dialAcknowledgedAs(transport, dials, first);
+    const writesBefore = dial.socket.writes.length;
+
+    dial.handlers.onData(dial.socket, handshake('hello-ack', first));
+
+    expect(dial.socket.destroyed).toBe(false);
+    expect(keysOf(transport)).toEqual([dialled.toString(), first.toString()].sort());
+    expect(dial.socket.writes.length).toBe(writesBefore);
+    expect(warnings(log)).toEqual([]);
+  });
+});
+
+describe('a connection gives back every key it holds (#1476)', () => {
+  test('disconnect(dialled address) gives back the announced identity too', async () => {
+    const { transport, dials } = startTransport();
+    await dialAcknowledgedAs(transport, dials, first);
+
+    transport.disconnect(dialled);
 
     expect(keysOf(transport)).toEqual([]);
     expect(transport.peers()).toEqual([]);
   });
 
-  test('disconnect(an identity announced in between) leaves none of them behind', () => {
-    const { transport } = startTransport();
-    inboundAnnouncingAll(transport);
+  test('disconnect(announced identity) gives back the dialled address too', async () => {
+    const { transport, dials } = startTransport();
+    await dialAcknowledgedAs(transport, dials, first);
 
-    transport.disconnect(second);
+    transport.disconnect(first);
 
     expect(keysOf(transport)).toEqual([]);
   });
 
-  test('a send to the first identity after disconnect() dials it again', () => {
+  test('a send to the dialled address after disconnect(identity) dials it again', async () => {
     const { transport, dials } = startTransport();
-    inboundAnnouncingAll(transport);
-    transport.disconnect(third);
+    await dialAcknowledgedAs(transport, dials, first);
+    transport.disconnect(first);
 
-    transport.send(first, heartbeat(1));
+    transport.send(dialled, heartbeat(2));
 
     // A key left behind maps the address to the closed connection, and the
     // frame went into that instead of a new dial.
-    expect(dials.map((dial) => dial.target)).toEqual([`${first.host}:${first.port}`]);
+    expect(dials.map((dial) => dial.target)).toEqual([
+      `${dialled.host}:${dialled.port}`,
+      `${dialled.host}:${dialled.port}`,
+    ]);
   });
 
-  test('the real peer at the first identity is taken after disconnect()', () => {
-    const { transport } = startTransport();
-    inboundAnnouncingAll(transport);
-    transport.disconnect(third);
+  test('the real peer at the announced identity is taken after its dial closed on its own', async () => {
+    // No `disconnect` at all: the peer went away, and the runtime said so.
+    const { transport, dials } = startTransport();
+    const dial = await dialAcknowledgedAs(transport, dials, first);
+    dial.handlers.onClose(dial.socket);
+    expect(keysOf(transport)).toEqual([]);
 
-    const real = recordingSocket();
-    internals(transport).attachInbound(real);
-    internals(transport).onData(real, handshake('hello', first));
+    const real = inboundAnnouncing(transport, first);
 
     // Answered and kept: a key left behind made this a claim on an address
     // another connection held, and the socket was aborted instead.
@@ -185,37 +280,14 @@ describe('an inbound connection gives back every identity it announced (#1476)',
     expect(transport.peers().map(String)).toEqual([first.toString()]);
   });
 
-  test('a connection whose socket closes on its own leaves none of them behind', () => {
-    // No `disconnect` at all: the peer went away, and the runtime said so.
+  test('a refused second identity gives back the first identity as well', async () => {
     const { transport } = startTransport();
-    const socket = inboundAnnouncingAll(transport);
+    const socket = inboundAnnouncing(transport, first);
+    internals(transport).onData(socket, handshake('hello', second));
 
-    internals(transport).onClose(socket);
+    const real = inboundAnnouncing(transport, first);
 
-    expect(keysOf(transport)).toEqual([]);
-    const real = recordingSocket();
-    internals(transport).attachInbound(real);
-    internals(transport).onData(real, handshake('hello', second));
     expect(real.destroyed).toBe(false);
-    expect(transport.peers().map(String)).toEqual([second.toString()]);
-  });
-});
-
-describe('a dial gives back its address and every identity its peer announced (#1476)', () => {
-  test('disconnect(dialled address) leaves none of the four keys behind', () => {
-    // The dialled address names none of the identities, as a seed written as a
-    // DNS name does not name the address its peer advertises.
-    const dialled = new NodeAddress('sim', 'seed.internal', 5_000, 'test-run');
-    const { transport, dials } = startTransport();
-    transport.send(dialled, heartbeat(1));
-    const [dial] = dials;
-    expect(dial).toBeDefined();
-    for (const identity of IDENTITIES) dial!.handlers.onData(dial!.socket, handshake('hello-ack', identity));
-    expect(keysOf(transport)).toEqual([dialled.toString(), ...identityKeys()].sort());
-
-    transport.disconnect(dialled);
-
-    expect(keysOf(transport)).toEqual([]);
-    expect(transport.peers()).toEqual([]);
+    expect(transport.peers().map(String)).toEqual([first.toString()]);
   });
 });

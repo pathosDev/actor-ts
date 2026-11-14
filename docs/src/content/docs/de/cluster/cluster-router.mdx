@@ -339,7 +339,14 @@ Die Rolle wird zur `Cluster.join`-Zeit pro Node deklariert. Das
 Wenn der lokale Node ein Kandidat ist (die Rolle passt), *kann*
 der Router auf einen Worker auf demselben Node routen. Der
 Transport behandelt Loopback gleich wie jede Cross-Node-Zustellung
-— über den Local-Loopback-Pfad des Transports.
+— über den Local-Loopback-Pfad des Transports. Jeder mitgelieferte
+Transport hat einen: `TcpTransport` kodiert den Frame, dekodiert ihn
+unter denselben Grenzen wieder und übergibt ihn in einem Microtask
+dem eigenen Handler des Nodes, ohne irgendetwas anzuwählen — eine
+Nachricht, die die Leitung nicht überstehen würde, übersteht also
+auch den Loopback nicht. Vor 0.19 wählte er stattdessen seinen
+eigenen Listener an, der einen Peer mit der eigenen Adresse des
+Nodes abweist, und der Anteil des Nodes ging verloren.
 
 Das bedeutet, dass die Lastverteilung des Routers symmetrisch ist
 — keine Bevorzugung lokaler Routees, kein Penalty. Round-Robin

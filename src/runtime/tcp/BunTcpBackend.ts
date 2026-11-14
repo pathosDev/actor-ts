@@ -13,7 +13,9 @@ import type {
  * Bun implementation of `TcpBackend` — wraps `Bun.listen` / `Bun.connect`.
  *
  * Bun's sockets satisfy most of `TcpSocketLike` structurally, but not
- * `peerCertificate()`, so every callback goes through {@link wrapSocket}.
+ * `peerCertificate()`, and their `write` drops what the kernel will not take
+ * (#931), so every callback goes through {@link wrapSocket} and a
+ * {@link BunSocket}.
  * That wrapper is memoised per native socket: the transport keys its
  * per-connection state on socket identity, so handing out a fresh object
  * per callback would break every lookup after `open`.  We intentionally do
@@ -45,6 +47,7 @@ export class BunTcpBackend implements TcpBackend {
         data: (s: BunSocketNative, chunk: Uint8Array) => options.handlers.onData(wrapSocket(s), chunk),
         close: (s: BunSocketNative) => options.handlers.onClose(wrapSocket(s)),
         error: (s: BunSocketNative, err: Error) => options.handlers.onError(wrapSocket(s), err),
+        drain: (s: BunSocketNative) => onNativeDrain(s, options.handlers),
       },
     };
     // `listenerUsesTls` both decides and validates — a half-configured `tls`
@@ -155,6 +158,9 @@ function dialNatively(
       // unresolvable — and having it keeps that rejection from also being
       // reported as an unhandled one.
       connectError: (_s: BunSocketNative, error: Error) => { fail(undefined, error); },
+      drain: (s: BunSocketNative) => {
+        if (state === 'open') onNativeDrain(s, handlers);
+      },
     };
     const connectOptions: Record<string, unknown> = {
       hostname: options.host,
@@ -226,26 +232,124 @@ interface BunSocketNative {
  * every lookup after `open` miss.  A `WeakMap` keyed on the native socket
  * keeps identity stable and lets both die together.
  */
-const wrappers = new WeakMap<BunSocketNative, TcpSocketLike>();
+const wrappers = new WeakMap<BunSocketNative, BunSocket>();
 
-function wrapSocket(socket: BunSocketNative): TcpSocketLike {
+/** Where a {@link BunSocket} stands on its way out: `ending` holds the FIN until the backlog is written. */
+type BunSocketClosing = 'open' | 'ending' | 'ended';
+
+function wrapSocket(socket: BunSocketNative): BunSocket {
   const existing = wrappers.get(socket);
   if (existing) return existing;
-  const wrapper: TcpSocketLike = {
-    write(data: Uint8Array): void { socket.write(data); },
-    end(): void { socket.end(); },
-    destroy(): void { socket.terminate(); },
-    get remoteAddress(): string | undefined { return socket.remoteAddress; },
-    // Read on demand.  Bun runs `open` *before* the TLS handshake completes —
-    // `authorized` is still false there and no certificate is available — so
-    // capturing this eagerly would silently yield nothing on Bun while
-    // working on Node.  Any inbound frame implies a finished handshake.
-    peerCertificate(): PeerCertificate | undefined {
-      return toPeerCertificate(socket.getPeerCertificate?.());
-    },
-  };
+  const wrapper = new BunSocket(socket);
   wrappers.set(socket, wrapper);
   return wrapper;
+}
+
+/**
+ * Bun's `drain` callback: write what the socket was holding, and tell the
+ * caller once nothing is left — the one place both the listener and a native
+ * dial route it, so the two cannot disagree about when a socket has drained.
+ */
+function onNativeDrain(socket: BunSocketNative, handlers: TcpSocketHandlers): void {
+  const wrapper = wrapSocket(socket);
+  if (wrapper.flushBacklog()) handlers.onDrain?.(wrapper);
+}
+
+/**
+ * A native Bun socket as a `TcpSocketLike`, with the write queue Bun does not
+ * keep (#931).
+ *
+ * `socket.write` answers with how many bytes the kernel took and keeps none of
+ * the rest: measured on Bun 1.4.2, a socket whose peer was not reading took
+ * seven 64 KiB writes and answered `0` to every one after — and `-1` once the
+ * socket had closed.  Writing a framed stream through it cut the stream at
+ * whatever byte the kernel stopped at, and the receiver read the next frame's
+ * bytes as a length prefix.  So the remainder is kept here, in order, written
+ * on Bun's `drain`, and every write made while it is non-empty queues behind
+ * it rather than overtaking it.
+ *
+ * Exported for its tests; not part of the backend's surface.
+ */
+export class BunSocket implements TcpSocketLike {
+  /** Bytes the kernel has not taken yet, oldest first. */
+  private readonly backlog: Uint8Array[] = [];
+  /** `ending`: `end()` arrived over a non-empty backlog, and the FIN waits for it. */
+  private closing: BunSocketClosing = 'open';
+
+  constructor(private readonly native: BunSocketNative) {}
+
+  write(data: Uint8Array): boolean {
+    if (this.closing !== 'open') return false;
+    if (this.backlog.length > 0) {
+      // Copied: the caller may reuse its buffer the moment this returns.
+      this.backlog.push(data.slice());
+      return false;
+    }
+    const written = this.native.write(data);
+    // Closed: there is nobody left to write the rest to.
+    if (written < 0) return false;
+    if (written >= data.byteLength) return true;
+    this.backlog.push(data.slice(written));
+    return false;
+  }
+
+  /**
+   * Write as much of the backlog as the kernel takes now; `true` once it is
+   * empty — the moment the caller may resume.
+   */
+  flushBacklog(): boolean {
+    while (this.backlog.length > 0) {
+      const head = this.backlog[0]!;
+      const written = this.native.write(head);
+      if (written < 0) {
+        this.backlog.length = 0;
+        return false;
+      }
+      if (written < head.byteLength) {
+        this.backlog[0] = head.subarray(written);
+        return false;
+      }
+      this.backlog.shift();
+    }
+    if (this.closing === 'ending') {
+      this.closing = 'ended';
+      this.native.end();
+    }
+    return true;
+  }
+
+  /**
+   * Half-close once everything written has gone out: a FIN sent over a
+   * non-empty backlog would end the stream short of what the caller wrote —
+   * `Cluster.leave` writes its `leave` frames immediately before the transport
+   * ends its sockets.  Node's `end()` waits for its queue the same way.
+   */
+  end(): void {
+    if (this.closing !== 'open') return;
+    if (this.backlog.length > 0) {
+      this.closing = 'ending';
+      return;
+    }
+    this.closing = 'ended';
+    this.native.end();
+  }
+
+  /** Bun's abort, which discards the backlog with everything else. */
+  destroy(): void {
+    this.closing = 'ended';
+    this.backlog.length = 0;
+    this.native.terminate();
+  }
+
+  get remoteAddress(): string | undefined { return this.native.remoteAddress; }
+
+  // Read on demand.  Bun runs `open` *before* the TLS handshake completes —
+  // `authorized` is still false there and no certificate is available — so
+  // capturing this eagerly would silently yield nothing on Bun while
+  // working on Node.  Any inbound frame implies a finished handshake.
+  peerCertificate(): PeerCertificate | undefined {
+    return toPeerCertificate(this.native.getPeerCertificate?.());
+  }
 }
 
 interface BunGlobal {

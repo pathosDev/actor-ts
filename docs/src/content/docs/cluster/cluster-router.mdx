@@ -325,7 +325,13 @@ candidate is a routee**.
 If the local node is a candidate (matches the role), the router
 *may* route to a worker on the same node.  The transport handles
 loopback the same as any cross-node delivery — through the
-transport's local-loopback path.
+transport's local-loopback path.  Every shipped transport has one:
+`TcpTransport` encodes the frame, decodes it again under the same
+caps and hands it to the node's own handler on a microtask, without
+dialling anything, so a message that would not survive the wire does
+not survive the loopback either.  Before 0.19 it dialled its own
+listener instead, which refuses a peer claiming the node's own
+address, and the node's share was lost.
 
 This means the router's load distribution is symmetric — no
 preference for local routees, no penalty either.  Round-robin

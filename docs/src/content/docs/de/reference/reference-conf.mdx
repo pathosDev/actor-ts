@@ -1219,12 +1219,13 @@ actor-ts {
 
     # How many frames are held for a peer that cannot take them right now,
     # oldest dropped first -- the newest membership and heartbeat state is the
-    # state worth keeping.  Today that is the buffer in front of the
-    # handshake, so a send racing the handshake is held rather than lost; the
-    # key is named for the category rather than that one buffer, because the
-    # post-handshake backpressure queue is the same quantity with the same
-    # policy and the same warning and will land under this key rather than a
-    # second one.
+    # state worth keeping.  Two buffers, one bound each: the one in front of
+    # the handshake, so a send racing the handshake is held rather than lost,
+    # and the one behind a socket that pushes back, so a peer that stops
+    # reading costs this node at most this many frames instead of its heap.
+    # Frames are held whole, never cut: what the peer receives is a frame
+    # stream with gaps, each gap reported by a warning when it opens and
+    # another naming its size when the socket drains.
     outbound-queue-size = 1000
 
     # How many inbound connections this node accepts before it refuses sockets
