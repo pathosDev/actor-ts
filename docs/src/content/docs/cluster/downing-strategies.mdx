@@ -483,6 +483,21 @@ block instead of from `withLease(…)` — see
 the strategy's first decision, from the address the decision carries,
 because the strategy is constructed before the node's address exists.
 
+### One arbiter per side
+
+Every node owns its own lease instance, so on an even split only one
+node per side asks the lease: the side's lowest-addressed reachable
+`up` member, the same order `KeepOldest` uses.  Its side-mates never
+touch the lease and decide nothing; they follow the arbiter through
+the membership.  An arbiter that wins downs the other side, and the
+side-mates see those members removed.  An arbiter that loses downs its
+own side and leaves; once it is `leaving`, the next member in line is
+the arbiter, and its acquire loses to the lease the other side holds.
+So an even split ends with the lease holder's whole side up.  Before
+v0.19.0 every node acquired for itself, at most one node won, and its
+side-mates downed their side, the winner included
+([issue #1824](https://github.com/pathosDev/actor-ts/issues/1824)).
+
 ### When an acquire is abandoned
 
 The interesting case is not "the lease said no" but "the lease
