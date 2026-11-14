@@ -385,8 +385,9 @@ Zum Monitoring der Cluster-Gesundheit:
   fehlende Eintrag in `trusted-selection-paths` taucht hier als
   abgelehnter Verkehr auf. Beide Labels sind geschlossene, aus dem Code
   gezogene Mengen: `reason` hat diese zwei Werte, `frame` ist
-  `envelope` oder `cluster-client-envelope` — die Familie sind also
-  vier Serien, egal was ankommt. Der angefragte Pfad ist bewusst *kein*
+  `envelope`, `cluster-client-envelope`, `watch` oder `ref` — Letzteres
+  ein Actor-Ref-Marker im Body eines Envelopes, der diesen Knoten nennt
+  —, die Familie sind also acht Serien, egal was ankommt. Der angefragte Pfad ist bewusst *kein*
   Label, aus demselben Grund wie die behauptete Adresse oben — und er
   steht auch nicht in der Log-Zeile, denn er ist eine ungeprüfte
   Zeichenkette aus der Payload.

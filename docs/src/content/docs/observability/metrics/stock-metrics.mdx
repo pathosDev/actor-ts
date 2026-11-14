@@ -354,9 +354,10 @@ For monitoring cluster health:
   it is the metric to watch — every entry your
   `trusted-selection-paths` is missing shows up here as refused
   traffic.  Both labels are closed sets drawn from code: `reason` has
-  those two values, `frame` is `envelope` or
-  `cluster-client-envelope`, so the family is four series whatever
-  arrives.  The requested path is deliberately *not* a label, for the
+  those two values, `frame` is `envelope`,
+  `cluster-client-envelope`, `watch` or `ref` — the last an actor-ref
+  marker inside an envelope's body that names this node — so the
+  family is eight series whatever arrives.  The requested path is deliberately *not* a label, for the
   same reason the claimed address above is not one — and it is not in
   the log line either, since it is an unvalidated string from the
   payload.

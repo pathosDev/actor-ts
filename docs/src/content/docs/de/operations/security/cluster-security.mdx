@@ -888,6 +888,18 @@ wird wie ein fehlender beantwortet — `Terminated` mit
 die Antwort nichts preisgibt, was die Ablehnung nicht ohnehin
 schon täte; die Ablehnung wird unter `frame="watch"` gezählt.
 
+Und sie bewacht einen Pfad, der in einem Body ankommt. Ein
+`ActorRef` in einer Nachricht überquert das Wire als Marker, und
+ein Marker, der den empfangenden Knoten nennt, wird gegen dessen
+Actor-Baum aufgelöst — er ist also ein Pfad, den der Peer gewählt
+hat, genau wie das Ziel eines Envelopes. Ein Marker, der einen
+`/system`-Actor nennt, oder bei eingeschaltetem `untrusted-mode`
+einen `/user`-Actor außerhalb der Allow-List, wird zu `Nobody`
+dekodiert; ebenso einer, dessen Pfad keine vollständige
+`actor-ts://…`-URI ist und früher zum Root-Guardian aufgelöst
+wurde. Der Rest der Nachricht wird wie bisher zugestellt, und die
+Ablehnung wird unter `frame="ref"` gezählt (#1572).
+
 ### Ein Ref in einer Nachricht bestimmt nicht, wohin dieser Knoten wählt
 
 Die andere Richtung hat dieselbe Form. Ein `ActorRef` im

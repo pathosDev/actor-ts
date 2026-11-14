@@ -3446,7 +3446,7 @@ export class Cluster {
     // Rehydrate any ActorRef markers embedded in the user payload before
     // handing it off — downstream handlers (sharding, pubsub, …) just
     // forward `env.body` and shouldn't each duplicate the decode step.
-    const decoded: EnvelopeMessage = { ...message, body: decodeRefs(message.body, this) };
+    const decoded: EnvelopeMessage = { ...message, body: decodeRefs(message.body, this, from) };
 
     // 1. Explicit per-path handler (pub-sub mediator, singleton manager,
     //    sharding coordinator, …).

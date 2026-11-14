@@ -815,6 +815,16 @@ so a watcher never hangs and the answer reveals nothing the
 refusal did not already; the refusal is counted under
 `frame="watch"`.
 
+And it guards a path that arrives inside a body. An `ActorRef` in a
+message crosses the wire as a marker, and a marker naming the
+receiving node is resolved against that node's actor tree — so it
+is a path the peer chose, just as an envelope's target is. A marker
+naming a `/system` actor, or a `/user` actor off the allow-list
+while `untrusted-mode` is on, decodes to `Nobody`; so does one
+whose path is not a full `actor-ts://…` URI, which used to resolve
+to the root guardian. The rest of the message is delivered as it
+was, and the refusal is counted under `frame="ref"` (#1572).
+
 ### A ref in a message cannot choose where this node dials
 
 The other direction has the same shape. An `ActorRef` in a message

@@ -47,9 +47,11 @@ export type EnvelopeRefusalReason = 'system-path' | 'not-allow-listed';
  * Which wire seam refused it.  Drawn from code and never from a payload, the
  * same rule `cluster_envelope_from_mismatch_total{frame}` already follows, so
  * the series count is bounded by how many seams ask rather than by what anyone
- * sends.
+ * sends.  `ref` is not a frame of its own: it is an actor-ref marker inside an
+ * envelope's body that names this node, which `RefCodec` resolves against the
+ * same policy (#1572).
  */
-export type RefusedFrameKind = 'envelope' | 'cluster-client-envelope' | 'watch';
+export type RefusedFrameKind = 'envelope' | 'cluster-client-envelope' | 'watch' | 'ref';
 
 /**
  * Render `['user', 'orders', '7']` as the `/user/orders/7` an operator writes.
