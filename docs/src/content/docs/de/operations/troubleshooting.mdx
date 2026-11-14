@@ -44,14 +44,34 @@ cluster.subscribe((evt) => {
 ```
 
 Prüfe, ob `SelfUp` feuert. Wenn nicht, hat der lokale Node nicht
-einmal gebootstrappt. Schau dir die Ausgabe des Seed-Providers an:
+einmal gebootstrappt. Schau dir an, was der Join über seine Seeds
+geloggt hat:
 
 ```bash
-kubectl logs pod-1 | grep -i seed
-# → "discovered N seeds: ..."  ← darf nicht leer sein
+kubectl logs pod-1 | grep -E 'seed|self-elect'
 ```
 
-Wenn leer: Selector / DNS / Config des Seed-Providers ist falsch.
+```text title="log"
+contacting <n> seed(s): [<address>,…]
+self-electing as first cluster member — <reason>
+still "<status>" after <n> seed-contact round(s), and nothing can promote
+```
+
+- **`contacting … seed(s)`** ist eine Debug-Zeile
+  (`logger.level = debug`), geschrieben, wenn der Join mit mindestens
+  einem Seed außer sich selbst startet. Die Adressen sind, was die
+  Discovery geliefert hat — prüfe, dass es Pod-IPs auf dem Cluster-Port
+  sind.
+- **`self-electing as first cluster member — no seeds configured`**
+  heißt, die Seed-Liste war leer, der Node hat also einen eigenen
+  Cluster gegründet. Auf dem ersten Pod ist das erwartet; auf jedem
+  anderen heißt es, dass die Discovery nichts gefunden hat — Service-Name,
+  Namespace, RBAC oder DNS des Seed-Providers stimmen nicht, und der
+  Node ist jetzt ein zweiter Cluster.
+- **`still "joining" after …`** ist eine Warnung: Der Node hat seine
+  Seeds erreicht, aber kein Mitglied ist `up`, es gibt also keinen
+  Leader, der ihn befördern könnte. Der Rest der Zeile sagt, was es
+  täte.
 
 ### Symptom: Cluster flappt
 
@@ -95,7 +115,7 @@ cluster.subscribe((evt) => {
 
 Mit `logger.level = debug` loggt der Detektor die erste Hälfte selbst:
 
-```
+```text title="log"
 FD: <address> → unreachable (heartbeat timeout)
 ```
 

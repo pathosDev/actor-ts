@@ -42,14 +42,31 @@ cluster.subscribe((evt) => {
 ```
 
 Check whether `SelfUp` fires.  If not, the local node hasn't
-even bootstrapped.  Look at the seed-provider output:
+even bootstrapped.  Look at what the join logged about its seeds:
 
 ```bash
-kubectl logs pod-1 | grep -i seed
-# → "discovered N seeds: ..."  ← should not be empty
+kubectl logs pod-1 | grep -E 'seed|self-elect'
 ```
 
-If empty: seed provider's selector / DNS / config is wrong.
+```text title="log"
+contacting <n> seed(s): [<address>,…]
+self-electing as first cluster member — <reason>
+still "<status>" after <n> seed-contact round(s), and nothing can promote
+```
+
+- **`contacting … seed(s)`** is a debug line (`logger.level = debug`),
+  written when the join starts with at least one seed other than
+  itself.  The addresses are what discovery returned — check that they
+  are pod IPs on the cluster port.
+- **`self-electing as first cluster member — no seeds configured`**
+  means the seed list was empty, so the node founded a cluster of its
+  own.  On the first pod that is expected; on any other it means
+  discovery found nothing — the seed provider's service name,
+  namespace, RBAC or DNS is wrong, and the node is now a second
+  cluster.
+- **`still "joining" after …`** is a warning: the node reached its
+  seeds, but no member is `up`, so there is no leader to promote it.
+  The rest of the line says what would.
 
 ### Symptom: cluster flaps
 
@@ -93,7 +110,7 @@ cluster.subscribe((evt) => {
 
 With `logger.level = debug` the detector logs the first half itself:
 
-```
+```text title="log"
 FD: <address> → unreachable (heartbeat timeout)
 ```
 
