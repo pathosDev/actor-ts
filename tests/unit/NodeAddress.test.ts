@@ -45,6 +45,19 @@ describe('NodeAddress', () => {
     expect(parsed.port).toBe(42);
   });
 
+  // #941 — `actor-ts://` belongs to actor paths, not to node addresses.  Taken
+  // into the system name it yields `systemName: 'actor-ts://my-app'`, which
+  // never equals the `my-app` a `Cluster` derives from `system.name`, and the
+  // cluster then never converges.  Refusing it makes that trap loud.
+  test('parse refuses an actor-path scheme prefix instead of folding it into the system name', () => {
+    expect(() => NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'))
+      .toThrow(/actor-ts:\/\/.*system@host:port.*my-app@10\.0\.0\.5:2552/s);
+  });
+
+  test('parse refuses any URI scheme in the system name', () => {
+    expect(() => NodeAddress.parse('tcp://my-app@10.0.0.5:2552')).toThrow(/scheme/);
+  });
+
   test('equals compares all three fields', () => {
     const addressA = new NodeAddress('s', 'h', 1);
     expect(addressA.equals(new NodeAddress('s', 'h', 1))).toBe(true);
