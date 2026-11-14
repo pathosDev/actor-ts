@@ -127,6 +127,17 @@ export function unadmittedClassesIn(
   return out;
 }
 
+/** Whether any node of `value`, itself included, satisfies `predicate`. */
+export function containsNode(value: unknown, predicate: (node: unknown) => boolean): boolean {
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (predicate(next)) return true;
+    pending.push(...childrenOf(next));
+  }
+  return false;
+}
+
 /**
  * Nodes plus string and byte units in `value` — the size of what a decoder
  * built, to set against the size of the input that paid for it.

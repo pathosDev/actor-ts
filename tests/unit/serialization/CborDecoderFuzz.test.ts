@@ -59,10 +59,16 @@ function cborViolations(
   return out;
 }
 
-/** The three decoders every input meets: the codec's own round trip, the wire's list, and tight ceilings. */
+/**
+ * The four decoders every input meets: the codec's own round trip, the same
+ * with the string ceiling switched off (so a length claim meets nothing but
+ * the end-of-input check), the wire's list, and tight ceilings.
+ */
 function decodersUnder(tags: readonly JsonTreeTagName[] | undefined) {
+  const admitted = tags === undefined ? undefined : new Set(tags);
   return [
-    { decoder: new CborDecoder({}, { tags }), admitted: tags === undefined ? undefined : new Set(tags) },
+    { decoder: new CborDecoder({}, { tags }), admitted },
+    { decoder: new CborDecoder({ maxStringLength: 0 }, { tags }), admitted },
     { decoder: new CborDecoder({}, { tags: DEFAULT_WIRE_ADMITTED_TAGS }), admitted: new Set(DEFAULT_WIRE_ADMITTED_TAGS) },
     {
       decoder: new CborDecoder({ maxNestingDepth: 6, maxStringLength: 16 }, { tags: [] }),
