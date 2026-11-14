@@ -1,0 +1,26 @@
+{
+  "$comment": "Written by `bun run test:mutation -- --write-baseline` (#1368). Survivors per file, for comparison — not a gate.",
+  "recordedAt": "2026-11-14T16:45:10.729Z",
+  "commit": "747498950",
+  "bunVersion": "1.4.2",
+  "files": {
+    "src/persistence/query/TagLookbackWindow.ts": {
+      "killed": 48,
+      "timedOut": 0,
+      "survived": 15,
+      "noCoverage": 0
+    },
+    "src/Supervision.ts": {
+      "killed": 14,
+      "timedOut": 0,
+      "survived": 4,
+      "noCoverage": 0
+    },
+    "src/util/OptionsMerge.ts": {
+      "killed": 2,
+      "timedOut": 0,
+      "survived": 0,
+      "noCoverage": 0
+    }
+  }
+}

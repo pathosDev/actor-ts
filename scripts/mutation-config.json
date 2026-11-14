@@ -1,0 +1,27 @@
+{
+  "$comment": "Configuration for scripts/mutation-run.mjs (#1368). `ignore` drops mutants that are noise rather than findings; `sets` names the bounded file lists a scheduled run mutates. String and template literals are never mutated at all — the lexer does not look inside them — so log, error and metric texts need no entry here.",
+  "ignore": [
+    {
+      "operators": ["removed-call"],
+      "pattern": "\\b(?:log|logger)\\.(?:trace|debug|info|warn|error)\\(",
+      "reason": "Removing a log statement changes no behaviour a test should bind; the message itself is a string and is never mutated."
+    },
+    {
+      "operators": ["removed-call"],
+      "pattern": "\\bconsole\\.(?:log|info|warn|error|debug|trace)\\(",
+      "reason": "Console output is diagnostics, not behaviour."
+    }
+  ],
+  "sets": {
+    "nightly": {
+      "$comment": "Small, pure and central (the starting points #1368 names: the actor runtime's supervision, the downing strategies, the mailboxes), plus the two files the first baseline was measured on. Keep it bounded: the run is sequential by design, and the workflow's timeout-minutes is sized against this list.",
+      "files": [
+        "src/Supervision.ts",
+        "src/util/OptionsMerge.ts",
+        "src/persistence/query/TagLookbackWindow.ts",
+        "src/cluster/downing/*.ts",
+        "src/mailbox/*.ts"
+      ]
+    }
+  }
+}
