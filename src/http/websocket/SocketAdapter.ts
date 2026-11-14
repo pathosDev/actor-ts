@@ -26,6 +26,14 @@ export interface WebsocketListeners {
   onMessage(data: string | Uint8Array): void;
   onClose(code: number, reason: string): void;
   onError(err: Error): void;
+  /**
+   * The peer answered a ping (#651).  Optional for the listener — the
+   * connection actor's heartbeat is its one consumer — and delivered only by
+   * an adapter that has {@link WebsocketSocketAdapter.ping}.  A pong that
+   * arrives before the listeners attach is dropped rather than buffered: it
+   * answers a ping nobody has sent yet.
+   */
+  onPong?(): void;
 }
 
 /** W3C-style readyState values. */
@@ -100,6 +108,15 @@ export interface WebsocketSocketAdapter {
    * `close()` and the third has nothing left to try.
    */
   terminate?(): void;
+  /**
+   * Send a protocol-level ping (#651).  Present only where the adapter can
+   * also report the answer through {@link WebsocketListeners.onPong} — a ping
+   * whose pong nobody sees cannot tell a dead peer from a live one, and the
+   * server heartbeat would then drop healthy connections.  So `ws`-backed
+   * sockets (Express, Fastify, Hono on Node) and Bun's `ServerWebSocket`
+   * (Hono on Bun) have it; Deno's standard `WebSocket` has no ping at all.
+   */
+  ping?(): void;
   /** Single-shot listener attach — see {@link WebsocketListeners}. */
   setListeners(l: WebsocketListeners): void;
   readonly readyState: 0 | 1 | 2 | 3;
@@ -119,12 +136,41 @@ export interface WebsocketPackageSocket {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   terminate?(): void;
+  /** `ws` has it, and emits `'pong'` with the answer (#651). */
+  ping?(): void;
   on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): void;
   on(event: 'close', listener: (code: number, reason: unknown) => void): void;
   on(event: 'error', listener: (err: unknown) => void): void;
+  on(event: 'pong', listener: () => void): void;
   readonly bufferedAmount?: number;
   readonly readyState?: number;
   readonly protocol?: string;
+}
+
+/**
+ * The runtime socket's own `ping()`, bound to it, when it has one — for an
+ * adapter over a socket this module does not wrap itself: Hono hands each
+ * runtime's socket over as `WSContext.raw` (#651).  Bun's `ServerWebSocket`
+ * and `ws`'s `WebSocket` have one; Deno's standard `WebSocket` does not, and
+ * neither does anything else the WHATWG interface describes.
+ */
+export function runtimeSocketPingOf(raw: unknown): (() => void) | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const socket = raw as { ping?: unknown };
+  return typeof socket.ping === 'function' ? (socket.ping as () => void).bind(raw) : undefined;
+}
+
+/**
+ * Hear the pongs of a runtime socket that reports them as an event — `ws`'s
+ * `WebSocket`, which `@hono/node-ws` hands over (#651).  A socket without an
+ * `on` method is left alone: Bun reports its pongs through the server's
+ * `websocket.pong` handler instead, which the Hono runner wires.
+ */
+export function subscribeRuntimeSocketPong(raw: unknown, onPong: () => void): void {
+  if (!raw || typeof raw !== 'object') return;
+  const socket = raw as { on?: unknown };
+  if (typeof socket.on !== 'function') return;
+  (socket.on as (event: string, listener: () => void) => void).call(raw, 'pong', onPong);
 }
 
 function coerceBinary(data: unknown): Uint8Array {
@@ -162,6 +208,8 @@ type BufferedEvent = BufferedMessageEvent | BufferedCloseEvent | BufferedErrorEv
 export interface BufferedWebsocketEvents extends WebsocketListeners {
   /** Attach the real listeners and flush whatever arrived before them. */
   attach(listeners: WebsocketListeners): void;
+  /** Hand a pong to the attached listeners; dropped before the attach. */
+  onPong(): void;
 }
 
 /**
@@ -291,6 +339,8 @@ export function bufferWebsocketEvents(
       if (overflowed) return;
       pending.push({ kind: 'error', error });
     },
+    // Not buffered: a pong before the attach answers a ping nobody sent.
+    onPong: () => listeners?.onPong?.(),
     attach: (incoming) => {
       listeners = incoming;
       bufferedFrames = 0;
@@ -349,11 +399,13 @@ export function websocketPackageAdapter(
   socket.on('error', (err) => {
     events.onError(err instanceof Error ? err : new Error(String(err)));
   });
+  socket.on('pong', () => events.onPong());
 
   return {
     send: (data) => socket.send(data),
     close: (code, reason) => socket.close(code, reason),
     terminate: socket.terminate ? () => socket.terminate!() : undefined,
+    ping: socket.ping ? () => socket.ping!() : undefined,
     setListeners: (l) => events.attach(l),
     get readyState() {
       return (socket.readyState ?? WebsocketReadyState.OPEN) as 0 | 1 | 2 | 3;

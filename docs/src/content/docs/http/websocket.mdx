@@ -102,6 +102,8 @@ type WebsocketRouteOptions<TOut, TIn> = {
   acceptTimeoutMs?:    number;                        // setup deadline; default 10 000, Infinity to disable
   connectionMailboxCapacity?: number;                 // per-connection queue bound; default unset (global bound)
   connectionMailboxOverflow?: 'drop-head' | 'drop-new' | 'reject'; // needs a capacity
+  heartbeatIntervalMs?: number;                       // server ping interval; default 30 000, 0 to disable
+  idleTimeoutMs?:       number;                       // close after this long without a message; default 0 (off)
 };
 ```
 
@@ -228,6 +230,42 @@ a hub with its default mailbox cannot hold a finished upgrade past
 `withMailbox(...)` orders the command like any other message in that
 mailbox, and behind a FIFO backlog that takes longer than
 `acceptTimeoutMs` to drain the new connection is still closed with 1013.
+
+#### Heartbeat and idle timeout
+
+A peer can vanish without a close frame — a pulled cable, a laptop that
+went to sleep, a NAT that forgot the mapping.  Nothing then arrives on its
+socket and nothing ever will, and without a check the connection's actor,
+its entry in the hub's `clients` and its `maxConnections` slot stay for the
+life of the process.
+
+- **`heartbeatIntervalMs`** (default 30 s) sends each peer a protocol-level
+  ping every interval.  A connection from which nothing arrived since the
+  previous ping — no pong, no frame — is dropped without a close handshake,
+  which a vanished peer could not answer anyway, and the hub's
+  `onClientDisconnected` hears `{ code: 1001, reason: 'heartbeat timeout',
+  initiatedBy: 'server' }`.  A dead peer is gone between one and two
+  intervals after it went quiet, and its slot with it.  Every conforming
+  client answers a ping on its own — browsers, `ws`, Bun and Deno — so
+  nothing in your protocol changes.  `0` turns it off.
+- **`idleTimeoutMs`** (default off) closes a connection with `1001`
+  `'idle timeout'` once that long has passed without an inbound message.
+  Pongs do not count: a peer that answers every ping but says nothing is
+  idle by this measure.  What "too quiet" means is your protocol's to
+  decide, which is why it is off unless you set it.
+
+```ts
+const liveRouteOptions = WebsocketRouteOptions.create()
+  .withHeartbeatIntervalMs(15_000)
+  .withIdleTimeoutMs(5 * 60_000);
+websocket('/ws', chat, liveRouteOptions);
+```
+
+The heartbeat runs on all three backends with one exception: Hono on
+**Deno**, whose standard `WebSocket` cannot send a ping.  A route there
+warns once that its connections run without the heartbeat; Deno's own
+`idleTimeout` on `Deno.upgradeWebSocket` (120 s by default) still pings and
+drops an unresponsive peer.
 
 ### Origin checks (CSWSH defence)
 
@@ -749,6 +787,8 @@ actor-ts.http.websocket {
   # Unset by default; a route's own value wins over both.
   # connection-mailbox-capacity = 256
   # connection-mailbox-overflow = "drop-head"
+  heartbeat-interval    = 30s   # 0 to disable
+  idle-timeout          = 0s    # off
 }
 ```
 

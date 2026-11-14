@@ -809,6 +809,8 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.http.websocket.max-pre-attach-frames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
   { key: 'actor-ts.http.websocket.max-pre-attach-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
   { key: 'actor-ts.http.websocket.accept-timeout', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
+  { key: 'actor-ts.http.websocket.heartbeat-interval', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.heartbeatIntervalMs },
+  { key: 'actor-ts.http.websocket.idle-timeout', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.idleTimeoutMs },
   // The two connection-mailbox leaves (#1432) ship comment-only, and unset is
   // their documented default rather than a gap: it leaves each connection
   // actor to `actor-ts.mailbox.default.*`, so there is no constant behind them

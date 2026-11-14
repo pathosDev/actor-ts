@@ -89,6 +89,39 @@ export type ResolvedWebsocketPolicy = {
    * a slow connection (#919).
    */
   readonly connectionMailboxOverflow?: BoundedMailboxOverflow;
+  /**
+   * How often each connection pings its peer with a protocol-level ping, in
+   * milliseconds; `0` turns the heartbeat off (#651).
+   *
+   * A peer that vanishes without a close frame — a pulled cable, a sleeping
+   * laptop, a NAT that forgot the mapping — leaves a socket nothing ever
+   * reads from or writes to again, and without a heartbeat its connection
+   * actor, its entry in the hub's `clients` and its `maxConnections` slot
+   * stay for the life of the process.  So every interval the connection
+   * checks that something arrived since the previous ping — the pong, or any
+   * frame — and sends the next one; when nothing did, it drops the socket
+   * without a close handshake the peer could not answer, and the hub hears
+   * `{ code: 1001, reason: 'heartbeat timeout', initiatedBy: 'server' }`.  A
+   * dead peer is therefore reaped between one and two intervals after it
+   * went silent.
+   *
+   * Every conforming client answers a ping on its own, so no application
+   * code is involved.  A transport that cannot send a ping or report its pong
+   * — Hono on Deno — leaves the heartbeat off for its connections and says so
+   * once per route; Deno's own `idleTimeout` still pings there.
+   */
+  readonly heartbeatIntervalMs: number;
+  /**
+   * How long a connection may go without an inbound **message** before it is
+   * closed with 1001 `'idle timeout'`, in milliseconds; `0`, the default,
+   * turns it off (#651).
+   *
+   * Unlike the heartbeat this is a statement about the application, not the
+   * transport: a peer that answers every ping but has said nothing for this
+   * long is closed too.  Pongs do not count.  Off by default because what
+   * "too quiet" means is the protocol's to decide.
+   */
+  readonly idleTimeoutMs: number;
 };
 
 /** Fields a `websocket()` route may override; everything else falls back. */
@@ -104,6 +137,8 @@ export type WebsocketPolicyOptions = {
   readonly acceptTimeoutMs?: number;
   readonly connectionMailboxCapacity?: number;
   readonly connectionMailboxOverflow?: BoundedMailboxOverflow;
+  readonly heartbeatIntervalMs?: number;
+  readonly idleTimeoutMs?: number;
 };
 
 export const DEFAULT_WEBSOCKET_POLICY: ResolvedWebsocketPolicy = {
@@ -125,6 +160,11 @@ export const DEFAULT_WEBSOCKET_POLICY: ResolvedWebsocketPolicy = {
   // Written here rather than in `Constants.ts` because this file is its only
   // reader — the wiring layer takes it off the resolved policy.
   acceptTimeoutMs: 10_000,
+  // 30 s: well inside the idle cut of the usual proxies and load balancers
+  // (60 s on nginx and AWS ALB), so the ping keeps a live connection warm
+  // through them as a side effect, and a dead peer is gone within a minute.
+  heartbeatIntervalMs: 30_000,
+  idleTimeoutMs: 0,
 };
 
 /**
@@ -158,6 +198,9 @@ export class WebsocketPolicyOptionsValidator extends OptionsValidator<WebsocketP
     this.positiveIntOrUnbounded('acceptTimeoutMs', s.acceptTimeoutMs);
     this.positiveInt('connectionMailboxCapacity');
     this.oneOf('connectionMailboxOverflow', ['drop-head', 'drop-new', 'reject']);
+    // `0` is the off-switch for both, and the one a HOCON leaf can spell.
+    this.nonNegativeInt('heartbeatIntervalMs');
+    this.nonNegativeInt('idleTimeoutMs');
     // Judged on the merged policy, so a capacity from the route and a policy
     // from HOCON make a complete pair.  `actor-ts.mailbox.default.capacity`
     // does not count: it reaches the actor at spawn, where this policy would
@@ -253,6 +296,8 @@ export function readWebsocketPolicyOptionsFromConfig(config: Config): WebsocketP
   if (config.hasPath(keys.connectionMailboxOverflow)) {
     out.connectionMailboxOverflow = config.getString(keys.connectionMailboxOverflow) as BoundedMailboxOverflow;
   }
+  if (config.hasPath(keys.heartbeatInterval)) out.heartbeatIntervalMs = config.getDuration(keys.heartbeatInterval);
+  if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
   return out;
 }
 
@@ -283,6 +328,8 @@ export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPo
     maxPreAttachFrames: options.maxPreAttachFrames ?? configured.maxPreAttachFrames ?? defaults.maxPreAttachFrames,
     maxPreAttachBytes: options.maxPreAttachBytes ?? configured.maxPreAttachBytes ?? defaults.maxPreAttachBytes,
     acceptTimeoutMs: options.acceptTimeoutMs ?? configured.acceptTimeoutMs ?? defaults.acceptTimeoutMs,
+    heartbeatIntervalMs: options.heartbeatIntervalMs ?? configured.heartbeatIntervalMs ?? defaults.heartbeatIntervalMs,
+    idleTimeoutMs: options.idleTimeoutMs ?? configured.idleTimeoutMs ?? defaults.idleTimeoutMs,
     ...(connectionMailboxCapacity === undefined ? {} : { connectionMailboxCapacity }),
     ...(connectionMailboxOverflow === undefined ? {} : { connectionMailboxOverflow }),
   };

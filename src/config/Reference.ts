@@ -1774,6 +1774,13 @@ actor-ts {
       # drop-head | drop-new | reject.
       # connection-mailbox-capacity = 1024
       # connection-mailbox-overflow = "drop-head"
+      # Each connection pings its peer this often and drops it, as 1001
+      # "heartbeat timeout", when nothing arrived since the previous ping --
+      # a half-open peer is reaped within two intervals.  0 turns it off.
+      heartbeat-interval = 30s
+      # Close a connection with 1001 "idle timeout" after this long without an
+      # inbound message (pongs do not count).  0 turns it off.
+      idle-timeout = 0s
     }
   }
 

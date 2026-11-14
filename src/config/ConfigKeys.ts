@@ -812,6 +812,10 @@ export const ConfigKeys = {
       connectionMailboxCapacity: 'actor-ts.http.websocket.connection-mailbox-capacity',
       /** Comment-only in `reference.conf`; only meaningful beside a capacity. */
       connectionMailboxOverflow: 'actor-ts.http.websocket.connection-mailbox-overflow',
+      /** Server-side ping interval per connection; `0` turns it off (#651). */
+      heartbeatInterval: 'actor-ts.http.websocket.heartbeat-interval',
+      /** Close after this long without an inbound message; `0`, the default, is off (#651). */
+      idleTimeout: 'actor-ts.http.websocket.idle-timeout',
     },
     /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
     client: {

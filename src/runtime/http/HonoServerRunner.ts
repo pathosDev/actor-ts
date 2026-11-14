@@ -186,6 +186,12 @@ export interface WSEventsLike {
   onMessage?(evt: { data: unknown }, ws: WSContextLike): void;
   onClose?(evt: { code?: number; reason?: string }, ws: WSContextLike): void;
   onError?(evt: unknown, ws: WSContextLike): void;
+  /**
+   * Not Hono's: the Bun runner calls it from `Bun.serve`'s `websocket.pong`
+   * handler, the only place Bun reports a pong (#651).  Hono's own adapters
+   * never call it.
+   */
+  onPong?(): void;
 }
 
 /** Hono `upgradeWebSocket` middleware factory. */
