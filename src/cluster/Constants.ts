@@ -360,6 +360,29 @@ export const MAX_PENDING_SHARD_HOME_REQUESTS = 1_024;
 export const SHARD_CORRELATION_ID_HEX_DIGITS = 13;
 
 /**
+ * The longest entity id the coordinator writes into its remember-entities
+ * registry (#1267).
+ *
+ * The id arrives in a lifecycle report off the wire and becomes a `Set` member
+ * and a persisted row, which the next allocation turns back into a real entity
+ * actor — so its size is the sender's to choose unless something bounds it.
+ * 1 024 characters is many times any id an application derives from a key (a
+ * UUID is 36) and still keeps one report from writing an unbounded row.
+ */
+export const MAX_REMEMBERED_ENTITY_ID_LENGTH = 1_024;
+
+/**
+ * How many remembered entities the coordinator keeps for one shard (#1267).
+ *
+ * The registry is durable and is pre-created as live entities on the next
+ * allocation, so a member with a claim on a shard could otherwise grow both
+ * without limit.  100 000 per shard is far above any population a shard is
+ * sized for — a type that needs more wants more shards — and a report past it
+ * is refused with a warning rather than silently dropped.
+ */
+export const MAX_REMEMBERED_ENTITIES_PER_SHARD = 100_000;
+
+/**
  * How long the singleton manager waits before re-spawning a child that died
  * unexpectedly (#1175).
  *

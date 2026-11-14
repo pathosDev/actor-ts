@@ -181,6 +181,22 @@ describe('sharding refusal lines escape peer-supplied text (#1220)', () => {
     expectEscaped(await recordMentioning(victim, 'hosted shard(s) for type'));
   });
 
+  test('a GetShardHome whose shard id is text shows it escaped', async () => {
+    // `shardId` is typed a number and checked as one, but the range refusal
+    // printed whatever the frame carried — a string included.
+    const victim = await startVictim('1220-shard-id', 44_128);
+    const evil = await attacker('evil-1220-shard-id', 44_129);
+
+    forge(evil, victim, victim.coordinatorPath, {
+      kind: 'sharding.GetShardHome',
+      shardId: FORGED_RECORD,
+      requester: '/system/sharding/region',
+      requesterNode: evil.self.toJSON(),
+    });
+
+    expectEscaped(await recordMentioning(victim, 'ignoring a shard request'));
+  });
+
   test('a Register claiming an owned shard shows its region path escaped', async () => {
     const victim = await startVictim('1220-conflict', 44_126);
     const evil = await attacker('evil-1220-conflict', 44_127);

@@ -1446,9 +1446,9 @@ export class ShardRegion<TMessage = unknown>
       .with({ kind: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
       // Someone on another node told a ref to one of our shards.
       .with({ kind: 'sharding.ToShard' }, (m) => this.onToShard(m))
-      // Lifecycle reports coming up from our own shards.
-      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
-      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      // Lifecycle reports coming up from our own shards — and only from them.
+      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m, peer))
+      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m, peer))
       // Introspection — node-local queries plus the coordinator's fan-out.
       .with({ kind: 'sharding.GetShards' }, (m) => this.onGetShards(m))
       .with({ kind: 'sharding.GetShardLocation' }, (m) => this.onGetShardLocation(m))
@@ -1887,7 +1887,7 @@ export class ShardRegion<TMessage = unknown>
   private isKnownShardId(shardId: number): boolean {
     if (this.isShardIdInRange(shardId)) return true;
     this.log.warn(
-      `[sharding] ignoring shard id ${shardId} for '${this.config.typeName}' — `
+      `[sharding] ignoring shard id ${sanitizeWireTextForLog(shardId)} for '${this.config.typeName}' — `
       + `outside 0..${this.config.numShards - 1}`,
     );
     return false;
@@ -2224,7 +2224,11 @@ export class ShardRegion<TMessage = unknown>
    * because it owns the passivation policies and answers stats queries, and
    * relays the event to the coordinator when entities are remembered.
    */
-  private onEntityStarted(message: EntityStarted): void {
+  private onEntityStarted(message: EntityStarted, peer: NodeAddress | null): void {
+    if (!this.fromOwnShard(message, peer)) return;
+    // Only for a shard this region hosts: a report for any other would write an
+    // index entry nothing here can ever clear, and relay nothing anyway.
+    if (!this.localShards.has(message.shardId) && !this.shards.has(message.shardId)) return;
     let entityIds = this.shardEntities.get(message.shardId);
     if (!entityIds) { entityIds = new Set(); this.shardEntities.set(message.shardId, entityIds); }
     entityIds.add(message.entityId);
@@ -2260,7 +2264,38 @@ export class ShardRegion<TMessage = unknown>
       && !this.releasingShards.has(shardId);
   }
 
-  private onEntityStopped(message: EntityStopped): void {
+  /**
+   * Whether a lifecycle report came from one of this region's own shards
+   * (#1267).
+   *
+   * A shard tells its parent with a plain local `tell`, so its report arrives
+   * unattributed.  One that arrived inside an {@link AuthenticatedShardingMessage}
+   * came off the wire, and no peer has any business reporting a local shard's
+   * lifecycle: it planted an index entry per attacker-chosen id, kept the
+   * shard's idle clock from starting, and under `rememberEntities` was relayed
+   * to the coordinator under *this* node's identity, laundering the forgery
+   * past the coordinator's own gate.  The id has to be in range as well, so an
+   * impossible shard never gets an index entry.
+   *
+   * Only the attribution decides; the hosting check is `onEntityStarted`'s
+   * alone.  A stop may still arrive after its shard moved away — the shard's
+   * actor reports its entities as it goes down — and the bookkeeping it clears
+   * would otherwise stay behind; a stop from anything but a local shard is
+   * refused by the attribution rule above it.
+   */
+  private fromOwnShard(message: EntityStarted | EntityStopped, peer: NodeAddress | null): boolean {
+    if (peer !== null) {
+      this.log.warn(
+        `[sharding] refusing '${message.kind}' for '${this.config.typeName}' from `
+        + `${sanitizeNodeAddressForLog(peer)} — only this region's own shards report their entities`,
+      );
+      return false;
+    }
+    return this.isKnownShardId(message.shardId);
+  }
+
+  private onEntityStopped(message: EntityStopped, peer: NodeAddress | null): void {
+    if (!this.fromOwnShard(message, peer)) return;
     this.shardEntities.get(message.shardId)?.delete(message.entityId);
     if ((this.shardEntities.get(message.shardId)?.size ?? 0) === 0) {
       // That was the last one — the shard's own idle window starts here.

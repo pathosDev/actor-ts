@@ -8,6 +8,8 @@ import {
   CONFLICT_RELEASE_RETRY_INTERVAL_MS,
   COORDINATOR_REGISTRATION_GOSSIP_ROUNDS,
   MAX_PENDING_SHARD_HOME_REQUESTS,
+  MAX_REMEMBERED_ENTITIES_PER_SHARD,
+  MAX_REMEMBERED_ENTITY_ID_LENGTH,
   SHARD_MAP_PUBLISH_DELAY_MS,
 } from '../Constants.js';
 import { DeadLetter } from '../../SystemMessages.js';
@@ -367,6 +369,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly pending = new Map<number, Array<GetShardHome>>(); // waiting queries
   /** Shards whose full {@link pending} queue has been warned about this episode (#1219). */
   private readonly pendingOverflowWarned = new Set<number>();
+  /** Shards whose remembered-entity cap has been warned about this episode (#1267). */
+  private readonly rememberedCapWarned = new Set<number>();
   private readonly rebalanceInProgress = new Map<number, { from: string; timer: Cancellable }>();
   private readonly entitiesPerShard = new Map<number, Set<string>>();
   private readonly statsQueries = new Map<number, StatsQuery>();
@@ -405,7 +409,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *
    * Capped to avoid unbounded growth if the lease never resolves.
    */
-  private acquireBuffer: ShardingMessage[] = [];
+  private acquireBuffer: Array<{ readonly message: ShardingMessage; readonly peer: NodeAddress }> = [];
   private static readonly ACQUIRE_BUFFER_CAP = 1_000;
 
   /**
@@ -685,11 +689,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // Leader, but lease not yet held — buffer instead of drop so
       // regions don't need to retry on the next cluster event.
       if (this.acquireBuffer.length < ShardCoordinator.ACQUIRE_BUFFER_CAP) {
-        this.acquireBuffer.push(message);
+        this.acquireBuffer.push({ message, peer });
       }
       return;
     }
-    this.dispatchShardingMessage(message);
+    this.dispatchShardingMessage(message, peer);
   }
 
   /**
@@ -720,7 +724,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * not come through here — it synthesises its message from the cluster event's
    * own address, which is not a claim anyone made over the wire.
    */
-  private maySpeakFor(message: ShardingMessage, peer: NodeAddress | null): boolean {
+  private maySpeakFor(message: ShardingMessage, peer: NodeAddress | null): peer is NodeAddress {
     // Every peer-supplied field below goes through the transport's escaping
     // helpers (#1220): `isShardingMessage` admits any kind with the `sharding.`
     // prefix, so the kind is the sender's text, and a CR or LF in it forged
@@ -749,7 +753,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     return false;
   }
 
-  private dispatchShardingMessage(message: ShardingMessage): void {
+  /**
+   * @param peer the authenticated node that sent `message` — the lifecycle
+   *   reports, which name no node of their own, are attributed by it (#1267).
+   */
+  private dispatchShardingMessage(message: ShardingMessage, peer: NodeAddress): void {
     match(message)
       .with({ kind: 'sharding.Register' }, (m) => this.onRegister(m))
       .with({ kind: 'sharding.GetShardHome' }, (m) => this.onGetShardHome(m))
@@ -757,8 +765,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'sharding.BeginHandOffAcknowledgment' }, () => this.onBeginHandOffAcknowledgment())
       .with({ kind: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
       .with({ kind: 'sharding.RegionHeartbeat' }, (m) => this.onRegionHeartbeat(m))
-      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
-      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m, peer))
+      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m, peer))
       .with({ kind: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
       .with({ kind: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
       .with({ kind: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
@@ -874,7 +882,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.acquireBuffer.length > 0) {
       const buffered = this.acquireBuffer;
       this.acquireBuffer = [];
-      for (const message of buffered) this.dispatchShardingMessage(message);
+      for (const { message, peer } of buffered) this.dispatchShardingMessage(message, peer);
     }
   }
 
@@ -1782,7 +1790,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private isKnownShardId(shardId: number): boolean {
     if (this.isShardIdInRange(shardId)) return true;
     this.log.warn(
-      `ignoring a shard request for id ${shardId} — outside 0..${this.options.numShards - 1} `
+      `ignoring a shard request for id ${sanitizeWireTextForLog(shardId)} — outside 0..${this.options.numShards - 1} `
       + `for type "${this.options.typeName}"`,
     );
     return false;
@@ -2061,13 +2069,83 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.shardHome.delete(shardId);
   }
 
-  private onEntityStarted(message: EntityStarted): void {
+  private onEntityStarted(message: EntityStarted, peer: NodeAddress): void {
     if (!this.options.rememberEntities) return;
+    if (!this.isReportFromHost(message, peer)) return;
+    if (!this.hasRoomFor(message.shardId, message.entityId)) return;
     this.applyRememberEvent({ kind: 'started', shardId: message.shardId, entityId: message.entityId });
     this.persistRememberEvent({ kind: 'started', shardId: message.shardId, entityId: message.entityId });
   }
 
-  private onEntityStopped(message: EntityStopped): void {
+  /**
+   * Whether a lifecycle report may edit the remember-entities registry (#1267).
+   *
+   * Both kinds name no region, so `claimedNode` has nothing to compare and the
+   * authority gate admitted them from any member — which wrote phantom pairs
+   * into a durable registry that the next allocation pre-creates as live
+   * entities, and forgot real ones.  Three rules, in order:
+   *
+   * - the shard id is one this type can have;
+   * - the sender is the node {@link shardHome} names for the shard.
+   *   **Decision:** attribution by node, not by a region field added to the
+   *   frame.  The region field would be a claim the node makes about itself,
+   *   checked against the same peer — it adds nothing a node-level check does
+   *   not already enforce, and a node hosts at most one region per type that
+   *   can own a shard (a proxy owns none), so the node *is* the region here;
+   * - the entity id is a non-empty string within
+   *   {@link MAX_REMEMBERED_ENTITY_ID_LENGTH}, since it becomes a `Set` member
+   *   and a persisted row.
+   *
+   * A refusal is logged without the entity id, which is the sender's text.
+   */
+  private isReportFromHost(message: EntityStarted | EntityStopped, peer: NodeAddress): boolean {
+    if (!this.isShardIdInRange(message.shardId)) return this.refuseReport(message, peer, 'names no shard of the type');
+    const home = this.regions.get(this.shardHome.get(message.shardId) ?? '');
+    if (home === undefined || !home.node.equals(peer)) {
+      return this.refuseReport(message, peer, `does not host shard ${message.shardId}`);
+    }
+    const entityId: unknown = message.entityId;
+    if (typeof entityId !== 'string' || entityId.length === 0 || entityId.length > MAX_REMEMBERED_ENTITY_ID_LENGTH) {
+      return this.refuseReport(
+        message, peer, `sent an entity id that is not a string of 1..${MAX_REMEMBERED_ENTITY_ID_LENGTH} characters`,
+      );
+    }
+    return true;
+  }
+
+  private refuseReport(message: EntityStarted | EntityStopped, peer: NodeAddress, reason: string): false {
+    this.log.warn(
+      `[sharding] refusing '${message.kind}' for type "${this.options.typeName}" from `
+      + `${sanitizeNodeAddressForLog(peer)} — it ${reason}`,
+    );
+    return false;
+  }
+
+  /**
+   * Whether `shardId` may remember one more entity (#1267): an id already
+   * remembered always may, a new one only below
+   * {@link MAX_REMEMBERED_ENTITIES_PER_SHARD}.  One warning per shard until it
+   * has room again — the reports past the bound are caller-sized.
+   */
+  private hasRoomFor(shardId: number, entityId: string): boolean {
+    const remembered = this.entitiesPerShard.get(shardId);
+    if (remembered === undefined || remembered.has(entityId) || remembered.size < MAX_REMEMBERED_ENTITIES_PER_SHARD) {
+      this.rememberedCapWarned.delete(shardId);
+      return true;
+    }
+    if (!this.rememberedCapWarned.has(shardId)) {
+      this.rememberedCapWarned.add(shardId);
+      this.log.warn(
+        `[sharding] shard ${shardId} of type "${this.options.typeName}" already has `
+        + `${MAX_REMEMBERED_ENTITIES_PER_SHARD} remembered entities; further entities started on it are not `
+        + `remembered until some stop — a type with this many entities per shard wants more shards`,
+      );
+    }
+    return false;
+  }
+
+  private onEntityStopped(message: EntityStopped, peer: NodeAddress): void {
+    if (!this.isReportFromHost(message, peer)) return;
     if (!this.options.rememberEntities) {
       // Existing behaviour: tidy the in-memory map even when we're
       // not remembering entities, so an unwise external trigger
