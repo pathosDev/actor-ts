@@ -366,7 +366,7 @@ const senderCountOf = (jsDoc: string): string => {
   return counted![1]!;
 };
 
-describe('the three descriptions of the exempt door agree — #729, #717, #985, #1468', () => {
+describe('the three descriptions of the exempt door agree — #729, #717, #985, #986, #1468', () => {
   test('every one of them counts the same senders and names the issues that added them', () => {
     const counts = new Map<string, string>();
     for (const [site, { source, declaration }] of EXEMPT_DOOR_BLOCKS) {
@@ -375,9 +375,10 @@ describe('the three descriptions of the exempt door agree — #729, #717, #985, 
       // the other two copies: three agreeing blocks could still all be wrong.
       expect(jsDoc).toContain('#717');
       expect(jsDoc).toContain('#985');
+      expect(jsDoc).toContain('#986');
       expect(jsDoc).toContain('#1468');
       counts.set(site, senderCountOf(jsDoc));
     }
-    expect([...new Set(counts.values())]).toEqual(['Four']);
+    expect([...new Set(counts.values())]).toEqual(['Five']);
   });
 });
