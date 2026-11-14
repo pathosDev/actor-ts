@@ -237,6 +237,8 @@ statt der Grace-Period:
 
 - Broker-Actors schließen ihre Verbindungen in `service-stop`, ebenso
   der Offload-Pool bei eingeschalteter Parallelität — **+5 s**;
+- bei eingeschalteter Parallelität terminieren die Systeme der Worker in
+  `before-cluster-shutdown` — **+5 s**;
 - eine Dead-Letter-Queue (`actor-ts.dead-letters.store` nicht `off`)
   flusht in `before-actor-system-terminate` — **+5 s**;
 - jede Phase, in die du selbst registrierst — **+5 s**, oder ihr

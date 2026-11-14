@@ -232,6 +232,8 @@ period:
 
 - broker actors close their connections in `service-stop`, and so does
   the offload pool when parallelism is on — **+5 s**;
+- with parallelism on, the workers' systems terminate in
+  `before-cluster-shutdown` — **+5 s**;
 - a dead-letter queue (`actor-ts.dead-letters.store` other than `off`)
   flushes in `before-actor-system-terminate` — **+5 s**;
 - each phase you register into yourself — **+5 s**, or its own

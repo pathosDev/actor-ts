@@ -4,6 +4,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions, type ActorSystemOptionsType } from '../../../src/ActorSystemOptions.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { CoordinatedShutdownId } from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedStartupId } from '../../../src/CoordinatedStartup.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -55,6 +56,8 @@ type RigOptions = {
   readonly workersFromConfig?: boolean;
   /** Persistence wired on the main thread only — the workers inherit its config, never its code. */
   readonly persistence?: NonNullable<ActorSystemOptionsType['persistence']>;
+  /** A worker's `terminate()` stops it the way a thread stops — see `hostMeshNode`'s `hardStop`. */
+  readonly hardStop?: boolean;
 };
 
 const realImport: ModuleImporter = (href) => import(href) as Promise<Record<string, unknown>>;
@@ -62,7 +65,10 @@ const realImport: ModuleImporter = (href) => import(href) as Promise<Record<stri
 function rig(options: RigOptions = {}): Rig {
   const importer = options.importer ?? realImport;
   const hosted: Array<Promise<{ readonly system: ActorSystem }>> = [];
-  const backend = new FakeWorkerBackend({ onSpawn: (worker) => { hosted.push(hostMeshNode(worker, importer).node); } });
+  const hostOptions = { hardStop: options.hardStop ?? false };
+  const backend = new FakeWorkerBackend({
+    onSpawn: (worker) => { hosted.push(hostMeshNode(worker, importer, hostOptions).node); },
+  });
   const base = ParallelismOptions.create().withModule(ACTORS).withBackend(backend);
   const parallelism = (options.configure ?? ((o) => o))(options.workersFromConfig ? base : base.withWorkers(2));
   const systemOptions = ActorSystemOptions.create()
@@ -372,6 +378,44 @@ describe('ParallelismExtension — actors on workers from config alone (#1563)',
     expect(stopped.slice(before)).toContain('actor-ts://para/user/lifecycle');
     expect(r.backend.spawned.every((worker) => worker.terminated)).toBe(true);
   }, 20_000);
+
+  /**
+   * #1754 — the pipeline used to stop the threads in `cluster-leave`, through
+   * `worker-mesh-terminate`, long before the termination prelude that gives
+   * each worker system its orderly `terminate()`.  The rig's default worker
+   * runs its hosted system's `terminate()` on a hard stop too, so it could not
+   * tell; `hardStop` makes a stop lose `postStop`, as a real thread's does.
+   */
+  const pipelineCases: Array<[string, (system: ActorSystem) => Promise<unknown>]> = [
+    ['CoordinatedShutdown.run()', (system) => system.extension(CoordinatedShutdownId).run()],
+    ['terminate({ runCoordinatedShutdown: true })', (system) => system.terminate({ runCoordinatedShutdown: true })],
+    // The control: the bare teardown never reached `cluster-leave`, so it was
+    // right before the fix — and it proves the hard-stopping rig is not what
+    // loses `postStop` in the two cases above.
+    ['a bare terminate()', (system) => system.terminate()],
+  ];
+  for (const [route, shutDown] of pipelineCases) {
+    test(`${route} on a hard-stopping backend still gives an offloaded actor its postStop (#1754)`, async () => {
+      const r = rig({ hardStop: true, name: 'para-hard' });
+      const before = stopped.length;
+      try {
+        const ref = r.system.spawn(Lifecycle, 'lifecycle');
+        await r.system.extension(ParallelismExtensionId).whenReady();
+        await awaitCondition(() => (ref as PendingRemoteActorRef).isResolved, { timeoutMs: 12_000, label: 'spawn acknowledged' });
+
+        await shutDown(r.system);
+
+        expect(stopped.slice(before)).toContain('actor-ts://para-hard/user/lifecycle');
+        expect(r.backend.spawned.every((worker) => worker.terminated)).toBe(true);
+      } finally {
+        await r.system.terminate();
+        for (const hosted of r.hosted) {
+          const node = await hosted.catch(() => null);
+          if (node !== null) await node.system.terminate();
+        }
+      }
+    }, 20_000);
+  }
 
   test('terminate() before the mesh is up still tears the workers down and fails what was waiting', async () => {
     const r = rig();

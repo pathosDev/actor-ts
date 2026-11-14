@@ -7,6 +7,7 @@ import type { WireMessage } from '../cluster/Protocol.js';
 import { assertUserAssignableName } from '../ActorPath.js';
 import { remoteActorPath } from '../cluster/RemoteActorRef.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension } from '../Extension.js';
 import { isClassForm } from '../internal/ActorBlueprint.js';
 import { USER_GUARDIAN_NAME } from '../internal/Guardian.js';
@@ -95,6 +96,8 @@ export class ParallelismExtension implements Extension {
   /** `class → export name`, built from the main thread's own import of the actor modules. */
   private registry: Map<unknown, string> | null = null;
   private startup: Promise<void> | null = null;
+  /** The one orderly shutdown, shared by the pipeline task and the prelude — see {@link shutdown}. */
+  private shutdownRun: Promise<void> | null = null;
   private startupError: Error | null = null;
   private readonly waiting: PendingSpawn[] = [];
   private readonly issued = new Map<string, PendingSpawn>();
@@ -134,7 +137,20 @@ export class ParallelismExtension implements Extension {
     if (!this.enabled || this.startup !== null) return;
     this.startup = this.startMesh();
     this.startup.catch((error: unknown) => this.onStartupFailed(error));
+    // Two doors into the same orderly shutdown.  A bare `terminate()` runs no
+    // phase, so the prelude is its only one.  The pipeline reaches the
+    // prelude only in its last phase, through the built-in terminator — by
+    // when `cluster-leave` has run `worker-mesh-terminate`, which stops the
+    // threads hard, and every offloaded actor has lost its `postStop` (#1754).
+    // So the pipeline gets a task of its own in `before-cluster-shutdown`:
+    // after the service layer has stopped taking work, before any thread is
+    // stopped.  Whichever door comes first runs it; the other joins it.
     this.system._beforeTerminate(() => this.shutdown());
+    this.system.extension(CoordinatedShutdownId).addFrameworkTask(
+      Phases.BeforeClusterShutdown,
+      PARALLELISM_SHUTDOWN_TASK_NAME,
+      () => this.shutdown(),
+    );
   }
 
   /** Resolves once the mesh is up and the actor modules are registered; rejects with what stopped it. */
@@ -375,8 +391,18 @@ export class ParallelismExtension implements Extension {
    * `terminate()` — so an offloaded actor gets its `postStop` like a local
    * one — then stop the threads and leave.  Bounded, because a worker that
    * never answers must not hold the main thread's shutdown open.
+   *
+   * Run once and shared: the pipeline's `before-cluster-shutdown` task and the
+   * termination prelude both call it, and the second caller — the prelude,
+   * when a phase budget abandoned the task — must wait for the first rather
+   * than find the mesh already handed off and return early.
    */
-  private async shutdown(): Promise<void> {
+  private shutdown(): Promise<void> {
+    this.shutdownRun ??= this.runShutdown();
+    return this.shutdownRun;
+  }
+
+  private async runShutdown(): Promise<void> {
     if (this.startup !== null) {
       try { await this.startup; } catch { /* reported by onStartupFailed */ }
     }
@@ -414,6 +440,9 @@ export class ParallelismExtension implements Extension {
       + `or keep this actor on the main thread by excluding its path from ${ConfigKeys.parallelism.offload}`;
   }
 }
+
+/** The pipeline task that runs {@link ParallelismExtension}'s orderly shutdown — see `_start`. */
+const PARALLELISM_SHUTDOWN_TASK_NAME = 'parallelism-terminate-workers';
 
 export const ParallelismExtensionId = extensionId<ParallelismExtension>(
   'parallelism',

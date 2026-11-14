@@ -133,7 +133,12 @@ offloaded `spawn` throw with the cause.
 down.  It terminates every worker's system first — so an offloaded actor
 gets its `postStop` like a local one — waits for them (bounded by the same
 `shutdown-drain-timeout` the workers use, plus a second), then stops the
-threads and the main thread's own actors.
+threads and the main thread's own actors.  The
+[coordinated-shutdown pipeline](/fundamentals/coordinated-shutdown/) a
+SIGTERM runs keeps the same promise: it takes the workers' systems down in
+`before-cluster-shutdown`, after the service layer has stopped and before
+`cluster-leave` stops any thread — so a message a main-thread actor sends
+an offloaded one after that point becomes a dead letter.
 
 ## Three limits, each with a loud error
 

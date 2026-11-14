@@ -69,7 +69,7 @@ du etwas registrierst.
 | 2 | `service-unbind` | `system.http(...).bind(...)`, DevTools | HTTP-Server / gRPC-Server / WebSocket-Listener stoppen, neue Verbindungen anzunehmen. |
 | 3 | `service-requests-done` | — | Auf das Ende laufender Requests warten; den Rest abbrechen. |
 | 4 | `service-stop` | Broker-Actors (MQTT, Kafka, NATS, AMQP, …) | Client-Verbindungen schließen, Sockets freigeben. |
-| 5 | `before-cluster-shutdown` | — | Optionale Pre-Cluster-Leave-Hooks. |
+| 5 | `before-cluster-shutdown` | Parallelität, wenn eingeschaltet | Optionale Pre-Cluster-Leave-Hooks.  Die Worker-Systeme ausgelagerter Actors terminieren hier, sodass jeder sein `postStop` bekommt, bevor ein Thread gestoppt wird. |
 | 6 | `cluster-sharding-shutdown-region` | `Cluster.join(...)` | Der Sharding-Region sagen, Entitäten zu übergeben. |
 | 7 | `cluster-leave` | `Cluster.join(...)` | Ein `Cluster.leave()` ausgeben — Leaving-Status gossipen. |
 | 8 | `cluster-exiting` | — | Warten, bis der Cluster den Leave bestätigt. |

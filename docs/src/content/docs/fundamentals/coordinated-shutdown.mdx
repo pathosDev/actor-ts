@@ -66,7 +66,7 @@ something.
 | 2 | `service-unbind` | `system.http(...).bind(...)`, DevTools | Stop the HTTP server / gRPC server / WebSocket listener from accepting new connections. |
 | 3 | `service-requests-done` | — | Wait for in-flight requests to finish; abort the rest. |
 | 4 | `service-stop` | broker actors (MQTT, Kafka, NATS, AMQP, …) | Close client connections, release sockets. |
-| 5 | `before-cluster-shutdown` | — | Optional pre-cluster-leave hooks. |
+| 5 | `before-cluster-shutdown` | parallelism, when enabled | Optional pre-cluster-leave hooks.  Offloaded actors' worker systems terminate here, so each gets its `postStop` before any thread stops. |
 | 6 | `cluster-sharding-shutdown-region` | `Cluster.join(...)` | Tell the sharding region to hand off entities. |
 | 7 | `cluster-leave` | `Cluster.join(...)` | Issue a `Cluster.leave()` — gossip leaving status. |
 | 8 | `cluster-exiting` | — | Wait for the cluster to acknowledge the leave. |
