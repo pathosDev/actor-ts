@@ -513,6 +513,24 @@ ersten Entscheidung der Strategie gebaut, aus der Adresse, die diese
 Entscheidung mitbringt, denn die Strategie entsteht, bevor es die Adresse
 des Nodes gibt.
 
+### Ein Arbiter pro Seite
+
+Jeder Node besitzt seine eigene Lease-Instanz, deshalb fragt bei einem
+gleich großen Split nur ein Node pro Seite die Lease: das reachable
+`up`-Mitglied der Seite mit der niedrigsten Adresse, dieselbe Ordnung,
+die `KeepOldest` verwendet.  Seine Seitengenossen fassen die Lease nie
+an und entscheiden nichts; sie folgen dem Arbiter über die
+Mitgliedschaft.  Gewinnt der Arbiter, downt er die andere Seite, und
+die Seitengenossen sehen deren Mitglieder als entfernt.  Verliert er,
+downt er seine eigene Seite und geht; sobald er `leaving` ist, ist das
+nächste Mitglied in der Reihe der Arbiter, und dessen Acquire verliert
+gegen die Lease, die die andere Seite hält.  Ein gleich großer Split
+endet also mit der ganzen Seite des Lease-Halters oben.  Vor v0.19.0
+hat jeder Node für sich selbst acquired, höchstens einer hat gewonnen,
+und seine Seitengenossen haben ihre Seite gedownt, den Gewinner
+eingeschlossen
+([Issue #1824](https://github.com/pathosDev/actor-ts/issues/1824)).
+
 ### Wenn ein Acquire aufgegeben wird
 
 Der interessante Fall ist nicht „die Lease sagt nein“, sondern
