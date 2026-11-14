@@ -9,6 +9,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **The aggregate coverage floor and the README badge are weighted by lines
+  now, `Σ LH / Σ LF` over every lcov record under `src/`** (#1016). They used
+  to read bun's `All files` row, which is the mean of per-file percentages:
+  ten 12-line barrels at 100 % cancelled out a 1000-line coordinator at 40 %.
+  The per-module floors were already weighted. The `src/` prefix keeps test
+  files out of the denominator whatever bun's `coverageSkipTestFiles` default
+  is. The badge figure moves with the statistic, not with any change in
+  coverage. `scripts/coverage-gate.mjs --lcov=…` is a complete gate on its own,
+  and `--log` is optional, only supplying bun's mean for the printout.
+
 ## [0.18.0] — 2026-11-10
 
 ### Added

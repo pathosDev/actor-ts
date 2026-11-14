@@ -317,10 +317,12 @@ jobs:
 
       - name: Coverage-floor gate
         id: coverage
-        # `scripts/coverage-gate.mjs` over the two artifacts of the run that
-        # already happened — the captured log for the aggregate floor, the lcov
-        # report for the per-module ones.  It refuses `--log` without `--lcov`,
-        # so this step cannot degrade into gating half of what it says it gates.
+        # `scripts/coverage-gate.mjs` over the artifacts of the run that
+        # already happened.  Every floor — the aggregate over `src/` and the
+        # per-module ones — is `Σ LH / Σ LF` from the lcov report (#1016); the
+        # captured log only supplies bun's per-file mean for the printout.  It
+        # refuses `--log` without `--lcov`, so this step cannot degrade into
+        # gating nothing while printing PASS.
         # The floors themselves live in the script and nowhere else, on purpose:
         # a COVERAGE_LINE_FLOOR here would be a second place the number lives
         # and a way to loosen the gate without the loosening showing up in a

@@ -335,13 +335,14 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
 - **`bun test`** is green. Line coverage floor is **≥ 90 %** —
   `bun run test:coverage:gate`.
 
-  That command enforces **two kinds** of floor, from the two artifacts of one
-  `bun test --coverage` run. The aggregate ≥ 90 % comes from the `All files`
-  row of bun's text table. Per-module floors — **`src/cluster/` ≥ 90 %** and
-  **`src/persistence/` ≥ 90 %** — come from the lcov report, as
-  `Σ LH / Σ LF` per path prefix, because a rollup of bun's per-file
-  percentages would average a ten-line barrel against a thousand-line
-  coordinator. **All three numbers are configured in
+  That command enforces **two kinds** of floor, both read from the lcov report
+  of one `bun test --coverage` run as `Σ LH / Σ LF` per path prefix: the
+  aggregate ≥ 90 % over **`src/`**, and per-module floors of
+  **`src/cluster/` ≥ 90 %** and **`src/persistence/` ≥ 90 %**. Weighted,
+  because bun's `All files` row is a mean of per-file percentages and would
+  average a ten-line barrel against a thousand-line coordinator; the gate still
+  prints that row for comparison, but nothing is decided on it, and the README
+  badge carries the weighted aggregate (#1016). **All three numbers are configured in
   `scripts/coverage-gate.mjs` and nowhere else**, deliberately: an environment
   override in a workflow file is a second place the number lives and a way to
   loosen the gate without the loosening showing up in a diff of the gate.
