@@ -168,6 +168,23 @@ describe('Kubernetes recipe (#1012, #1013)', () => {
       expect(grace).toBeGreaterThanOrEqual(preStop + rows.length * (DEFAULT_PHASE_TIMEOUT_MS / 1000));
     });
 
+    test(`${page.language}: the coordinated-shutdown page orders PreStop before SIGTERM, as this page does`, () => {
+      // Kubernetes runs the hook to completion and only then signals the
+      // container; that ordering is why the grace period has to cover both.
+      const shutdownPage = readNormalised(page.path.replace(
+        /operations[\\/]deployment[\\/]kubernetes\.mdx$/, join('fundamentals', 'coordinated-shutdown.mdx'),
+      ));
+      const heading = shutdownPage.search(/^## K8s[ -]PreStop[ -]integration$/im);
+      expect(heading).toBeGreaterThan(-1);
+      const sequence = /^```\n([\s\S]*?)^```/m.exec(shutdownPage.slice(heading))![1]!;
+      const lines = sequence.split('\n');
+      const preStop = lines.findIndex((line) => /PreStop/.test(line));
+      const sigterm = lines.findIndex((line) => /SIGTERM/.test(line));
+      expect(preStop).toBeGreaterThan(-1);
+      expect(preStop).toBeLessThan(sigterm);
+      expect(sequence).not.toMatch(/concurrently|parallel/);
+    });
+
     test(`${page.language}: the page quotes no other grace period as the recipe's`, () => {
       const grace = /terminationGracePeriodSeconds: (\d+)/.exec(statefulSet)![1];
       const quoted = [...text.matchAll(/terminationGracePeriodSeconds: (\d+)(.*)$/gm)]
