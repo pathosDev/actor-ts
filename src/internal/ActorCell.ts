@@ -2104,13 +2104,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * One class of envelope is out of every policy's reach in all five shapes
    * since #729, and what defines the class is the door rather than the
    * message: whatever arrives through {@link postSignalEnvelope} carries
-   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Four
-   * senders use that door, from five call sites: `ActorCell._notifyWatcher`,
+   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Five
+   * senders use that door, from six call sites: `ActorCell._notifyWatcher`,
    * with the `Terminated` of a local death; `ActorCell.onWatchNotify`, with
    * the `Terminated` of a death another node reported (#918);
    * `ConnectionWiring.postAcceptCommand`, with the `websocket-accept` that
    * hands an upgraded socket to its hub (#717); `WebsocketConnection.close`,
-   * with the `close` a connection sends its own actor (#985); and
+   * with the `close` a connection sends its own actor (#985);
+   * `WebsocketConnectionActor.reportLifecycle`, with the `connected` and
+   * `disconnected` a connection reports to its hub (#986); and
    * `DistributedData.offerToSubscriber`, with the `DistributedDataChanged` a
    * replicator posts to an actor subscribed to one of its keys (#1468) — the
    * newest, and the one sender that passes a release.  What a dropped one of

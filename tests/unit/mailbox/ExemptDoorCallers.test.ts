@@ -155,6 +155,7 @@ describe('the exempt door names its real callers — #1431', () => {
       'ConnectionWiring.postAcceptCommand',
       'DistributedData.offerToSubscriber',
       'WebsocketConnection.close',
+      'WebsocketConnectionActor.reportLifecycle',
     ]);
   });
 

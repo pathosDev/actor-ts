@@ -311,7 +311,7 @@ export class Mailbox<T = unknown> {
    * `dequeueUser`, its `size` and its `drainUser`, so not even a dead letter
    * comes out of it.
    *
-   * **The door decides undroppability, never position (#1431).**  Five call
+   * **The door decides undroppability, never position (#1431).**  Six call
    * sites reach it, all through `ActorCell.postSignalEnvelope`:
    * `ActorCell._notifyWatcher`, with the `Terminated` of a local death;
    * `ActorCell.onWatchNotify`, with the `Terminated` of a death another node
@@ -319,7 +319,9 @@ export class Mailbox<T = unknown> {
    * report (#918); `ConnectionWiring.postAcceptCommand`, with the
    * `websocket-accept` that hands an upgraded socket to its hub (#717);
    * `WebsocketConnection.close`, with the `close` a connection sends its own
-   * actor (#985); and `DistributedData.offerToSubscriber`, with the
+   * actor (#985); `WebsocketConnectionActor.reportLifecycle`, with the
+   * `connected` and `disconnected` a connection reports to its hub (#986);
+   * and `DistributedData.offerToSubscriber`, with the
    * `DistributedDataChanged` a replicator posts to an actor subscribed to one
    * of its keys (#1468).  Two of those depend on arriving *late*: death watch
    * promises that every `tell` already queued is handled before the
