@@ -73,7 +73,7 @@ import type { BoundedMailboxOverflow } from '../mailbox/BoundedMailboxOptions.js
 import { ControlAwareMailbox } from '../mailbox/ControlAwareMailbox.js';
 import { DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
 import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
-import { DEFAULT_STASH_CAPACITY, MAILBOX_HIGH_WATER_MARK } from './Constants.js';
+import { DEFAULT_STASH_CAPACITY, FAILURE_LOG_INTERVAL_MS, MAILBOX_HIGH_WATER_MARK } from './Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
 import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
@@ -251,6 +251,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * allowance counts those group restarts.
    */
   private _groupRestartBudget: RestartBudget | null = null;
+
+  /**
+   * When the parent last logged one of *this* cell's failures, on
+   * `system.clock`, and how many it has held back since — the per-actor
+   * throttle behind {@link FAILURE_LOG_INTERVAL_MS}.  On the cell, like
+   * {@link _restartBudget}, so a crash loop is throttled across the restarts
+   * it consists of.
+   */
+  private _failureLoggedAt: number | null = null;
+  private _failuresNotLogged = 0;
 
   private _receiveTimeoutMs = 0;
   private _receiveTimeoutHandle: Cancellable | null = null;
@@ -2027,9 +2037,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // keep the child alive but frozen, with its mailbox filling.
       for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
       this.state = 'running';
-      // Stock metric: count restarts.
+      // Stock metric: count restarts, by actor class (#916) — the label that
+      // answers "which actor is restarting" while staying bounded by the
+      // program; the path would be one series per entity (#658, #745).
       metricsOf(this.system).counter(
-        'actor_restarted_total', {},
+        'actor_restarted_total', { class: next.constructor.name },
         { help: 'Cumulative count of supervisor-driven actor restarts.' },
       ).inc();
       this.system.eventStream.publish(new ActorRestarted(this.self, cause));
@@ -2867,6 +2879,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       ? Array.from(this._children.values())
       : [child];
 
+    // Act first, report second (#1749): the report runs user code — the
+    // logger, the cause's own getters — and must not be able to cost the
+    // failure its directive.
+    let budgetSpent = false;
     switch (directive) {
       case Directive.Resume:
         for (const child of affected) child.enqueueSystem({ kind: 'resume' });
@@ -2874,11 +2890,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       case Directive.Restart: {
         const withinLimit = this.registerRestart(strategy, child);
         if (!withinLimit) {
+          budgetSpent = true;
           for (const child of affected) child.enqueueSystem({ kind: 'terminate' });
-          this._report(
-            'warn',
-            `Restart threshold exceeded (${strategy.maxRetries} in ${strategy.withinTimeRangeMs}ms) — stopping children`,
-          );
         } else {
           for (const child of affected) child.enqueueSystem({ kind: 'recreate', cause });
         }
@@ -2891,6 +2904,57 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         this.failToParent(cause, message);
         break;
     }
+
+    this.reportChildFailure(child, cause, message, directive, budgetSpent);
+    if (budgetSpent) {
+      this._report(
+        'warn',
+        `Restart threshold exceeded (${strategy.maxRetries} in ${strategy.withinTimeRangeMs}ms) — stopping children`,
+      );
+    }
+  }
+
+  /**
+   * Log one supervised failure of `child`, naming the actor, the message it
+   * failed on, the cause and the directive taken (#916).
+   *
+   * Before this an actor that threw in `onReceive` and was restarted left no
+   * line at any level — the only traces were an unlabelled counter in a
+   * registry that is off by default and an event nothing subscribes to — so a
+   * crash loop surfaced first as a downstream symptom.  Logged on the parent,
+   * because the parent is where the directive is known, with the cause as an
+   * argument so the logger renders its stack.
+   *
+   * `Resume` is a warning, everything else an error: a resumed actor keeps its
+   * state and its next message, so nothing was lost but the one it failed on.
+   * Throttled per child to one line per {@link FAILURE_LOG_INTERVAL_MS} — the
+   * restart budget bounds a crash loop under the default strategy, but a
+   * `Resume` decider or an unlimited budget does not, and an actor failing on
+   * every message must not drown the log it is trying to appear in.  The next
+   * line after a quiet interval counts what was held back.  The threshold
+   * warning on a spent budget is not throttled; it fires once per stop.
+   */
+  private reportChildFailure(
+    child: ActorCell<any>, cause: Error, message: unknown, directive: Directive, budgetSpent: boolean,
+  ): void {
+    const now = this.system.clock.now();
+    if (child._failureLoggedAt !== null && now - child._failureLoggedAt < FAILURE_LOG_INTERVAL_MS) {
+      child._failuresNotLogged++;
+      return;
+    }
+    const notLogged = child._failuresNotLogged;
+    child._failureLoggedAt = now;
+    child._failuresNotLogged = 0;
+    this._report(
+      directive === Directive.Resume ? 'warn' : 'error',
+      () => {
+        const failedOn = message === undefined ? '' : ` handling ${describeMessageType(message)}`;
+        const heldBack = notLogged === 0 ? '' : ` (${notLogged} further failures not logged since the last report)`;
+        const outcome = budgetSpent ? `${directive} refused, restart budget spent — stop` : directive;
+        return `${child.path} failed${failedOn}: ${cause.name}: ${cause.message} — ${outcome}${heldBack}`;
+      },
+      cause,
+    );
   }
 
   /**

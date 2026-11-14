@@ -33,3 +33,16 @@ export const MESSAGE_JSON_LIMIT = 2_000;
 
 /** How deep {@link describeMessagePayload} walks before giving up. */
 export const MESSAGE_JSON_DEPTH = 6;
+
+/**
+ * Shortest gap between two logged failures of one actor, in milliseconds.
+ *
+ * Every supervised failure is logged (#916), and a crash loop must not turn
+ * that into a flood: a `Resume` decider, or an unlimited restart budget, lets
+ * an actor fail once per message for as long as messages arrive.  One line per
+ * second per actor keeps the first failure — the one an operator needs, with
+ * its cause and stack — and the next line after a quiet second says how many
+ * were held back in between, so the rate stays readable from the log alone.
+ * Measured on `system.clock`, so a test crosses it by advancing virtual time.
+ */
+export const FAILURE_LOG_INTERVAL_MS = 1_000;

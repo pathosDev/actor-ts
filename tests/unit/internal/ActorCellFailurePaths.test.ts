@@ -20,6 +20,7 @@ import {
 import type { LogContextData } from '../../../src/LogContext.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { ThrowingLogger } from '../../util/ThrowingLogger.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
 
 /**
  * The failure paths through `ActorCell` that left an actor in a state nothing
@@ -164,6 +165,105 @@ describe('a terminating actor with a queued message does not spin the dispatcher
     // `late` itself schedules.  The spin measured ~120 000 in 300 ms.
     expect(executions - before).toBeLessThan(20);
     expect(letters).toContain('late');
+  });
+});
+
+/* ------------------------------------ #916 ----------------------------------- */
+
+type CapturedLog = { readonly level: string; readonly message: string; readonly args: readonly unknown[] };
+
+/** Records level, message *and* arguments — the cause travels as an argument. */
+class CapturingLogger implements Logger {
+  readonly records: CapturedLog[] = [];
+  constructor(readonly level: LogLevel = LogLevel.Info, private readonly root: CapturingLogger | null = null) {}
+  private get sink(): CapturingLogger { return this.root ?? this; }
+  private record(level: string, at: LogLevel, message: string, args: unknown[]): void {
+    if (at >= this.level) this.sink.records.push({ level, message, args });
+  }
+  debug(message: string, ...args: unknown[]): void { this.record('debug', LogLevel.Debug, message, args); }
+  info(message: string, ...args: unknown[]): void { this.record('info', LogLevel.Info, message, args); }
+  warn(message: string, ...args: unknown[]): void { this.record('warn', LogLevel.Warn, message, args); }
+  error(message: string, ...args: unknown[]): void { this.record('error', LogLevel.Error, message, args); }
+  withSource(_source: string): Logger { return new CapturingLogger(this.level, this.sink); }
+  withFields(_fields: LogContextData): Logger { return new CapturingLogger(this.level, this.sink); }
+}
+
+describe('a failure in onReceive is logged (#916)', () => {
+  type WorkMessage = { kind: 'work' };
+
+  class Crashing extends Actor<WorkMessage> {
+    override onReceive(): void { throw new TypeError('handler boom'); }
+  }
+
+  test('an ERROR line names the actor, the cause, the message type and the directive', async () => {
+    const logger = new CapturingLogger(LogLevel.Info);
+    const system = quietSystem('failure-logged', logger);
+    let starts = 0;
+    class Counted extends Crashing {
+      override preStart(): void { starts++; }
+    }
+    const ref = system.spawn(Counted, 'crasher');
+    ref.tell({ kind: 'work' });
+    await awaitCondition(() => starts === 2, { label: 'the crashing actor was restarted' });
+
+    const failures = logger.records.filter((record) => record.level === 'error' && record.message.includes('crasher'));
+    expect(failures.length).toBe(1);
+    const [line] = failures;
+    expect(line!.message).toContain('/user/crasher');
+    expect(line!.message).toContain('work');
+    expect(line!.message).toContain('TypeError: handler boom');
+    expect(line!.message).toContain('restart');
+    // The cause itself rides along, so the logger can render its stack.
+    expect(line!.args.some((arg) => arg instanceof TypeError && arg.message === 'handler boom')).toBe(true);
+  });
+
+  test('a Resume is reported at WARN', async () => {
+    const logger = new CapturingLogger(LogLevel.Info);
+    const system = quietSystem('failure-resume-logged', logger);
+    const resume = new OneForOneStrategy(() => Directive.Resume);
+    let handled = 0;
+    class ResumedCrash extends Actor<WorkMessage> {
+      override onReceive(): void { handled++; throw new TypeError('handler boom'); }
+    }
+    const ref = system.spawn(ResumedCrash, 'resumed', { supervisorStrategy: resume });
+    ref.tell({ kind: 'work' });
+    await awaitCondition(
+      () => logger.records.some((record) => record.message.includes('/user/resumed')),
+      { label: 'the resumed failure was logged' },
+    );
+    const lines = logger.records.filter((record) => record.message.includes('/user/resumed'));
+    expect(handled).toBe(1);
+    expect(lines.map((record) => record.level)).toEqual(['warn']);
+    expect(lines[0]!.message).toContain('resume');
+  });
+
+  test('a crash loop is throttled per actor, and the next line counts what it held back', async () => {
+    const logger = new CapturingLogger(LogLevel.Info);
+    // A virtual clock, so "within one interval" is a fact of the test rather
+    // than of how fast this machine runs fifty failures.
+    const { kit } = TestKit.withManualScheduler('failure-throttled', { logger, logLevel: LogLevel.Info });
+    try {
+      const resume = new OneForOneStrategy(() => Directive.Resume);
+      let handled = 0;
+      class Looping extends Actor<WorkMessage> {
+        override onReceive(): void { handled++; throw new TypeError('handler boom'); }
+      }
+      const ref = kit.system.spawn(Looping, 'looping', { supervisorStrategy: resume });
+      for (let i = 0; i < 50; i++) ref.tell({ kind: 'work' });
+      await awaitCondition(() => handled === 50, { label: 'all fifty failures were handled' });
+
+      // One interval later, one more failure: its line is the second of the
+      // loop, and it counts the 49 the parent held back — which also proves
+      // all of them reached the parent before it, since they queue in order.
+      await kit.advance(1_001);
+      ref.tell({ kind: 'work' });
+      const looping = () => logger.records.filter((record) => record.message.includes('/user/looping'));
+      await awaitCondition(() => looping().length === 2, { label: 'the failure after the interval was logged' });
+      expect(looping()[0]!.message).not.toContain('not logged');
+      expect(looping()[1]!.message).toContain('(49 further failures not logged since the last report)');
+    } finally {
+      await kit.shutdown();
+    }
   });
 });
 
