@@ -197,8 +197,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _watchWithMessages = new Map<string, TMessage>();
 
   /**
-   * Sliding-window restart tally for this cell's children, `null` until the
-   * first failure — which for most actors is never.
+   * Sliding-window tally of *this* cell's restarts under a one-for-one
+   * strategy, `null` until its first failure — which for most actors is never.
+   * Written and read only by the parent's {@link registerRestart}: the parent
+   * decides, but the allowance is the failing child's own (#917).  It lives on
+   * the cell rather than the instance so it survives the restarts it counts,
+   * and it dies with the cell, so a child stopped and spawned again under the
+   * same name starts with a whole allowance.
+   *
+   * It used to be one tally on the parent for all of its children, which made
+   * five siblings that each failed once spend one `maxRetries: 2` between them
+   * — and every top-level actor share the user guardian's.
    *
    * A {@link RestartBudget} rather than a bare timestamp array, because this
    * cell used to keep the array *and* its own arithmetic over it, and the two
@@ -210,11 +219,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _restartBudget: RestartBudget | null = null;
 
   /**
-   * The strategy {@link _restartBudget} was built for.  A budget is bound to
-   * its allowance at construction, so a cell whose strategy is replaced has to
-   * start a new tally rather than keep spending the old one's.
+   * The one tally this cell's children share under an all-for-one strategy.
+   * Shared on purpose: an all-for-one directive already restarts the group as
+   * one unit, so a failure anywhere in it is a restart of all of it, and the
+   * allowance counts those group restarts.
    */
-  private _restartBudgetStrategy: SupervisorStrategy | null = null;
+  private _groupRestartBudget: RestartBudget | null = null;
 
   private _receiveTimeoutMs = 0;
   private _receiveTimeoutHandle: Cancellable | null = null;
@@ -2814,10 +2824,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // actor is supervised, so it has to be read here, on the parent — the
     // child never gets to answer for its own failure.
     //
-    // Two consequences of expressing a per-child override through
-    // parent-side machinery, both deliberate: an `all-for-one` strategy in a
-    // child's options still widens to every sibling, and the restart budget in
-    // `registerRestart` stays per-parent, so siblings share one allowance.
+    // One consequence of expressing a per-child override through parent-side
+    // machinery, deliberate: an `all-for-one` strategy in a child's options
+    // still widens to every sibling — and then spends the group's shared
+    // allowance in `registerRestart`, where a one-for-one failure spends only
+    // the failing child's own (#917).
     const strategy: SupervisorStrategy =
       child.blueprint.supervisorStrategy
       ?? this.actor?.supervisorStrategy()
@@ -2833,7 +2844,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         for (const child of affected) child.enqueueSystem({ kind: 'resume' });
         break;
       case Directive.Restart: {
-        const withinLimit = this.registerRestart(strategy);
+        const withinLimit = this.registerRestart(strategy, child);
         if (!withinLimit) {
           this.log.warn(
             `Restart threshold exceeded (${strategy.maxRetries} in ${strategy.withinTimeRangeMs}ms) — stopping children`,
@@ -2854,22 +2865,35 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
-   * Ask this cell's budget for one restart.  Delegated rather than computed
-   * here: `RestartBudget` is the same sliding window over the same two
-   * allowance fields, and keeping a second copy is what let the two drift
-   * apart in the first place.  See {@link _restartBudget}.
+   * Ask the budget that `strategy` charges for one restart: the failing
+   * child's own under one-for-one, the group's under all-for-one (#917).
+   * Delegated rather than computed here: `RestartBudget` is the same sliding
+   * window over the same two allowance fields, and keeping a second copy is
+   * what let the two drift apart in the first place.  See
+   * {@link _restartBudget}.
    *
    * The window is measured on `system.clock`, not the budget's wall-clock
    * default: a parent under a `ManualScheduler` has to see "a minute passed"
    * when the test says so, or `withinTimeRangeMs` can only be crossed by
    * sleeping through it (#1019, #1424).
    */
-  private registerRestart(strategy: SupervisorStrategy): boolean {
-    if (this._restartBudget === null || this._restartBudgetStrategy !== strategy) {
-      this._restartBudget = new RestartBudget(strategy, this.system.clock);
-      this._restartBudgetStrategy = strategy;
+  private registerRestart(strategy: SupervisorStrategy, child: ActorCell<any>): boolean {
+    if (strategy.scope === 'all-for-one') {
+      this._groupRestartBudget = this.budgetFor(this._groupRestartBudget, strategy);
+      return this._groupRestartBudget.registerRestart();
     }
-    return this._restartBudget.registerRestart();
+    child._restartBudget = this.budgetFor(child._restartBudget, strategy);
+    return child._restartBudget.registerRestart();
+  }
+
+  /**
+   * Keep `current` while it was built for the allowance `strategy` states,
+   * else start a fresh tally.  By allowance, not by object: see
+   * {@link RestartBudget.hasAllowanceOf}.
+   */
+  private budgetFor(current: RestartBudget | null, strategy: SupervisorStrategy): RestartBudget {
+    if (current !== null && current.hasAllowanceOf(strategy)) return current;
+    return new RestartBudget(strategy, this.system.clock);
   }
 
   private findChildByRef(ref: ActorRef): ActorCell<any> | null {
