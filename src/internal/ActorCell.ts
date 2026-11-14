@@ -2839,10 +2839,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * here: `RestartBudget` is the same sliding window over the same two
    * allowance fields, and keeping a second copy is what let the two drift
    * apart in the first place.  See {@link _restartBudget}.
+   *
+   * The window is measured on `system.clock`, not the budget's wall-clock
+   * default: a parent under a `ManualScheduler` has to see "a minute passed"
+   * when the test says so, or `withinTimeRangeMs` can only be crossed by
+   * sleeping through it (#1019, #1424).
    */
   private registerRestart(strategy: SupervisorStrategy): boolean {
     if (this._restartBudget === null || this._restartBudgetStrategy !== strategy) {
-      this._restartBudget = new RestartBudget(strategy);
+      this._restartBudget = new RestartBudget(strategy, this.system.clock);
       this._restartBudgetStrategy = strategy;
     }
     return this._restartBudget.registerRestart();
