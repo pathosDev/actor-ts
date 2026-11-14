@@ -24,6 +24,7 @@ import { describe, expect, test } from 'bun:test';
 import fc from 'fast-check';
 import { FrameDecodeError, FrameDecoder, type WireMessage } from '../../../src/cluster/Protocol.js';
 import { JSON_TREE_TAG_NAMES, type JsonTreeTagName } from '../../../src/serialization/Constants.js';
+import { CborEncoder } from '../../../src/serialization/CborCodec.js';
 import { decodeJsonTree, RefusedTagError } from '../../../src/serialization/JsonTree.js';
 import { SerializationError } from '../../../src/serialization/Serializer.js';
 import {
@@ -113,9 +114,16 @@ const splits = fc.array(fc.integer({ min: 1, max: 40 }), { maxLength: 24 });
  */
 function comparable(result: StreamResult, whole: StreamResult): unknown {
   return whole.error === null
-    ? { frames: result.frames, refused: result.refused, pending: result.pending, error: result.error }
+    ? { frames: result.frames.map(canonical), refused: result.refused, pending: result.pending, error: result.error }
     : { error: result.error };
 }
+
+/**
+ * A frame as its CBOR encoding, which is how two frames are compared: a
+ * malformed `__date__` decodes to an Invalid Date, which never equals itself,
+ * and `toEqual` keys a `Map`'s object keys by identity.
+ */
+const canonical = (frame: unknown): number[] => [...new CborEncoder().encode(frame)];
 
 describe('FrameDecoder over arbitrary bytes', () => {
   test('property: noise in any split returns frames or throws FrameDecodeError, the same for every split', () => {
@@ -170,7 +178,10 @@ describe('FrameDecoder over arbitrary bytes', () => {
       let expectedRefusals = 0;
       let expectedError: string | null = null;
       for (const value of fitting) {
-        const reference = outcomeOf(() => decodeJsonTree(value, { maxNestingDepth: MAXIMUM_NESTING_DEPTH, tags }));
+        // The walker is handed what the wire carried, not the generated value:
+        // `JSON.stringify(-0)` is `0`, so the two differ by exactly the frame.
+        const carried: unknown = JSON.parse(JSON.stringify(value));
+        const reference = outcomeOf(() => decodeJsonTree(carried, { maxNestingDepth: MAXIMUM_NESTING_DEPTH, tags }));
         if (reference.kind === 'decoded') {
           expectedFrames.push(reference.value);
         } else if (reference.error instanceof RefusedTagError) {
@@ -185,7 +196,7 @@ describe('FrameDecoder over arbitrary bytes', () => {
       expect(result.foreign).toBeNull();
       expect(result.error).toBe(expectedError);
       if (expectedError === null) {
-        expect(result.frames).toEqual(expectedFrames as WireMessage[]);
+        expect(result.frames.map(canonical)).toEqual(expectedFrames.map(canonical));
         expect(result.refused).toBe(expectedRefusals);
       }
     }));
