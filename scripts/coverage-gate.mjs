@@ -5,16 +5,16 @@
  * Two floors, measured from the two artifacts of a single
  * `bun test --coverage` run:
  *
- *   - the **aggregate** line-coverage floor, read from the `All files` row of
- *     bun's text table.  `COVERAGE_LINE_FLOOR` overrides
- *     {@link DEFAULT_LINE_FLOOR};
+ *   - the **aggregate** line-coverage floor, `Σ LH / Σ LF` over every lcov
+ *     record under {@link AGGREGATE_PREFIX} (#1016).  `COVERAGE_LINE_FLOOR`
+ *     overrides {@link DEFAULT_LINE_FLOOR};
  *   - **per-module** line-coverage floors for the subsystems where an
  *     unnoticed regression is the expensive kind, read from the lcov report.
  *     {@link MODULE_LINE_FLOORS} is the only place they are configured.
  *
  *   bun run test:coverage:gate                       # run the suite, then gate
  *   bun scripts/coverage-gate.mjs \
- *     --log=<bun-test.log> --lcov=<lcov.info>        # gate captured artifacts
+ *     --lcov=<lcov.info> [--log=<bun-test.log>]      # gate captured artifacts
  *
  * **This file is the only coverage parser in the repository.**
  * `.github/workflows/test.yml` used to re-derive the aggregate in bash — `grep
@@ -27,50 +27,40 @@
  * {@link badgeLineCoverage}).  One parse, one floor, one place to change
  * either.  #541, #1016.
  *
- * The per-module figures cannot come from that table even in principle.  Bun
- * prints a percentage per file, and a per-directory rollup of percentages is an
- * unweighted mean: a 12-line barrel at 100 % would cancel a 600-line
- * coordinator at 40 %.  lcov carries `LF:` / `LH:` counts per file, so a module
- * is `Σ LH / Σ LF` — weighted by the lines that actually exist.  The two
- * statistics measurably disagree on this repository: the 2026-08-25 run reads
- * 93.63 % in the `All files` row and 92.85 % as `Σ LH / Σ LF` over the same 679
- * records, and the gap was six points wider on the smaller populations #1016
- * measured.  Which is why the aggregate keeps reading the row the badge has
- * always published while the module floors read lcov — nothing here silently
- * re-defines the front-page number.
+ * **Every floor is `Σ LH / Σ LF` from lcov, the aggregate included (#1016).**
+ * Bun prints a percentage per file, and the `All files` row of its text table
+ * is the unweighted mean of those percentages: a 1000-line coordinator at 40 %
+ * is cancelled out by ten 12-line barrels at 100 %.  lcov carries `LF:` / `LH:`
+ * counts per file, so a population is `Σ LH / Σ LF`, weighted by the lines
+ * that actually exist.  The per-module floors were always computed that way.
+ * The aggregate kept reading the row until v0.19.0, for one reason: that cell
+ * is what the README badge had published for its whole history, and changing
+ * the statistic underneath it moves the front-page number.  #1016 is that
+ * change, made deliberately and in its own commit.  The aggregate is now the
+ * rollup over {@link AGGREGATE_PREFIX}, and the badge publishes the same
+ * figure.
  *
- * **What is no longer wrong with the aggregate, and what still is.**  It used
- * to carry the whole test suite in its own denominator: `bunfig.toml` does not
- * set `coverageSkipTestFiles`, and bun's default for it *was* `false`, so 508
- * test files sat in the mean at 99.05 % and the row read ~2 points above
- * product code.  The bun 1.4.0 pin (#1328) flipped that default.  Measured
- * 2026-08-25 by A/B over `tests/unit/util/Lazy.test.ts`: with `bunfig.toml` as
- * committed the report holds exactly one row, `src/util/Lazy.ts`; adding an
- * explicit `coverageSkipTestFiles = false` brings `tests/unit/util/
- * Lazy.test.ts` back as a second row and moves the `All files` cell with it.
- * So the aggregate is product-code coverage now, and #1016's first bullet is
- * satisfied by the toolchain rather than by a `bunfig.toml` line.
+ * Restricting it to `src/` is what makes it product-code coverage *by
+ * construction*.  Bun 1.4.0 changed the default of `coverageSkipTestFiles`, so
+ * test files no longer appear in the report.  This was measured on 2026-08-25
+ * by A/B over `tests/unit/util/Lazy.test.ts`: with `bunfig.toml` as committed
+ * the report holds the single row `src/util/Lazy.ts`, and an explicit
+ * `coverageSkipTestFiles = false` brings the test file back.  A toolchain
+ * default can flip again, though.  A prefix cannot match a test file.
  *
- * What survives is that the row is an **unweighted mean over files**, so a
- * 1000-line coordinator at 40 % is cancelled by ten 12-line barrels at 100 %.
- * On this tree the two statistics have converged to within a point — the
- * 2026-08-25 run below reads 93.63 % as the mean and 92.85 % as `Σ LH / Σ LF`
- * over the same 679 records — but they are still different statistics, and
- * choosing between them is the rest of #1016.  Deliberately not pre-empted
- * here: the `All files` cell is what the README badge has published for its
- * whole history, and swapping the statistic underneath it moves the front-page
- * number for a reason no commit message would be attached to.  The per-module
- * floors are immune either way — they are `Σ LH / Σ LF` from lcov, and a
- * `src/…/` prefix cannot match a test file.
+ * The row is still printed when `--log` hands this script a table, labelled as
+ * bun's per-file mean, so a reader comparing the badge with an older run can
+ * see both numbers.  It decides nothing.
  *
- * **`--log` / `--lcov` exist so CI never runs the suite twice.**  Without them
- * the script runs `bun test --coverage` itself, which is right for a developer
- * and wrong for `test.yml`, where the suite has already run once on purpose —
- * that workflow's header records the two-runs-two-numbers failure the single
- * run was introduced to remove.  Passing both artifacts turns this file into a
- * pure gate over someone else's run.  Both or neither: a gate that silently
- * evaluates half of itself is the failure mode #1194 taught this repository to
- * write assertions against.
+ * **`--lcov` exists so CI never runs the suite twice.**  Without it the script
+ * runs `bun test --coverage` itself.  That is right for a developer and wrong
+ * for `test.yml`, where the suite has already run once on purpose; the
+ * workflow's header records the two-runs-two-numbers failure that the single
+ * run was introduced to remove.  The lcov report carries every number the gate
+ * decides on, so it is the one artifact that turns this file into a pure gate
+ * over someone else's run.  `--log` alone is refused, because it can gate
+ * nothing, and a gate that reports PASS having evaluated none of itself is the
+ * failure mode #1194 taught this repository to write assertions against.
  *
  * **`GITHUB_OUTPUT`, when the environment sets it.**  The workflow's `badge`
  * job renders `coverage-~N%` from a step output, and that output used to come
@@ -191,6 +181,15 @@ export const MODULE_LINE_FLOORS = Object.freeze({
   'src/persistence/': 90,
 });
 
+/**
+ * The population the aggregate floor and the README badge measure: every lcov
+ * record under `src/`, rolled up as `Σ LH / Σ LF` exactly like a module floor
+ * (#1016).  A prefix and not "everything in the report" so that no test file,
+ * script or example can enter the denominator whatever bun's
+ * `coverageSkipTestFiles` default happens to be.
+ */
+export const AGGREGATE_PREFIX = 'src/';
+
 /** Where the script's own run leaves bun's lcov report.  Git-ignored. */
 const COVERAGE_DIRECTORY = 'coverage';
 
@@ -303,7 +302,17 @@ export function evaluateModuleFloors(records, floors = MODULE_LINE_FLOORS) {
 }
 
 /**
- * The line-coverage percentage from bun's text table.
+ * The aggregate the floor gates and the badge publishes: the weighted rollup of
+ * {@link AGGREGATE_PREFIX}.  `percentage` is `undefined` when nothing under the
+ * prefix was measured, which the driver refuses to read as any figure at all.
+ */
+export function aggregateLineCoverage(records) {
+  return rollUpModule(records, AGGREGATE_PREFIX);
+}
+
+/**
+ * The line-coverage percentage from bun's text table.  Informational since
+ * #1016: printed beside the weighted aggregate, never gated on.
  *
  * The table is `File | % Funcs | % Lines | Uncovered Line #s`, so line coverage
  * is the SECOND numeric column — `c35fd0c5` fixed this gate reading the first.
@@ -325,8 +334,10 @@ export function parseAggregateLineCoverage(output) {
 /**
  * `--log=` / `--lcov=` — the captured artifacts of a run that already happened.
  *
- * Both or neither, because the alternative is a gate that reports PASS having
- * checked one of its two floors.
+ * `--lcov` carries every number the gate decides on; `--log` is optional and
+ * only supplies bun's per-file mean for the printout.  `--log` alone is
+ * refused, because the alternative is a gate that reports PASS having checked
+ * none of its floors.
  */
 export function parseArguments(argv) {
   const readFlag = (name) => {
@@ -388,22 +399,22 @@ function main() {
   }
 
   const { logPath, lcovPath } = parseArguments(process.argv.slice(2));
-  if ((logPath === undefined) !== (lcovPath === undefined)) {
-    console.error('coverage-gate: --log and --lcov go together — one alone would gate half of'
-      + ' what this script gates.  Pass both, or neither to run the suite here.');
+  if (logPath !== undefined && lcovPath === undefined) {
+    console.error('coverage-gate: --log needs --lcov — every floor is read from the lcov report,'
+      + ' so a log alone would gate nothing.  Pass --lcov, or neither to run the suite here.');
     process.exit(2);
   }
 
   let output;
   let lcovFile;
-  if (logPath !== undefined && lcovPath !== undefined) {
+  if (lcovPath !== undefined) {
     for (const path of [logPath, lcovPath]) {
-      if (!existsSync(path)) {
+      if (path !== undefined && !existsSync(path)) {
         console.error(`coverage-gate: no such file: ${path}`);
         process.exit(2);
       }
     }
-    output = readFileSync(logPath, 'utf8');
+    output = logPath === undefined ? undefined : readFileSync(logPath, 'utf8');
     lcovFile = lcovPath;
   } else {
     const result = spawnSync(
@@ -427,22 +438,10 @@ function main() {
     lcovFile = join(REPOSITORY_ROOT, COVERAGE_DIRECTORY, 'lcov.info');
   }
 
-  const aggregate = parseAggregateLineCoverage(output);
-  if (aggregate === undefined) {
-    console.error('coverage-gate: could not find the "All files" aggregate row in the'
-      + ' `bun test --coverage` output.');
-    process.exit(2);
-  }
-  // Before any verdict.  A run that fails a floor is exactly the run whose real
-  // figure the badge should carry, and an unparseable table publishes nothing
-  // at all rather than a plausible-looking number — which is what let a green
-  // run rewrite the README to "0 of 0" in #1194.
-  publishBadgeOutput(aggregate);
-
   if (!existsSync(lcovFile)) {
     console.error(`coverage-gate: no lcov report at ${lcovFile}.`
-      + '  The per-module floors cannot be evaluated, and skipping them would report a'
-      + ' PASS for checks that never ran.');
+      + '  Every floor is read from it, and skipping them would report a PASS for'
+      + ' checks that never ran.');
     process.exit(2);
   }
   const records = parseLcovRecords(readFileSync(lcovFile, 'utf8'));
@@ -451,8 +450,28 @@ function main() {
     process.exit(2);
   }
 
-  console.log(`\ncoverage-gate: aggregate line coverage = ${aggregate.toFixed(2)}%,`
-    + ` floor = ${floor}%`);
+  const aggregateRollup = aggregateLineCoverage(records);
+  const aggregate = aggregateRollup.percentage;
+  if (aggregate === undefined) {
+    console.error(`coverage-gate: no lcov record under ${AGGREGATE_PREFIX} — the aggregate`
+      + ' measured nothing, and a figure taken from nothing is not one to publish.');
+    process.exit(2);
+  }
+  // Before any verdict.  A run that fails a floor is exactly the run whose real
+  // figure the badge should carry, and a report with nothing under `src/`
+  // publishes nothing at all rather than a plausible-looking number — which is
+  // what let a green run rewrite the README to "0 of 0" in #1194.
+  publishBadgeOutput(aggregate);
+
+  console.log(`\ncoverage-gate: aggregate line coverage = ${aggregate.toFixed(2)}%`
+    + ` (${aggregateRollup.linesHit}/${aggregateRollup.linesFound} lines,`
+    + ` ${aggregateRollup.files} files under ${AGGREGATE_PREFIX}), floor = ${floor}%`);
+  if (output !== undefined) {
+    const mean = parseAggregateLineCoverage(output);
+    console.log(mean === undefined
+      ? 'coverage-gate: (no "All files" row in the log; bun\'s per-file mean not shown)'
+      : `coverage-gate: (bun's unweighted per-file mean, not gated: ${mean.toFixed(2)}%)`);
+  }
   const verdicts = evaluateModuleFloors(records);
   for (const verdict of verdicts) console.log(`coverage-gate: ${describeModuleVerdict(verdict)}`);
 
