@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
+  DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
   DEFAULT_PERSISTENCE_AUTO_START,
@@ -22,8 +23,8 @@ import { expectExactOptions, ownKeyPaths } from '../../util/ExactOptions.js';
  * a breaker in front of the journal from a config file at all.
  *
  * Sibling of `PersistenceConfigDefaults.test.ts`, which covers #872's plugin
- * blocks; these six leaves sit one level above those and are read by
- * `PersistenceExtension` rather than by a backend.  The sixth, `auto-start`,
+ * blocks; the behaviour leaves sit one level above those and are read by
+ * `PersistenceExtension` rather than by a backend.  `auto-start`
  * is #1473's: whether the selected stores open at startup.
  *
  * What the reader has to get right is the mapping (kebab HOCON leaf →
@@ -47,6 +48,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
         max-concurrent-recoveries = 8
         recovery-timeout          = 2500ms
         snapshot-is-optional      = true
+        allow-fully-compacted-recovery = true
         journal-breaker           = "jrnl"
         snapshot-breaker          = "snap"
         auto-start                = off
@@ -57,6 +59,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       maxConcurrentRecoveries: 8,
       recoveryTimeoutMs: 2_500,
       snapshotIsOptional: true,
+      allowFullyCompactedRecovery: true,
       journalBreaker: 'jrnl',
       snapshotBreaker: 'snap',
       autoStart: false,
@@ -123,6 +126,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       maxConcurrentRecoveries: DEFAULT_MAX_CONCURRENT_RECOVERIES,
       recoveryTimeoutMs: DEFAULT_RECOVERY_TIMEOUT_MS,
       snapshotIsOptional: DEFAULT_SNAPSHOT_IS_OPTIONAL,
+      allowFullyCompactedRecovery: DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
       journalBreaker: DEFAULT_JOURNAL_BREAKER_ID,
       snapshotBreaker: DEFAULT_SNAPSHOT_BREAKER_ID,
       autoStart: DEFAULT_PERSISTENCE_AUTO_START,
@@ -163,6 +167,7 @@ describe('PersistenceBehaviorOptionsBuilder', () => {
       .withMaxConcurrentRecoveries(4)
       .withRecoveryTimeoutMs(1_500)
       .withSnapshotIsOptional(true)
+      .withAllowFullyCompactedRecovery(true)
       .withJournalBreaker('shared-database')
       .withSnapshotBreaker('')
       .withAutoStart(false);
@@ -171,6 +176,7 @@ describe('PersistenceBehaviorOptionsBuilder', () => {
       maxConcurrentRecoveries: 4,
       recoveryTimeoutMs: 1_500,
       snapshotIsOptional: true,
+      allowFullyCompactedRecovery: true,
       journalBreaker: 'shared-database',
       snapshotBreaker: '',
       autoStart: false,

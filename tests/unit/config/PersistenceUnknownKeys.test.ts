@@ -110,7 +110,8 @@ describe('what the check refuses, naming the full key and what to do (#1729)', (
     expect(refusal.message).toBe(
       'Config at "actor-ts.persistence.jornal" is not a key actor-ts.persistence takes — it takes the journal, '
         + 'snapshot-store and durable-state blocks and max-concurrent-recoveries, recovery-timeout, '
-        + 'snapshot-is-optional, journal-breaker, snapshot-breaker and auto-start.  Read by nothing, it would '
+        + 'snapshot-is-optional, allow-fully-compacted-recovery, journal-breaker, snapshot-breaker and '
+        + 'auto-start.  Read by nothing, it would '
         + 'leave a default in force, so it is refused rather than ignored: correct the spelling, or move a '
         + 'plug-in\'s settings into its block under the axis it serves, such as '
         + 'actor-ts.persistence.journal.<plug-in> { … }.',

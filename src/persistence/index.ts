@@ -18,6 +18,7 @@ export type { SnapshotPolicy } from './PersistentActor.js';
 // built-in defaults, and what `reference.conf` publishes under
 // `actor-ts.persistence`, the startup switch as `auto-start`.
 export {
+  DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
   DEFAULT_PERSISTENCE_AUTO_START,

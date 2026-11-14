@@ -56,6 +56,17 @@ export const DEFAULT_RECOVERY_TIMEOUT_MS = 30_000;
 export const DEFAULT_SNAPSHOT_IS_OPTIONAL = false;
 
 /**
+ * Built-in default for
+ * {@link PersistenceBehaviorOptionsType.allowFullyCompactedRecovery}, published
+ * as `actor-ts.persistence.allow-fully-compacted-recovery` (#1052).
+ *
+ * `false` — a journal that has seen events, kept none of them and has no
+ * snapshot covering them fails the recovery with `JournalIntegrityError`, the
+ * same verdict a compacted prefix gets (#122).
+ */
+export const DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY = false;
+
+/**
  * Built-in default for {@link PersistenceBehaviorOptionsType.journalBreaker},
  * published as `actor-ts.persistence.journal-breaker`.
  *
@@ -146,6 +157,21 @@ export type PersistenceBehaviorOptionsType = {
    */
   readonly snapshotIsOptional: boolean;
   /**
+   * Recover a `PersistentActor` whose journal was compacted completely — it
+   * has seen events, holds none of them, and no snapshot covers them — as
+   * `initialState()`, instead of failing the recovery (#1052).
+   *
+   * Off, such a recovery fails with `JournalIntegrityError` through
+   * `onRecoveryFailure`: the state those events produced is gone, and
+   * starting from empty would answer every later command from a state that
+   * never existed — the same reason a compacted *prefix* already fails
+   * (#122).  On, the actor starts empty and resumes its sequence at the
+   * journal's high-water mark, so its next `persist` lines up with what the
+   * journal remembers (#628).  Turn it on only where losing the state is
+   * intended, for a stream compacted without a snapshot on purpose.
+   */
+  readonly allowFullyCompactedRecovery: boolean;
+  /**
    * `CircuitBreakerExtension` id the journal is called through, or `""` for
    * no breaker at all.
    *
@@ -208,6 +234,11 @@ export class PersistenceBehaviorOptionsBuilder extends OptionsBuilder<Persistenc
     return this.set('snapshotIsOptional', snapshotIsOptional);
   }
 
+  /** Recover a completely compacted journal with no snapshot as the initial state instead of failing. */
+  withAllowFullyCompactedRecovery(allowFullyCompactedRecovery: boolean): this {
+    return this.set('allowFullyCompactedRecovery', allowFullyCompactedRecovery);
+  }
+
   /** Circuit-breaker id the journal is called through; `""` disables it. */
   withJournalBreaker(journalBreaker: string): this {
     return this.set('journalBreaker', journalBreaker);
@@ -256,7 +287,7 @@ export class PersistenceBehaviorOptionsValidator extends OptionsValidator<Persis
  *
  * The plugin sub-blocks of the same HOCON block (`journal`, `snapshot-store`,
  * `durable-state`) are not touched here — a plugin block is read by the
- * backend that owns it, and these six leaves sit *directly* under
+ * backend that owns it, and the behaviour leaves sit *directly* under
  * `actor-ts.persistence` where no plugin id can be, so the "that block is
  * exclusively plugin-id namespaces" reading of the path stays true one level
  * down.
@@ -281,6 +312,9 @@ export function readPersistenceBehaviorOptionsFromConfig(
   }
   if (config.hasPath(keys.snapshotIsOptional)) {
     out.snapshotIsOptional = config.getBoolean(keys.snapshotIsOptional);
+  }
+  if (config.hasPath(keys.allowFullyCompactedRecovery)) {
+    out.allowFullyCompactedRecovery = config.getBoolean(keys.allowFullyCompactedRecovery);
   }
   if (config.hasPath(keys.journalBreaker)) {
     out.journalBreaker = config.getString(keys.journalBreaker);

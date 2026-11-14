@@ -836,6 +836,11 @@ export const ConfigKeys = {
     recoveryTimeout: 'actor-ts.persistence.recovery-timeout',
     snapshotIsOptional: 'actor-ts.persistence.snapshot-is-optional',
     /**
+     * Recover a completely compacted journal with no snapshot as the initial
+     * state instead of failing with `JournalIntegrityError` (#1052).
+     */
+    allowFullyCompactedRecovery: 'actor-ts.persistence.allow-fully-compacted-recovery',
+    /**
      * The `CircuitBreakerExtension` id each store is called through — a name,
      * not a block of numbers.  The numbers live under
      * `actor-ts.circuit-breaker.<id>`, which #864 made the single home for

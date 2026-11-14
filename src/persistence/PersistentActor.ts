@@ -15,6 +15,7 @@ import type {
 import type { SnapshotStore } from './SnapshotStore.js';
 import {
   foldReplayHistory,
+  JournalIntegrityError,
   loadReplaySnapshot,
   readReplayHistory,
   type ReplayHistory,
@@ -545,7 +546,39 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     //
     // For a new actor `highestSeq` is 0, so this costs one query only when
     // there was nothing to replay anyway.
-    return { history, sequenceNr: await this._journal.highestSeq(this.persistenceId) };
+    const head = await this._journal.highestSeq(this.persistenceId);
+    if (head > 0 && !this._persistence.behavior.allowFullyCompactedRecovery) {
+      throw this.fullyCompactedJournalError(head);
+    }
+    return { history, sequenceNr: head };
+  }
+
+  /**
+   * A journal that has seen `head` events and kept none of them, with no
+   * snapshot covering them (#1052).
+   *
+   * The same verdict #122 gives a compacted *prefix*: the state those events
+   * produced is gone, and folding nothing onto `initialState()` would hand
+   * `onCommand` a state that never existed.  Total loss had slipped past that
+   * check only because a history with no events has nothing to iterate — which
+   * also made the loud path trivially bypassable by deleting one row more.
+   *
+   * Raised here rather than in `replayState`, beside the #628 high-water
+   * probe, because only actor recovery asks about *now*: the DevTools
+   * time-travel panel shares `replayState` and must keep answering for a
+   * point in history.  `actor-ts.persistence.allow-fully-compacted-recovery`
+   * restores the empty restart, with #628's sequence clamp, for a system
+   * that compacts without a snapshot on purpose.
+   */
+  private fullyCompactedJournalError(head: number): JournalIntegrityError {
+    return new JournalIntegrityError(
+      `[persistence] '${this.persistenceId}' journal was compacted completely: it has seen events up to `
+      + `sequenceNr=${head}, holds none of them, and no snapshot covers them, so the state cannot be `
+      + 'reconstructed (compact only past a snapshot, or set '
+      + 'actor-ts.persistence.allow-fully-compacted-recovery = on to start from the initial state)',
+      this.persistenceId,
+      head,
+    );
   }
 
   /**

@@ -16,6 +16,7 @@ import { CircuitBreakerTimeoutError, type CircuitBreaker, type CircuitState } fr
 import { CircuitBreakerExtensionId } from '../pattern/CircuitBreakerExtension.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import {
+  DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
   DEFAULT_PERSISTENCE_AUTO_START,
@@ -514,6 +515,7 @@ export class PersistenceExtension implements Extension {
         maxConcurrentRecoveries: DEFAULT_MAX_CONCURRENT_RECOVERIES,
         recoveryTimeoutMs: DEFAULT_RECOVERY_TIMEOUT_MS,
         snapshotIsOptional: DEFAULT_SNAPSHOT_IS_OPTIONAL,
+        allowFullyCompactedRecovery: DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
         journalBreaker: DEFAULT_JOURNAL_BREAKER_ID,
         snapshotBreaker: DEFAULT_SNAPSHOT_BREAKER_ID,
         autoStart: DEFAULT_PERSISTENCE_AUTO_START,

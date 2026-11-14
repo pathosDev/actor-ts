@@ -297,6 +297,16 @@ cannot be reconstructed, and folding the surviving tail onto
 snapshot** — `deleteHistory(seq)` keeps the snapshot at `seq` for
 exactly this reason.
 
+That includes the case where *nothing* survives: a journal that has
+seen events, holds none of them, and has no snapshot covering them
+fails recovery with `JournalIntegrityError` too, rather than
+starting from `initialState()`.  A system that compacts without a
+snapshot on purpose — the state is meant to be forgotten — sets
+`actor-ts.persistence.allow-fully-compacted-recovery = on`; the
+actor then starts empty and resumes its sequence at the journal's
+high-water mark, so its next `persist` still lines up with what the
+journal remembers.
+
 The DevTools [time-travel
 panel](/observability/devtools/time-travel/) shares this replay
 code but opts out of that last part.  It asks what state looked

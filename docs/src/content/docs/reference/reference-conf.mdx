@@ -2052,8 +2052,8 @@ actor-ts {
     # this system, read once by PersistenceExtension -- a replicated actor's
     # appends of events from its peers excepted until #958.  The sub-blocks
     # below are plugin-id namespaces and belong to the backend that owns them;
-    # these six are not, which is why they sit one level above where a plugin
-    # id can appear.
+    # the leaves directly in this block are not, which is why they sit one
+    # level above where a plugin id can appear.
 
     # Journal replays allowed to run at once, system-wide.  0 = uncapped.
     #   A shard hand-off re-creates every entity it owns at once and each one
@@ -2077,6 +2077,15 @@ actor-ts {
     #   rejected load, and swallowing the first would turn an integrity check
     #   into a retry.
     snapshot-is-optional = false
+    # Recover a PersistentActor whose journal was compacted completely -- it
+    #   has seen events, holds none of them, and no snapshot covers them --
+    #   as initialState(), resuming its sequence at the journal's high-water
+    #   mark.  off fails that recovery with JournalIntegrityError through
+    #   onRecoveryFailure, as a compacted prefix already does: the state those
+    #   events produced is gone, and starting empty would answer every later
+    #   command from a state that never existed.  Turn it on only where losing
+    #   the state is intended.
+    allow-fully-compacted-recovery = false
 
     # The circuit-breaker each store is called through, BY ID -- the numbers
     #   live under actor-ts.circuit-breaker.<id>, layered over
