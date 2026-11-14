@@ -111,6 +111,21 @@ function assertAskTimeout(timeoutMs: number): void {
 }
 
 /**
+ * Whether `ask` may rebuild `message` with a `replyTo` beside its fields — a
+ * literal-shaped object, whose prototype is `Object.prototype` or none (#925).
+ *
+ * Decided by the prototype rather than by `typeof`, because that is exactly
+ * what a spread throws away: anything with another prototype — a `Map`, a
+ * `Date`, an array, a class instance — would arrive as a different object
+ * than the one sent.
+ */
+function isPlainObject(message: unknown): message is object {
+  if (typeof message !== 'object' || message === null) return false;
+  const prototype: unknown = Object.getPrototypeOf(message);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
  * Handle to an actor.  The only way to interact with an actor — you never
  * hold a direct reference to the Actor instance itself.  tell() is fire-and-
  * forget; ask() provides a request/response Promise.
@@ -126,9 +141,11 @@ export abstract class ActorRef<TMessage = unknown> {
 
   /**
    * Request/response — send `message` and await the recipient's reply.
-   * The framework synthesises a one-shot reply ref, injects it as both
-   * the `sender` slot and as `message.replyTo`, and resolves the returned
-   * promise with the first reply (or rejects with `AskTimeoutError`).
+   * The framework synthesises a one-shot reply ref, injects it as the
+   * `sender` slot — and, on a plain-object message, as `message.replyTo` —
+   * and resolves the returned promise with the first reply (or rejects with
+   * `AskTimeoutError`).  Any other message (a `Map`, a `Date`, an array, a
+   * class instance) is delivered as the very object passed (#925).
    *
    * The caller never specifies `replyTo` on the message — the `OmitReplyTo`
    * type subtracts it from the parameter type if the recipient declares it.
@@ -161,20 +178,30 @@ export abstract class ActorRef<TMessage = unknown> {
     const ref = new AskResponseRef<TResponse>(
       systemName, name, resolvedTimeoutMs, this.path.toString(), this._virtualScheduler(),
     );
-    // Inject `replyTo: ref` into the message so recipients that read
-    // `msg.replyTo` work without the caller supplying it.  Recipients
-    // that read `this.sender` see the same ref (passed via `tell`'s
-    // second arg).
+    // Inject `replyTo: ref` into a plain-object message so recipients that
+    // read `msg.replyTo` work without the caller supplying it.  Recipients
+    // that read `this.sender` see the same ref (passed via `tell`'s second
+    // arg) — whatever the message is.
     //
-    // The spread stays, and was measured rather than assumed: it is the last
-    // per-ask allocation of any size, and both ways around it are worse.
-    // Writing `replyTo` onto the caller's object is observable — callers reuse
-    // message objects — and a prototype-based stand-in breaks the wire, since
-    // serialising a remote ask walks own properties and would drop it.
-    const enriched =
-      typeof message === 'object' && message !== null
-        ? ({ ...(message as object), replyTo: ref } as unknown as TMessage)
-        : (message as unknown as TMessage);
+    // The spread stays for a plain object, and was measured rather than
+    // assumed: it is the last per-ask allocation of any size, and both ways
+    // around it are worse.  Writing `replyTo` onto the caller's object is
+    // observable — callers reuse message objects — and a prototype-based
+    // stand-in breaks the wire, since serialising a remote ask walks own
+    // properties and would drop it.
+    //
+    // Only for a plain object, though (#925).  A spread rebuilds its argument
+    // as `Object.prototype`-shaped, so a `Map`, `Set`, `Date`, typed array,
+    // array or class instance arrived stripped of its prototype and, for the
+    // collections, of its contents — silently, and a receiver matching on
+    // `instanceof` then never answered.  Neither reason above applies to the
+    // alternative for those: handing over the caller's object unchanged
+    // writes nothing onto it, and puts nothing on the wire a serialiser could
+    // drop.  Such a message carries no `msg.replyTo`; its reply ref is the
+    // sender, which is what a class-shaped message's receiver reads.
+    const enriched = isPlainObject(message)
+      ? ({ ...message, replyTo: ref } as unknown as TMessage)
+      : (message as unknown as TMessage);
     this.tell(enriched, ref as unknown as ActorRef);
     return ref.promise;
   }
