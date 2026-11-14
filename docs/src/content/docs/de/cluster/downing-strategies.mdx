@@ -633,6 +633,18 @@ wird verworfen und dort released, wo er ankommt.  Ein Release, das
 fehlschlägt, wird geloggt, und das Verlassen geht weiter; der Eintrag
 läuft dann mit seiner TTL ab.
 
+Auch ein Node, der terminiert, ohne zu gehen, gibt die Lease zurück.
+`system.terminate()` allein führt unter dem ausgelieferten
+`coordinated-shutdown.run-by-actor-system-terminate = false` keinen
+Coordinated Shutdown aus und verlässt den Cluster also nicht — aber
+`Cluster.join` registriert einen Terminierungsschritt, der den
+Failure-Detector-Tick stoppt und das `shutdown()` der Strategie
+aufruft, sodass der Eintrag released wird und seine Erneuerung den
+Prozess nicht mehr am Leben hält.  Der Hook läuft einmal pro Join,
+gleich ob ein Verlassen oder ein Terminieren ihn zuerst erreicht.  Die
+Peers erfahren von einem solchen Node weiterhin nur über ihre Failure
+Detectors, dass er weg ist; geh also zuerst, wo du kannst.
+
 Danach entscheidet die Strategie nichts mehr, ein Node, der erneut
 beitritt, braucht also eine frische.  Eine in der Konfiguration
 gewählte Strategie baut jeder `Cluster.join` neu; eine im Code gebaute

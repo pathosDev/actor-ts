@@ -529,6 +529,8 @@ export class Cluster {
   private started = false;
 
   private readonly downing: DowningProvider | null;
+  /** The one {@link shutdownDowning} run, once a leave or a terminate has started it. */
+  private downingShutdown: Promise<void> | null = null;
   /**
    * Whether a `down` verdict removes the peer when no {@link downing}
    * provider is configured (#1426) — on by default.  Its price: under a real
@@ -872,6 +874,14 @@ export class Cluster {
       CLUSTER_LEAVE_TASK_NAME,
       () => cluster.leave(),
     );
+    // A bare `terminate()` does not leave — with the shipped
+    // `run-by-actor-system-terminate = false` it runs no pipeline — so the
+    // downing provider was never shut down: a lease-majority winner went on
+    // renewing its lease on a scheduler of its own, the members left behind
+    // found the record taken, and the renewal timer kept the process alive
+    // (#1753).  A prelude runs after a bare `terminate()` and at the end of
+    // the pipeline alike; after a leave it finds the hook already called.
+    system._beforeTerminate(() => cluster.onSystemTerminating());
     return cluster;
   }
 
@@ -1975,12 +1985,39 @@ export class Cluster {
    * hook that throws or rejects is logged and goes no further: a leave must not
    * fail because a release did, and a lease left behind runs out at its TTL.
    */
-  private async shutdownDowning(): Promise<void> {
+  private shutdownDowning(): Promise<void> {
+    // At most once per cluster, whichever of a leave and a terminate gets here
+    // first (#1753): the bundled providers return early on a second call, but
+    // the hook is a contract for any provider, and "released once" is the
+    // cluster's promise rather than each implementation's.
+    this.downingShutdown ??= this.releaseDowning();
+    return this.downingShutdown;
+  }
+
+  /** The one call {@link shutdownDowning} makes — see there. */
+  private async releaseDowning(): Promise<void> {
     try {
       await this.downing?.shutdown?.();
     } catch (error) {
-      this.log.warn('leaving: the downing provider could not release what it holds', error);
+      this.log.warn('the downing provider could not release what it holds', error);
     }
+  }
+
+  /**
+   * The termination prelude {@link join} registers (#1753): stop asking the
+   * downing provider for decisions, then let it give back what it holds.
+   *
+   * The failure-detector tick goes first for the reason {@link depart} cancels
+   * it before the same hook: it is the only caller of `decide()`, and a decision
+   * taken after the release could acquire the lease again.  Nothing else is
+   * torn down here — the system's own termination stops the scheduler the
+   * remaining timers run on — and nothing is announced: a node that terminates
+   * without leaving is, to its peers, a node that went silent, which is exactly
+   * what the failure detector and the downing strategies exist to handle.
+   */
+  private async onSystemTerminating(): Promise<void> {
+    this.fdTimer?.cancel();
+    await this.shutdownDowning();
   }
 
   /**

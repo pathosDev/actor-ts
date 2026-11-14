@@ -586,6 +586,17 @@ rules cover it: a win the attempt reports afterwards is dropped and
 released where it lands.  A release that fails is logged and the
 leave goes on; the record then runs out at its TTL.
 
+A node that terminates without leaving gives the lease back too.
+`system.terminate()` on its own runs no coordinated shutdown under the
+shipped `coordinated-shutdown.run-by-actor-system-terminate = false`,
+so it does not leave — but `Cluster.join` registers a termination
+step that stops the failure-detector tick and calls the strategy's
+`shutdown()`, so the record is released and its renewal no longer
+keeps the process alive.  The hook runs once per join, whichever of a
+leave and a terminate reaches it first.  The peers still learn that
+such a node is gone only from their failure detectors, so leave
+first where you can.
+
 The strategy decides nothing after it, so a node that joins again
 needs a fresh one.  A strategy selected in configuration is built anew
 by every `Cluster.join`; one built in code has to be built again
