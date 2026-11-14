@@ -35,7 +35,7 @@ class RecordingSocket implements TcpSocketLike {
   readonly writes: Uint8Array[] = [];
   ended = false;
   destroyed = false;
-  write(data: Uint8Array): void { this.writes.push(data); }
+  write(data: Uint8Array): boolean { this.writes.push(data); return true; }
   end(): void { this.ended = true; }
   destroy(): void { this.destroyed = true; }
 
