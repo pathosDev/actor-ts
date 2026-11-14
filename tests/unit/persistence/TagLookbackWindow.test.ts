@@ -162,6 +162,40 @@ describe('the push-driven eventsByTag stream around its catch-up read', () => {
   });
 });
 
+describe('the push-driven eventsByPersistenceId stream around its catch-up read', () => {
+  test('an event published while the catch-up read runs does not hide the older ones', async () => {
+    // The by-id twin of the tag case above: the dedup there is a single
+    // `lastEmittedSeq`, so a bus event emitted ahead of the catch-up moved it
+    // past every event the catch-up was about to return.
+    const journal = new InMemoryJournal();
+    await journal.append('p', [{ event: 'p1' }, { event: 'p2' }], 0);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = journal.read.bind(journal);
+    journal.read = (async (...args: Parameters<typeof read>) => {
+      await gate;
+      return read(...args);
+    }) as typeof journal.read;
+
+    const iterator = new InMemoryQuery(journal).eventsByPersistenceId<string>('p', 1)[Symbol.asyncIterator]();
+    const delivered: string[] = [];
+    const pump = (async (): Promise<void> => {
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) return;
+        delivered.push(next.value.event);
+      }
+    })();
+    await journal.append('p', [{ event: 'p3' }], 2);
+    release();
+    await awaitCondition(() => delivered.length >= 3, { timeoutMs: 2_000, label: 'p1, p2 and p3 reached the stream' });
+    await iterator.return?.();
+    await pump;
+
+    expect(delivered).toEqual(['p1', 'p2', 'p3']);
+  });
+});
+
 describe('a grouped by-tag projection remembers every event of a group', () => {
   test('a late event inside a delivered group is not handled again on the next poll', async () => {
     const journal = new InMemoryJournal();

@@ -183,8 +183,10 @@ export class InMemoryQuery implements PersistenceQuery {
 /**
  * Push-driven stream by persistenceId.  Subscribes to the bus FIRST
  * so events appended during the catch-up read aren't missed; then
- * does the catch-up read; then drains buffered bus events filtering
- * out any whose `sequenceNr` was already covered by the catch-up.
+ * does the catch-up read; then drains the bus events held back while it
+ * ran, filtering out any whose `sequenceNr` the catch-up already covered.
+ * Before the hold existed (#957) the drain was described here but not
+ * done: a bus event emitted on arrival dropped the catch-up behind it.
  *
  * This dance is what makes the contract "every event with seq >=
  * fromSeq, exactly once" hold in the face of concurrent appends.
@@ -212,20 +214,33 @@ function pushStreamByPersistenceId<E>(
         }
       };
 
+      /** Bus events held back while the catch-up read runs; `null` once it has finished. */
+      let heldDuringCatchUp: PersistentEvent<E>[] | null = [];
+
       const onPublish = (ev: PersistentEvent<unknown>): void => {
         if (ev.persistenceId !== persistenceId) return;
         if (ev.sequenceNr < fromSeq) return; // historical, irrelevant
-        emit(ev as PersistentEvent<E>);
+        if (heldDuringCatchUp !== null) heldDuringCatchUp.push(ev as PersistentEvent<E>);
+        else emit(ev as PersistentEvent<E>);
       };
       const unsubscribe = bus.subscribe(onPublish);
 
-      // Catch-up read happens off-mainline — we kick it asynchronously
-      // and let any bus events that arrived in the meantime queue.
+      // Catch-up read happens off-mainline.  Bus events that arrive in the
+      // meantime are held, not emitted: emitted on arrival, a new event
+      // would move `lastEmittedSeq` past the older ones the catch-up is
+      // about to return, and the dedup would then drop every one of them.
+      const releaseHeld = (): void => {
+        const held = heldDuringCatchUp ?? [];
+        heldDuringCatchUp = null;
+        for (const ev of held) emit(ev);
+      };
       void journal.read<E>(persistenceId, fromSeq).then((events) => {
         for (const ev of events) emit(ev);
+        releaseHeld();
       }).catch((err) => {
         // eslint-disable-next-line no-console
         console.warn('pushStreamByPersistenceId: catch-up read failed', err);
+        releaseHeld();
       });
 
       return {
