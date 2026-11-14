@@ -10,6 +10,10 @@ import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import {
   COLD_START_STALL_AFTER_SEED_ROUNDS,
+  GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS,
+  GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES,
+  GOSSIP_SEQUENCE_LEAD_MS,
+  GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS,
   MAX_REPORTED_CONFIGURATION_MISMATCHES,
   MAX_REPORTED_UNCLAIMED_WIRE_KINDS,
   MAX_WALL_CLOCK_SKEW_MS,
@@ -187,6 +191,29 @@ type GossipRefusalReason = typeof GOSSIP_REFUSAL_REASONS[number];
 
 /** Refusals since startup, one running total per reason. */
 type GossipRefusalCounts = Record<GossipRefusalReason, number>;
+
+/**
+ * What a receiver has learned about one gossip sender's clock, beside its
+ * high-water mark — the state the #1262 bound is derived from.
+ *
+ * All offsets are `sequence − Date.now()` at the receiver, in milliseconds: a
+ * sender stamps its frames from its own wall clock, so a genuine frame sits at
+ * that sender's clock offset, less delivery delay.
+ */
+type GossipSenderClock = {
+  /** The run these readings belong to; a frame from another run starts afresh. */
+  readonly incarnation: string | undefined;
+  /** The highest offset accepted so far, never above {@link GossipSenderClock.allowanceBase}'s growth. */
+  readonly offset: number;
+  /** Where the rate-limited rise of {@link GossipSenderClock.offset} is measured from. */
+  readonly allowanceBase: number;
+  /** When {@link GossipSenderClock.allowanceBase} was set, at the receiver. */
+  readonly allowanceBaseAt: number;
+  /** When the current run of too-far-ahead refusals began; undefined while there is none. */
+  readonly aheadSince: number | undefined;
+  /** How many frames that run of refusals counts. */
+  readonly aheadFrames: number;
+};
 
 /**
  * How {@link Cluster.subscribe} states the membership that already exists when
@@ -411,6 +438,16 @@ export class Cluster {
    * with the member, so the map #138 caps caps this one too.
    */
   private readonly acceptedGossipSequences = new Map<string, number>();
+
+  /**
+   * The clock each connection peer's accepted frames have shown, keyed like
+   * {@link acceptedGossipSequences} and written and dropped with it — the state
+   * the upper bound in {@link admitsGossipSequence} is derived from (#1262).
+   * It records the incarnation the readings belong to, which is what makes the
+   * mark *per (member, incarnation)*: a mark taken against one run of an
+   * address says nothing about where the next run's counter is.
+   */
+  private readonly gossipSenderClocks = new Map<string, GossipSenderClock>();
 
   /**
    * This node's own gossip frame counter — see {@link GossipMessage.sequence}.
@@ -2115,9 +2152,20 @@ export class Cluster {
     }
   }
 
-  /** The next value for {@link GossipMessage.sequence}. */
+  /**
+   * The next value for {@link GossipMessage.sequence}: this node's wall clock,
+   * or one past the previous value when the clock has not moved on (#1262).
+   *
+   * Following the clock rather than counting frames is what lets a receiver
+   * bound a sender's next number by the clock offset it has already shown
+   * ({@link admitsGossipSequence}).  A counter advances by one per frame, so a
+   * long-lived node's numbers lag its clock by its whole uptime, and a receiver
+   * could only bound them by `now + maxVersionSkewMs` — the gap one restamped
+   * capture used to pin the mark for minutes.  Strictly increasing still, so a
+   * clock stepped backwards never repeats a number.
+   */
   private nextGossipSequence(): number {
-    this.gossipSequence += 1;
+    this.gossipSequence = Math.max(this.gossipSequence + 1, Date.now());
     return this.gossipSequence;
   }
 
@@ -3259,10 +3307,30 @@ export class Cluster {
    *
    * Refusing it instead keeps the property the old split was reaching for and
    * loses nothing: the mark stays where the last plausible frame left it, so the
-   * real node's next frame still out-numbers it and still merges.  What a peer
-   * can no longer do is pin the mark *or* replay through it — the pinning
-   * exploit #114 closed on `version` is not reintroduced one field to the left,
-   * it is closed on both sides.
+   * real node's next frame still out-numbers it and still merges.
+   *
+   * **Pinning is bounded, not closed.**  This comment used to say the pinning
+   * exploit #114 closed on `version` was "closed on both sides" here.  It held
+   * only *above* the budget: a captured frame restamped anywhere inside it —
+   * `now + 4 min` against the five-minute default — was admitted, merged once,
+   * and became the mark, and every genuine frame after it lost
+   * `sequence > mark` until the wall clock caught up (#1262).  So once a sender
+   * has a mark, the bound is derived from that sender rather than from `now`:
+   * a node stamps its frames from its own clock ({@link nextGossipSequence}),
+   * the receiver learns its offset from the frames it accepts
+   * ({@link nextGossipSenderClock}), and a frame may run at most
+   * {@link GOSSIP_SEQUENCE_LEAD_MS} past that offset.  A frame admitted at the
+   * edge pins for at most that lead, and lifts the learned offset only at
+   * {@link GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS}, so repeated injections do not
+   * walk the mark ahead.  The reading is per (member, incarnation)
+   * ({@link gossipSenderClockOf}), so a mark pinned against one run does not
+   * refuse the next.  What stays: an injector who keeps injecting at the edge
+   * keeps the sender's own frames out for as long as it does so — no bound on a
+   * wire without a MAC can stop that, and mTLS is the answer to it (#912) — and
+   * a sender's *first* frame still meets only the skew budget, the case of
+   * residual 2.  A sender that steps its clock forward by more than the lead is
+   * refused until {@link GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS} of such frames
+   * makes the receiver forget its reading.
    *
    * `Number.isFinite` is checked here as well as by the frame guard
    * ({@link wireFrameProblem}) — `NaN` loses every `>` comparison, so an
@@ -3304,9 +3372,74 @@ export class Cluster {
    * `tests/unit/cluster/GossipReplayGuard.test.ts`.
    */
   private admitsGossipSequence(from: NodeAddress, sequence: number): boolean {
-    if (!Number.isFinite(sequence) || sequence > Date.now() + this.maxVersionSkewMs) return false;
-    const lastAccepted = this.acceptedGossipSequences.get(from.toString());
-    return lastAccepted === undefined || sequence > lastAccepted;
+    const now = Date.now();
+    if (!Number.isFinite(sequence) || sequence > now + this.maxVersionSkewMs) return false;
+    const key = from.toString();
+    const clock = this.gossipSenderClockOf(from);
+    // No reading for this (member, incarnation): a first frame, which nothing
+    // but the skew budget can bound.  Residual 2 below.
+    if (clock === undefined) return true;
+    const lastAccepted = this.acceptedGossipSequences.get(key);
+    if (sequence <= now + this.allowedGossipOffset(clock, now) + GOSSIP_SEQUENCE_LEAD_MS) {
+      return lastAccepted === undefined || sequence > lastAccepted;
+    }
+    if (!this.forgetsGossipSenderClock(key, clock, now)) return false;
+    // The sender has run past its learned clock for long enough that the clock,
+    // not the sender, is what is wrong — a forward step.  Judged as a first
+    // frame from here: the skew budget it has already passed.
+    this.acceptedGossipSequences.delete(key);
+    this.gossipSenderClocks.delete(key);
+    return true;
+  }
+
+  /**
+   * The reading {@link admitsGossipSequence} holds a frame from `from` to — or
+   * none, when there is none for the run that sent it (#1262).
+   *
+   * The run is the connection's incarnation when the transport knows it, and
+   * otherwise the one on the member record held for the address.  Either is a
+   * claim at the same trust level as the address the mark is keyed on: both
+   * come from the handshake or from records that address has had admitted.  A
+   * reading taken against another run is no reading at all, which is what
+   * keeps a mark pinned against one process from refusing the next one.
+   */
+  private gossipSenderClockOf(from: NodeAddress): GossipSenderClock | undefined {
+    const clock = this.gossipSenderClocks.get(from.toString());
+    if (clock === undefined || clock.incarnation !== this.gossipSenderIncarnation(from)) return undefined;
+    return clock;
+  }
+
+  /** Which run of `from` is speaking, as far as this node can tell — see {@link gossipSenderClockOf}. */
+  private gossipSenderIncarnation(from: NodeAddress): string | undefined {
+    return from.incarnation ?? this.members.get(from.toString())?.address.incarnation;
+  }
+
+  /**
+   * The highest clock offset a frame from this sender may be credited with
+   * now: the offset it has shown, allowed to rise by
+   * {@link GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS} since the last time a frame
+   * pushed it to that limit, and by no more than one lead in all.  The cap is
+   * what keeps a sender that has been quiet for a day from having banked a
+   * day's worth of drift for an injector to spend.
+   */
+  private allowedGossipOffset(clock: GossipSenderClock, now: number): number {
+    const drifted = clock.allowanceBase + (now - clock.allowanceBaseAt) * GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS;
+    return Math.min(clock.offset + GOSSIP_SEQUENCE_LEAD_MS, Math.max(clock.offset, drifted));
+  }
+
+  /**
+   * Count one frame refused for running past the lead, and say whether the run
+   * of such refusals is now long enough to forget the sender's learned clock
+   * ({@link GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS}).  Any accepted frame ends the
+   * run — {@link rememberGossipSequence} writes a reading without one.
+   */
+  private forgetsGossipSenderClock(key: string, clock: GossipSenderClock, now: number): boolean {
+    const aheadSince = clock.aheadSince ?? now;
+    const aheadFrames = clock.aheadFrames + 1;
+    if (now - aheadSince >= GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS
+      && aheadFrames >= GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES) return true;
+    this.gossipSenderClocks.set(key, { ...clock, aheadSince, aheadFrames });
+    return false;
   }
 
   /**
@@ -3338,6 +3471,42 @@ export class Cluster {
     const key = from.toString();
     if (!this.members.has(key)) return;
     this.acceptedGossipSequences.set(key, sequence);
+    this.gossipSenderClocks.set(key, this.nextGossipSenderClock(from, sequence));
+  }
+
+  /**
+   * Fold an accepted frame into its sender's clock reading (#1262).
+   *
+   * A first frame — or the first of another run — sets the offset outright.
+   * After that the offset only rises, and only as fast as
+   * {@link allowedGossipOffset} lets it: a frame admitted at the edge of the
+   * lead lifts the reading to the allowance and no further, so the bound the
+   * next frame meets has not moved by the lead it just used.  Never lowered: a
+   * delayed frame or a receiver that paused makes a genuine frame look older,
+   * and tightening the bound on that evidence would refuse the frames after it.
+   *
+   * The run is read after the merge, so a frame that introduced a new
+   * incarnation of the address files its reading under that incarnation.
+   */
+  private nextGossipSenderClock(from: NodeAddress, sequence: number): GossipSenderClock {
+    const now = Date.now();
+    const observed = sequence - now;
+    const incarnation = this.gossipSenderIncarnation(from);
+    const previous = this.gossipSenderClocks.get(from.toString());
+    if (previous === undefined || previous.incarnation !== incarnation) {
+      return {
+        incarnation, offset: observed, allowanceBase: observed, allowanceBaseAt: now,
+        aheadSince: undefined, aheadFrames: 0,
+      };
+    }
+    const allowed = this.allowedGossipOffset(previous, now);
+    if (observed > allowed) {
+      return {
+        incarnation, offset: allowed, allowanceBase: allowed, allowanceBaseAt: now,
+        aheadSince: undefined, aheadFrames: 0,
+      };
+    }
+    return { ...previous, offset: Math.max(previous.offset, observed), aheadSince: undefined, aheadFrames: 0 };
   }
 
   /**
@@ -3370,7 +3539,8 @@ export class Cluster {
         `implausible removedAt — more than ${MAX_WALL_CLOCK_SKEW_MS}ms ahead, or not a number`)
       .with('replayed-frame', () =>
         'the frame does not out-number the last one accepted from that peer, or its sequence is not '
-        + `a finite number within maxVersionSkewMs (${this.maxVersionSkewMs}ms) of this clock — `
+        + `a finite number within maxVersionSkewMs (${this.maxVersionSkewMs}ms) of this clock, or it runs `
+        + `more than ${GOSSIP_SEQUENCE_LEAD_MS}ms past the clock that peer has shown — `
         + 'a replay, a duplicate, or a capture with its sequence rewritten')
       .with('self-claim', () =>
         'a status for this node itself that is neither the one it already holds nor the leader '
@@ -4676,6 +4846,7 @@ export class Cluster {
     // frames of the address's next incarnation, whose counter starts from its
     // own clock rather than from where the previous one left off (#112).
     this.acceptedGossipSequences.delete(key);
+    this.gossipSenderClocks.delete(key);
     // Likewise, or the next incarnation would inherit this one's silence clock
     // and interval window (#1103).  A tombstone's entry already went in
     // `setMember`; this is the one for the routes that delete a live member.

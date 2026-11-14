@@ -326,7 +326,8 @@ For monitoring cluster health:
   not a plausible instant. `reason="replayed-frame"` is a whole gossip
   frame whose `sequence` did not out-number the last one accepted from
   that peer, or was not a finite number within `maxVersionSkewMs` of
-  this node's clock — a duplicate, someone re-sending a frame captured
+  this node's clock, or ran more than ten seconds past the clock that
+  peer has shown — a duplicate, someone re-sending a frame captured
   off the wire, or someone re-sending one with its `sequence` rewritten
   to clear the mark. The counter is incremented once per frame with
   that frame's count, and the label set is closed at those four values.
