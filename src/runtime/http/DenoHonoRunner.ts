@@ -22,6 +22,8 @@ export class DenoHonoRunner implements HonoServerRunner {
       throw new Error('DenoHonoRunner requires Deno runtime (globalThis.Deno.serve).');
     }
     const ac = new AbortController();
+    /** Set once a graceful `shutdown()` has resolved — see `stop`. */
+    let shutDown = false;
     // `serveOptions` goes in first, beneath everything the runner writes: the
     // `signal` is the one `stop(false)` aborts, and a bag that replaced it
     // would leave a non-graceful stop with nothing to stop.  Whatever in it
@@ -48,8 +50,16 @@ export class DenoHonoRunner implements HonoServerRunner {
       async stop(graceful: boolean): Promise<void> {
         if (graceful && typeof server.shutdown === 'function') {
           await server.shutdown();
+          shutDown = true;
           return;
         }
+        // The backend's unbind follows a graceful stop with a forced one, for
+        // the connections the grace window did not drain (#997).  Once
+        // `shutdown()` has resolved, Deno has already released the listener,
+        // and aborting its signal then throws `BadResource` out of an event
+        // listener — uncaught, so it takes the process down.  A listener that
+        // is already closed has nothing left to force.
+        if (shutDown) return;
         ac.abort();
         try { await server.finished; } catch { /* ignore */ }
       },
