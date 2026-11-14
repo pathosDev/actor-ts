@@ -374,9 +374,14 @@ Das Protokoll trägt:
   gehört."
 
 Zwei Peers, die Gossip austauschen, mergen ihre Tabellen, indem sie
-die **höhere Version** für jedes Mitglied wählen. Genau das lässt
-Konvergenz ohne leader-gewählten Koordinator funktionieren: jedes
-parallele Update wird schließlich von jedem Peer gesehen.
+die **höhere Version** für jedes Mitglied wählen. Tragen zwei Einträge
+dieselbe Version, gewinnt der Status, der im Lebenszyklus weiter ist —
+`joining` < `weakly-up` < `up` < `unreachable` < `leaving` < `down` <
+`removed` —, sodass die Reihenfolge des Eintreffens das Ergebnis nie
+entscheidet. Genau das lässt Konvergenz ohne leader-gewählten
+Koordinator funktionieren: jedes parallele Update wird schließlich von
+jedem Peer gesehen, und zwei Peers, die dieselben Updates gesehen
+haben, halten dieselbe Tabelle.
 
 Für den tiefen Einstieg siehe
 [Joining und Seeds](/de/cluster/joining-and-seeds/).

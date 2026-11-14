@@ -353,9 +353,13 @@ The protocol carries:
 - **Reachability observations** — "I haven't heard from X recently."
 
 Two peers exchanging gossip merge their tables by picking the
-**higher version** for each member.  This is what makes convergence
-work without a leader-elected coordinator: every concurrent update
-is eventually seen by every peer.
+**higher version** for each member.  When two records carry the same
+version, the status further along the lifecycle wins — `joining` <
+`weakly-up` < `up` < `unreachable` < `leaving` < `down` < `removed` —
+so the order in which records arrive never decides the outcome.  This
+is what makes convergence work without a leader-elected coordinator:
+every concurrent update is eventually seen by every peer, and two
+peers that have seen the same updates hold the same table.
 
 For the deep dive, see
 [Joining and seeds](/cluster/joining-and-seeds/).
