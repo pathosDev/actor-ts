@@ -21,10 +21,7 @@ import type { Journal } from './Journal.js';
 import type { PersistentEvent } from './JournalTypes.js';
 import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
 import { withRecoveryDeadline, type SnapshotPolicy } from './PersistentActor.js';
-import {
-  type ConflictResolver,
-  LastWriterWinsResolver,
-} from './replicated/ConflictResolver.js';
+import type { ConflictCandidate, ConflictResolver } from './replicated/ConflictResolver.js';
 import type { ReplicatedSnapshot } from './replicated/ReplicatedSnapshot.js';
 import { loadSnapshotOrNull } from './Replay.js';
 import type { SnapshotStore } from './SnapshotStore.js';
@@ -34,14 +31,15 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
 /**
  * Replicated Event Sourcing — multiple nodes can write events for the
  * **same** persistenceId concurrently; vector clocks let every replica
- * recognise the divergent histories and a {@link ConflictResolver}
- * (default: last-writer-wins) decides how to merge them.
+ * recognise the events that were written concurrently, and an optional
+ * {@link ConflictResolver} decides how to reconcile them (#1245).
  *
  * **Mental model.**  The canonical history at each replica is the
  * union of every event ever persisted by any replica, sorted in a
- * deterministic order (by default: `(timestamp, replicaId,
- * sequenceAtReplica)` via `LastWriterWinsResolver`).  State is the
- * fold of `onEvent` over that ordered history.  Two replicas that
+ * deterministic order — `(timestamp, replicaId, sequenceAtReplica)`.
+ * State is the fold of `onEvent` over that ordered history: every event
+ * by default, or, with a resolver, one reconciled event per run of
+ * mutually concurrent events (see `resolver()`).  Two replicas that
  * have received the same set of events compute the same state — that
  * is the convergence guarantee.
  *
@@ -114,9 +112,10 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  *     committed takes the same route with no breaker involved.
  *
  * A refused `persist` still consumes the `seqAtReplica` it was minted with.
- * Peers already accept a gap (see `_envelopeRejection`), and the vector clock
- * decides no ordering today (#1245); handing the number back would mint it
- * twice once a timed-out append landed.
+ * Peers already accept a gap (see `_envelopeRejection`), and a skipped
+ * clock component changes no concurrency verdict — `VectorClock.compareTo`
+ * compares components, not how densely they were ticked; handing the number
+ * back would mint it twice once a timed-out append landed.
  *
  *   class ReplicatedCounter extends ReplicatedEventSourcedActor<
  *     Command, Event, { value: number }
@@ -330,8 +329,42 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   abstract onEvent(state: State, event: Event): State;
   abstract onCommand(state: State, command: Command): void | Promise<void>;
 
-  /** Resolver consulted only as the deterministic order comparator. */
-  protected resolver(): ConflictResolver<Event> { return new LastWriterWinsResolver<Event>(); }
+  /**
+   * How events the vector clocks call **concurrent** are reconciled (#1245).
+   * Read once, in `preStart`, before recovery folds anything.
+   *
+   * Two jobs, kept apart.  The canonical order — `(timestamp, replica,
+   * seqAtReplica)` — decides where every event sits in the history, resolver
+   * or not; it is what makes the history the same list on every replica.  The
+   * resolver decides what a run of concurrent events in that list *means*:
+   *
+   *   - **`null` (the default)** — nothing is reconciled.  Every event is
+   *     folded through `onEvent`, in canonical order, concurrent or not.  For
+   *     an event that replaces a value that is last-writer-wins by order: the
+   *     concurrent event stamped later is applied last.  For an event that
+   *     adds, both apply.  This is the fold the class always had.
+   *   - **A {@link ConflictResolver}** — the history is cut into **conflict
+   *     groups**: walking the canonical order, an event joins the current
+   *     group when it is concurrent with every event already in it, and opens
+   *     a new group otherwise.  A group of one is folded as it is; a larger
+   *     one is reduced pairwise through `resolve`, left to right in canonical
+   *     order, and the single event that comes out is folded through
+   *     `onEvent`.  An event that happens after another is never handed to the
+   *     resolver with it.
+   *
+   * The groups are a function of the event set alone, so two replicas holding
+   * the same events fold the same state whatever order they arrived in.  A
+   * resolver that returns one of its inputs carries that input's metadata into
+   * the next pairwise step; a synthesised event carries the later candidate's
+   * `timestamp` and `replica` and the merge of both clocks.  The pairwise steps
+   * run in canonical order, the same on every replica, so convergence needs
+   * `resolve` to be deterministic, not associative.
+   *
+   * `LastWriterWinsResolver` *drops* the losing event of a concurrent pair —
+   * unlike the default, where an additive event from both sides still applies.
+   * Choose it for state that is replaced, not accumulated.
+   */
+  protected resolver(): ConflictResolver<Event> | null { return null; }
 
   /**
    * How often the underlying DistributedPubSub mediator gossips its
@@ -424,6 +457,16 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   private _events: Array<ReplicatedEventEnvelope<Event>> = [];
   /** Every observed event's `eventId`.  A hit means "already applied". */
   private _seenIds = new Set<string>();
+  /** What {@link resolver} returned at `preStart` — `null` folds every event as it is. */
+  private _conflictResolver: ConflictResolver<Event> | null = null;
+  /**
+   * With a resolver: the last conflict group of `_events`, which the next
+   * in-order arrival may join, or `null` when it is not known — after a
+   * snapshot seeded the history, until the first refold works it out.
+   */
+  private _trailingGroup: Array<ReplicatedEventEnvelope<Event>> | null = [];
+  /** With a resolver: the state folded up to, and excluding, {@link _trailingGroup}. */
+  private _stateBeforeTrailingGroup!: State;
   /**
    * Whether the "history is full, remote events refused" `WARN` has
    * been emitted.  One line rather than one per refused envelope: a
@@ -542,6 +585,8 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     this._persistence = ext;
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
+    // Before recovery: the replayed history is folded with it.
+    this._conflictResolver = this.resolver();
 
     // 1 + 2. Recovery, guarded as `PersistentActor`'s is (#1497), in two
     //    phases.  The read phase — the snapshot, then the journal after it —
@@ -639,8 +684,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    */
   private _applyRecovery(recovery: ReplicatedRecovery<Event, State>): void {
     this._state = this.initialState();
+    this._stateBeforeTrailingGroup = this._state;
+    this._trailingGroup = [];
     const { snapshot, delta } = recovery;
     if (snapshot !== null) {
+      // The snapshot carries the folded state but not its conflict groups;
+      // the first arrival that needs them refolds the seeded history.
+      this._trailingGroup = null;
       this._state = snapshot.state;
       this._vc = VectorClock.fromData(snapshot.vc);
       this._seenIds = new Set(snapshot.seenIds);
@@ -1024,16 +1074,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       : this._findInsertIndex(envelope);
     this._events.splice(insertIndex, 0, envelope);
 
-    if (insertIndex === this._events.length - 1) {
-      // Append-only — apply just this event to current state.
-      this._state = this.onEvent(this._state, envelope.event);
-    } else {
-      // Out-of-order arrival — refold from initial state to keep
-      // the canonical sort intact.  Cheap as long as N stays small;
-      // gossip usually delivers in order so this is rare.
-      this._state = this.initialState();
-      for (const persistedEvent of this._events) this._state = this.onEvent(this._state, persistedEvent.event);
-    }
+    this._foldInserted(envelope, insertIndex === this._events.length - 1);
 
     this._vc = this._vc.merge(VectorClock.fromData(envelope.vc));
     this._observedCount += 1;
@@ -1060,6 +1101,113 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     if (policy(this._observedCount, this._state, envelope.event)) {
       this._maybeSaveSnapshot();
     }
+  }
+
+  /* -------------------------------- fold -------------------------------- */
+
+  /**
+   * Bring `_state` up to date with an envelope just spliced into `_events`.
+   *
+   * Without a resolver this is the fold the class always had: an envelope
+   * that sorts last is applied on its own, anything else refolds.  With one,
+   * an envelope that sorts last either joins the trailing conflict group —
+   * concurrent with every member — and the group is re-reduced from the state
+   * before it, or opens a new group of one and is applied on its own.
+   */
+  private _foldInserted(envelope: ReplicatedEventEnvelope<Event>, appended: boolean): void {
+    const resolver = this._conflictResolver;
+    if (resolver === null) {
+      if (appended) this._state = this.onEvent(this._state, envelope.event);
+      // Out-of-order arrival — refold to keep the canonical sort intact.
+      // Cheap as long as N stays small; gossip usually delivers in order.
+      else this._refold();
+      return;
+    }
+    const trailing = this._trailingGroup;
+    if (!appended || trailing === null) {
+      this._refold();
+      return;
+    }
+    if (trailing.length > 0 && this._isConcurrentWithAll(envelope, trailing)) {
+      trailing.push(envelope);
+      this._state = this._foldGroup(this._stateBeforeTrailingGroup, trailing, resolver);
+      return;
+    }
+    this._stateBeforeTrailingGroup = this._state;
+    this._trailingGroup = [envelope];
+    this._state = this.onEvent(this._state, envelope.event);
+  }
+
+  /**
+   * Fold the whole canonical history from `initialState()`, cutting it into
+   * conflict groups when a resolver is set (see {@link resolver}).  Records the
+   * trailing group and the state before it, so the next in-order arrival
+   * folds incrementally again.
+   */
+  private _refold(): void {
+    const resolver = this._conflictResolver;
+    let state = this.initialState();
+    if (resolver === null) {
+      for (const observed of this._events) state = this.onEvent(state, observed.event);
+      this._state = state;
+      return;
+    }
+    let group: Array<ReplicatedEventEnvelope<Event>> = [];
+    let before = state;
+    for (const observed of this._events) {
+      if (group.length > 0 && this._isConcurrentWithAll(observed, group)) {
+        group.push(observed);
+        continue;
+      }
+      if (group.length > 0) state = this._foldGroup(state, group, resolver);
+      before = state;
+      group = [observed];
+    }
+    this._trailingGroup = group;
+    this._stateBeforeTrailingGroup = before;
+    this._state = group.length > 0 ? this._foldGroup(before, group, resolver) : before;
+  }
+
+  /**
+   * Fold one conflict group: a lone event as it is, a larger group reduced
+   * pairwise through the resolver in canonical order and folded once.
+   */
+  private _foldGroup(
+    state: State,
+    group: ReadonlyArray<ReplicatedEventEnvelope<Event>>,
+    resolver: ConflictResolver<Event>,
+  ): State {
+    if (group.length === 1) return this.onEvent(state, group[0]!.event);
+    let winner = this._candidateOf(group[0]!);
+    for (let i = 1; i < group.length; i++) {
+      const next = this._candidateOf(group[i]!);
+      const resolved = resolver.resolve(winner, next);
+      if (resolved === next.event) winner = next;
+      else if (resolved !== winner.event) {
+        // A synthesised event.  `next` sorts after `winner`, so its timestamp
+        // is the larger one; the clock covers both.
+        winner = { event: resolved, timestamp: next.timestamp, replica: next.replica, vc: winner.vc.merge(next.vc) };
+      }
+    }
+    return this.onEvent(state, winner.event);
+  }
+
+  private _candidateOf(envelope: ReplicatedEventEnvelope<Event>): ConflictCandidate<Event> {
+    return {
+      event: envelope.event,
+      timestamp: envelope.timestamp,
+      replica: envelope.replica,
+      vc: VectorClock.fromData(envelope.vc),
+    };
+  }
+
+  /** Whether `envelope`'s clock is concurrent with the clock of every member of `group`. */
+  private _isConcurrentWithAll(
+    envelope: ReplicatedEventEnvelope<Event>,
+    group: ReadonlyArray<ReplicatedEventEnvelope<Event>>,
+  ): boolean {
+    const clock = VectorClock.fromData(envelope.vc);
+    return group.every((member) => clock.isConcurrentWith(VectorClock.fromData(member.vc)));
   }
 
   /* ----------------------------- snapshotting --------------------------- */

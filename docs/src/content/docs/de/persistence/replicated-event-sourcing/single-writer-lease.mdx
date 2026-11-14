@@ -160,11 +160,14 @@ Kürzere TTL = schnelleres Failover, aber mehr Renewal-Traffic.
 ```ts
 class Account extends ReplicatedEventSourcedActor<...> {
   protected override lease(): Lease { /* ... */ }
-  protected override resolver(): ConflictResolver<Event> { /* ← still required */ }
+  protected override resolver(): ConflictResolver<Event> { /* ← still worth deciding */ }
 }
 ```
 
-Der Resolver ist weiterhin Pflicht.  Warum?
+Das Lease macht nebenläufige Events nicht unmöglich, also muss
+weiterhin entschieden werden, was sie bedeuten — der Default wendet
+beide an, was nur passt, wenn sie sich zusammensetzen lassen.
+Warum können sie weiterhin auftreten?
 
 - **Während des Failover-Fensters** könnten der alte + der neue
   Writer kurz schreiben — der alte, bevor er bemerkt, dass sein
@@ -176,7 +179,8 @@ Der Resolver ist weiterhin Pflicht.  Warum?
   Resolver gleicht ab, wenn die Partition heilt.
 
 Das Lease **reduziert die Konflikt-Frequenz auf nahe null**,
-eliminiert sie aber nicht.  Habe immer einen Resolver.
+eliminiert sie aber nicht.  Entscheide bewusst: der Default oder ein
+Resolver.
 
 ## Lease-Backends
 

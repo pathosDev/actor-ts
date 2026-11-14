@@ -4,8 +4,10 @@ import type { VectorClock } from './VectorClock.js';
 /**
  * Resolution strategy for two events that {@link VectorClock} flags
  * as concurrent — neither happens-before the other.  The replicated-
- * event-sourced actor consults this when merging divergent histories
- * so every replica converges to the same state.
+ * event-sourced actor consults the one its `resolver()` returns for every
+ * run of mutually concurrent events in its canonical history, and folds the
+ * single event that comes out (#1245).  Without one — the default — every
+ * event is folded as it is.
  *
  * Two contracts:
  *   - The resolver is deterministic for a given `(a, b)` pair —
@@ -16,8 +18,9 @@ import type { VectorClock } from './VectorClock.js';
  *     event arrived first.
  *
  * The simplest deterministic resolver is **last-writer-wins** (LWW)
- * keyed on `(timestamp, replicaId)` — that's what we ship as the
- * default.  Domain-aware resolvers can do something smarter
+ * keyed on `(timestamp, replicaId)`, shipped as
+ * {@link LastWriterWinsResolver}; it keeps one event of a concurrent pair
+ * and drops the other.  Domain-aware resolvers can do something smarter
  * (e.g. additive merge for counters, set union for tag sets).
  */
 export interface ConflictResolver<E> {

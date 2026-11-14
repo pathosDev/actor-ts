@@ -107,8 +107,10 @@ Basisklasse liest den `Cluster` vom `ActorSystem`
 (siehe [`this.cluster`](/de/cluster/overview/#den-cluster-aus-einem-actor-heraus-erreichen)).
 Zwei zusätzliche Dinge zu spezifizieren:
 
-- **`resolver()`** — wie nebenläufige Events gemergt werden
-  (optional; Default ist Last-Writer-Wins).
+- **`resolver()`** — wie nebenläufige Events abgeglichen werden
+  (optional; der Default, `null`, faltet jedes Event in kanonischer
+  Reihenfolge — siehe
+  [Conflict Resolver](/de/persistence/replicated-event-sourcing/conflict-resolver/)).
 - **Ein Journal pro Replica.**  Jede Replica schreibt ihren eigenen
   Stream: Sie hängt jedes Event, das sie beobachtet — ihre eigenen und
   jedes, das ein Peer publiziert —, an das Journal ihres Nodes an, ein
@@ -320,7 +322,8 @@ Jedes bekommt seine eigene Deep-Dive-Seite.
   ```ts
   // "User ändert Namen in EU und US gleichzeitig — was gewinnt?"
   ```
-  Replicated ES verlangt, dass du einen Resolver definierst.  Wenn
+  Replicated ES verlangt, dass du entscheidest, was nebenläufige
+  Events bedeuten — der Default wendet beide an.  Wenn
   "was gewinnt" keine sinnvolle Antwort hat, ist Replicated ES
   die falsche Form — verwende ein Single-Writer-Muster
   (Singleton / Sharding).

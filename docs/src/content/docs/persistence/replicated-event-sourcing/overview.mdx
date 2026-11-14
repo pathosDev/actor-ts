@@ -106,7 +106,9 @@ class reads the `Cluster` off the `ActorSystem` (see
 [`this.cluster`](/cluster/overview/#reaching-the-cluster-from-an-actor)).
 Two additional things to specify:
 
-- **`resolver()`** — how to merge concurrent events (optional; defaults to last-writer-wins).
+- **`resolver()`** — how to reconcile concurrent events (optional;
+  the default, `null`, folds every event in canonical order — see
+  [Conflict resolver](/persistence/replicated-event-sourcing/conflict-resolver/)).
 - **A journal per replica.**  Each replica writes its own stream: it
   appends every event it observes — its own, and each one a peer
   publishes — to its node's journal, so a restart rebuilds the state
@@ -301,7 +303,8 @@ Each gets its own deep-dive page.
   ```ts
   // "User changes name in EU and US concurrently — which wins?"
   ```
-  Replicated ES requires you to define a resolver.  If "what
+  Replicated ES requires you to decide what concurrent events
+  mean — the default applies both.  If "what
   wins" doesn't have a sensible answer, replicated ES is the
   wrong shape — use a single-writer pattern (singleton /
   sharding).
