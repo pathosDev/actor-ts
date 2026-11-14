@@ -147,8 +147,8 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="The second place is metrics">
-  Stock metrics give you actor message-rate, mailbox depth, cluster
-  member count, sharding region count — enough to identify
+  Stock metrics give you actor message-rate, mailbox depth and wait
+  time, cluster member count, journal latency — enough to identify
   "something is off" before users notice.  Wire a Prometheus
   exporter in production.  See
   [Stock metrics](/observability/metrics/stock-metrics/).

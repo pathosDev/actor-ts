@@ -232,9 +232,9 @@ GET /metrics
 → 200 OK
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 
-# HELP actor_messages_processed_total ...
-# TYPE actor_messages_processed_total counter
-actor_messages_processed_total{class="Worker",path="..."} 12345
+# HELP actor_messages_delivered_total Cumulative count of user messages delivered to actor onReceive.
+# TYPE actor_messages_delivered_total counter
+actor_messages_delivered_total 12345
 ...
 ```
 

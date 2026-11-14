@@ -36,14 +36,37 @@ experimental, and what to expect.
 
 Pre-1.0:
 
-- **Patch versions (0.x.Y)** — bug fixes, no breaking changes.
+- **Patch versions (0.x.Y)** — bug fixes, no new features.  They
+  are meant to carry no breaking change, and that has not always
+  held: two of the three patch releases so far shipped an entry
+  marked `BREAKING`.
+  - **0.12.1** removed the `Cluster` constructor argument of
+    `ReplicatedEventSourcedActor` and gave `replicaId` a default
+    (#833) — a subclass that passed the cluster to `super(...)` no
+    longer compiled.
+  - **0.12.2** changed how every persistence store encodes payloads
+    (#888), to stop `Set`, `Map`, `Date`, `Uint8Array` and `bigint`
+    values from being corrupted on the way to the database.  Rows
+    written by older versions still read unchanged, but rows written
+    by 0.12.2 and later carry tag objects that an *older* version
+    reads as the tag shape rather than the value.  A rolling deploy
+    is exactly that state — old pods reading rows the new pods wrote
+    — so a change like this needs the phased rollout in
+    [Rolling migration](/operations/upgrades/rolling-migration/), not
+    a pod-by-pod restart.
+
+  A caret or tilde range (`^0.12.0`, `~0.12.0`) installs a patch
+  without asking, so neither one shields you from such an entry.
 - **Minor versions (0.X.0)** — new features, may include
   breaking changes.
 - **Major version (1.0.0)** — API stabilization commitment.
 
 Read the
 [CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
-before upgrading minor versions.
+before **every** upgrade, patch versions included — every breaking
+change is flagged there with a `BREAKING` marker, whichever kind of
+release it arrives in.  To take an upgrade only when you have read
+it, pin an exact version rather than a range.
 
 A minor bump can also change the **cluster wire**.  The CHANGELOG records
 that per release but does not summarise it across releases, and when a
@@ -52,12 +75,18 @@ to be upgraded in one step.
 [Upgrade strategies](/operations/upgrades/upgrade-strategies/#cluster-wire-compatibility-per-release)
 carries the per-release table; two consecutive releases are on it.
 
-## Security fixes
+## Supported versions
 
-There are **no maintenance branches**, so "supported" means the
-latest published version and nothing else. A security fix lands on
-`develop` and ships in the next release; it is never backported to
-an earlier `0.x`.
+Only the **latest published release** receives fixes.  There are
+**no maintenance branches**: a bug fix or a security fix lands on
+`develop` and ships in the next release, and it is never backported
+to an earlier `0.x`.  A project pinned to `~0.12.0` therefore
+receives nothing once 0.13.0 is out.
+
+The consequence is worth stating plainly: the next release may be a
+minor, and a minor may carry breaking changes, so taking a fix can
+mean taking a breaking change with it.  Read the CHANGELOG entries
+between your version and the latest before you upgrade for a fix.
 
 [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
 is the reporting channel and, more usefully before you file, the

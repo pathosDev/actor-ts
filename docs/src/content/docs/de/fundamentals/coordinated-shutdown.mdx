@@ -444,10 +444,16 @@ Zusagen weiterhin ein: es wartet, und es hält die Event-Loop offen.
 In Kubernetes ist die Pod-Shutdown-Sequenz:
 
 ```
-1. K8s sendet SIGTERM und beendet die Grace-Period-Uhr des Pods.
-2. K8s ruft auch den PreStop-Hook (falls konfiguriert), läuft parallel.
-3. Nach max(Graceful-Shutdown, Grace-Period) sendet K8s SIGKILL.
+1. K8s markiert den Pod als terminating und startet die Grace-Period-Uhr
+   (terminationGracePeriodSeconds).
+2. K8s führt den PreStop-Hook aus (falls konfiguriert) und wartet, bis er endet.
+3. Erst dann sendet K8s SIGTERM; die Pipeline unten läuft.
+4. Läuft die Grace-Period vorher ab — PreStop eingerechnet —, sendet K8s SIGKILL.
 ```
+
+Die Grace-Period muss deshalb den PreStop-Sleep **plus** jede Phase mit
+Tasks abdecken, eine nach der anderen — siehe
+[die Grace-Period dimensionieren](/de/operations/deployment/kubernetes/#terminationgraceperiodseconds).
 
 Das Standard-Rezept:
 
