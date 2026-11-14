@@ -282,9 +282,13 @@ roleBinding:
 
 Ohne diese rejectet `acquire()` mit 403 (Forbidden).
 
-Ohne `delete` funktioniert `release()`, aber das Lease-Objekt
-bleibt nach dem Release stehen (harmlos; das nächste Acquire
-nutzt es weiter).
+Ohne `delete` rejectet `release()`: Der API-Server beantwortet das
+DELETE mit 403, und das wird wie jedes andere fehlgeschlagene
+Release gemeldet (siehe [Release](#release)).  Das Renewal ist dann
+schon gestoppt, also bleibt der Record stehen, bis seine TTL
+abläuft; danach kann ein anderer Pod ihn übernehmen.  Ein Release,
+das erst nach Ablauf der TTL kommt, sendet gar kein DELETE, stößt
+also nie auf die fehlende Berechtigung und resolved.
 
 ## Was erzeugt wird
 

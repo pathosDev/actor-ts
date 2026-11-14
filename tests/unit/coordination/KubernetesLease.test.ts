@@ -44,6 +44,8 @@ class FakeK8sServer implements K8sFetchClient {
    * lease has to read both the same way (#1659).
    */
   preconditionFailureStatus: 409 | 412 = 409;
+  /** When set, every DELETE is answered 403 — a Role granted without the `delete` verb. */
+  forbidDeletes = false;
   /**
    * Bearer tokens this API server refuses — every request carrying one is
    * answered 401, for as long as it stays in the set.  Modelling expiry as
@@ -123,6 +125,7 @@ class FakeK8sServer implements K8sFetchClient {
         this.forceDeleteErrorNext = false;
         return { status: 500, body: { code: 500, reason: 'InternalError' } };
       }
+      if (this.forbidDeletes) return { status: 403, body: { code: 403, reason: 'Forbidden' } };
       const key = `${ns}/${name}`;
       const stored = this.leases.get(key);
       if (!stored) return { status: 404, body: { code: 404 } };
@@ -488,6 +491,19 @@ describe('KubernetesLease — acquire (no existing lease)', () => {
     expect(server.peek('default', 'test-lease')?.spec.renewTime).toBe(renewTimeAfterRelease);
   });
 
+  test('release rejects when RBAC forbids the DELETE, and the record stays behind', async () => {
+    // A Role without the `delete` verb.  The docs' RBAC note used to call this
+    // a working release; it is a failed one, reported like any other (#600).
+    const lease = new KubernetesLease(baseOptions({ scheduler: new ManualScheduler() }));
+    expect(await lease.acquire()).toBe(true);
+    server.forbidDeletes = true;
+
+    await expect(lease.release()).rejects.toThrow(/DELETE lease default\/test-lease → HTTP 403/);
+
+    expect(lease.checkAlive()).toBe(false);
+    expect(server.peek('default', 'test-lease')?.spec.holderIdentity).toBe('test-pod');
+  });
+
   test('release is a no-op when the lease was never held', async () => {
     const lease = new KubernetesLease(baseOptions());
     await lease.release();
@@ -581,6 +597,8 @@ describe('KubernetesLease — release deletes only what it holds (#1659)', () =>
     const lease = new KubernetesLease(expiringOptions);
     expect(await lease.acquire()).toBe(true);
     await awaitCondition(() => !lease.checkAlive(), { label: 'the 100 ms TTL ran out' });
+    // Nor does a Role without `delete` matter here: nothing reaches it.
+    server.forbidDeletes = true;
 
     await lease.release();
 
