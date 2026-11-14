@@ -123,9 +123,17 @@ describe('RedisStreamsOptionsValidator', () => {
     expect(() => check({ url: 'amqp://host' })).toThrow(OptionsError);
   });
 
-  test('rejects a negative blockMs but accepts 0 (block indefinitely)', () => {
+  test('rejects a negative blockMs', () => {
     expect(() => check({ blockMs: -1 })).toThrow(OptionsError);
-    expect(() => check({ blockMs: 0 })).not.toThrow();
+    expect(() => check({ blockMs: 1 })).not.toThrow();
+  });
+
+  // `BLOCK 0` never returns on an idle stream, and `quit()` queues behind the
+  // in-flight read — so a stop would wait forever for a reply nothing sends
+  // (#982).  Refused rather than clamped: a silent rewrite of the configured
+  // value would answer a different question than the one written.
+  test('rejects blockMs = 0, which would hold quit() on stop indefinitely (#982)', () => {
+    expect(() => check({ blockMs: 0 })).toThrow(OptionsError);
   });
 });
 
