@@ -43,10 +43,10 @@
  */
 
 import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION, wireVersionRefusal } from './WireVersion.js';
-import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
+import { getTcpBackend, type TcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { Config } from '../config/Config.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
-import { armChainedTimeout, type Cancellable } from '../Scheduler.js';
+import { armChainedTimeout, type Cancellable, type HostTimers } from '../Scheduler.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { randomUuid } from '../util/RandomString.js';
 import { safeStringify } from '../util/SafeStringify.js';
@@ -71,6 +71,57 @@ type PendingAsk = {
   /** The ask's deadline; cancelled by whatever settles the ask first. */
   readonly timer: Cancellable;
 };
+
+/**
+ * One dial of one contact point, from `backend.connect` to the end of the
+ * connection it produced — or to the moment it was given up (#1751).
+ *
+ * An attempt used to be a bare promise, and nothing ended it: when its
+ * deadline fired the loop moved on to the next contact point, but the dial
+ * went on connecting, an open socket stayed open and its handlers stayed
+ * installed.  A `hello-ack` arriving later still made that socket the
+ * client's connection, and its `close` tore down whichever connection the
+ * client really had.  Everything an attempt started is reachable from here,
+ * so the one place it ends ({@link fail}) can end all of it, and every
+ * handler checks {@link ended} before it acts.
+ */
+type ContactPointConnection = {
+  readonly target: NodeAddress;
+  /**
+   * Gives the dial up — handed to `backend.connect` as its `signal`, so a dial
+   * still connecting is destroyed rather than left to the operating system.
+   */
+  readonly dial: AbortController;
+  /**
+   * This socket's decoder: `FrameDecoder` holds the partial frame, and bytes
+   * from two sockets fed through one interleave into garbage (#1751).
+   */
+  readonly decoder: FrameDecoder;
+  /** Set by `onOpen`. */
+  socket: TcpSocketLike | null;
+  /** Filled by the `hello-ack` that made this the client's connection. */
+  peer: NodeAddress | null;
+  /**
+   * Set once the attempt has failed or been given up, and never cleared.
+   * Nothing that happens on an ended attempt changes the client.
+   */
+  ended: boolean;
+  /** End the attempt and reject its promise; a no-op once it has settled. */
+  fail: (error: Error) => void;
+  /** Make this the client's connection and resolve; a no-op once it has settled. */
+  establish: (peer: NodeAddress) => void;
+};
+
+/**
+ * Close a socket nobody will read from again.  `destroy` where the runtime has
+ * it: `end()` only half-closes, and the peer decides when the rest goes.
+ */
+function abandonSocket(socket: TcpSocketLike): void {
+  try {
+    if (socket.destroy !== undefined) socket.destroy();
+    else socket.end();
+  } catch { /* already gone */ }
+}
 
 /**
  * Generate an unpredictable ask ID.  Used by `ClusterClient.ask()` to
@@ -136,14 +187,18 @@ export class ClusterClient {
   private readonly askTimeoutMs: number;
   private readonly connectTimeoutMs: number;
   private readonly log: Logger;
-  private socket: TcpSocketLike | null = null;
-  private decoder = new FrameDecoder();
+  /** The connection a `hello-ack` completed; `null` until then and after it closes. */
+  private connection: ContactPointConnection | null = null;
+  /** The attempt in flight, so `close()` can end it. */
+  private dialing: ContactPointConnection | null = null;
   private connectingPromise: Promise<void> | null = null;
   private nextContactIndex = 0;
   private readonly pending = new Map<string, PendingAsk>();
   private stopped = false;
-  /** Filled by `hello-ack`; the contact-point's real address (post-handshake). */
-  private contactPointPeer: NodeAddress | null = null;
+  /** @internal The runtime's backend unless a test installs its own. */
+  private backend: TcpBackend | null = null;
+  /** @internal What the deadlines are armed over: the runtime's timers unless a test substitutes virtual ones. */
+  private hostTimers: HostTimers | undefined = undefined;
 
   private readonly options: ClusterClientOptionsType;
 
@@ -245,7 +300,7 @@ export class ClusterClient {
       const timer = armChainedTimeout(() => {
         this.pending.delete(askId);
         reject(new Error(`ClusterClient.ask timed out after ${ms}ms (path=${targetPath})`));
-      }, ms);
+      }, ms, this.hostTimers);
       this.pending.set(askId, {
         resolve: (v: unknown) => resolve(v as R),
         reject, timer,
@@ -254,7 +309,11 @@ export class ClusterClient {
     });
   }
 
-  /** Close the connection.  Idempotent. */
+  /**
+   * Close the client.  Idempotent.  Rejects every ask still waiting, ends a
+   * connect attempt still in flight — rejecting every call parked on it,
+   * which used to stay parked for good (#938) — and closes the connection.
+   */
   async close(): Promise<void> {
     this.stopped = true;
     for (const [, p] of this.pending) {
@@ -262,85 +321,58 @@ export class ClusterClient {
       p.reject(new Error('ClusterClient closed'));
     }
     this.pending.clear();
-    if (this.socket) {
-      try { this.socket.end(); } catch { /* ignore */ }
-      this.socket = null;
+    this.dialing?.fail(new Error('ClusterClient closed'));
+    const connection = this.connection;
+    if (connection !== null) {
+      // Cleared first, so the `close` this provokes is one for a connection the
+      // client no longer has.
+      this.connection = null;
+      if (connection.socket !== null) {
+        try { connection.socket.end(); } catch { /* ignore */ }
+      }
     }
   }
 
   /* --------------------------- internals ---------------------------- */
 
+  /**
+   * Connect, or join the connect already in flight.
+   *
+   * The memoised promise is cleared by a continuation attached the moment it
+   * is created, so it is gone by the time any caller resumes from it, however
+   * it settled and whichever caller started it.  Clearing it is only as good
+   * as the promise settling: one that never did stayed memoised and was handed
+   * to every later `send` and `ask` (#938).  What guarantees the settling is
+   * {@link dialContactPoint}, whose attempts all end through one deadline that
+   * nothing cancels without settling them.
+   */
   private async ensureConnected(): Promise<void> {
     if (this.stopped) throw new Error('ClusterClient is closed');
-    if (this.socket && this.contactPointPeer) return;
-    if (this.connectingPromise) return this.connectingPromise;
-    this.connectingPromise = this.connect();
-    try {
-      await this.connectingPromise;
-    } finally {
-      this.connectingPromise = null;
+    if (this.connection !== null) return;
+    if (this.connectingPromise === null) {
+      const connecting = this.connect();
+      const forget = (): void => {
+        if (this.connectingPromise === connecting) this.connectingPromise = null;
+      };
+      connecting.then(forget, forget);
+      this.connectingPromise = connecting;
     }
+    return this.connectingPromise;
   }
 
   private async connect(): Promise<void> {
-    const backend = await getTcpBackend();
+    const backend = this.backend ?? await getTcpBackend();
     const errors: Error[] = [];
     // Try each contact-point in order, advancing the round-robin index
     // so a future reconnect prefers the next one.
     for (let attempt = 0; attempt < this.contactPoints.length; attempt++) {
+      // `close()` ends the attempt in flight; it must not start the next one.
+      if (this.stopped) throw new Error('ClusterClient closed');
       const target = this.contactPoints[
         (this.nextContactIndex + attempt) % this.contactPoints.length
       ]!;
       try {
-        const sock = await new Promise<TcpSocketLike>((resolve, reject) => {
-          // Chained for the reason `ask` gives: `connect-timeout` is refused
-          // only when it is not positive, and one host timer would give up on
-          // a contact point a millisecond into a 30-day wait.
-          const timer = armChainedTimeout(() => reject(new Error(
-            `ClusterClient connect to ${target} timed out after ${this.connectTimeoutMs}ms`,
-          )), this.connectTimeoutMs);
-
-          let openSock: TcpSocketLike | null = null;
-          backend.connect({
-            host: target.host,
-            port: target.port,
-            ...(this.tls ? { tls: this.tls } : {}),
-            handlers: {
-              onOpen: (s) => {
-                openSock = s;
-                // Send hello.
-                const hello: HelloMessage = {
-                  kind: 'hello',
-                  self: this.identity.toJSON(),
-                  wireVersion: CLUSTER_WIRE_VERSION,
-                  minWireVersion: MIN_CLUSTER_WIRE_VERSION,
-                };
-                try { s.write(encodeFrame(hello)); } catch (e) {
-                  timer.cancel();
-                  reject(e as Error);
-                }
-              },
-              onData: (s, chunk) => {
-                this.onData(s, chunk, (peer) => {
-                  this.contactPointPeer = peer;
-                  this.socket = s;
-                  timer.cancel();
-                  resolve(s);
-                });
-              },
-              onClose: (_s) => this.onSocketClose(),
-              onError: (_s, err) => {
-                timer.cancel();
-                if (openSock === null) reject(err);
-                else this.log.warn(`ClusterClient socket error`, err);
-              },
-            },
-          }).catch((err) => {
-            timer.cancel();
-            reject(err as Error);
-          });
-        });
-        void sock;
+        await this.dialContactPoint(backend, target);
         // Move the round-robin index past the successful contact-point
         // so the next reconnect prefers a different one.
         this.nextContactIndex = (this.nextContactIndex + attempt + 1) % this.contactPoints.length;
@@ -349,17 +381,148 @@ export class ClusterClient {
         errors.push(e as Error);
       }
     }
+    if (this.stopped) throw new Error('ClusterClient closed');
     throw new Error(
       `ClusterClient: failed to connect to any of ${this.contactPoints.length} `
       + `contact-point(s).  Errors: ${errors.map((e) => e.message).join('; ')}`,
     );
   }
 
-  private onData(
-    sock: TcpSocketLike,
-    chunk: Uint8Array,
-    onHelloAcknowledgment: (peer: NodeAddress) => void,
-  ): void {
+  /**
+   * One attempt on one contact point.  Settles exactly once: resolved by the
+   * `hello-ack`, rejected by the deadline, a refused dial, a failed write, an
+   * error or a close before the `hello-ack`, or `close()` — and every one of
+   * the rejections goes through {@link ContactPointConnection.fail}, which
+   * ends everything the attempt started.
+   *
+   * Two defects lived in the shape this replaced.  An error after the socket
+   * had opened cancelled the deadline without settling the attempt, and a
+   * close never settled it at all, so a contact point that reset before its
+   * `hello-ack` left a promise with no way to finish (#938).  And a deadline
+   * that fired rejected the promise and left the dial, the socket and the
+   * handlers running, so a contact point that answered late took the client's
+   * connection over (#1751).
+   */
+  private dialContactPoint(backend: TcpBackend, target: NodeAddress): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const connection: ContactPointConnection = {
+        target,
+        dial: new AbortController(),
+        decoder: new FrameDecoder(),
+        socket: null,
+        peer: null,
+        ended: false,
+        fail: (error) => {
+          if (connection.ended || connection.peer !== null) return;
+          connection.ended = true;
+          deadline.cancel();
+          if (this.dialing === connection) this.dialing = null;
+          // A dial still connecting is destroyed by the backend; an open
+          // socket is the attempt's to close, since aborting a dial that has
+          // resolved changes nothing.
+          connection.dial.abort(error);
+          if (connection.socket !== null) abandonSocket(connection.socket);
+          reject(error);
+        },
+        establish: (peer) => {
+          if (connection.ended || connection.peer !== null) return;
+          connection.peer = peer;
+          deadline.cancel();
+          if (this.dialing === connection) this.dialing = null;
+          this.connection = connection;
+          resolve();
+        },
+      };
+      this.dialing = connection;
+      // Chained for the reason `ask` gives: `connect-timeout` is refused only
+      // when it is not positive, and one host timer would give up on a contact
+      // point a millisecond into a 30-day wait.  It covers the `hello-ack` as
+      // well as the dial, so a peer that accepts and then goes quiet is given
+      // up on too.
+      const deadline = armChainedTimeout(() => connection.fail(new Error(
+        `ClusterClient connect to ${target} timed out after ${this.connectTimeoutMs}ms`,
+      )), this.connectTimeoutMs, this.hostTimers);
+
+      backend.connect({
+        host: target.host,
+        port: target.port,
+        ...(this.tls ? { tls: this.tls } : {}),
+        signal: connection.dial.signal,
+        handlers: {
+          onOpen: (s) => this.onConnectionOpen(connection, s),
+          onData: (s, chunk) => this.onData(connection, s, chunk),
+          onClose: () => this.onConnectionClose(connection),
+          onError: (_s, err) => this.onConnectionError(connection, err),
+        },
+      }).then(
+        (s) => {
+          // A backend that cannot honour the abort — Deno over TLS, a backend
+          // of the caller's own — resolves a dial that was given up.
+          if (connection.ended) abandonSocket(s);
+          else connection.socket ??= s;
+        },
+        (err: unknown) => connection.fail(err instanceof Error ? err : new Error(String(err))),
+      );
+    });
+  }
+
+  private onConnectionOpen(connection: ContactPointConnection, socket: TcpSocketLike): void {
+    if (connection.ended) {
+      abandonSocket(socket);
+      return;
+    }
+    connection.socket = socket;
+    const hello: HelloMessage = {
+      kind: 'hello',
+      self: this.identity.toJSON(),
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
+    };
+    try {
+      socket.write(encodeFrame(hello));
+    } catch (e) {
+      connection.fail(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
+
+  /**
+   * Before the `hello-ack` a close fails the attempt at once rather than
+   * leaving it to the deadline (#938); after it, it is the end of the client's
+   * connection — but only if it still *is* the client's connection.  The close
+   * of a socket the client gave up on, or replaced, used to tear down the
+   * connection it actually had, failing every ask in flight there (#1751).
+   */
+  private onConnectionClose(connection: ContactPointConnection): void {
+    if (connection.peer === null) {
+      connection.fail(new Error(
+        `ClusterClient: contact point ${connection.target} closed the connection before its hello-ack`,
+      ));
+      return;
+    }
+    if (this.connection === connection) this.onSocketClose();
+  }
+
+  /**
+   * Before the `hello-ack` an error fails the attempt, whether or not the socket
+   * had opened: the branch that only logged it also cancelled the deadline,
+   * which left the attempt nothing that could ever settle it (#938).
+   */
+  private onConnectionError(connection: ContactPointConnection, error: Error): void {
+    if (connection.peer === null) {
+      connection.fail(error);
+      return;
+    }
+    if (this.connection === connection) this.log.warn(`ClusterClient socket error`, error);
+  }
+
+  /**
+   * Bytes on one attempt's socket, decoded by that socket's own decoder.  An
+   * attempt that has ended takes nothing: a `hello-ack` that arrives after the
+   * client gave up on its contact point used to make that socket the client's
+   * connection (#1751).
+   */
+  private onData(connection: ContactPointConnection, sock: TcpSocketLike, chunk: Uint8Array): void {
+    if (connection.ended) return;
     // The client trusts its contact points no more than a node trusts a peer.
     // `push` throws on an oversized length-prefix or malformed JSON, and this
     // runs inside the runtime's socket-data callback — so an unguarded call
@@ -367,13 +530,14 @@ export class ClusterClient {
     // (#587).  The transport-side equivalent has been guarded since #563.
     let frames;
     try {
-      frames = this.decoder.push(chunk);
+      frames = connection.decoder.push(chunk);
     } catch (e) {
       this.log.warn(
         `ClusterClient: frame-decoder error from a contact point; dropping the connection: `
         + `${e instanceof Error ? e.message : String(e)}`,
       );
-      try { sock.end(); } catch { /* already gone */ }
+      if (connection.peer === null) connection.fail(e instanceof Error ? e : new Error(String(e)));
+      else try { sock.end(); } catch { /* already gone */ }
       return;
     }
     for (const frame of frames) {
@@ -397,14 +561,14 @@ export class ClusterClient {
           this.log.warn(`ClusterClient: handshake with ${NodeAddress.fromJSON(ack.self)} refused: ${refusal}`);
           continue;
         }
-        onHelloAcknowledgment(NodeAddress.fromJSON(ack.self));
+        connection.establish(NodeAddress.fromJSON(ack.self));
         continue;
       }
       // Widened on purpose: `WireMessage` enumerates only the core kinds, and
       // `cluster-client-reply` is one of the extension kinds that ride the same
       // wire (see the note in WireValidation.ts).
       const frameType = (checked.message as { kind: string }).kind;
-      if (frameType === 'cluster-client-reply') {
+      if (frameType === 'cluster-client-reply' && this.connection === connection) {
         // Contained on purpose.  `push` returns a *batch* of frames, so a throw
         // from one reply used to abandon the rest of the batch — every later
         // frame in the same chunk was dropped, and the asks they would have
@@ -443,9 +607,7 @@ export class ClusterClient {
   }
 
   private onSocketClose(): void {
-    this.socket = null;
-    this.contactPointPeer = null;
-    this.decoder = new FrameDecoder();
+    this.connection = null;
     // Pending asks fail — the user can retry, which will reconnect.
     for (const [id, p] of this.pending) {
       p.timer.cancel();
@@ -456,10 +618,11 @@ export class ClusterClient {
   }
 
   private writeFrame(message: WireMessage): void {
-    if (!this.socket) {
+    const socket = this.connection?.socket ?? null;
+    if (socket === null) {
       throw new Error('ClusterClient: not connected — call send()/ask() which awaits ensureConnected()');
     }
-    this.socket.write(encodeFrame(message));
+    socket.write(encodeFrame(message));
   }
 }
 

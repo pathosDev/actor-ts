@@ -87,6 +87,16 @@ nächsten zurück. `connectTimeoutMs` begrenzt, wie lange **einer**
 von ihnen Zeit hat, den `hello`-Handshake zu beantworten, bevor
 der Client weiterzieht.
 
+Ein Kontaktpunkt, von dem der Client weiterzieht, ist endgültig
+aufgegeben: Ein Verbindungsaufbau, der noch läuft, wird
+abgebrochen, eine bereits offene Verbindung wird geschlossen, und
+ein verspätetes `hello-ack` ändert nichts mehr.  Setzt ein
+Kontaktpunkt die Verbindung vor seinem `hello-ack` zurück oder
+schließt sie, scheitert der Versuch sofort statt erst an der
+Frist, und das nächste `send` oder `ask` wählt neu.  `close()`
+beendet auch einen noch laufenden Versuch und weist jeden Aufruf
+ab, der darauf wartet.
+
 `tls` folgt den Einstellungen des Clusters.  `ca` allein ist
 einseitiges TLS: Der Client prüft das Zertifikat des Servers und
 legt selbst keines vor.  Für gegenseitiges TLS setzt man `cert`
