@@ -60,6 +60,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`actor-ts.cluster.unreachable-gossip-rounds`** /
   `withUnreachableGossipRounds` (default 3; `0` turns it off) (#930).
 
+- **`JournalRememberEntitiesStore` compacts its log into a snapshot**
+  (#649). A coordinator start used to replay the whole remember-entities
+  history; it now reads at most one snapshot plus one interval of tail. The
+  interval is the larger of 1 000 events and the size of the last snapshot,
+  so the cost stays amortised for large registries. A failed compaction never
+  fails the append that triggered it and is retried only after an interval.
+  The delete always leaves the snapshot behind, so the journal is never
+  compacted to nothing (#1052). *Downgrade note:* an earlier release cannot
+  read a registry that has been compacted.
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -185,6 +195,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`maxRestarts: -1` keeps the worker respawn backoff growing** (#1255).
   Before, every respawn waited only the minimum delay, a respawn storm.
   `OffloadPool` says its budget is unlimited instead of logging `restart 0`.
+
+- **`LWWRegister.merge` is commutative when timestamp and replica id both
+  tie** (#950). The value now decides, so two writes from one replica within
+  one millisecond converge on every node. `LWWMap` inherits the fix. The
+  DistributedData coordinator-state store stamps each snapshot above the one
+  it replaces, so the later snapshot wins even after the clock steps
+  backwards.
+- **`ShardedDaemonProcess` places each daemon on a shard of its own** (#951).
+  Before, 100 daemons landed on 58 shards and some always shared one. An id
+  remembered from an earlier release that no longer names a daemon retires
+  on start.
 
 ### Changed
 
