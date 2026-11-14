@@ -1912,7 +1912,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   private async onRecreate(signal: RecreateCommand): Promise<void> {
     const cause = signal.cause;
-    if (!this.actor) return;
+    // No instance means the constructor itself threw: there is nothing to
+    // restart, only a factory that already failed.  Returning here used to
+    // leave the cell suspended for good — never stopped, still its parent's
+    // child, its watchers never told, its mailbox filling (#914).  Stopping is
+    // the only outcome that closes the loop, and it has to happen here rather
+    // than in `defaultStrategy`, because a user decider answering `Restart` for
+    // an `ActorInitializationError` would otherwise rebuild the zombie.
+    if (!this.actor) {
+      await this.onTerminate();
+      return;
+    }
 
     // Timers and stash belong to the outgoing instance.  The stash cannot
     // carry over — the new instance has none of the state that made those
