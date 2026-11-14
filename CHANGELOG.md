@@ -70,6 +70,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   compacted to nothing (#1052). *Downgrade note:* an earlier release cannot
   read a registry that has been compacted.
 
+- **`actor-ts.projection.lookback-window`** (default `30s`;
+  `ByTagProjectionOptions.withLookbackWindowMs`,
+  `LiveQueryOptions.lookbackWindowMs`; `0` keeps forward-only reads) and the
+  exports `TagLookbackWindow`, `TagCursor`, `DeliveredEventMark` and
+  `DEFAULT_TAG_LOOKBACK_WINDOW_MS` (#957).
+- **`clientIpResolver` / `resolveClientIp`**: the trusted-proxy client-address
+  walk that `IpAllowlist` uses, now public for rate-limit keys and logging
+  (#1236).
+- **`rateLimit` options `failureMode`** (`'open'` by default, `'closed'`
+  answers 503), `onBackendError`, `logger` and `metrics`, and a new metric,
+  `http_rate_limit_backend_errors_total{prefix}` (#983). **`idempotent`
+  options `lockTtlMs`** (60 s by default), `onHandlerError` and
+  `cacheStatuses` (#984).
+- **Decode options for JSON and CBOR**: `JsonTreeTagOptions`,
+  `RefusedTagError`, `JSON_TREE_TAG_NAMES`, and a tag-options argument on
+  `JsonSerializer`, `CborSerializer` and `CborDecoder`. Also
+  `EntityOptions.withTags`, `WireDecodeOptions`,
+  `TcpTransportOptions.withWireDecode`, `ClusterClientOptions.withWireDecode`,
+  `FrameDecoder.refusedFrames` / `lastRefusals()`, and the key
+  `actor-ts.serialization.wire.admitted-tags` (#967, #1303).
+- **`HttpServerBackend.setStreamFailureHandler`**: a hook that reports a
+  streamed response which fails after its first chunk was sent (#979).
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -217,6 +240,54 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   field; a report without a reason, from an older region, counts as
   `'passivated'`.
 
+- **By-tag consumers no longer drop an event whose write committed after
+  they had passed its timestamp** (#957). Journals stamp an event before it
+  commits, so a slow writer's event could land behind a projection cursor or
+  a live `eventsByTag` stream and be lost for good.
+  - Each by-tag read now re-reads a lookback window behind its position and
+    drops what it already delivered, by `(persistenceId, sequenceNr)`.
+  - The projection saves that state with its cursor, so a restart neither
+    replays nor misses events. A cursor saved before this change resumes
+    without replay.
+  - Push streams by tag and by persistence id no longer drop events that
+    arrive while their catch-up read is still running.
+  - `OffsetStore.loadOffset` / `saveOffset` type the cursor as
+    `TagCursor`, which is an `Offset` plus optional window state. A custom
+    store keeps working, but should store the object whole to keep
+    deduplication across restarts.
+- **`ReplicatedEventSourcedActor` consults `resolver()` for concurrent
+  events** (#1245). Each conflict group is reduced pairwise through
+  `resolve` and folded once. Before, every override was silently ignored.
+  The default is `null` and keeps the previous fold.
+- **A peer's event is appended to the local journal in order, once**
+  (#958). These appends are now serialized behind the actor's other journal
+  calls, so back-to-back events no longer race one head and drop from the
+  journal. They go through the journal breaker, are retried only when the
+  attempt is known to have written nothing, and fail the actor once the
+  retries are spent.
+- **A local replicated append whose outcome `persist` never saw is
+  settled** (#1732):
+  - If it landed, the event is folded and broadcast.
+  - A snapshot no longer counts an unfolded event as covered.
+  - A restarted instance waits for its predecessor's in-flight appends, so
+    it never reuses a `seqAtReplica`.
+  - Recovery re-publishes the replica's own events written after the
+    snapshot.
+
+  A rejected replicated `persist` now means "not confirmed": the event may
+  still be folded and broadcast later.
+- **`LastWriterWinsResolver` is commutative when two events tie on both
+  timestamp and replica**: the payload breaks the tie.
+- **Express no longer crashes the process on Node or hangs the request on
+  Bun when a `ReadableStream` body fails** (#979). A client that disconnects
+  cancels the source.
+- **Hono under Bun honours the shutdown grace period** (#997): it now awaits
+  `server.stop()`.
+- **`idempotent()` no longer wedges a key for 24 h after a crashed worker**
+  (#984); the claim lapses after `lockTtlMs`. `cached()` no longer replays
+  `x-ratelimit-*` headers, and the docs give `rateLimit(cached(h))` as the
+  correct nesting (#983).
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
@@ -321,6 +392,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is sent. *Migration:* pass a finite deadline, or omit it to use
   `ask-timeout`.
 
+- **BREAKING — `actor-ts.http.shutdown-grace-period` defaults to `4s`**
+  (#997). It used to be `0ms`, so a rolling deploy cut off requests still in
+  flight. The setting now means the same on every backend: `0` forces at
+  once, where Express used to wait 1 s. The drain runs in
+  `service-requests-done`, and `/ready` answers 503 from
+  `before-service-unbind` on, including on a registry created while a
+  shutdown is already running. *Migration:* set `0ms` to keep the old
+  behaviour. A window of 5 s or more also needs a higher
+  `service-requests-done` timeout.
+- **BREAKING — `idempotent()` records a thrown handler's failure under the
+  key instead of freeing it, and no longer records 5xx/408/429 responses**
+  (#984). A retry gets 500 and must use a new key, so a partly applied
+  handler is not run twice. *Migration:* pass `onHandlerError: 'release'`
+  for an atomic handler that should be retried after a throw, and
+  `cacheStatuses` to record a status the new default skips.
+
 ### Security
 
 - **`KubernetesLease.release()` no longer deletes a Lease record this node
@@ -376,6 +463,49 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   at construction** (#1085). Before, the half was dropped on the dial and the
   client fell back to one-way TLS while its configuration read as mutual TLS.
   *Migration:* supply both halves, or `ca` alone for one-way TLS.
+- **BREAKING — `entity()` decodes request bodies as plain data** (#967).
+  A client no longer chooses a value's runtime class (RegExp, bigint,
+  undefined, Map, Date, …). A JSON body is plain JSON, so
+  `{"__regexp__":…}` stays an object. A CBOR body accepts only the JSON data
+  model, and any richer type is a 400 that names it. *Migration:* a route
+  that relies on rebuilt types opts in per tag with
+  `entity(request, EntityOptions.create().withTags([...]))`. The same names
+  apply to JSON and CBOR.
+- **BREAKING — the cluster wire builds only admitted tags, and moves to wire
+  version 3** (#1303).
+  - Only the tags in `actor-ts.serialization.wire.admitted-tags` are built.
+    The default is date, bytes, typed-array, map, set, bigint,
+    bidirectional-map, bidirectional-multi-map and number.
+  - A frame using any other tag (regexp, undefined, error, url) is refused
+    and logged, and the connection stays up.
+  - A v0.18 node is refused at the handshake with a `hello-refused` that
+    names both versions. **v0.18 and v0.19 nodes cannot form one cluster.**
+    This is the fourth consecutive release that breaks rolling upgrade, and
+    the first one the handshake refuses by name instead of leaving it to be
+    discovered.
+  - `ClusterClient` reads the same key and now honours
+    `actor-ts.serialization.read-constraints`.
+
+  *Migration:* upgrade every node in one window. To keep sending the refused
+  types, list them in `admitted-tags` on every receiving node.
+- **HTTP/1.1 connections on Fastify's HTTP/2 listener under Bun are held to
+  `idle-timeout` and `request-timeout`** (#1756). When `idle-timeout` is
+  unset, an idle HTTP/2 session is closed at 72 s whether or not it sends
+  PINGs (#1757).
+- **BREAKING — `idle-timeout = 0` is refused on the Hono backend under Bun**
+  (#1767). There it removed the only bound on a stalled request.
+  *Migration:* set a positive value, or leave the key unset.
+- **`rateLimit` no longer fails open silently** (#983). A cache outage or a
+  missing `ioredis` is logged and counted, and the limiter can be set to
+  fail closed.
+- **`idempotent()` releases and overwrites its claim only while it holds its
+  own token** (#1082). A handler that overran its claim can no longer delete
+  a retry's claim and let a third request run beside it.
+- **Samples no longer key a rate limiter, an idempotency scope or a cache on
+  a header the client can set** (#1248). This covers `x-forwarded-for` in
+  the shipped REST example, and `x-user-id`, `x-account` and `x-tenant-id`
+  in the docs. The samples use `clientIpResolver` or a verified claim
+  instead.
 
 ## [0.18.0] — 2026-11-10
 
