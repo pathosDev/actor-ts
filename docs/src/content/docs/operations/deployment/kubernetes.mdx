@@ -22,11 +22,11 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: actor-ts-pod-reader
+  name: actor-ts-endpoints-reader
 rules:
   - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
+    resources: ["endpoints"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -37,7 +37,7 @@ subjects:
     name: actor-ts
 roleRef:
   kind: Role
-  name: actor-ts-pod-reader
+  name: actor-ts-endpoints-reader
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: v1
@@ -84,7 +84,7 @@ spec:
         app: actor-ts
     spec:
       serviceAccountName: actor-ts
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 45   # preStop 10 s + 5 phases × 5 s + margin
       containers:
         - name: app
           image: ghcr.io/your-org/your-app:1.2.3
@@ -102,12 +102,12 @@ spec:
                   fieldPath: status.podIP
             - name: ACTOR_TS_PORT
               value: "2552"
-            - name: K8S_NAMESPACE
+            - name: CLUSTER_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: K8S_LABEL_SELECTOR
-              value: "app=actor-ts"
+            - name: CLUSTER_SERVICE_NAME
+              value: actor-ts-cluster     # the headless Service above
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -138,13 +138,25 @@ spec:
 
 ```yaml
 ServiceAccount: actor-ts
-Role:           actor-ts-pod-reader   # get + list pods
+Role:           actor-ts-endpoints-reader   # get endpoints
 RoleBinding:    binds them
 ```
 
-The K8s API seed provider needs to **list pods** matching a label
-selector to discover peers.  Without this RBAC grant, the seed
-provider gets 403 and the cluster never forms.
+The K8s API seed provider makes one request —
+`GET /api/v1/namespaces/<namespace>/endpoints/<serviceName>` — and
+reads the ready pod IPs out of that `Endpoints` object.  It lists no
+pods and takes no label selector: which pods belong to the cluster is
+decided by the headless Service's own `spec.selector`.  So the Role
+grants `get` on `endpoints` and nothing else; without it the request
+answers 403, `lookup()` rejects, and the cluster never forms.
+
+The two names in that path come from the environment:
+`CLUSTER_NAMESPACE` (the pod's own namespace, from the downward API)
+and `CLUSTER_SERVICE_NAME`, which has to name the headless Service —
+`actor-ts-cluster` here.  These are the variables the framework itself
+reads when the pods start through
+[`Cluster.bootstrap`](/cluster/cluster-bootstrap/), so the same
+manifest serves the hand-wired join below and the bootstrap alike.
 
 ### Headless Service for cluster gossip
 
@@ -182,18 +194,55 @@ Postgres/Cassandra), Deployment is fine and simpler.
 ### `terminationGracePeriodSeconds`
 
 ```yaml
-terminationGracePeriodSeconds: 30
+terminationGracePeriodSeconds: 45
 ```
 
-K8s sends SIGTERM, then waits this long before SIGKILL.  Sized
-based on:
+The clock starts when the pod is marked terminating, so it covers the
+`preStop` hook **and** everything after SIGTERM; when it runs out, K8s
+sends SIGKILL.  What SIGTERM starts is the
+[coordinated shutdown](/fundamentals/coordinated-shutdown/): twelve
+phases, run **one after another**, each with its own timeout
+(`actor-ts.coordinated-shutdown.default-phase-timeout`, 5 s).  A phase
+with no task is skipped at no cost, so the budget is
+`preStop + Σ(timeouts of the phases that have tasks)`.  For the app on
+this page:
 
-- **HTTP drain** — typically 5-10 s.
-- **Cluster leave gossip** — 5-15 s for convergence.
-- **Journal flush** — depends on the journal.
+| Phase | Who registers the task | Worst case |
+| --- | --- | --- |
+| `service-unbind` | both `bind()` calls | 5 s |
+| `service-requests-done` | your request drain, if you register one | 5 s |
+| `cluster-sharding-shutdown-region` | `Cluster.join` | 5 s |
+| `cluster-leave` | `Cluster.join` | 5 s |
+| `actor-system-terminate` | the built-in terminator | 5 s |
 
-30 s is a reasonable default.  Bump it if your cluster is large
-or the failure-detector window is long.
+That is `10 s + 5 × 5 s = 35 s`, and 45 leaves ten seconds of margin.
+The tasks inside one phase run in parallel, so the second `bind()`
+costs nothing extra — but every **further phase** that gets a task adds
+its timeout:
+
+- broker actors close their connections in `service-stop`, and so does
+  the offload pool when parallelism is on — **+5 s**;
+- a dead-letter queue (`actor-ts.dead-letters.store` other than `off`)
+  flushes in `before-actor-system-terminate` — **+5 s**;
+- each phase you register into yourself — **+5 s**, or its own
+  `timeout` if you set one.
+
+With a grace period the platform fixes for you, turn the phase budget
+down rather than the grace period up:
+
+```hocon
+actor-ts.coordinated-shutdown {
+  default-phase-timeout = 3s
+  phases {
+    service-requests-done { timeout = 10s }   # the one phase that needs room
+  }
+}
+```
+
+Keep `actor-ts.system.shutdown-drain-timeout` (2 s) below the
+`actor-system-terminate` timeout, because the drain runs inside that
+phase — see
+[the drain budget](/fundamentals/coordinated-shutdown/#the-drain-budget-sits-inside-the-last-phase).
 
 ### `preStop` sleep
 
@@ -287,8 +336,8 @@ const system = ActorSystem.create('my-app');
 
 // 1. Cluster join with K8s API seed discovery
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
-  .withNamespace(process.env.K8S_NAMESPACE!)
-  .withServiceName(process.env.K8S_SERVICE_NAME!)
+  .withNamespace(process.env.CLUSTER_NAMESPACE!)
+  .withServiceName(process.env.CLUSTER_SERVICE_NAME!)
   .withSystemName(system.name)
   .withPort(2552);
 const seeds = await new KubernetesApiSeedProvider(kubernetesApiSeedProviderOptions).lookup();
@@ -315,9 +364,12 @@ await system.runUntilTerminated();
 Four pieces in order:
 
 1. **Cluster join with seed discovery** — the K8s API seed
-   provider queries pods matching `app=actor-ts` and uses their
-   IPs as seeds.  On the first pod, the seed list is just itself
-   (the auto-promote-to-leader path).
+   provider reads the `Endpoints` of the headless Service
+   `actor-ts-cluster` and uses the ready pod IPs as seeds.  A pod is
+   ready only once it is `up` in the cluster, so the first pod finds
+   an empty list and founds the cluster itself; the StatefulSet's
+   default `OrderedReady` policy starts the next pod only after that,
+   and it finds the first one.
 2. **Management endpoints** — `/health` + `/ready` for K8s probes,
    `/cluster/members` for debugging.
 3. **App HTTP** — your routes, separate port from management.
@@ -429,6 +481,8 @@ For each pod, in order (StatefulSet) or arbitrary (Deployment):
    - Drain in-flight requests (`service-requests-done`, yours).
    - Close broker connections (`service-stop`, wired by each broker
      actor).
+   - Hand this node's shards off (`cluster-sharding-shutdown-region`,
+     wired by `Cluster.join`).
    - Issue `cluster.leave()` (`cluster-leave`, wired by
      `Cluster.join`).
    - Terminate the actor system (`actor-system-terminate`).
@@ -461,7 +515,9 @@ import { Aside } from '@astrojs/starlight/components';
   `preStop` sleep **plus** the pipeline, and the pipeline's own worst
   case is `default-phase-timeout` (5 s) times the number of phases
   that actually have tasks — not times twelve, because an empty phase
-  is a no-op that costs nothing.
+  is a no-op that costs nothing.  The arithmetic for this page's
+  manifest is under
+  [`terminationGracePeriodSeconds`](#terminationgraceperiodseconds).
 </Aside>
 
 <Aside type="caution" title="Pre-1.0 of the Kubernetes lease provider">
