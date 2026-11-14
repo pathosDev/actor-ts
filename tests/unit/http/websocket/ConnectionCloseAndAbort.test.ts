@@ -425,9 +425,11 @@ const upgradeRequest: HttpRequest = {
 
 /**
  * Finite, so the slot wrapper is part of the chain.  Large enough that no
- * test here is ever refused.
+ * test here is ever refused.  No heartbeat: these sockets cannot ping, and
+ * the once-per-route warning that says so would land in the one case here
+ * that counts a connection's warnings, whenever it happens to run first.
  */
-const cappedPolicy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 8 };
+const cappedPolicy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 8, heartbeatIntervalMs: 0 };
 
 type Harness = {
   readonly hub: WebsocketServerRef<ServerMessage, ClientMessage, HubCommand>;
@@ -1022,7 +1024,7 @@ describe('abort() on a connection that is no longer open does nothing (#1431)', 
  */
 describe('a close that asks for more than a close frame carries still shuts the socket and gives its slot back (#1431)', () => {
   /** One connection per route: a second one is admitted only once the first has given its slot back. */
-  const onePolicy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 1 };
+  const onePolicy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 1, heartbeatIntervalMs: 0 };
   /** 100 two-byte characters: 200 bytes, and byte 123 falls inside one of them. */
   const longReason = 'é'.repeat(100);
   /** The longest prefix of {@link longReason} a close frame carries: 61 characters, 122 bytes. */
