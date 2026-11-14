@@ -148,7 +148,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation.  Greift, wenn `ActorSystem.create()` ohne Namen aufgerufen wird; ein explizites `create('billing')` gewinnt. |
-| `system.shutdown-drain-timeout` | `2s` | Wie lange `terminate()` den Actors unter `/user` gibt, die eingereihte Arbeit zu beenden, bevor die Stop-Kaskade startet.  Kehrt zurück, sobald der Baum ruhig ist — ein untätiges System zahlt einen Tick.  Halte den Wert unter `coordinated-shutdown.default-phase-timeout`; `0` schaltet den Drain ab. |
+| `system.shutdown-drain-timeout` | `2s` | Wie lange `terminate()` den Actors unter `/user` gibt, die eingereihte Arbeit zu beenden, bevor die Stop-Kaskade startet.  Kehrt zurück, sobald der Baum ruhig ist — ein untätiges System zahlt einen Tick.  Halte den Wert unter dem Budget der Phase `actor-system-terminate` (`10s`, wenn nicht gesetzt); `0` schaltet den Drain ab. |
 
 ### `actor-ts.logger`
 
@@ -3311,7 +3311,8 @@ Kinder für die anderen Phasen schon.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
+| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Ein Task, der es überschreitet, wird aufgegeben — auf Error-Level geloggt, läuft weiter —, damit die nächste Phase noch läuft.  `actor-system-terminate` startet stattdessen mit `10s`, nie weniger als dieser Wert. |
+| `coordinated-shutdown.overall-timeout` | `30s` | Schranke für einen ganzen Lauf — die Zahl, gegen die eine Grace Period bemessen wird.  Danach hält der Lauf in seiner Phase an, loggt die offenen Tasks auf Error-Level, und `exit-process` beendet mit `1`, wo `exit-code` `0` ist; ein Exit wartet auch nicht länger als das auf aufgegebene Tasks.  `0` setzt keine Frist. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task das Actor-System in der finalen Phase herunterfährt. |
 | `coordinated-shutdown.exit-process` | `false` | Ob `process.exit(exit-code)` aufgerufen wird, sobald ein Lauf endet.  Ein Lauf, den eine Phase mit `recover = false` anhält, beendet den Prozess am Halt, anstelle des Teardowns, den er sonst bekäme, und mit `1`, wo `exit-code` `0` ist. |
 | `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start.  Ein Lauf für einen fehlgeschlagenen Start, ein Lauf für einen Node, der nicht beitreten konnte (`ClusterJoinUnsuccessfulReason`: das Aufgeben des Joins, ein gescheitertes Readiness-Warten oder eine Ablehnung von `Cluster.bootstrap`), und ein Lauf, den eine Phase mit `recover = false` anhält, enden mit `1`, wo hier `0` steht, und lesen sich so nie wie ein sauberer Stopp. |

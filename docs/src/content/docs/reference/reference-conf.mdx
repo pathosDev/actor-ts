@@ -35,10 +35,11 @@ actor-ts {
     # already have before the stop cascade starts.  The wait ends as soon as
     # the tree goes quiet, so an idle system pays a tick rather than the
     # budget; what is still queued when the budget runs out is dead-lettered
-    # exactly as it was before.  Keep it under
-    # coordinated-shutdown.default-phase-timeout — the last phase awaits
-    # terminate(), so a drain as long as the phase leaves no room to stop
-    # anything.  0 disables draining and restores the pre-#663 behaviour.
+    # exactly as it was before.  Keep it under the budget of the
+    # coordinated-shutdown phase actor-system-terminate (10s unless set) —
+    # that phase awaits terminate(), so a drain as long as the phase leaves
+    # no room to stop anything.  0 disables draining and restores the
+    # pre-#663 behaviour.
     #
     # A throttled or suspended mailbox is never waited on: neither drains at
     # a rate a shutdown can wait for.
@@ -3113,7 +3114,17 @@ actor-ts {
   }
 
   coordinated-shutdown {
+    # Budget of every phase that names none.  actor-system-terminate, the
+    # phase that drains and tears the system down, is seeded with 10s and
+    # never less than this; set it under phases to change it.
     default-phase-timeout = 5s
+    # Bound on a whole run -- the number to size a Kubernetes grace period
+    # against, not the sum of the phase budgets.  Past it the run halts in
+    # the phase it is in and logs, at error, the tasks still pending;
+    # exit-process then exits 1 where exit-code is 0.  An exit at the end of
+    # a run waits for tasks a phase budget abandoned, but never past this.
+    # 0 sets no deadline.
+    overall-timeout = 30s
     terminate-actor-system = true
     exit-process = false   # call process.exit once a run ends, completed or halted
     # Status that exit carries.  Only consulted when exit-process is on; a

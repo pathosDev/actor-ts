@@ -9,6 +9,7 @@ import {
   DEFAULT_DISPATCHER_THROUGHPUT,
   DEFAULT_PHASE_TIMEOUT_MS,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS,
 } from '../../../src/Constants.js';
 import { DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
@@ -375,6 +376,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.dispatcher.throughput', kind: 'int', constant: DEFAULT_DISPATCHER_THROUGHPUT },
   { key: 'actor-ts.coordinated-startup.default-phase-timeout', kind: 'duration', constant: DEFAULT_STARTUP_PHASE_TIMEOUT_MS },
   { key: 'actor-ts.coordinated-shutdown.default-phase-timeout', kind: 'duration', constant: DEFAULT_PHASE_TIMEOUT_MS },
+  { key: 'actor-ts.coordinated-shutdown.overall-timeout', kind: 'duration', constant: DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS },
   { key: 'actor-ts.coordinated-shutdown.exit-code', kind: 'int', constant: DEFAULT_SHUTDOWN_EXIT_CODE },
   { key: 'actor-ts.system.shutdown-drain-timeout', kind: 'duration', constant: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS },
 

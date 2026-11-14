@@ -2715,6 +2715,7 @@ export const ConfigKeys = {
    */
   coordinatedShutdown: {
     defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
+    overallTimeout: 'actor-ts.coordinated-shutdown.overall-timeout',
     terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
     exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
     exitCode: 'actor-ts.coordinated-shutdown.exit-code',
