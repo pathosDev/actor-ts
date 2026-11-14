@@ -81,12 +81,21 @@ import {
  * `keyPrefix` and a per-caller `key` are for.
  *
  * **Security — choosing `key` (security audit HTTP-3):** derive it from a
- * value the client can't freely forge.  `request.remoteAddress` (the socket peer)
- * is the safe default.  Do NOT key on a client-settable header such as
- * `x-forwarded-for` unless a trusted proxy strips and re-sets it — otherwise
- * an attacker rotates the header per request for a fresh bucket each time
- * (limit bypassed), while clients without the header collapse into a single
- * shared bucket (one client can exhaust everyone's quota).
+ * value the client can't freely forge.  Served directly, that is
+ * `request.remoteAddress`, the socket peer.  Behind a reverse proxy the
+ * socket peer is the proxy — every client in one bucket — so resolve the
+ * client by naming the proxies you trust:
+ *
+ *   const clientIp = clientIpResolver(['10.0.0.0/8']);
+ *   rateLimit({ …, key: (request) => clientIp(request) ?? '<unresolved>' });
+ *
+ * That is the trust-by-address walk `IpAllowlist` runs (#1236).  Never key on
+ * a raw `x-forwarded-for`, and not on "the entry my proxy sets" either: NGINX,
+ * AWS ALB and Cloudflare all *append* to the header, so whatever the client
+ * typed is still in it (#715, #1248).  Keyed on the header, an attacker
+ * rotates it per request for a fresh bucket each time (limit bypassed), while
+ * clients without the header collapse into a single shared bucket (one client
+ * can exhaust everyone's quota).
  */
 
 /**
