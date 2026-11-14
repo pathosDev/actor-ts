@@ -2321,8 +2321,8 @@ tolerieren, und machte aus einer Integritätskontrolle einen Retry.
 
 Die fünf Verhaltens-Blätter gelten für jeden `PersistentActor` und für das
 eigene `persist`, die Recovery und das Speichern der Snapshots eines
-`ReplicatedEventSourcedActor`; sein Anhängen eines Events, das ein Peer
-geschickt hat, liegt bis #958 nicht hinter dem Journal-Breaker.
+`ReplicatedEventSourcedActor`, und auch sein Anhängen eines Events, das ein
+Peer geschickt hat, läuft durch den Journal-Breaker (#958).
 `DurableStateActor` steht außerhalb davon: Keines dieser Blätter erreicht einen
 Durable-State-Store, ob seine `DurableStateOptions` einen nennen oder er den
 systemweiten Store nutzt, den `persistence.durable-state.plugin` auswählt.

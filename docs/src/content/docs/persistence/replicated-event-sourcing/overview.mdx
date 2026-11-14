@@ -270,11 +270,22 @@ breaker refuses, or the store fails, is a warning and never fails the
 actor: the next recovery starts from the previous snapshot, or replays
 the journal.
 
-**Appends of events from peers are not guarded yet.**  The append of an
-event received from a peer is fire-and-forget and races itself; #958
-gives it a serialized append chain, and the breaker belongs there.
-Until then those appends reach the journal even while its breaker is
-open, and `call-timeout` does not bound them.
+**Appends of events from peers run in a chain, through the
+breaker.**  Every journal call the replica makes after recovery — its
+own `persist`, the append of an event received from a peer, the read
+that checks whether an append of unknown outcome landed — waits for
+the one before it to be answered, so no head probe reads beside an
+append still in flight, and a peer's back-to-back events no longer
+push each other out of the journal.  The append of a peer's event
+runs through the journal breaker and `call-timeout`.  The event is
+already folded and nothing re-sends it, so an attempt that is known to
+have written nothing — the breaker open, a losing conditional append,
+an error after which the journal does not hold the event — is retried,
+up to three attempts with a growing pause.  When the budget is spent,
+or the outcome cannot be settled because the journal cannot be read,
+the actor fails through its supervisor: its journal is missing an
+event its state holds, and a recovery from that journal will not hold
+it.
 
 ## The pieces
 

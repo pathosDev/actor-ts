@@ -17,10 +17,9 @@
  *     re-used number would then exist twice;
  *   - a losing conditional append is the journal answering, not an outage —
  *     it must not open the breaker for every other entity on the node;
- *   - the append of an event received from a peer is **not** behind the
- *     breaker yet.  That path is fire-and-forget and races itself today, and
- *     #958 gives it a serialized append chain, which is where a breaker belongs
- *     on it.
+ *   - the append of an event received from a peer runs through the same
+ *     breaker, inside the serialized append chain #958 introduced — pinned in
+ *     `RemoteAppendChain.test.ts`.
  *
  * Single node over `InMemoryTransport`, like the sibling replicated suites —
  * no OS port is bound.
@@ -35,7 +34,6 @@ import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import {
   DistributedPubSubId,
-  PubSubEnvelope,
   Subscribe,
   SubscribeAcknowledgment,
 } from '../../../../../src/cluster/pubsub/index.js';
@@ -323,41 +321,6 @@ describe('ReplicatedEventSourcedActor — the local persist goes through the jou
       }
       expect(journal.appendCalls).toBe(10);
       expect(replica.extension.journalBreaker!.state).toBe('closed');
-    } finally {
-      await stopReplica(replica);
-    }
-  });
-
-  test('the append of a peer\'s event stays outside the breaker until #958 gives it a serialized append chain', async () => {
-    // Pins the boundary of this change rather than a goal: an envelope from an
-    // authenticated peer is still absorbed AND appended with the breaker open.
-    // #958 moves that fire-and-forget append into its own serialized chain,
-    // where a refusal can be retried instead of logged, and puts the breaker
-    // there — at which point this expectation inverts.
-    const journal = new InMemoryJournal();
-    const replica = await startReplica('journal-breaker-remote', 83_106, journal, 'jb-remote');
-    try {
-      replica.extension.journalBreaker!.setState('open');
-      const peer = 'journal-breaker-peer@h:83199';
-      const envelope: ReplicatedEventEnvelope<Event> = {
-        persistenceId: replica.persistenceId,
-        replica: peer,
-        seqAtReplica: 1,
-        eventId: `${peer}#${'1'.padStart(24, '0')}`,
-        vc: { [peer]: 1 },
-        timestamp: 1_700_000_000_000,
-        event: { kind: 'added', amount: 5 },
-      };
-      replica.ref.tell(
-        new PubSubEnvelope(`replicated-es:${replica.persistenceId}`, envelope, NodeAddress.parse(peer)) as unknown as Command,
-      );
-      await awaitCondition(async () => (await journal.highestSeq(replica.persistenceId)) === 1, {
-        ...WAIT, label: "the peer's event was appended to the local journal",
-      });
-
-      expect(replica.observations.current!.value).toBe(5);
-      expect((await storedEnvelopes(journal, replica.persistenceId))[0]!.replica).toBe(peer);
-      expect(replica.extension.journalBreaker!.state).toBe('open');
     } finally {
       await stopReplica(replica);
     }

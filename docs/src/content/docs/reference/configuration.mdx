@@ -2167,8 +2167,8 @@ would tolerate the tampering, and turn an integrity control into a retry.
 
 The five behaviour leaves cover every `PersistentActor`, and a
 `ReplicatedEventSourcedActor`'s own `persist`, its recovery and its snapshot
-saves; its append of an event a peer sent is not behind the journal breaker
-until #958.  `DurableStateActor` is outside all of this: none of these leaves
+saves, and its append of an event a peer sent goes through the journal breaker
+too (#958).  `DurableStateActor` is outside all of this: none of these leaves
 reaches a durable-state store, whether its `DurableStateOptions` name one or it
 uses the system-wide store `persistence.durable-state.plugin` selects.
 

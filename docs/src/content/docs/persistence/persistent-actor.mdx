@@ -432,8 +432,7 @@ application family already registered under one of these names, say
 with, what the store said.
 
 Several callers reach a store without going through these breakers,
-so none of the above sees them: a `ReplicatedEventSourcedActor`'s
-append of an event it received from a peer (#958); the journal-backed
+so none of the above sees them: the journal-backed
 remember-entities store `JournalRememberEntitiesStore` (#852);
 `readEvents`, the protected helper for reading an actor's own events
 back; the durable [dead-letter queue](/operations/dead-letters/),
@@ -446,10 +445,9 @@ handed.
 
 [`ReplicatedEventSourcedActor`](/persistence/replicated-event-sourcing/overview/#when-the-stores-are-down)
 follows all five settings for its local `persist`, its recovery and
-its snapshot saves, through the same two breakers.  Three things
-differ.  Its append of an event a peer sent is not behind the journal
-breaker yet: that append is fire-and-forget and races itself, and its
-breaker belongs in the serialized append chain #958 introduces.  A
+its snapshot saves, through the same two breakers, and its append of
+an event a peer sent goes through the journal breaker as well, in a
+serialized append chain that retries it (#958).  Two things differ.  A
 recovery that fails — past `recovery-timeout`, or refused by a
 breaker — fails `preStart`, because the class has no
 `onRecoveryFailure`.  And a timed-out write is **not** safe by

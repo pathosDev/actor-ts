@@ -16,9 +16,11 @@ import {
   MAX_REPLICATED_EVENT_ID_LENGTH,
   MAX_VECTOR_CLOCK_ENTRIES,
   REPLICATED_EVENT_ID_ENTROPY_CHARACTERS,
+  REPLICATED_JOURNAL_RETRY_ATTEMPTS,
+  REPLICATED_JOURNAL_RETRY_BACKOFF_MS,
 } from './Constants.js';
 import type { Journal } from './Journal.js';
-import type { PersistentEvent } from './JournalTypes.js';
+import { JournalConcurrencyError, type PersistentEvent } from './JournalTypes.js';
 import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
 import { withRecoveryDeadline, type SnapshotPolicy } from './PersistentActor.js';
 import type { ConflictCandidate, ConflictResolver } from './replicated/ConflictResolver.js';
@@ -90,12 +92,15 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * so one breaker in front of it, and an outage either class runs into
  * fast-fails both.
  *
+ * **The append of an event received from a peer** (#958) runs in the same
+ * chain as every other journal call this actor makes after recovery — each
+ * waits for the one before it — and through the same journal breaker.  It is
+ * retried while an attempt is known to have written nothing, and a spent
+ * budget, or an outcome nothing can settle, fails the actor so its supervisor
+ * sees a journal missing an event its state holds (see `_persistRemote`).
+ *
  * Outside it, on purpose:
  *
- *   - **The append of an event received from a peer.**  It is
- *     fire-and-forget and races itself (#958); a breaker belongs inside the
- *     serialized append chain that issue introduces, not around the racing
- *     call.
  *   - **What a timed-out local append did.**  `call-timeout` gives up
  *     without cancelling, so the append may still land.  Nothing folds or
  *     broadcasts the event then — only a successful `persist` does either —
@@ -184,6 +189,44 @@ export type ReplicatedEventEnvelope<E> = {
 
 const REPLICATED_TAG = 'replicated-es';
 
+/**
+ * One append waiting in, or run by, the actor's journal chain (#958).
+ *
+ * `started` flips when the chain step asks the journal; until then setting
+ * `cancelled` is definitive — the step skips and `written` answers `null`.
+ * `head` is the position the step read before appending, where a check of an
+ * unknown outcome starts.
+ */
+type AppendTicket = {
+  started: boolean;
+  cancelled: boolean;
+  head: number;
+  written: Promise<number | null>;
+};
+
+/** The append is in the journal, at `sequenceNr`. */
+type WrittenOutcome = { readonly kind: 'written'; readonly sequenceNr: number };
+/** The journal holds no such append. */
+type AbsentOutcome = { readonly kind: 'absent' };
+/** Neither could be established — the journal could not be read. */
+type UnknownOutcome = { readonly kind: 'unknown' };
+/** What an append whose call did not succeed actually did. */
+type AppendOutcome = WrittenOutcome | AbsentOutcome | UnknownOutcome;
+
+/**
+ * Told to itself by an actor whose append of a peer's event failed for good,
+ * so the failure is thrown from a mailbox turn and reaches the supervisor.
+ * A class rather than a shape, so nothing that arrives over the wire can be
+ * one.
+ */
+class RemoteAppendExhausted {
+  constructor(readonly failure: Error) {}
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, milliseconds); });
+}
+
 function topicFor(persistenceId: string): string {
   return `replicated-es:${persistenceId}`;
 }
@@ -234,11 +277,12 @@ function vectorClockRejection(vc: unknown): string | null {
 /**
  * Per-system live-pid registry (#58).  `ReplicatedEventSourcedActor`
  * relies on being the **single writer** for its `persistenceId` on
- * the local node — `_appendOne` reads `highestSeq` and `append` in
- * one mailbox tick under that assumption.  Two actors with the same
+ * the local node — `_appendOne` reads `highestSeq` and then appends
+ * conditionally on it, and the actor's own append chain (#958) only
+ * keeps *one* instance from racing itself.  Two actors with the same
  * pid on the same node violate it: their journal appends race, the
- * second silently drops with `JournalConcurrencyError`, in-memory
- * state diverges between the two instances.
+ * loser fails with `JournalConcurrencyError`, in-memory state diverges
+ * between the two instances.
  *
  * The registry catches this at preStart: the second actor sees the
  * pid already taken and throws.  `WeakMap`-keyed by `ActorSystem`
@@ -503,6 +547,18 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    */
   private _isLeaseHolder = true;
   private _leaseUnsubscribeLost: (() => void) | null = null;
+  /**
+   * The tail of the local journal's write schedule (#958).  Every journal
+   * call this actor makes after recovery — an append, local or a peer's, and
+   * the read that checks whether an append of unknown outcome landed — is
+   * chained behind the one before it, so a head probe never runs while an
+   * earlier append is still in flight.  Never rejects.
+   */
+  private _appendChain: Promise<void> = Promise.resolve();
+  /** Background work that outlives the message that started it — a peer's append and its retries. */
+  private readonly _unsettled = new Set<Promise<void>>();
+  /** Set in `postStop`: background work stops scheduling retries and reports instead of escalating. */
+  private _stopped = false;
 
   /** Current state — updated after every event apply. */
   protected get state(): State { return this._state; }
@@ -729,6 +785,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   }
 
   override postStop(): void {
+    this._stopped = true;
     // Release the live-pid registration so a fresh actor with the
     // same persistenceId can take over (e.g. after a graceful stop
     // + re-spawn).  Must run on every termination path, including
@@ -753,7 +810,8 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     message: Command
       | ReplicatedEventEnvelope<Event>
       | PubSubEnvelope<ReplicatedEventEnvelope<Event>>
-      | SubscribeAcknowledgment,
+      | SubscribeAcknowledgment
+      | RemoteAppendExhausted,
   ): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
     if (message && typeof message === 'object' && (message as { subscribe?: unknown }).subscribe instanceof Subscribe) {
@@ -764,6 +822,11 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     // class is a shape only the local mediator can have produced (#706).
     if (message instanceof PubSubEnvelope) {
       this._handleTopicDelivery(message);
+      return;
+    }
+    // Only this actor creates one, and only by telling itself.
+    if (message instanceof RemoteAppendExhausted) {
+      this._onRemoteAppendExhausted(message);
       return;
     }
     if (this._isEnvelope(message)) {
@@ -853,18 +916,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       timestamp: Date.now(),
       event,
     };
-    // One call through the breaker for the head probe and the append
-    // together: a backend that stalls the probe stalls the write as surely as
-    // one that stalls the append, and a deadline around the append alone would
-    // leave the first of the two unbounded.  `isStoreOutage` travels with the
+    // One call through the breaker for the wait in the append chain, the head
+    // probe and the append together: a backend that stalls the probe stalls
+    // the write as surely as one that stalls the append, and so does an
+    // earlier append it is queued behind.  `isStoreOutage` travels with the
     // call, so a losing conditional append — the journal answering, not
     // failing — is not counted against the breaker.
-    //
-    // Only this path.  The append of an event received from a peer
-    // (`_absorb`) is fire-and-forget and races itself (#958); its breaker
-    // belongs inside the serialized append chain that issue introduces, not
-    // around the racing call.
-    await this._persistence.callThroughJournalBreaker('append', () => this._appendOne(envelope));
+    await this._persistence.callThroughJournalBreaker('append', () => this._enqueueAppend(envelope).written);
     this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ true);
     afterPersist?.(this._state);
   }
@@ -892,22 +950,168 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   }
 
   /**
-   * Append exactly one envelope to the local journal.  We read the
-   * current highestSeq inside the same actor mailbox tick so the
-   * `expectedSeq` argument is always accurate — the actor is the
-   * single writer to its own persistenceId, so no other coroutine
-   * can interleave between the read and the append.
+   * Append exactly one envelope to the local journal: read the head, then
+   * append conditionally on it.  The two awaits span mailbox turns, so the
+   * pair is only race-free because every caller reaches it through
+   * {@link _enqueueAppend} — the single-writer registry (#58) keeps a second
+   * *actor* off this persistence id, and the chain keeps this actor from
+   * racing *itself* (#958).
    *
-   * Updates `_journalSeq` so the next snapshot records the
-   * just-appended journal position.
+   * Records the head it read on `ticket`, where a check of an unknown outcome
+   * starts reading, and answers the sequence number written.
    */
-  private async _appendOne(envelope: ReplicatedEventEnvelope<Event>): Promise<void> {
+  private async _appendOne(envelope: ReplicatedEventEnvelope<Event>, ticket: AppendTicket): Promise<number> {
     const head = await this._journal.highestSeq(this.persistenceId);
+    ticket.head = head;
     const written = await this._journal.append(
       this.persistenceId, [{ event: envelope, tags: [REPLICATED_TAG] }], head,
     );
     const lastWrittenSeq = written[written.length - 1]?.sequenceNr ?? head + 1;
     if (lastWrittenSeq > this._journalSeq) this._journalSeq = lastWrittenSeq;
+    return lastWrittenSeq;
+  }
+
+  /**
+   * Run `work` once every journal call scheduled before it has settled, and
+   * make it what the next one waits for.  The chain itself never rejects; the
+   * returned promise carries `work`'s own outcome.
+   */
+  private _enqueueJournalCall<T>(work: () => Promise<T>): Promise<T> {
+    const result = this._appendChain.then(work);
+    this._appendChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  /**
+   * Schedule one append in the chain and answer its ticket.  The ticket's
+   * `written` settles with the journal's answer — the sequence number written
+   * — or with `null` when the ticket was cancelled before its turn came, in
+   * which case the journal was never asked.
+   */
+  private _enqueueAppend(envelope: ReplicatedEventEnvelope<Event>): AppendTicket {
+    const ticket: AppendTicket = { started: false, cancelled: false, head: 0, written: Promise.resolve(null) };
+    ticket.written = this._enqueueJournalCall(async () => {
+      if (ticket.cancelled) return null;
+      ticket.started = true;
+      return this._appendOne(envelope, ticket);
+    });
+    return ticket;
+  }
+
+  /**
+   * What an append that was not answered with success actually did: written
+   * (with its position), absent, or unknown.  Waits for the journal call
+   * itself to settle — a breaker's `call-timeout` gives up on it and does not
+   * cancel it — and cancels it first if its turn has not come yet, which is
+   * the one case in which "absent" is known without asking the journal.
+   *
+   * A `JournalConcurrencyError` is the conditional append refused, so nothing
+   * was written.  Any other error may have come after the store committed —
+   * a lost response — and is settled by reading the journal from the head the
+   * append saw, looking for the event id.
+   */
+  private async _settleAppend(
+    envelope: ReplicatedEventEnvelope<Event>,
+    ticket: AppendTicket | null,
+  ): Promise<AppendOutcome> {
+    // The breaker refused before the journal was asked.
+    if (ticket === null) return { kind: 'absent' };
+    ticket.cancelled = true;
+    try {
+      const sequenceNr = await ticket.written;
+      return sequenceNr === null ? { kind: 'absent' } : { kind: 'written', sequenceNr };
+    } catch (error) {
+      if (error instanceof JournalConcurrencyError) return { kind: 'absent' };
+      return this._findLanded(envelope, ticket.head);
+    }
+  }
+
+  /**
+   * Read the journal after `head` for `envelope`'s event id, through the
+   * journal breaker and in the chain, so nothing this actor writes moves
+   * under the read.  Tried {@link REPLICATED_JOURNAL_RETRY_ATTEMPTS} times;
+   * if no read gets an answer the outcome stays unknown.
+   */
+  private async _findLanded(envelope: ReplicatedEventEnvelope<Event>, head: number): Promise<AppendOutcome> {
+    for (let attempt = 1; attempt <= REPLICATED_JOURNAL_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const after = await this._enqueueJournalCall(() => this._persistence.callThroughJournalBreaker(
+          'replay',
+          () => this._journal.read<ReplicatedEventEnvelope<Event>>(this.persistenceId, head + 1),
+        ));
+        const landed = after.find((persisted) => persisted.event.eventId === envelope.eventId);
+        return landed === undefined ? { kind: 'absent' } : { kind: 'written', sequenceNr: landed.sequenceNr };
+      } catch {
+        if (attempt < REPLICATED_JOURNAL_RETRY_ATTEMPTS && !this._stopped) {
+          await sleep(REPLICATED_JOURNAL_RETRY_BACKOFF_MS * attempt);
+        }
+      }
+    }
+    return { kind: 'unknown' };
+  }
+
+  /**
+   * Append an event received from a peer to the local journal (#958) — in
+   * the chain, through the journal breaker, and retried.
+   *
+   * The event is already folded when this starts: the fold is what a peer
+   * sees, and nothing re-sends the event, so it cannot wait on a store.  What
+   * a failure costs is this replica's *on-disk* history, which the next
+   * recovery rebuilds from.  So an attempt that ends absent — the breaker
+   * open, a losing conditional append, an error the journal confirms wrote
+   * nothing — is retried, up to {@link REPLICATED_JOURNAL_RETRY_ATTEMPTS}
+   * attempts with a growing pause.  An attempt whose outcome stays unknown is
+   * not retried, since a second write could land the event twice; it
+   * escalates at once, like a spent budget.
+   *
+   * Escalating fails the actor through its supervisor: a replica whose
+   * journal is missing an event it has folded must not carry on as if it
+   * were whole.  The restarted instance recovers from its journal and so
+   * does not hold the event — the divergence is loud now, not repaired.
+   */
+  private async _persistRemote(envelope: ReplicatedEventEnvelope<Event>): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= REPLICATED_JOURNAL_RETRY_ATTEMPTS; attempt++) {
+      const holder: { ticket: AppendTicket | null } = { ticket: null };
+      try {
+        await this._persistence.callThroughJournalBreaker('append', () => {
+          holder.ticket = this._enqueueAppend(envelope);
+          return holder.ticket.written;
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        const outcome = await this._settleAppend(envelope, holder.ticket);
+        if (outcome.kind === 'written') return;
+        if (outcome.kind === 'unknown') break;
+      }
+      if (attempt < REPLICATED_JOURNAL_RETRY_ATTEMPTS && !this._stopped) {
+        await sleep(REPLICATED_JOURNAL_RETRY_BACKOFF_MS * attempt);
+      }
+    }
+    this._escalateRemoteAppend(envelope, lastError);
+  }
+
+  private _escalateRemoteAppend(envelope: ReplicatedEventEnvelope<Event>, cause: unknown): void {
+    const failure = new Error(
+      `replicated-es '${this.persistenceId}': the event ${envelope.eventId} from ${envelope.replica} is folded `
+      + 'but could not be written to the local journal — a recovery from this journal would not hold it',
+      { cause },
+    );
+    this.log.error(failure.message, cause);
+    // A stopped instance has no supervisor left to tell; the log line is all.
+    if (!this._stopped) this.self.tell(new RemoteAppendExhausted(failure) as unknown as Command);
+  }
+
+  /** Back in the mailbox: fail, so the supervisor sees the incomplete journal. */
+  private _onRemoteAppendExhausted(message: RemoteAppendExhausted): never {
+    throw message.failure;
+  }
+
+  /** Keep `work` reachable until it settles. */
+  private _track(work: Promise<void>): void {
+    this._unsettled.add(work);
+    void work.finally(() => this._unsettled.delete(work));
   }
 
   /* ----------------------------- absorb event --------------------------- */
@@ -1080,13 +1284,11 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     this._observedCount += 1;
 
     if (persistLocally) {
-      // Append remote events to OUR local journal so a recovery from
-      // disk replays the full causal history.  Single-writer (us) per
-      // pid means we can read highestSeq + append in one mailbox
-      // tick without races.
-      void this._appendOne(envelope).catch((err) => {
-        this.log.warn(`replicated-es: failed to persist remote event ${deduplicationKey}`, err);
-      });
+      // Append remote events to OUR local journal so a recovery from disk
+      // replays the full causal history — serialized behind every other
+      // journal call this actor makes, so back-to-back envelopes do not race
+      // one head (#958).
+      this._track(this._persistRemote(envelope));
     }
 
     if (broadcast && this._mediator) {

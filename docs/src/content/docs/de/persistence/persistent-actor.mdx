@@ -453,9 +453,8 @@ einmal im Log gemeldet, und der Aufruf liefert weiterhin, was der Store
 geantwortet hat, oder scheitert mit dessen Fehler.
 
 Mehrere Aufrufer erreichen einen Store, ohne durch diese Breaker zu
-laufen, und tauchen deshalb in nichts davon auf: das Anhängen eines
-Events, das ein `ReplicatedEventSourcedActor` von einem Peer empfangen
-hat (#958); der journalgestützte Remember-Entities-Store
+laufen, und tauchen deshalb in nichts davon auf: der journalgestützte
+Remember-Entities-Store
 `JournalRememberEntitiesStore` (#852); `readEvents`, der geschützte
 Helfer, mit dem ein Actor seine eigenen Events zurückliest; die
 dauerhafte [Dead-Letter-Queue](/de/operations/dead-letters/), die
@@ -469,10 +468,9 @@ ihnen übergibt.
 [`ReplicatedEventSourcedActor`](/de/persistence/replicated-event-sourcing/overview/#wenn-die-stores-ausfallen)
 folgt allen fünf Einstellungen für sein lokales `persist`, seine
 Recovery und das Speichern seiner Snapshots, über dieselben beiden
-Breaker.  Drei Dinge sind anders.  Das Anhängen eines Events, das ein
-Peer geschickt hat, liegt noch nicht hinter dem Journal-Breaker: Es
-läuft ohne Warten nebenher und konkurriert mit sich selbst, und sein
-Breaker gehört in die serialisierte Append-Kette, die #958 einführt.
+Breaker, und auch sein Anhängen eines Events, das ein Peer geschickt
+hat, läuft durch den Journal-Breaker, in einer serialisierten
+Append-Kette, die es wiederholt (#958).  Zwei Dinge sind anders.
 Eine Recovery, die scheitert — nach `recovery-timeout` oder von einem
 Breaker abgewiesen —, lässt `preStart` scheitern, denn die Klasse hat
 kein `onRecoveryFailure`.  Und ein Schreibvorgang, der in das Timeout

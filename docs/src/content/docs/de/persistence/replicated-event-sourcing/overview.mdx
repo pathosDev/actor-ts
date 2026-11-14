@@ -288,12 +288,23 @@ Speichern, das der Breaker abweist oder an dem der Store scheitert, ist
 eine Warnung und lässt den Actor nie scheitern: Die nächste Recovery
 beginnt beim vorherigen Snapshot oder spielt das Journal ab.
 
-**Appends von Events aus Peers sind noch nicht geschützt.**  Das
-Anhängen eines Events, das von einem Peer kam, läuft ohne Warten
-nebenher und konkurriert mit sich selbst; #958 gibt ihm eine
-serialisierte Append-Kette, und dorthin gehört der Breaker.  Bis dahin
-erreichen diese Appends das Journal auch bei offenem Breaker, und
-`call-timeout` begrenzt sie nicht.
+**Appends von Events aus Peers laufen in einer Kette, durch den
+Breaker.**  Jeder Journal-Aufruf, den die Replica nach der Recovery
+macht — ein eigenes `persist`, das Anhängen eines Events von einem
+Peer, das Nachlesen, ob ein Append mit unbekanntem Ausgang gelandet
+ist — wartet, bis der vorige beantwortet ist, sodass kein Head-Probe
+neben einem noch laufenden Append liest und schnell aufeinander
+folgende Events eines Peers sich nicht mehr gegenseitig aus dem
+Journal verdrängen.  Das Anhängen eines Peer-Events läuft durch den
+Journal-Breaker und `call-timeout`.  Das Event ist bereits gefaltet,
+und niemand sendet es erneut, also wird ein Versuch, der nachweislich
+nichts geschrieben hat — der Breaker offen, ein verlorener bedingter
+Append, ein Fehler, nach dem das Journal das Event nicht enthält —
+wiederholt, bis zu drei Versuche mit wachsender Pause.  Ist das
+Budget verbraucht, oder lässt sich der Ausgang nicht klären, weil
+das Journal nicht lesbar ist, scheitert der Actor über seinen
+Supervisor: Seinem Journal fehlt ein Event, das sein State enthält,
+und eine Recovery aus diesem Journal enthält es nicht.
 
 ## Die Komponenten
 

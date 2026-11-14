@@ -547,6 +547,28 @@ export const MAX_VECTOR_CLOCK_ENTRIES = 4_096;
 export const DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS = 100_000;
 
 /**
+ * Attempts a `ReplicatedEventSourcedActor` makes at a journal call it cannot
+ * simply give up on (#958): appending an event received from a peer, which
+ * is already folded and which nothing re-sends, and reading back whether an
+ * append of unknown outcome landed.
+ *
+ * Three, because the failures worth retrying are short — a losing
+ * conditional append, a breaker that opened a moment ago, a dropped
+ * connection — and a journal that refuses three attempts spread over
+ * {@link REPLICATED_JOURNAL_RETRY_BACKOFF_MS} × (1 + 2) is down, which is the
+ * supervisor's call to make, not a loop's.
+ */
+export const REPLICATED_JOURNAL_RETRY_ATTEMPTS = 3;
+
+/**
+ * Pause before the n-th retry of {@link REPLICATED_JOURNAL_RETRY_ATTEMPTS},
+ * multiplied by n — 100 ms, then 200 ms.  Short enough that a replica whose
+ * breaker closes again within its half-open probe still writes the event,
+ * long enough not to spin on a journal that is answering errors at once.
+ */
+export const REPLICATED_JOURNAL_RETRY_BACKOFF_MS = 100;
+
+/**
  * Compression an object-storage body is written with when neither the actor
  * nor the plugin asked for one.
  *
