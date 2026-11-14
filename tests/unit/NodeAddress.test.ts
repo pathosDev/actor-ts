@@ -58,6 +58,17 @@ describe('NodeAddress', () => {
     expect(() => NodeAddress.parse('tcp://my-app@10.0.0.5:2552')).toThrow(/scheme/);
   });
 
+  // The same trap one field over: `parseInt` stops at the first non-digit, so
+  // an actor path pasted where a node address belongs read as port 2552 and
+  // the rest was dropped without a word.
+  test('parse refuses anything after the port instead of dropping it', () => {
+    expect(() => NodeAddress.parse('my-app@10.0.0.5:2552/system/cluster/receptionist'))
+      .toThrow(/Invalid port.*system@host:port.*'\/system\/cluster\/receptionist'/s);
+    expect(() => NodeAddress.parse('my-app@10.0.0.5:2552 ')).toThrow(/Invalid port/);
+    expect(() => NodeAddress.parse('my-app@10.0.0.5:25e2')).toThrow(/Invalid port/);
+    expect(() => NodeAddress.parse('my-app@10.0.0.5:')).toThrow(/Invalid port/);
+  });
+
   test('equals compares all three fields', () => {
     const addressA = new NodeAddress('s', 'h', 1);
     expect(addressA.equals(new NodeAddress('s', 'h', 1))).toBe(true);
@@ -196,7 +207,9 @@ describe('NodeAddress.isPort — one rule for the wire and the string form (#151
     expect(NodeAddress.isPort(6.96e23)).toBe(false);
     expect(() => NodeAddress.fromJSON({ systemName: 'app', host: 'h', port: 6.96e23 }))
       .toThrow(/Invalid node address/);
-    expect(NodeAddress.parse(new NodeAddress('app', 'h', 6.96e23).toString()).port).toBe(6);
+    // `parse` no longer reads `6.96e+23` as port 6: what follows the digits is
+    // refused rather than dropped (#941).
+    expect(() => NodeAddress.parse(new NodeAddress('app', 'h', 6.96e23).toString())).toThrow(/Invalid port/);
   });
 
   /**

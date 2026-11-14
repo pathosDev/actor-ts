@@ -217,9 +217,20 @@ export class NodeAddress {
       );
     }
     const host = s.slice(at + 1, colon);
-    const port = parseInt(s.slice(colon + 1), 10);
-    if (!Number.isFinite(port)) throw new Error(`Invalid port in node address: ${s}`);
-    return new NodeAddress(systemName, host, port);
+    // Digits and nothing else.  `parseInt` stops at the first non-digit, so
+    // `my-app@host:2552/system/receptionist` — an actor path where a node
+    // address belongs — read as port 2552 with the rest dropped without a word,
+    // the same quiet mis-read the scheme refusal above closes.
+    const portText = s.slice(colon + 1);
+    const digits = /^\d+/.exec(portText)?.[0] ?? '';
+    if (digits === '') throw new Error(`Invalid port in node address: ${s}`);
+    if (digits.length < portText.length) {
+      throw new Error(
+        `Invalid port in node address: ${s} — a node address has the form system@host:port `
+        + `and ends at the port; '${portText.slice(digits.length)}' follows it (write ${s.slice(0, colon + 1 + digits.length)})`,
+      );
+    }
+    return new NodeAddress(systemName, host, parseInt(digits, 10));
   }
 }
 
