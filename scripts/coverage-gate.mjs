@@ -112,6 +112,17 @@ const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * down, and all three floors stay where they are — the ratchet only goes up,
  * and a floor is raised on a hosted number rather than a local one.
  *
+ * **Re-measured 2026-11-14 for #1016, which made the aggregate `Σ LH / Σ LF`
+ * over `src/` instead of the `All files` row.**  On the pinned bun 1.4.2,
+ * 22 640 pass across 953 files, the new statistic reads **97.34 %**
+ * (66008/67811 lines, 736 files), against **96.49 %** for the old row over the
+ * same run.  The weighted figure is the *higher* of the two on this tree, so
+ * the switch moved the headroom up and the floor stays at 90.  A cautionary
+ * figure from the same day: the same tree measured under bun 1.4.4 reads
+ * 94.96 % weighted and 94.35 % as the row, so a toolchain bump alone moves the
+ * aggregate by more than two points.  The badge changes with the statistic and
+ * with the runtime, never on its own, which is why the pin matters to it.
+ *
  * Three properties are what make 90 safe to enforce rather than merely true
  * today.  The gap that forced `83b0a4af` down from 89 to 80 — hosted CI
  * measuring 86 % against a higher local figure — has closed: hosted reads 93
