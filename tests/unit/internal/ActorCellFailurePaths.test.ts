@@ -116,6 +116,57 @@ describe('an actor whose constructor throws is stopped, not left suspended (#914
   });
 });
 
+/**
+ * The same family as #914: a decider that throws used to leave the failed
+ * child suspended for good — `onFailure` threw before any directive went out,
+ * so nothing resumed, restarted or stopped it, and the only trace was a
+ * dispatcher error.  A throwing decider is a failure of the supervising
+ * parent, so it escalates like one.
+ */
+describe('a supervisor strategy whose decider throws escalates instead of stranding the child', () => {
+  test('the parent is supervised in turn, the child is not left suspended, and the error is logged', async () => {
+    const logger = new CapturingLogger(LogLevel.Info);
+    const system = quietSystem('throwing-decider', logger);
+    let kidStarts = 0;
+    let kidHandled = 0;
+    class Kid extends Actor<string> {
+      override preStart(): void { kidStarts++; }
+      override onReceive(message: string): void {
+        if (message === 'fail') throw new Error('kid failed');
+        kidHandled++;
+      }
+    }
+    const throwingDecider = new OneForOneStrategy(() => { throw new RangeError('decider boom'); });
+    class Parent extends Actor<string> {
+      override supervisorStrategy(): SupervisorStrategy { return throwingDecider; }
+      override preStart(): void { this.context.spawn(Kid, 'kid'); }
+      override onReceive(message: string): void {
+        this.context.child('kid').forEach((kid) => kid.tell(message as never));
+      }
+    }
+    const parent = system.spawn(Parent, 'parent');
+    await awaitCondition(() => kidStarts === 1, { label: 'the child started' });
+
+    parent.tell('fail');
+    // The user guardian restarts the parent, whose restart stops the old
+    // child and builds a new one in `preStart`.
+    await awaitCondition(() => kidStarts === 2, { label: 'the escalated failure rebuilt the subtree' });
+    parent.tell('ping');
+    await awaitCondition(() => kidHandled === 1, { label: 'the new child handles messages' });
+
+    // Two lines carry the decider's error: the parent's own, which says it was
+    // the strategy that threw and on whose failure, and the guardian's
+    // supervision line for the escalated failure of the parent.
+    const carriesDeciderError = (record: CapturedLog): boolean => record.level === 'error'
+      && record.args.some((arg) => arg instanceof RangeError && arg.message === 'decider boom');
+    expect(logger.records.some((record) => carriesDeciderError(record)
+      && record.message.includes('supervisor strategy threw')
+      && record.message.includes('/user/parent/kid'))).toBe(true);
+    expect(logger.records.some((record) => carriesDeciderError(record)
+      && record.message.includes('/user/parent failed'))).toBe(true);
+  });
+});
+
 /* ------------------------------------ #915 ----------------------------------- */
 
 describe('a terminating actor with a queued message does not spin the dispatcher (#915)', () => {

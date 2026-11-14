@@ -2869,11 +2869,28 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // still widens to every sibling — and then spends the group's shared
     // allowance in `registerRestart`, where a one-for-one failure spends only
     // the failing child's own (#917).
-    const strategy: SupervisorStrategy =
-      child.blueprint.supervisorStrategy
-      ?? this.actor?.supervisorStrategy()
-      ?? defaultStrategy;
-    const directive = strategy.decider(cause);
+    //
+    // Choosing a strategy and asking it for a directive both run user code.
+    // A throw from either used to leave `onFailure` before any directive went
+    // out, so the child — already suspended by `failToParent` — stayed
+    // suspended for good, with a dispatcher error as the only trace (the
+    // #914 family).  It is a failure of this actor, the supervisor, so it
+    // escalates like one: this cell suspends its subtree and its own parent
+    // decides, and whatever that decides — a restart stops the children, a
+    // resume resumes them, a stop stops them — reaches the stranded child too.
+    let strategy: SupervisorStrategy;
+    let directive: Directive;
+    try {
+      strategy = child.blueprint.supervisorStrategy
+        ?? this.actor?.supervisorStrategy()
+        ?? defaultStrategy;
+      directive = strategy.decider(cause);
+    } catch (e) {
+      const deciderError = e instanceof Error ? e : new Error(String(e));
+      this.failToParent(deciderError, message);
+      this._report('error', `supervisor strategy threw while deciding on a failure of ${child.path} — escalating`, deciderError);
+      return;
+    }
 
     const affected = strategy.scope === 'all-for-one'
       ? Array.from(this._children.values())
