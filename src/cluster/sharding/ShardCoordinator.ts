@@ -120,7 +120,70 @@ type CoordinatorEvent =
   | CoordinatorStateLoadedEvent
   | CoordinatorStateLoadTimeoutEvent;
 
-type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent;
+/** A hand-off in flight: the region asked to give the shard up, and the timer that forces it. */
+type InFlightHandOff = { readonly from: string; readonly timer: Cancellable };
+
+/**
+ * "Run the rebalance tick" — the coordinator telling itself, on a timer
+ * (#1750).
+ *
+ * The tick used to run in the scheduler's callback, beside the mailbox: the
+ * stale-region sweep and `beginHandOff` decided while a `RegionHeartbeat`, a
+ * `Register` or a `HandOffComplete` that changes their answer could still be
+ * queued.  The timer only sends this now.  A class, like the region's ticks,
+ * so nothing off the wire can be one — unlike a plain `{ kind }` event, which
+ * a frame delivered through generic path resolution could spell.
+ */
+class RebalanceTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const REBALANCE_TICK = new RebalanceTick();
+
+/**
+ * "A hand-off has run out of time" (#1750).  Carries the hand-off that armed
+ * it: a timer that has fired cannot take back its tick, so a hand-off that
+ * completed — or was replaced by a new one for the same shard — in between is
+ * recognised as such and left alone.
+ */
+class HandOffTimeoutTick {
+  constructor(
+    readonly shardId: number,
+    readonly handOff: InFlightHandOff,
+  ) {}
+}
+
+/** "A statistics query's deadline is up" (#1750) — with the query it is for, for the same reason. */
+class StatsQueryTimeoutTick {
+  constructor(
+    readonly queryId: number,
+    readonly query: StatsQuery,
+  ) {}
+}
+
+/** "Publish the coalesced shard map now" (#1750). */
+class ShardMapPublishTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const SHARD_MAP_PUBLISH_TICK = new ShardMapPublishTick();
+
+/**
+ * A member left the cluster — handed to the coordinator by its own
+ * `cluster.subscribe` callback, which `Cluster.emit` calls synchronously
+ * (#1750).  Handling it there re-homed the departed regions' shards ahead of
+ * whatever frame was already queued.
+ */
+class MemberRemovedReceived {
+  constructor(readonly address: NodeAddress) {}
+}
+
+type CoordinatorTick =
+  | RebalanceTick
+  | HandOffTimeoutTick
+  | StatsQueryTimeoutTick
+  | ShardMapPublishTick
+  | MemberRemovedReceived;
+
+type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent | CoordinatorTick;
 
 /**
  * What a coordinator that has just become leader is still waiting for before
@@ -371,7 +434,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly pendingOverflowWarned = new Set<number>();
   /** Shards whose remembered-entity cap has been warned about this episode (#1267). */
   private readonly rememberedCapWarned = new Set<number>();
-  private readonly rebalanceInProgress = new Map<number, { from: string; timer: Cancellable }>();
+  private readonly rebalanceInProgress = new Map<number, InFlightHandOff>();
   private readonly entitiesPerShard = new Map<number, Set<string>>();
   private readonly statsQueries = new Map<number, StatsQuery>();
   private nextStatsQuery = 0;
@@ -542,7 +605,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
     this.unsubscribeCluster = this.options.cluster.subscribe(evt =>
       match(evt)
-        .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e.member.address))
+        // Through the mailbox too (#1750): re-homing the departed regions'
+        // shards must not run ahead of a frame already queued.
+        .with(P.instanceOf(MemberRemoved), (e) => this.self.tell(new MemberRemovedReceived(e.member.address)))
         // Through the mailbox (#952): the handler clears and seeds the maps
         // every other handler reads, so it must not interleave with them.
         .with(P.instanceOf(LeaderChanged), () => this.self.tell({ kind: 'leader-changed' } satisfies CoordinatorEvent))
@@ -560,7 +625,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       rebalanceIntervalMs,
       rebalanceIntervalMs,
-      () => { if (this.isActive() && this.registrationBarrier === null) this.rebalanceTick(); },
+      // Only ever *sends* — see `RebalanceTick` (#1750).
+      () => { this.self.tell(REBALANCE_TICK); },
     );
   }
 
@@ -632,6 +698,27 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   override onReceive(message: CoordinatorInbox): void {
+    // The coordinator's own ticks (#1750) — classes, so no frame can be one.
+    if (message instanceof RebalanceTick) {
+      this.onRebalanceTick();
+      return;
+    }
+    if (message instanceof HandOffTimeoutTick) {
+      this.onHandOffTimeoutTick(message);
+      return;
+    }
+    if (message instanceof StatsQueryTimeoutTick) {
+      this.onStatsQueryTimeoutTick(message);
+      return;
+    }
+    if (message instanceof ShardMapPublishTick) {
+      this.onShardMapPublishTick();
+      return;
+    }
+    if (message instanceof MemberRemovedReceived) {
+      this.onMemberRemoved(message.address);
+      return;
+    }
     if (message instanceof AuthenticatedShardingMessage) {
       this.receiveShardingMessage(message.message, message.peer);
       return;
@@ -2229,11 +2316,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
     const queryId = ++this.nextStatsQuery;
     this.statsQueries.set(queryId, query);
+    // Only ever *sends* — see `StatsQueryTimeoutTick` (#1750).
     query.timer = this.system.scheduler.scheduleOnceFunction(message.timeoutMs, () => {
-      const pending = this.statsQueries.get(queryId);
-      if (!pending) return;
-      this.statsQueries.delete(queryId);
-      this.answerStatsQuery(pending);
+      this.self.tell(new StatsQueryTimeoutTick(queryId, query));
     });
     for (const [key] of targets) {
       this.sendToRegion(key, {
@@ -2578,7 +2663,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.shardMapPublishTimer) return;
     this.shardMapPublishTimer = this.system.scheduler.scheduleOnceFunction(
       SHARD_MAP_PUBLISH_DELAY_MS,
-      () => { this.shardMapPublishTimer = null; this.publishShardMap(); },
+      // Only ever *sends* — see `ShardMapPublishTick` (#1750).
+      () => { this.self.tell(SHARD_MAP_PUBLISH_TICK); },
     );
   }
 
@@ -2956,9 +3042,52 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!owner) return;
 
     const timeout = this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS;
-    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => this.onHandOffTimeout(shardId));
-    this.rebalanceInProgress.set(shardId, { from: ownerKey, timer });
+    // Only ever *sends* — see `HandOffTimeoutTick` (#1750).  The callback reads
+    // `handOff` when it fires, by which time it is assigned.
+    let handOff: InFlightHandOff | null = null;
+    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => {
+      if (handOff !== null) this.self.tell(new HandOffTimeoutTick(shardId, handOff));
+    });
+    handOff = { from: ownerKey, timer };
+    this.rebalanceInProgress.set(shardId, handOff);
     this.sendToRegion(ownerKey, { kind: 'sharding.HandOff', shardId });
+  }
+
+  /** The rebalance timer fired; tick now, behind whatever was queued first (#1750). */
+  private onRebalanceTick(): void {
+    if (this.isActive() && this.registrationBarrier === null) this.rebalanceTick();
+  }
+
+  /**
+   * A hand-off's timer fired (#1750).  Stale when that hand-off is no longer
+   * the one in flight for the shard — it completed, was cleared with its region
+   * or a lost leadership, or a new one replaced it — all of which a
+   * `HandOffComplete` or a leader change queued ahead of the tick can do.
+   */
+  private onHandOffTimeoutTick(tick: HandOffTimeoutTick): void {
+    if (this.rebalanceInProgress.get(tick.shardId) !== tick.handOff) return;
+    this.onHandOffTimeout(tick.shardId);
+  }
+
+  /**
+   * A statistics query's deadline is up (#1750): answer with what has come
+   * in.  Stale when the query was answered in full, or dropped with a lost
+   * leadership, before the tick was read.
+   */
+  private onStatsQueryTimeoutTick(tick: StatsQueryTimeoutTick): void {
+    if (this.statsQueries.get(tick.queryId) !== tick.query) return;
+    this.statsQueries.delete(tick.queryId);
+    this.answerStatsQuery(tick.query);
+  }
+
+  /**
+   * The coalescing window closed; publish the map as it stands now (#1750).
+   * The timer field stays set until here, so a change in the meantime is
+   * folded into this publish instead of arming a second one.
+   */
+  private onShardMapPublishTick(): void {
+    this.shardMapPublishTimer = null;
+    this.publishShardMap();
   }
 
   /**
