@@ -89,6 +89,12 @@
  * behind, and the next run restores from it before doing anything else — run
  * `--recover` to do only that.
  *
+ * **Stopping is not losing.**  A signal restores the tree first, then writes
+ * the report for the mutants finished so far, marked `interrupted`, and exits
+ * 128 + n.  Windows runs no JS handler for a signal sent from another process,
+ * so `--stop-file=<path>` is the portable stop: polled between mutants and
+ * before each baseline, consumed when seen, same partial report, exit 143.
+ *
  * **Sequential, deliberately.**  Mutation happens in place, in the one working
  * tree; two mutants at once would each be read by the other's tests.  Bounding
  * parallelism to one is also what a shared machine with a few GB of free commit
@@ -127,6 +133,8 @@ const MINIMUM_TIMEOUT_MS = 15_000;
 /** Baseline cap: an unmutated run that takes this long is a hang in its own right. */
 const BASELINE_TIMEOUT_MS = 10 * 60 * 1_000;
 const KILL_GRACE_MS = 3_000;
+/** Exit status of a run stopped by `--stop-file`: 128 + 15, what SIGTERM gives, since it is the same stop. */
+const STOP_EXIT_CODE = 143;
 
 export const OPERATORS = Object.freeze([
   'relational-boundary', 'equality', 'logical', 'boolean-literal', 'removed-call', 'removed-return',
@@ -701,6 +709,10 @@ export function baselineDocument(report) {
 
 export function renderMarkdown(report) {
   const out = ['# Mutation report', ''];
+  if (report.interrupted !== undefined) {
+    out.push(`> **Partial report** — interrupted by ${report.interrupted.signal} at ${report.interrupted.at}. `
+      + 'Mutants after that point are not-run, and files after it are absent.', '');
+  }
   out.push(`- bun ${report.bunVersion ?? 'unknown'}, commit ${report.commit ?? 'unknown'}, ${report.startedAt}`);
   out.push(`- score **${percent(report.totals.score)}** — killed ${report.totals.killed}, `
     + `timed-out ${report.totals['timed-out']}, survived ${report.totals.survived}, `
@@ -819,13 +831,21 @@ export function createFileGuard({ journalDirectory, root = process.cwd() }) {
  * process (injected for the tests); a signal restores, then exits with the
  * shell's 128 + n convention so a CI step reads it as interrupted.
  */
-export function installRestoreHandlers(guard, { target = process, onSignal } = {}) {
+export function installRestoreHandlers(guard, { target = process, onSignal, onInterrupted, log = console.error } = {}) {
   const signalNumbers = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
   const handlers = [];
   for (const [signal, number] of Object.entries(signalNumbers)) {
     const handler = () => {
       onSignal?.(signal);
       guard.restoreAll();
+      // Only once the tree is whole: the partial report is worth hours of
+      // results, but never a mutated file, and a failure writing it must not
+      // keep the process from exiting.
+      try {
+        onInterrupted?.(signal);
+      } catch (error) {
+        log(`mutation-run: interrupted by ${signal}; the partial report could not be written: ${error?.message ?? error}`);
+      }
       target.exit(128 + number);
     };
     target.on(signal, handler);
@@ -896,7 +916,7 @@ export function parseArguments(argv) {
     files: [], globs: [], since: undefined, set: undefined, tests: [], operators: [...OPERATORS],
     reportDirectory: DEFAULT_REPORT_DIRECTORY, configPath: DEFAULT_CONFIG_PATH, baselinePath: DEFAULT_BASELINE_PATH,
     writeBaseline: false, timeoutFactor: DEFAULT_TIMEOUT_FACTOR,
-    timeoutMs: undefined, budgetMinutes: undefined, maximumMutantsPerFile: undefined, maximumTestsPerFile: undefined,
+    timeoutMs: undefined, budgetMinutes: undefined, maximumMutantsPerFile: undefined, maximumTestsPerFile: undefined, stopFile: undefined,
     mutantIds: undefined, dryRun: false, recoverOnly: false, changedLines: false,
   };
   const number = (name, value) => {
@@ -921,6 +941,7 @@ export function parseArguments(argv) {
     'budget-minutes': (value) => { options.budgetMinutes = number('budget-minutes', value); },
     'max-mutants': (value) => { options.maximumMutantsPerFile = number('max-mutants', value); },
     'max-tests-per-file': (value) => { options.maximumTestsPerFile = number('max-tests-per-file', value); },
+    'stop-file': (value) => { options.stopFile = value; },
     // Re-check named mutants only — the survivors of an earlier run, say, against a wider --tests.
     mutants: (value) => { options.mutantIds = numbers('mutants', value); },
   };
@@ -1033,7 +1054,10 @@ function allTestFiles() {
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
-async function mutateFile(path, { options, config, guard, deadline, activeChild, testPaths, sourcePaths, importsOf, changedLines }) {
+async function mutateFile(path, {
+  options, config, guard, deadline, activeChild, testPaths, sourcePaths, importsOf, changedLines,
+  stopRequested = () => false, onRecord,
+}) {
   const originalBytes = readFileSync(path);
   const source = originalBytes.toString('utf8');
   const transpiler = new Bun.Transpiler({ loader: 'ts' });
@@ -1061,6 +1085,8 @@ async function mutateFile(path, { options, config, guard, deadline, activeChild,
     })),
   };
   const finishRecord = () => ({ ...record, counts: countStatuses(record.mutants) });
+  // The file in flight, as it stands: what a partial report includes if the run is interrupted mid-file.
+  onRecord?.(finishRecord);
 
   const offDiffNote = changedLines === undefined ? '' : `, ${offDiff.length} off the changed lines`;
   const capNote = mapping.dropped.length === 0 ? '' : `, ${mapping.dropped.length} more dropped by the cap`;
@@ -1086,6 +1112,10 @@ async function mutateFile(path, { options, config, guard, deadline, activeChild,
     record.skipped = 'budget exhausted';
     return finishRecord();
   }
+  if (stopRequested()) {
+    record.skipped = 'stopped';
+    return finishRecord();
+  }
 
   const coverageDirectory = join(options.reportDirectory, 'coverage');
   rmSync(coverageDirectory, { recursive: true, force: true });
@@ -1106,7 +1136,7 @@ async function mutateFile(path, { options, config, guard, deadline, activeChild,
 
   for (const mutant of record.mutants) {
     if (hits.get(mutant.line) === 0) { mutant.status = 'no-coverage'; continue; }
-    if (budgetSpent(deadline, Date.now())) break;
+    if (budgetSpent(deadline, Date.now()) || stopRequested()) break;
     const candidate = chosen.find((entry) => entry.id === mutant.id);
     try {
       guard.mutate(path, originalBytes, applyMutant(source, candidate));
@@ -1140,7 +1170,39 @@ async function main() {
   if (options.recoverOnly) return;
 
   let child;
-  installRestoreHandlers(guard, { onSignal: () => { if (child !== undefined) killTree(child); } });
+  const records = [];
+  let current;
+  let startedAt = new Date().toISOString();
+  let commit = null;
+  try { commit = git(['rev-parse', '--short', 'HEAD']); } catch { /* not a checkout */ }
+  const buildReport = (interrupted) => {
+    const files = current === undefined ? records : [...records, current()];
+    return {
+      startedAt, finishedAt: new Date().toISOString(), bunVersion: process.versions.bun ?? null, commit,
+      ...(interrupted === undefined ? {} : { interrupted }),
+      operators: options.operators, files, totals: countStatuses(files.flatMap((record) => record.mutants)),
+      baseline: existsSync(options.baselinePath) ? JSON.parse(readFileSync(options.baselinePath, 'utf8')).files : undefined,
+    };
+  };
+  const writeReport = (report) => {
+    mkdirSync(reportDirectory, { recursive: true });
+    writeFileSync(join(reportDirectory, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
+    const markdown = renderMarkdown(report);
+    writeFileSync(join(reportDirectory, 'report.md'), markdown);
+    return markdown;
+  };
+  const writePartialReport = (signal) => {
+    writeReport(buildReport({ signal, at: new Date().toISOString() }));
+    console.error(`mutation-run: interrupted by ${signal}; partial report in ${relative(process.cwd(), reportDirectory) || '.'}`);
+  };
+  installRestoreHandlers(guard, {
+    onSignal: () => { if (child !== undefined) killTree(child); },
+    onInterrupted: writePartialReport,
+  });
+  // Polled between mutants and before each baseline.  The portable way to stop
+  // a detached run: on Windows a signal sent to a process does not run its JS
+  // handlers, a file appearing always reaches this check.
+  const stopRequested = () => options.stopFile !== undefined && existsSync(options.stopFile);
 
   const config = JSON.parse(readFileSync(options.configPath, 'utf8'));
   const { files, changedLines } = selectFiles(options, config);
@@ -1161,26 +1223,31 @@ async function main() {
     }
     return imports;
   };
-  const startedAt = new Date().toISOString();
-  const records = [];
+  startedAt = new Date().toISOString();
   for (const path of files) {
+    if (stopRequested()) break;
     if (!existsSync(path) || !statSync(path).isFile()) continue;
     records.push(await mutateFile(path, {
-      options, config, guard, deadline, testPaths, sourcePaths, importsOf, changedLines,
+      options, config, guard, deadline, testPaths, sourcePaths, importsOf, changedLines, stopRequested,
       activeChild: (spawned) => { child = spawned; },
+      onRecord: (snapshot) => { current = snapshot; },
     }));
+    current = undefined;
   }
 
   // The lcov scratch is per file and large; the report is what is kept.
   rmSync(join(reportDirectory, 'coverage'), { recursive: true, force: true });
 
-  let commit = null;
-  try { commit = git(['rev-parse', '--short', 'HEAD']); } catch { /* not a checkout */ }
-  const report = {
-    startedAt, finishedAt: new Date().toISOString(), bunVersion: process.versions.bun ?? null, commit,
-    operators: options.operators, files: records, totals: countStatuses(records.flatMap((record) => record.mutants)),
-    baseline: existsSync(options.baselinePath) ? JSON.parse(readFileSync(options.baselinePath, 'utf8')).files : undefined,
-  };
+  if (stopRequested()) {
+    // Same partial report as a signal, same exit status as SIGTERM.  The stop
+    // file is consumed, so the next run does not stop at its first check.
+    guard.restoreAll();
+    rmSync(options.stopFile, { force: true });
+    writePartialReport('stop-file');
+    process.exit(STOP_EXIT_CODE);
+  }
+
+  const report = buildReport(undefined);
   if (options.writeBaseline && !options.dryRun) {
     // Merged over what is recorded, so a run over one file does not erase the others.
     const document = baselineDocument(report);
@@ -1188,9 +1255,7 @@ async function main() {
     writeFileSync(options.baselinePath, `${JSON.stringify(document, null, 2)}\n`);
     console.log(`mutation-run: baseline written to ${options.baselinePath}`);
   }
-  writeFileSync(join(reportDirectory, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
-  const markdown = renderMarkdown(report);
-  writeFileSync(join(reportDirectory, 'report.md'), markdown);
+  const markdown = writeReport(report);
   console.log(`\n${markdown}`);
   console.log(`mutation-run: report in ${relative(process.cwd(), reportDirectory) || '.'}`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);

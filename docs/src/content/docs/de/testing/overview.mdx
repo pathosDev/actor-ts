@@ -352,6 +352,17 @@ Strg-C und beim Beenden. Wurde ein Lauf hart abgebrochen, stellt der nächste
 Lauf zuerst aus dem Journal wieder her. `--recover` tut nur das. Committe deine
 Arbeit vor einem langen Lauf trotzdem.
 
+**Einen langen Lauf anhalten.** Strg-C, `SIGTERM` oder `SIGHUP` stellen zuerst
+den Working Tree wieder her, schreiben dann `report.md` und `report.json` für
+die bis dahin fertigen Mutanten und beenden den Lauf mit 128 + Signalnummer.
+Der Bericht ist als unvollständig markiert: durch ein Feld `interrupted` im
+JSON und eine Zeile oben im Markdown. Unter Windows beendet ein an einen
+anderen Prozess gesendetes Signal diesen, ohne die Handler auszuführen. Einen
+abgekoppelten Lauf hältst du dort deshalb mit `--stop-file=<pfad>` an. Der
+Runner prüft zwischen den Mutanten und vor dem Baseline-Lauf jeder Datei, ob
+die Datei existiert. Sobald sie da ist, löscht er sie, schreibt denselben
+unvollständigen Bericht und endet mit 143, wie bei `SIGTERM`.
+
 Ein Quoten-Gate gibt es noch nicht. Der nächtliche Workflow `mutation` führt
 das Set `nightly` aus `scripts/mutation-config.json` aus und lädt den Bericht
 als Artefakt hoch. `scripts/mutation-baseline.json` enthält die Zahl der

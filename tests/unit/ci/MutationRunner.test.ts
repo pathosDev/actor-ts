@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -525,6 +525,124 @@ describe('the tree is never left mutated', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  test('a signal restores first, then writes the partial report, and exits even when that write fails', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'mutation-interrupt-'));
+    try {
+      const file = join(directory, 'Subject.ts');
+      const original = Buffer.from('export const a = 1 === 1;\n');
+      writeFileSync(file, original);
+      const guard = createFileGuard({ journalDirectory: join(directory, 'journal'), root: directory });
+      const target = Object.assign(new EventEmitter(), { exitCodes: [] as number[], exit(code: number) { this.exitCodes.push(code); } });
+      const seenByReport: Array<[string, boolean]> = [];
+      const dispose = installRestoreHandlers(guard, {
+        target,
+        onInterrupted: (signal) => seenByReport.push([signal, readFileSync(file).equals(original)]),
+      });
+      guard.mutate('Subject.ts', original, 'mutant');
+      target.emit('SIGTERM');
+      // The report writer ran after the restore, so it saw the original bytes.
+      expect(seenByReport).toEqual([['SIGTERM', true]]);
+      expect(target.exitCodes).toEqual([143]);
+      dispose();
+
+      const logged: string[] = [];
+      const failing = Object.assign(new EventEmitter(), { exitCodes: [] as number[], exit(code: number) { this.exitCodes.push(code); } });
+      const disposeFailing = installRestoreHandlers(guard, {
+        target: failing,
+        onInterrupted: () => { throw new Error('disk full'); },
+        log: (line) => logged.push(line),
+      });
+      guard.mutate('Subject.ts', original, 'mutant');
+      failing.emit('SIGHUP');
+      expect(readFileSync(file).equals(original)).toBe(true);
+      expect(failing.exitCodes).toEqual([129]);
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toContain('disk full');
+      disposeFailing();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * End to end, over a throwaway project: the runner's cwd is a temporary
+   * directory with one source file and its same-name test, so nothing in the
+   * repository is mutated.  The stop file is the path used here because it is
+   * the one that works on Windows, where a signal sent to a child process ends
+   * it without running its handlers; the signal path itself is pinned above.
+   */
+  test('a stop file ends the run between mutants with the tree restored and a partial report', async () => {
+    const repositoryRoot = join(import.meta.dir, '..', '..', '..');
+    const script = join(repositoryRoot, 'scripts', 'mutation-run.mjs');
+    const project = mkdtempSync(join(tmpdir(), 'mutation-stop-'));
+    try {
+      mkdirSync(join(project, 'src'));
+      mkdirSync(join(project, 'tests'));
+      const source = [
+        'export function clamp(value: number, low: number, high: number): number {',
+        '  if (value < low) return low;',
+        '  if (value > high) return high;',
+        '  return value;',
+        '}',
+        'export function both(a: boolean, b: boolean): boolean {',
+        '  return a && b;',
+        '}',
+        'export function same(a: number, b: number): boolean {',
+        '  return a === b;',
+        '}',
+        '',
+      ].join('\n');
+      writeFileSync(join(project, 'src', 'Fixture.ts'), source);
+      const testImport = `import { both, clamp, same } from ${"'"}../src/Fixture.ts';`;
+      writeFileSync(join(project, 'tests', 'Fixture.test.ts'), [
+        "import { expect, test } from 'bun:test';",
+        testImport,
+        // Slow enough that the stop file lands while mutants remain.
+        'test("fixture", async () => {',
+        '  await Bun.sleep(300);',
+        '  expect(clamp(5, 0, 10)).toBe(5); expect(clamp(-1, 0, 10)).toBe(0); expect(clamp(11, 0, 10)).toBe(10);',
+        '  expect(both(true, false)).toBe(false); expect(same(1, 2)).toBe(false);',
+        '});',
+        '',
+      ].join('\n'));
+      const stopFile = join(project, 'STOP');
+      const reportDirectory = join(project, 'report');
+      const run = Bun.spawn(
+        [process.execPath, script, 'src/Fixture.ts', '--config', join(repositoryRoot, 'scripts', 'mutation-config.json'),
+          '--report-dir', reportDirectory, '--stop-file', stopFile],
+        { cwd: project, stdout: 'pipe', stderr: 'pipe' },
+      );
+      let output = '';
+      let requested = false;
+      const decoder = new TextDecoder();
+      for await (const chunk of run.stdout) {
+        output += decoder.decode(chunk);
+        // Once a mutant has a verdict, ask the run to stop — once: the runner
+        // consumes the file, and writing it again would outlive the run.
+        if (!requested && /#\d+ .*: (?:killed|SURVIVED|timed-out)/.test(output)) {
+          requested = true;
+          writeFileSync(stopFile, '');
+        }
+      }
+      const exitCode = await run.exited;
+
+      expect(exitCode).toBe(143);
+      expect(readFileSync(join(project, 'src', 'Fixture.ts'), 'utf8')).toBe(source);
+      expect(existsSync(stopFile)).toBe(false);
+      const report = JSON.parse(readFileSync(join(reportDirectory, 'report.json'), 'utf8')) as {
+        interrupted?: { signal: string; at: string };
+        files: Array<{ path: string; mutants: Array<{ status: string }> }>;
+      };
+      expect(report.interrupted?.signal).toBe('stop-file');
+      const statuses = report.files[0]!.mutants.map((mutant) => mutant.status);
+      expect(statuses.filter((status) => status !== 'not-run').length).toBeGreaterThanOrEqual(1);
+      expect(statuses).toContain('not-run');
+      expect(readFileSync(join(reportDirectory, 'report.md'), 'utf8')).toContain('**Partial report** — interrupted by stop-file');
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 describe('the watchdog', () => {
@@ -564,6 +682,7 @@ describe('the command line', () => {
     ['budget-minutes', '30', (o) => o.budgetMinutes, 30],
     ['max-mutants', '5', (o) => o.maximumMutantsPerFile, 5],
     ['max-tests-per-file', '12', (o) => o.maximumTestsPerFile, 12],
+    ['stop-file', '.mutation/STOP', (o) => o.stopFile, '.mutation/STOP'],
     ['mutants', '1,7,28', (o) => o.mutantIds, [1, 7, 28]],
   ];
 

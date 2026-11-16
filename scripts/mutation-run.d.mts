@@ -82,6 +82,7 @@ export type ParsedArguments = {
   readonly maximumMutantsPerFile: number | undefined;
   readonly maximumTestsPerFile: number | undefined;
   readonly changedLines: boolean;
+  readonly stopFile: string | undefined;
   readonly mutantIds: number[] | undefined;
   readonly dryRun: boolean;
   readonly recoverOnly: boolean;
@@ -112,6 +113,7 @@ export type Report = {
   readonly startedAt: string;
   readonly bunVersion: string | null;
   readonly commit: string | null;
+  readonly interrupted?: { readonly signal: string; readonly at: string };
   readonly files: readonly ReportFile[];
   readonly totals: StatusCounts;
   readonly baseline?: Readonly<Record<string, BaselineCounts>>;
@@ -175,7 +177,12 @@ export function baselineDocument(report: Report): BaselineDocument;
 export function createFileGuard(options: { journalDirectory: string; root?: string }): FileGuard;
 export function installRestoreHandlers(
   guard: FileGuard,
-  options?: { target?: RestoreTarget; onSignal?: (signal: string) => void },
+  options?: {
+    target?: RestoreTarget;
+    onSignal?: (signal: string) => void;
+    onInterrupted?: (signal: string) => void;
+    log?: (line: string) => void;
+  },
 ): () => void;
 export function runWithTimeout(
   command: string,

@@ -332,6 +332,16 @@ time. Before it touches a file, it saves the original bytes to
 exit. If a run was killed outright, the next run restores from the journal
 first. `--recover` does only that. Commit your work before a long run anyway.
 
+**Stopping a long run.** Ctrl-C, `SIGTERM` or `SIGHUP` restore the tree first,
+then write `report.md` and `report.json` for the mutants finished so far, and
+exit with 128 + the signal number. The report is marked as partial: an
+`interrupted` field in the JSON and a line at the top of the markdown. On
+Windows, a signal sent to another process ends it without running these
+handlers, so stop a detached run with `--stop-file=<path>` instead. The runner
+checks for the file between mutants and before each file's baseline. When the
+file appears, the runner deletes it, writes the same partial report and exits
+with 143, as `SIGTERM` would.
+
 There is no score gate yet. The nightly `mutation` workflow runs the set named
 `nightly` in `scripts/mutation-config.json` and uploads the report as an
 artifact. `scripts/mutation-baseline.json` holds the survivor count per file
