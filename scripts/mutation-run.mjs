@@ -12,6 +12,7 @@
  *   bun run test:mutation -- src/Supervision.ts
  *   bun run test:mutation -- --files='src/mailbox/*.ts'
  *   bun run test:mutation -- --since=origin/develop     # what this branch changed
+ *   bun run test:mutation -- --since=v0.18.0 --changed-lines  # only the changed lines
  *   bun run test:mutation -- --set=nightly               # scripts/mutation-config.json
  *   bun run test:mutation -- --dry-run src/Supervision.ts  # list mutants, run nothing
  *
@@ -49,11 +50,25 @@
  * specifier resolving to it) plus a test whose basename equals the file's
  * (`Supervision.ts` → `Supervision.test.ts`).  Not the transitive import graph:
  * nearly every test reaches `ActorSystem`, and a mapping that selects the whole
- * suite for every core file is a mapping that never finishes.  A file reached
- * only through a barrel therefore maps to nothing and is reported as
- * *no-coverage* — that is a finding about the mapping, and `--tests` overrides
- * it.  `tests/multi-node/`, the broker suites, the smoke cases and the examples
- * are never selected: they spawn workers or need Docker.
+ * suite for every core file is a mapping that never finishes.  A file with
+ * neither — reached only through a barrel or an aggregate, as
+ * `ShardCoordinator.ts` is through `ClusterSharding.ts` — takes the tests of
+ * the modules that import or re-export it, one hop and no further.  A
+ * `testMap` entry in `scripts/mutation-config.json` names a file's list
+ * outright and always wins; `--tests` wins over both.  The derived list is
+ * capped (`--max-tests-per-file`, default `maxTestsPerFile` in the config),
+ * most specific first: the same-name test, then tests in the directory that
+ * mirrors the file's (`tests/unit/cluster/sharding/` for
+ * `src/cluster/sharding/`), then by import distance.  What the cap drops is
+ * printed and kept in the report.  A file that still maps to nothing is
+ * reported as *no-coverage* — a finding about the mapping.
+ * `tests/multi-node/`, the broker suites, the smoke cases and the examples are
+ * never selected: they spawn workers or need Docker.
+ *
+ * **Which mutants run.**  Every one in the file, unless `--changed-lines` is
+ * given with `--since=<ref>`: then only those on a line `git diff -U0` reports
+ * as added or changed since the merge base, so a release's diff is measured
+ * without paying for the unchanged rest of each file it touched.
  *
  * **What one file costs.**  A baseline run of the mapped tests with
  * `--coverage` (red baseline → the file is skipped, since every mutant would
@@ -73,6 +88,12 @@
  * (SIGKILL, a closed terminal on Windows, a power cut) leaves the journal
  * behind, and the next run restores from it before doing anything else — run
  * `--recover` to do only that.
+ *
+ * **Stopping is not losing.**  A signal restores the tree first, then writes
+ * the report for the mutants finished so far, marked `interrupted`, and exits
+ * 128 + n.  Windows runs no JS handler for a signal sent from another process,
+ * so `--stop-file=<path>` is the portable stop: polled between mutants and
+ * before each baseline, consumed when seen, same partial report, exit 143.
  *
  * **Sequential, deliberately.**  Mutation happens in place, in the one working
  * tree; two mutants at once would each be read by the other's tests.  Bounding
@@ -112,6 +133,8 @@ const MINIMUM_TIMEOUT_MS = 15_000;
 /** Baseline cap: an unmutated run that takes this long is a hang in its own right. */
 const BASELINE_TIMEOUT_MS = 10 * 60 * 1_000;
 const KILL_GRACE_MS = 3_000;
+/** Exit status of a run stopped by `--stop-file`: 128 + 15, what SIGTERM gives, since it is the same stop. */
+const STOP_EXIT_CODE = 143;
 
 export const OPERATORS = Object.freeze([
   'relational-boundary', 'equality', 'logical', 'boolean-literal', 'removed-call', 'removed-return',
@@ -458,13 +481,154 @@ export function importedSources(testPath, text) {
  * test.  `readText` is injected so the mapping is testable over a fixture.
  */
 export function testsFor(sourcePath, testPaths, readText) {
-  const target = toPosix(sourcePath);
-  const name = target.split('/').at(-1).replace(/\.ts$/, '');
-  return testPaths
-    .map(toPosix)
-    .filter((test) => !EXCLUDED_TEST_PREFIXES.some((prefix) => test.startsWith(prefix)))
-    .filter((test) => test.split('/').at(-1) === `${name}.test.ts` || importedSources(test, readText(test)).has(target))
+  const importsOf = (path) => importedSources(path, readText(path));
+  return directTests(toPosix(sourcePath), selectableTests(testPaths), importsOf)
+    .map((entry) => entry.test)
     .sort();
+}
+
+function selectableTests(testPaths) {
+  return testPaths.map(toPosix).filter((test) => !EXCLUDED_TEST_PREFIXES.some((prefix) => test.startsWith(prefix)));
+}
+
+function isSameNameTest(target, test) {
+  return test.split('/').at(-1) === `${target.split('/').at(-1).replace(/\.ts$/, '')}.test.ts`;
+}
+
+/** Same-name test (distance 0) and direct importers (distance 1). */
+function directTests(target, tests, importsOf) {
+  const entries = [];
+  for (const test of tests) {
+    if (isSameNameTest(target, test)) entries.push({ test, distance: 0 });
+    else if (importsOf(test).has(target)) entries.push({ test, distance: 1 });
+  }
+  return entries;
+}
+
+/**
+ * How many leading directories a test shares with the source it is mapped to,
+ * once `src/` and the test tree's own prefix are stripped:
+ * `tests/unit/cluster/sharding/X.test.ts` shares two with
+ * `src/cluster/sharding/ShardCoordinator.ts`.
+ */
+export function sharedDirectoryDepth(sourcePath, testPath) {
+  const sourceDirectories = toPosix(sourcePath).replace(/^src\//, '').split('/').slice(0, -1);
+  const testDirectories = toPosix(testPath).replace(/^tests\/(?:unit\/|integration\/in-process\/|integration\/)?/, '')
+    .split('/').slice(0, -1);
+  let depth = 0;
+  while (depth < sourceDirectories.length && sourceDirectories[depth] === testDirectories[depth]) depth += 1;
+  return depth;
+}
+
+/**
+ * Orders candidate tests most specific first: the same-name test, then by how
+ * deep the test's directory mirrors the source's, then by import distance,
+ * then by path — so a cap keeps the tests most likely to bind the file.
+ */
+export function rankTests(sourcePath, entries) {
+  const keyed = entries.map((entry) => ({
+    ...entry, sameName: isSameNameTest(toPosix(sourcePath), entry.test), depth: sharedDirectoryDepth(sourcePath, entry.test),
+  }));
+  keyed.sort((a, b) => Number(b.sameName) - Number(a.sameName)
+    || b.depth - a.depth
+    || a.distance - b.distance
+    || (a.test < b.test ? -1 : a.test > b.test ? 1 : 0));
+  return keyed.map((entry) => entry.test);
+}
+
+/**
+ * The test list for one source file, and how it was reached.
+ *
+ * - `override` — `testMap` in `scripts/mutation-config.json` names the list;
+ *   it always wins and is never capped, because somebody chose it.
+ * - `direct` — the same-name test and the tests that import the file.
+ * - `one-hop` — no test imports the file directly and none carries its name
+ *   (it is reached through a barrel or an aggregate such as
+ *   `ClusterSharding`), so the tests of every
+ *   source module that imports or re-exports it are taken, one hop and no
+ *   further: two hops reach `ActorSystem` and with it the whole suite.
+ * - `none` — not even that.
+ *
+ * `maximum` caps the list after `rankTests`; what the cap drops is returned so
+ * the report can say what was not run.  `importsOf(path)` returns the
+ * repository paths a file's relative imports resolve to (`importedSources`).
+ */
+export function mapTests(sourcePath, { testPaths, sourcePaths = [], importsOf, overrides = {}, maximum }) {
+  const target = toPosix(sourcePath);
+  if (Object.hasOwn(overrides, target)) {
+    return { tests: [...overrides[target]], via: 'override', candidates: overrides[target].length, dropped: [] };
+  }
+  const tests = selectableTests(testPaths);
+  const entries = directTests(target, tests, importsOf);
+  // A same-name test counts as direct: it was written for the file, and
+  // widening past it would trade a one-file baseline for a subsystem's.
+  let via = entries.length > 0 ? 'direct' : 'none';
+  if (via === 'none') {
+    const hops = new Set(sourcePaths.map(toPosix).filter((path) => path !== target && importsOf(path).has(target)));
+    for (const test of tests) {
+      const imports = importsOf(test);
+      if ([...hops].some((hop) => imports.has(hop))) entries.push({ test, distance: 2 });
+    }
+    if (entries.length > 0) via = 'one-hop';
+  }
+  const ranked = rankTests(target, entries);
+  const kept = maximum === undefined ? ranked : ranked.slice(0, maximum);
+  return { tests: kept, via, candidates: ranked.length, dropped: ranked.slice(kept.length) };
+}
+
+/* ------------------------------------------------------------------ */
+/* Changed lines                                                       */
+/* ------------------------------------------------------------------ */
+
+function diffPath(header) {
+  let path = header;
+  if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
+  return path === '/dev/null' ? undefined : toPosix(path.replace(/^b\//, ''));
+}
+
+/**
+ * Path → the set of line numbers (in the new file, which is the working tree)
+ * that `git diff -U0 --dst-prefix=b/` reports as added or changed.  A hunk of
+ * new-count 0 is a pure deletion and adds no line; a renamed file is keyed by
+ * its new path.  Hunk bodies are skipped by count, so an added line that
+ * happens to read `+++ x` is never taken for a file header.
+ */
+export function changedLinesFromDiff(diff) {
+  const changed = new Map();
+  let current;
+  let remaining = 0;
+  for (const raw of diff.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (remaining > 0) {
+      if (line.startsWith('+') || line.startsWith('-')) { remaining -= 1; continue; }
+      if (line.startsWith('\\')) continue;
+      remaining = 0;
+    }
+    if (line.startsWith('diff --git ')) { current = undefined; continue; }
+    if (line.startsWith('+++ ')) {
+      current = diffPath(line.slice(4));
+      if (current !== undefined && !changed.has(current)) changed.set(current, new Set());
+      continue;
+    }
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (hunk === null) continue;
+    const oldCount = hunk[1] === undefined ? 1 : Number(hunk[1]);
+    const start = Number(hunk[2]);
+    const newCount = hunk[3] === undefined ? 1 : Number(hunk[3]);
+    remaining = oldCount + newCount;
+    if (current === undefined) continue;
+    const lines = changed.get(current);
+    for (let number = start; number < start + newCount; number += 1) lines.add(number);
+  }
+  return changed;
+}
+
+/** Splits mutants into those on a changed line and those off it.  No line set: nothing changed. */
+export function filterToChangedLines(mutants, lines) {
+  const kept = [];
+  const filtered = [];
+  for (const mutant of mutants) (lines?.has(mutant.line) ? kept : filtered).push(mutant);
+  return { kept, filtered };
 }
 
 /**
@@ -495,6 +659,11 @@ export function lineHits(lcov, sourcePath) {
 export function classifyRun({ exitCode, timedOut }) {
   if (timedOut) return 'timed-out';
   return exitCode === 0 ? 'survived' : 'killed';
+}
+
+/** True once the `--budget-minutes` deadline is reached; `>=`, so a budget of 0 runs nothing. */
+export function budgetSpent(deadline, now) {
+  return deadline !== undefined && now >= deadline;
 }
 
 export function timeoutFor(baselineMs, { factor = DEFAULT_TIMEOUT_FACTOR, slackMs = DEFAULT_TIMEOUT_SLACK_MS, fixedMs } = {}) {
@@ -540,6 +709,10 @@ export function baselineDocument(report) {
 
 export function renderMarkdown(report) {
   const out = ['# Mutation report', ''];
+  if (report.interrupted !== undefined) {
+    out.push(`> **Partial report** — interrupted by ${report.interrupted.signal} at ${report.interrupted.at}. `
+      + 'Mutants after that point are not-run, and files after it are absent.', '');
+  }
   out.push(`- bun ${report.bunVersion ?? 'unknown'}, commit ${report.commit ?? 'unknown'}, ${report.startedAt}`);
   out.push(`- score **${percent(report.totals.score)}** — killed ${report.totals.killed}, `
     + `timed-out ${report.totals['timed-out']}, survived ${report.totals.survived}, `
@@ -552,6 +725,19 @@ export function renderMarkdown(report) {
     const recorded = report.baseline?.[file.path]?.survived;
     out.push(`| \`${file.path}\`${note} | ${file.tests.length} | ${percent(c.score)} | ${c.killed} | ${c['timed-out']} | `
       + `${c.survived} | ${recorded ?? '—'} | ${c['no-coverage']} | ${c['not-run']} | ${file.invalid} | ${file.equivalent} |`);
+  }
+  // How each file's tests were chosen and how much of it was mutated: what a
+  // reader needs to judge a survivor (was the binding suite even run?).
+  const mapped = report.files.filter((file) => file.testMapping !== undefined || file.changedLines !== undefined);
+  if (mapped.length > 0) {
+    out.push('', '## Test mapping', '');
+    out.push('| file | via | tests run | dropped by the cap | mutants on changed lines | off the changed lines |');
+    out.push('|---|---|---:|---:|---:|---:|');
+    for (const file of mapped) {
+      const mapping = file.testMapping;
+      out.push(`| \`${file.path}\` | ${mapping?.via ?? '—'} | ${file.tests.length} | ${mapping?.dropped.length ?? '—'} | `
+        + `${file.changedLines?.kept ?? '—'} | ${file.changedLines?.filtered ?? '—'} |`);
+    }
   }
   const survivors = report.files.flatMap((file) => file.mutants
     .filter((mutant) => mutant.status === 'survived' || mutant.status === 'timed-out')
@@ -645,13 +831,21 @@ export function createFileGuard({ journalDirectory, root = process.cwd() }) {
  * process (injected for the tests); a signal restores, then exits with the
  * shell's 128 + n convention so a CI step reads it as interrupted.
  */
-export function installRestoreHandlers(guard, { target = process, onSignal } = {}) {
+export function installRestoreHandlers(guard, { target = process, onSignal, onInterrupted, log = console.error } = {}) {
   const signalNumbers = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
   const handlers = [];
   for (const [signal, number] of Object.entries(signalNumbers)) {
     const handler = () => {
       onSignal?.(signal);
       guard.restoreAll();
+      // Only once the tree is whole: the partial report is worth hours of
+      // results, but never a mutated file, and a failure writing it must not
+      // keep the process from exiting.
+      try {
+        onInterrupted?.(signal);
+      } catch (error) {
+        log(`mutation-run: interrupted by ${signal}; the partial report could not be written: ${error?.message ?? error}`);
+      }
       target.exit(128 + number);
     };
     target.on(signal, handler);
@@ -722,7 +916,8 @@ export function parseArguments(argv) {
     files: [], globs: [], since: undefined, set: undefined, tests: [], operators: [...OPERATORS],
     reportDirectory: DEFAULT_REPORT_DIRECTORY, configPath: DEFAULT_CONFIG_PATH, baselinePath: DEFAULT_BASELINE_PATH,
     writeBaseline: false, timeoutFactor: DEFAULT_TIMEOUT_FACTOR,
-    timeoutMs: undefined, budgetMinutes: undefined, maximumMutantsPerFile: undefined, mutantIds: undefined, dryRun: false, recoverOnly: false,
+    timeoutMs: undefined, budgetMinutes: undefined, maximumMutantsPerFile: undefined, maximumTestsPerFile: undefined, stopFile: undefined,
+    mutantIds: undefined, dryRun: false, recoverOnly: false, changedLines: false,
   };
   const number = (name, value) => {
     const parsed = Number(value);
@@ -745,6 +940,8 @@ export function parseArguments(argv) {
     timeout: (value) => { options.timeoutMs = number('timeout', value); },
     'budget-minutes': (value) => { options.budgetMinutes = number('budget-minutes', value); },
     'max-mutants': (value) => { options.maximumMutantsPerFile = number('max-mutants', value); },
+    'max-tests-per-file': (value) => { options.maximumTestsPerFile = number('max-tests-per-file', value); },
+    'stop-file': (value) => { options.stopFile = value; },
     // Re-check named mutants only — the survivors of an earlier run, say, against a wider --tests.
     mutants: (value) => { options.mutantIds = numbers('mutants', value); },
   };
@@ -752,6 +949,7 @@ export function parseArguments(argv) {
     'write-baseline': () => { options.writeBaseline = true; },
     'dry-run': () => { options.dryRun = true; },
     recover: () => { options.recoverOnly = true; },
+    'changed-lines': () => { options.changedLines = true; },
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -777,6 +975,12 @@ export function parseArguments(argv) {
   }
   for (const operator of options.operators) {
     if (!OPERATORS.includes(operator)) throw new UsageError(`unknown operator "${operator}" (known: ${OPERATORS.join(', ')})`);
+  }
+  // Changed against what?  Only --since names a base the diff can be taken from.
+  if (options.changedLines && options.since === undefined) throw new UsageError('--changed-lines needs --since=<ref>');
+  if (options.maximumTestsPerFile !== undefined
+    && (!Number.isInteger(options.maximumTestsPerFile) || options.maximumTestsPerFile < 1)) {
+    throw new UsageError(`--max-tests-per-file needs a whole number of at least 1, got ${options.maximumTestsPerFile}`);
   }
   return options;
 }
@@ -813,6 +1017,7 @@ function selectFiles(options, config) {
   for (const pattern of globs) {
     for (const path of new Bun.Glob(pattern).scanSync({ cwd: process.cwd() })) selectedAdd(selected, path);
   }
+  let changedLines;
   if (options.since !== undefined) {
     // Merge base to working tree: what this branch changed, committed or not,
     // and nothing a moving base gained since the branch was cut.
@@ -820,8 +1025,21 @@ function selectFiles(options, config) {
     for (const path of git(['diff', '--name-only', '--diff-filter=ACMR', base, '--', 'src']).split('\n')) {
       if (path !== '') selectedAdd(selected, path);
     }
+    if (options.changedLines) {
+      // The same base, so a line counts as changed exactly when its file was
+      // selected for changing.  Prefixes pinned: a user's diff.noprefix or
+      // diff.mnemonicPrefix must not move the path the parser keys on.
+      changedLines = changedLinesFromDiff(git([
+        'diff', '-U0', '--no-color', '--no-ext-diff', '-M', '--src-prefix=a/', '--dst-prefix=b/',
+        '--diff-filter=ACMR', base, '--', 'src',
+      ]));
+    }
   }
-  return [...selected].filter(isMutableSource).sort();
+  return { files: [...selected].filter(isMutableSource).sort(), changedLines };
+}
+
+function allSourceFiles() {
+  return [...new Bun.Glob('src/**/*.ts').scanSync({ cwd: process.cwd() })].map(toPosix).filter((path) => !path.endsWith('.d.ts'));
 }
 
 function selectedAdd(selected, path) {
@@ -836,24 +1054,45 @@ function allTestFiles() {
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
-async function mutateFile(path, { options, config, guard, deadline, activeChild, testPaths }) {
+async function mutateFile(path, {
+  options, config, guard, deadline, activeChild, testPaths, sourcePaths, importsOf, changedLines,
+  stopRequested = () => false, onRecord,
+}) {
   const originalBytes = readFileSync(path);
   const source = originalBytes.toString('utf8');
   const transpiler = new Bun.Transpiler({ loader: 'ts' });
   const candidates = findMutants(source, { operators: options.operators, ignore: config.ignore ?? [] });
   const { valid, invalid, equivalent } = partitionMutants(source, candidates, (code) => transpiler.transformSync(code));
-  const selected = options.mutantIds === undefined ? valid : valid.filter((mutant) => options.mutantIds.includes(mutant.id));
+  // Ids stay those of the whole file, so a --mutants list from an earlier run still names the same mutants.
+  const { kept: onDiff, filtered: offDiff } = changedLines === undefined
+    ? { kept: valid, filtered: [] }
+    : filterToChangedLines(valid, changedLines.get(toPosix(path)));
+  const selected = options.mutantIds === undefined ? onDiff : onDiff.filter((mutant) => options.mutantIds.includes(mutant.id));
   const chosen = options.maximumMutantsPerFile === undefined ? selected : selected.slice(0, options.maximumMutantsPerFile);
-  const tests = options.tests.length > 0 ? options.tests : testsFor(path, testPaths, (test) => readFileSync(test, 'utf8'));
+  const mapping = options.tests.length > 0
+    ? { tests: options.tests, via: 'command-line', candidates: options.tests.length, dropped: [] }
+    : mapTests(path, {
+      testPaths, sourcePaths, importsOf, overrides: config.testMap ?? {},
+      maximum: options.maximumTestsPerFile ?? config.maxTestsPerFile,
+    });
+  const { tests } = mapping;
   const record = {
-    path, tests, invalid: invalid.length, equivalent: equivalent.length, skipped: undefined, baselineMs: undefined,
+    path, tests, testMapping: { via: mapping.via, candidates: mapping.candidates, dropped: mapping.dropped },
+    changedLines: changedLines === undefined ? undefined : { kept: onDiff.length, filtered: offDiff.length },
+    invalid: invalid.length, equivalent: equivalent.length, skipped: undefined, baselineMs: undefined,
     mutants: chosen.map(({ id, operator, line, column, original, replacement, lineText }) => ({
       id, operator, line, column, original, replacement, lineText, status: 'not-run', durationMs: undefined,
     })),
   };
   const finishRecord = () => ({ ...record, counts: countStatuses(record.mutants) });
+  // The file in flight, as it stands: what a partial report includes if the run is interrupted mid-file.
+  onRecord?.(finishRecord);
 
-  console.log(`\n${path}: ${chosen.length} mutant(s) (${invalid.length} invalid, ${equivalent.length} equivalent dropped), ${tests.length} test file(s)`);
+  const offDiffNote = changedLines === undefined ? '' : `, ${offDiff.length} off the changed lines`;
+  const capNote = mapping.dropped.length === 0 ? '' : `, ${mapping.dropped.length} more dropped by the cap`;
+  console.log(`\n${path}: ${chosen.length} mutant(s) (${invalid.length} invalid, ${equivalent.length} equivalent dropped${offDiffNote}), `
+    + `${tests.length} test file(s) via ${mapping.via}${capNote}`);
+  if (mapping.dropped.length > 0) console.log(`  dropped by the test cap: ${mapping.dropped.join(', ')}`);
   if (options.dryRun) {
     for (const mutant of record.mutants) {
       console.log(`  #${mutant.id} ${mutant.line}:${mutant.column} ${mutant.operator}: ${mutant.original} → ${mutant.replacement}`);
@@ -865,6 +1104,16 @@ async function mutateFile(path, { options, config, guard, deadline, activeChild,
   if (tests.length === 0) {
     for (const mutant of record.mutants) mutant.status = 'no-coverage';
     record.skipped = 'no test maps to this file';
+    return finishRecord();
+  }
+  // Checked before the baseline as well as between mutants: a spent budget
+  // must not buy one more file's coverage run, which can take minutes.
+  if (budgetSpent(deadline, Date.now())) {
+    record.skipped = 'budget exhausted';
+    return finishRecord();
+  }
+  if (stopRequested()) {
+    record.skipped = 'stopped';
     return finishRecord();
   }
 
@@ -887,7 +1136,7 @@ async function mutateFile(path, { options, config, guard, deadline, activeChild,
 
   for (const mutant of record.mutants) {
     if (hits.get(mutant.line) === 0) { mutant.status = 'no-coverage'; continue; }
-    if (deadline !== undefined && Date.now() > deadline) break;
+    if (budgetSpent(deadline, Date.now()) || stopRequested()) break;
     const candidate = chosen.find((entry) => entry.id === mutant.id);
     try {
       guard.mutate(path, originalBytes, applyMutant(source, candidate));
@@ -921,10 +1170,42 @@ async function main() {
   if (options.recoverOnly) return;
 
   let child;
-  installRestoreHandlers(guard, { onSignal: () => { if (child !== undefined) killTree(child); } });
+  const records = [];
+  let current;
+  let startedAt = new Date().toISOString();
+  let commit = null;
+  try { commit = git(['rev-parse', '--short', 'HEAD']); } catch { /* not a checkout */ }
+  const buildReport = (interrupted) => {
+    const files = current === undefined ? records : [...records, current()];
+    return {
+      startedAt, finishedAt: new Date().toISOString(), bunVersion: process.versions.bun ?? null, commit,
+      ...(interrupted === undefined ? {} : { interrupted }),
+      operators: options.operators, files, totals: countStatuses(files.flatMap((record) => record.mutants)),
+      baseline: existsSync(options.baselinePath) ? JSON.parse(readFileSync(options.baselinePath, 'utf8')).files : undefined,
+    };
+  };
+  const writeReport = (report) => {
+    mkdirSync(reportDirectory, { recursive: true });
+    writeFileSync(join(reportDirectory, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
+    const markdown = renderMarkdown(report);
+    writeFileSync(join(reportDirectory, 'report.md'), markdown);
+    return markdown;
+  };
+  const writePartialReport = (signal) => {
+    writeReport(buildReport({ signal, at: new Date().toISOString() }));
+    console.error(`mutation-run: interrupted by ${signal}; partial report in ${relative(process.cwd(), reportDirectory) || '.'}`);
+  };
+  installRestoreHandlers(guard, {
+    onSignal: () => { if (child !== undefined) killTree(child); },
+    onInterrupted: writePartialReport,
+  });
+  // Polled between mutants and before each baseline.  The portable way to stop
+  // a detached run: on Windows a signal sent to a process does not run its JS
+  // handlers, a file appearing always reaches this check.
+  const stopRequested = () => options.stopFile !== undefined && existsSync(options.stopFile);
 
   const config = JSON.parse(readFileSync(options.configPath, 'utf8'));
-  const files = selectFiles(options, config);
+  const { files, changedLines } = selectFiles(options, config);
   if (files.length === 0) {
     console.error('mutation-run: no source files selected (give paths, --files=<glob>, --since=<ref> or --set=<name>)');
     process.exit(2);
@@ -932,25 +1213,41 @@ async function main() {
   mkdirSync(reportDirectory, { recursive: true });
   const deadline = options.budgetMinutes === undefined ? undefined : Date.now() + options.budgetMinutes * 60_000;
   const testPaths = allTestFiles();
-  const startedAt = new Date().toISOString();
-  const records = [];
+  const sourcePaths = allSourceFiles();
+  const importCache = new Map();
+  const importsOf = (path) => {
+    let imports = importCache.get(path);
+    if (imports === undefined) {
+      imports = existsSync(path) ? importedSources(path, readFileSync(path, 'utf8')) : new Set();
+      importCache.set(path, imports);
+    }
+    return imports;
+  };
+  startedAt = new Date().toISOString();
   for (const path of files) {
+    if (stopRequested()) break;
     if (!existsSync(path) || !statSync(path).isFile()) continue;
     records.push(await mutateFile(path, {
-      options, config, guard, deadline, testPaths, activeChild: (spawned) => { child = spawned; },
+      options, config, guard, deadline, testPaths, sourcePaths, importsOf, changedLines, stopRequested,
+      activeChild: (spawned) => { child = spawned; },
+      onRecord: (snapshot) => { current = snapshot; },
     }));
+    current = undefined;
   }
 
   // The lcov scratch is per file and large; the report is what is kept.
   rmSync(join(reportDirectory, 'coverage'), { recursive: true, force: true });
 
-  let commit = null;
-  try { commit = git(['rev-parse', '--short', 'HEAD']); } catch { /* not a checkout */ }
-  const report = {
-    startedAt, finishedAt: new Date().toISOString(), bunVersion: process.versions.bun ?? null, commit,
-    operators: options.operators, files: records, totals: countStatuses(records.flatMap((record) => record.mutants)),
-    baseline: existsSync(options.baselinePath) ? JSON.parse(readFileSync(options.baselinePath, 'utf8')).files : undefined,
-  };
+  if (stopRequested()) {
+    // Same partial report as a signal, same exit status as SIGTERM.  The stop
+    // file is consumed, so the next run does not stop at its first check.
+    guard.restoreAll();
+    rmSync(options.stopFile, { force: true });
+    writePartialReport('stop-file');
+    process.exit(STOP_EXIT_CODE);
+  }
+
+  const report = buildReport(undefined);
   if (options.writeBaseline && !options.dryRun) {
     // Merged over what is recorded, so a run over one file does not erase the others.
     const document = baselineDocument(report);
@@ -958,9 +1255,7 @@ async function main() {
     writeFileSync(options.baselinePath, `${JSON.stringify(document, null, 2)}\n`);
     console.log(`mutation-run: baseline written to ${options.baselinePath}`);
   }
-  writeFileSync(join(reportDirectory, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
-  const markdown = renderMarkdown(report);
-  writeFileSync(join(reportDirectory, 'report.md'), markdown);
+  const markdown = writeReport(report);
   console.log(`\n${markdown}`);
   console.log(`mutation-run: report in ${relative(process.cwd(), reportDirectory) || '.'}`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);

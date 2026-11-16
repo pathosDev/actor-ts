@@ -252,6 +252,9 @@ bun run test:mutation -- --files='src/mailbox/*.ts'
 # everything your branch changed, committed or not
 bun run test:mutation -- --since=origin/develop
 
+# only the lines changed since a release, not the rest of each file
+bun run test:mutation -- --since=v0.18.0 --changed-lines
+
 # list the mutants without running anything
 bun run test:mutation -- --dry-run src/util/OptionsMerge.ts
 ```
@@ -274,11 +277,27 @@ that compiles to the same JavaScript as the original (a `true` inside a
 `type`), is dropped before it runs. `scripts/mutation-config.json` holds the
 remaining filters, such as removed log calls, each with its reason.
 
+**Which mutants run:** every mutant in the file. With `--changed-lines`,
+which needs `--since=<ref>`, only the mutants on a line that `git diff -U0`
+reports as added or changed since the merge base. That measures a release's
+diff without paying for the unchanged rest of each file it touched. The run
+prints, and the report records, how many mutants per file were left out.
+
 **Which tests run:** the tests that import the file directly, plus the test
 with the file's own name (`Supervision.ts` → `Supervision.test.ts`). The
 transitive import graph is not used, because nearly every test reaches
-`ActorSystem`. A file that is reached only through a barrel maps to no test.
-Name the tests yourself with `--tests=a.test.ts,b.test.ts`. Multi-node, broker,
+`ActorSystem`. A file with neither, reached only through a barrel or an
+aggregate (`ShardCoordinator.ts` through `ClusterSharding.ts`), takes the tests
+of the modules that import or re-export it, one hop and no further.
+
+The derived list is capped at `maxTestsPerFile` from
+`scripts/mutation-config.json` (25), or at `--max-tests-per-file=<n>`. The cap
+keeps the most specific tests: the same-name test first, then tests in the
+directory that mirrors the file's (`tests/unit/cluster/sharding/` for
+`src/cluster/sharding/`), then the nearest by import distance. The run prints
+what the cap dropped. Where neither rule gives a good list, `testMap` in the
+same file names a file's tests outright; such an entry always wins and is
+never capped. `--tests=a.test.ts,b.test.ts` wins over both. Multi-node, broker,
 smoke and example suites are never selected.
 
 **Reading the report.** The run prints a table per file and writes
@@ -295,18 +314,33 @@ of these states:
   survivors.
 - **no-coverage** — the baseline run never executed the line, or no test
   maps to the file. It is not run and not scored.
-- **not-run** — `--budget-minutes` ran out before the mutant's turn.
+- **not-run** — `--budget-minutes` ran out before the mutant's turn. The
+  budget is checked between mutants and before each file's baseline run, and
+  the report is still written.
 
 The score is (killed + timed-out) ÷ (killed + timed-out + survived). A
 survivor is only as strong as the mapping behind it: it means *the mapped
 tests* did not notice. Before you file it, check whether a suite outside the
-mapping covers the line.
+mapping covers the line. The report's *Test mapping* table helps here: per
+file, it shows how the tests were chosen (`direct`, `one-hop`, `override`),
+how many the cap dropped and, with `--changed-lines`, how many mutants were
+on and off the changed lines. `report.json` lists the tests themselves.
 
 **Safety.** The runner mutates the working tree in place, one mutant at a
 time. Before it touches a file, it saves the original bytes to
 `.mutation/journal/`. It restores the file after every mutant, on Ctrl-C and on
 exit. If a run was killed outright, the next run restores from the journal
 first. `--recover` does only that. Commit your work before a long run anyway.
+
+**Stopping a long run.** Ctrl-C, `SIGTERM` or `SIGHUP` restore the tree first,
+then write `report.md` and `report.json` for the mutants finished so far, and
+exit with 128 + the signal number. The report is marked as partial: an
+`interrupted` field in the JSON and a line at the top of the markdown. On
+Windows, a signal sent to another process ends it without running these
+handlers, so stop a detached run with `--stop-file=<path>` instead. The runner
+checks for the file between mutants and before each file's baseline. When the
+file appears, the runner deletes it, writes the same partial report and exits
+with 143, as `SIGTERM` would.
 
 There is no score gate yet. The nightly `mutation` workflow runs the set named
 `nightly` in `scripts/mutation-config.json` and uploads the report as an
