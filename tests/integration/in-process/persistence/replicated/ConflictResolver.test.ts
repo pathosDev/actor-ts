@@ -86,6 +86,41 @@ describe('LastWriterWinsResolver', () => {
     expect(fullTies).toBeGreaterThan(0);
   });
 
+  test('a full tie between 1n and "1n", or undefined and a function, goes to one event in both orders (#1841)', () => {
+    // The JSON tie-break key rendered `1n` as the string `"1n"`, and both
+    // `undefined` and a function as the empty key, so each pair tied and the
+    // resolver answered its first argument.
+    const resolver = new LastWriterWinsResolver<unknown>();
+    const pairs: Array<readonly [unknown, unknown]> = [[1n, '1n'], [undefined, () => 1]];
+    for (const [first, second] of pairs) {
+      const candidateA = candidate<unknown>(first, { timestamp: 100, replica: 'node-x' });
+      const candidateB = candidate<unknown>(second, { timestamp: 100, replica: 'node-x' });
+      expect(typeof resolver.resolve(candidateA, candidateB)).toBe(typeof resolver.resolve(candidateB, candidateA));
+    }
+  });
+
+  test('commutative over events a tie-break key could confuse (#1841)', () => {
+    // Bigints against their string spellings, `undefined` against a function,
+    // `-0` against `0`, a field holding `undefined` against a missing one, and
+    // a cycle against a plain object.  Compared by identity: every event below
+    // is a distinct value, so the two orders agree only if they keep the same one.
+    const cyclic: { self?: unknown } = {};
+    cyclic.self = cyclic;
+    const eventFunction = (): number => 1;
+    const resolver = new LastWriterWinsResolver<unknown>();
+    const candidateArbitrary = fc.record({
+      event: fc.constantFrom<unknown>(
+        1n, '1n', 1, '1', 0, -0, undefined, null, 'null', eventFunction, '',
+        { amount: 1 }, { amount: 2 }, { amount: 1n }, { amount: '1n' }, { amount: undefined }, {}, cyclic,
+      ),
+      timestamp: fc.integer({ min: 1, max: 2 }),
+      replica: fc.constantFrom('a', 'b'),
+    }).map((c) => candidate<unknown>(c.event, { timestamp: c.timestamp, replica: c.replica }));
+    fc.assert(fc.property(candidateArbitrary, candidateArbitrary, (left, right) => {
+      expect(Object.is(resolver.resolve(left, right), resolver.resolve(right, left))).toBe(true);
+    }));
+  });
+
   test('commutativity across a small input grid', () => {
     // Property-style cross-check — every (a,b) pair must agree with
     // (b,a).  Cheap & sufficient since the resolver has only two
