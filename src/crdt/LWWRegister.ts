@@ -106,10 +106,17 @@ export class LWWRegister<V> implements Crdt<LWWRegister<V>> {
     return new LWWRegister<V>(json.value, json.timestamp, json.replica);
   }
 
+  /**
+   * Same timestamp, same replica and canonically equal values.  The values are
+   * compared through `canonicalOrderKey`, the key a full tie in `merge` is
+   * ranked by, so two registers are equal exactly when a merge could keep
+   * either of them.  `JSON.stringify` did this before and threw on a `bigint`
+   * value and called `{ v: undefined }` equal to `{}` (#1841).
+   */
   equals(other: LWWRegister<V>): boolean {
     return this._timestamp === other._timestamp
       && this._replica === other._replica
-      && JSON.stringify(this._value) === JSON.stringify(other._value);
+      && canonicalOrderKey(this._value) === canonicalOrderKey(other._value);
   }
 }
 

@@ -466,6 +466,7 @@
     ],
     "src/crdt/LWWRegister.ts": [
       "tests/unit/crdt/CrdtWireValidation.test.ts",
+      "tests/unit/crdt/LWWRegisterEquals.test.ts",
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/cluster/sharding/DistributedDataCoordinatorStateStore.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
