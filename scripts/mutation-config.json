@@ -137,6 +137,7 @@
       "tests/unit/cluster/sharding/RememberEntitiesCompaction.test.ts",
       "tests/unit/cluster/sharding/SeededRefusedRegionRebalance.test.ts",
       "tests/unit/cluster/sharding/ShardCoordinatorAuthority.test.ts",
+      "tests/unit/cluster/sharding/ShardCoordinatorLeaseCycle.test.ts",
       "tests/unit/cluster/sharding/ShardCoordinatorTimersOnTurn.test.ts",
       "tests/unit/cluster/sharding/ShardCountRefusal.test.ts",
       "tests/unit/cluster/sharding/ShardHomeRequestCap.test.ts",
