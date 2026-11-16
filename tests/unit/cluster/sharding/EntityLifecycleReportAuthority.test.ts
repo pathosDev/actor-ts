@@ -229,6 +229,31 @@ describe('the region takes lifecycle reports only from its own shards (#1267)', 
   });
 });
 
+describe('a shard whose home moved away is still the region\'s own (#1267)', () => {
+  test('an EntityStarted from a shard actor still running after its home moved is indexed', async () => {
+    // A ShardHome naming another node drops the shard from `localShards`, but
+    // the shard actor runs on until its hand-off stops it, and the entities it
+    // starts in the meantime are real: the region still has to index them, or
+    // their stops would find nothing to clear and the cap would not see them.
+    const victim = await startVictim('1267-region-moved', 44_432);
+    const region = victim.region() as unknown as {
+      readonly localShards: Set<number>;
+      readonly shards: Map<number, unknown>;
+    };
+    region.localShards.delete(SHARD);
+    expect(region.shards.has(SHARD)).toBe(true);
+    const resolved = victim.system._resolvePath(regionSegments(victim.system.name, TYPE_NAME));
+    if (resolved.isNone()) throw new Error('region actor not found');
+
+    resolved.value.tell(started(SHARD, 'late-starter') as never);
+    await awaitCondition(() => victim.region().shardEntities.get(SHARD)?.has('late-starter') ?? false, {
+      timeoutMs: 4_000,
+      label: 'the moving shard\'s entity was indexed',
+    });
+    expect(victim.region().entityActivity.has('late-starter')).toBe(true);
+  });
+});
+
 describe('the coordinator takes lifecycle reports only from the shard\'s host (#1267)', () => {
   test('an EntityStarted from a member that does not host the shard is refused', async () => {
     const victim = await startVictim('1267-coordinator-started', 44_426);
