@@ -80,14 +80,27 @@ export type ParsedArguments = {
   readonly timeoutMs: number | undefined;
   readonly budgetMinutes: number | undefined;
   readonly maximumMutantsPerFile: number | undefined;
+  readonly maximumTestsPerFile: number | undefined;
+  readonly changedLines: boolean;
   readonly mutantIds: number[] | undefined;
   readonly dryRun: boolean;
   readonly recoverOnly: boolean;
 };
 
+export type TestMappingVia = 'override' | 'direct' | 'one-hop' | 'none' | 'command-line';
+
+export type TestMapping = {
+  readonly tests: string[];
+  readonly via: TestMappingVia;
+  readonly candidates: number;
+  readonly dropped: string[];
+};
+
 export type ReportFile = {
   readonly path: string;
   readonly tests: readonly string[];
+  readonly testMapping?: { readonly via: TestMappingVia; readonly candidates: number; readonly dropped: readonly string[] };
+  readonly changedLines?: { readonly kept: number; readonly filtered: number };
   readonly invalid: number;
   readonly equivalent: number;
   readonly skipped?: string;
@@ -132,6 +145,24 @@ export function partitionMutants(
 export function toPosix(path: string): string;
 export function importedSources(testPath: string, text: string): Set<string>;
 export function testsFor(sourcePath: string, testPaths: readonly string[], readText: (path: string) => string): string[];
+export function sharedDirectoryDepth(sourcePath: string, testPath: string): number;
+export function rankTests(sourcePath: string, entries: ReadonlyArray<{ test: string; distance: number }>): string[];
+export function mapTests(
+  sourcePath: string,
+  options: {
+    testPaths: readonly string[];
+    sourcePaths?: readonly string[];
+    importsOf: (path: string) => Set<string>;
+    overrides?: Readonly<Record<string, readonly string[]>>;
+    maximum?: number;
+  },
+): TestMapping;
+export function changedLinesFromDiff(diff: string): Map<string, Set<number>>;
+export function filterToChangedLines<T extends { readonly line: number }>(
+  mutants: readonly T[],
+  lines: ReadonlySet<number> | undefined,
+): { kept: T[]; filtered: T[] };
+export function budgetSpent(deadline: number | undefined, now: number): boolean;
 export function lineHits(lcov: string, sourcePath: string): Map<number, number>;
 export function classifyRun(result: { exitCode: number | null; timedOut: boolean }): 'killed' | 'survived' | 'timed-out';
 export function timeoutFor(
