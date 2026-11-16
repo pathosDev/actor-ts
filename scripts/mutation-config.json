@@ -176,6 +176,7 @@
       "tests/unit/cluster/singleton/SingletonConfigDefaults.test.ts",
       "tests/unit/cluster/singleton/SingletonConfigFromHocon.test.ts",
       "tests/unit/cluster/singleton/SingletonInternalCommands.test.ts",
+      "tests/unit/cluster/singleton/SingletonManagerTimers.test.ts",
       "tests/unit/cluster/SingletonAcquireRetryDocumented.test.ts",
       "tests/unit/cluster/SingletonWarmHandOverBudget.test.ts",
       "tests/unit/coordination/SingletonLeasePrecedence.test.ts"
