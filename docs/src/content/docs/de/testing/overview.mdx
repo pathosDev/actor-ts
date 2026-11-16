@@ -265,6 +265,9 @@ bun run test:mutation -- --files='src/mailbox/*.ts'
 # alles, was dein Branch geändert hat, committet oder nicht
 bun run test:mutation -- --since=origin/develop
 
+# nur die seit einem Release geänderten Zeilen, nicht den Rest jeder Datei
+bun run test:mutation -- --since=v0.18.0 --changed-lines
+
 # die Mutanten auflisten, ohne etwas auszuführen
 bun run test:mutation -- --dry-run src/util/OptionsMerge.ts
 ```
@@ -289,12 +292,31 @@ nicht parsen lässt oder zu demselben JavaScript kompiliert wie das Original
 `scripts/mutation-config.json` enthält die übrigen Filter, etwa entfernte
 Log-Aufrufe, jeweils mit Begründung.
 
+**Welche Mutanten laufen:** jeder Mutant der Datei. Mit `--changed-lines`,
+das `--since=<ref>` voraussetzt, nur die Mutanten auf einer Zeile, die
+`git diff -U0` seit der Merge-Base als hinzugefügt oder geändert meldet. So
+lässt sich der Diff eines Releases messen, ohne für den unveränderten Rest
+jeder berührten Datei zu bezahlen. Der Lauf gibt aus und der Bericht hält fest,
+wie viele Mutanten pro Datei weggelassen wurden.
+
 **Welche Tests laufen:** die Tests, die die Datei direkt importieren, und der
 Test mit dem Namen der Datei (`Supervision.ts` → `Supervision.test.ts`). Der
 transitive Importgraph wird nicht benutzt, weil fast jeder Test `ActorSystem`
-erreicht. Eine Datei, die nur über ein Barrel erreicht wird, bekommt keinen
-Test zugeordnet. Die Tests lassen sich mit `--tests=a.test.ts,b.test.ts` selbst
-angeben. Multi-Node-, Broker-, Smoke- und Beispiel-Suiten werden nie gewählt.
+erreicht. Eine Datei ohne beides, die nur über ein Barrel oder ein Aggregat
+erreicht wird (`ShardCoordinator.ts` über `ClusterSharding.ts`), bekommt die
+Tests der Module, die sie importieren oder re-exportieren, einen Schritt weit
+und nicht weiter.
+
+Die abgeleitete Liste ist auf `maxTestsPerFile` aus
+`scripts/mutation-config.json` (25) begrenzt, oder auf
+`--max-tests-per-file=<n>`. Die Grenze behält die spezifischsten Tests: zuerst
+den gleichnamigen Test, dann Tests im Verzeichnis, das dem der Datei
+entspricht (`tests/unit/cluster/sharding/` für `src/cluster/sharding/`), dann
+die nach Importabstand nächsten. Der Lauf gibt aus, was die Grenze weggelassen
+hat. Wo keine der beiden Regeln eine gute Liste ergibt, nennt `testMap` in
+derselben Datei die Tests einer Datei direkt; ein solcher Eintrag gewinnt immer
+und wird nie begrenzt. `--tests=a.test.ts,b.test.ts` gewinnt über beides.
+Multi-Node-, Broker-, Smoke- und Beispiel-Suiten werden nie gewählt.
 
 **Den Bericht lesen.** Der Lauf gibt pro Datei eine Tabelle aus und schreibt
 `.mutation/report.md` und `.mutation/report.json`. Jeder Mutant landet in einem
@@ -311,11 +333,17 @@ dieser Zustände:
 - **no-coverage** — der Baseline-Lauf hat die Zeile nie ausgeführt, oder der
   Datei ist kein Test zugeordnet. Er läuft nicht und zählt nicht zur Quote.
 - **not-run** — `--budget-minutes` war aufgebraucht, bevor der Mutant dran war.
+  Das Budget wird zwischen den Mutanten und vor dem Baseline-Lauf jeder Datei
+  geprüft, und der Bericht wird trotzdem geschrieben.
 
 Die Quote ist (killed + timed-out) ÷ (killed + timed-out + survived). Ein
 Überlebender ist nur so aussagekräftig wie die Zuordnung dahinter: Er heißt,
 dass *die zugeordneten Tests* nichts bemerkt haben. Bevor du ihn meldest, prüfe,
-ob eine Suite außerhalb der Zuordnung die Zeile abdeckt.
+ob eine Suite außerhalb der Zuordnung die Zeile abdeckt. Dabei hilft die
+Tabelle *Test mapping* im Bericht: Sie zeigt pro Datei, wie die Tests gewählt
+wurden (`direct`, `one-hop`, `override`), wie viele die Grenze weggelassen hat
+und, mit `--changed-lines`, wie viele Mutanten auf und neben den geänderten
+Zeilen lagen. `report.json` führt die Tests selbst auf.
 
 **Sicherheit.** Der Runner mutiert den Working Tree direkt, einen Mutanten
 nach dem anderen. Bevor er eine Datei anfasst, sichert er die Originalbytes in
@@ -323,6 +351,17 @@ nach dem anderen. Bevor er eine Datei anfasst, sichert er die Originalbytes in
 Strg-C und beim Beenden. Wurde ein Lauf hart abgebrochen, stellt der nächste
 Lauf zuerst aus dem Journal wieder her. `--recover` tut nur das. Committe deine
 Arbeit vor einem langen Lauf trotzdem.
+
+**Einen langen Lauf anhalten.** Strg-C, `SIGTERM` oder `SIGHUP` stellen zuerst
+den Working Tree wieder her, schreiben dann `report.md` und `report.json` für
+die bis dahin fertigen Mutanten und beenden den Lauf mit 128 + Signalnummer.
+Der Bericht ist als unvollständig markiert: durch ein Feld `interrupted` im
+JSON und eine Zeile oben im Markdown. Unter Windows beendet ein an einen
+anderen Prozess gesendetes Signal diesen, ohne die Handler auszuführen. Einen
+abgekoppelten Lauf hältst du dort deshalb mit `--stop-file=<pfad>` an. Der
+Runner prüft zwischen den Mutanten und vor dem Baseline-Lauf jeder Datei, ob
+die Datei existiert. Sobald sie da ist, löscht er sie, schreibt denselben
+unvollständigen Bericht und endet mit 143, wie bei `SIGTERM`.
 
 Ein Quoten-Gate gibt es noch nicht. Der nächtliche Workflow `mutation` führt
 das Set `nightly` aus `scripts/mutation-config.json` aus und lädt den Bericht
