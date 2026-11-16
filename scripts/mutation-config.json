@@ -463,21 +463,7 @@
       "tests/integration/in-process/persistence/replicated/RemoteAppendChain.test.ts",
       "tests/unit/cluster/sharding/RememberEntitiesCompaction.test.ts",
       "tests/unit/testkit/FaultInjectingStores.test.ts"
-    ]
-  },
-  "sets": {
-    "nightly": {
-      "$comment": "Small, pure and central (the starting points #1368 names: the actor runtime's supervision, the downing strategies, the mailboxes), plus the two files the first baseline was measured on. Keep it bounded: the run is sequential by design, and the workflow's timeout-minutes is sized against this list.",
-      "files": [
-        "src/Supervision.ts",
-        "src/util/OptionsMerge.ts",
-        "src/persistence/query/TagLookbackWindow.ts",
-        "src/cluster/downing/*.ts",
-        "src/mailbox/*.ts"
-      ]
-    }
-  },
-  "testMap": {
+    ],
     "src/crdt/LWWRegister.ts": [
       "tests/unit/crdt/CrdtWireValidation.test.ts",
       "tests/unit/crdt/Properties.test.ts",
@@ -507,5 +493,17 @@
       "tests/unit/cluster/FrameDecoderFuzz.test.ts",
       "tests/unit/http/EntityCborAllowList.test.ts"
     ]
+  },
+  "sets": {
+    "nightly": {
+      "$comment": "Small, pure and central (the starting points #1368 names: the actor runtime's supervision, the downing strategies, the mailboxes), plus the two files the first baseline was measured on. Keep it bounded: the run is sequential by design, and the workflow's timeout-minutes is sized against this list.",
+      "files": [
+        "src/Supervision.ts",
+        "src/util/OptionsMerge.ts",
+        "src/persistence/query/TagLookbackWindow.ts",
+        "src/cluster/downing/*.ts",
+        "src/mailbox/*.ts"
+      ]
+    }
   }
 }
