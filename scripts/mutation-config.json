@@ -445,6 +445,7 @@
       "tests/unit/cluster/TcpTransportOutboundDial.test.ts",
       "tests/unit/io/broker/TcpServerActor.test.ts",
       "tests/unit/logging/TcpLogSinkDial.test.ts",
+      "tests/unit/runtime/tcp/BunDialDrain.test.ts",
       "tests/unit/runtime/tcp/BunHandshakeVerdict.test.ts",
       "tests/unit/runtime/tcp/BunSocketBacklog.test.ts",
       "tests/unit/runtime/tcp/ConnectAbort.test.ts",
