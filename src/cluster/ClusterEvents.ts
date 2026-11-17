@@ -129,9 +129,9 @@ export class MemberLeft { constructor(public readonly member: Member) {} }
  *   - **FD-driven** — the failure detector's elapsed-time
  *     `unreachable → down → removed` cascade, which runs when no
  *     downing provider is configured and
- *     `failure-detector.auto-down = on`, the default (#1426).  Here the
- *     entry is deleted outright, without a tombstone; that buys no
- *     recovery after a healed partition (#930).
+ *     `failure-detector.auto-down = on`, the default (#1426).  It leaves a
+ *     tombstone like the paths above, so a peer that still carries the
+ *     member cannot gossip it back (#1834).
  *
  * Public APIs (`getMembers`, `upMembers`, `reachableMembers`) skip
  * `removed` entries, so most user code stays unaffected.  Code that

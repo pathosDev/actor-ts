@@ -661,10 +661,9 @@ Heartbeats für es schickt, erklären es beide Detectors für `down` —
 φ misst die Stille ab diesem Moment. Was dieses Urteil bewirkt,
 entscheidet die Downing-Konfiguration. Unter dem Default — keine
 Strategie, `failure-detector.auto-down = on` — entfernt der Detector
-es, `down-after` nach dem letzten Nachschub, und endgültig erst,
-wenn kein anderer Knoten es noch trägt, denn dieser Weg löscht ohne
-Tombstone, und ein Knoten, der das Phantom noch nicht gelöscht hat,
-gossipt es zurück. Mit konfigurierter Strategie oder unter
+es, `down-after` nach dem letzten Nachschub, in einen Tombstone, der
+seinen lebenden Platz freigibt und bis zum Aufräumen einen Platz von
+`max-tombstones` belegt (#1834). Mit konfigurierter Strategie oder unter
 `auto-down = off` wird das Phantom wie jeder stille Peer auf
 `unreachable` geparkt und hält seinen lebenden Platz, bis eine
 Strategie oder ein Operator es entfernt. Das *Absender*-Feld eines
@@ -746,9 +745,9 @@ Mitglied und höchstens einen pro Seed, begrenzt durch `max-members`
 und die Seed-Liste (#1103).
 
 :::note[Die Reihenfolge, in der das gelandet ist, hat gezählt]
-Früher war die `down → delete`-Kaskade des Failure Detectors das,
-was Phantom-Mitglieder in *lebenden* Status auf Sekunden begrenzte.
-Dieses Löschen hängt jetzt an einer Bedingung — ein konfigurierter
+Früher war die `down → removed`-Kaskade des Failure Detectors das,
+was Phantom-Mitglieder in *lebenden* Status auf Sekunden begrenzte
+(bis #1834 ein Löschen, seitdem ein Tombstone). Dieses Entfernen hängt jetzt an einer Bedingung — ein konfigurierter
 `DowningProvider` übernimmt die Entscheidung, und ohne einen
 entscheidet `failure-detector.auto-down`, das an ausgeliefert wird —,
 wo immer also eine Strategie konfiguriert oder `auto-down` aus ist,
@@ -1187,31 +1186,20 @@ unbegrenzt *gültig*. Gegen einen konvergierten Empfänger kostet
 das nichts: jeder Record darin verliert den Vergleich „höhere
 Version gewinnt" gegen den Record, der schon da ist. Zum Exploit
 wird es bei einem Eintrag, den der Empfänger **gelöscht** hat,
-und zwei Wege löschen einen. Das eigene Entfernen des Failure
-Detectors — der Default ohne konfigurierte Strategie, unter
-`failure-detector.auto-down = on` — löscht rundheraus, statt einen
-Tombstone zu hinterlassen. Begründet wurde das einmal damit, dass
-eine Partition nach dem Heilen den Peer so wiederfinde, und genau
-das bringt das Löschen nicht: Einen gelöschten Peer hat eine Seite
-gar nicht mehr in ihrer Map, um ihn zu adressieren — nach einer
-symmetrischen Partition hört also keine Seite je wieder von der
-anderen, während ein auf `unreachable` geparkter Peer weiter
-Heartbeats bekommt und zurückkehrt, sobald das Netz heilt
-([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
-Unter dem Default entfernen sich die beiden Seiten einer echten
-Partition also gegenseitig und laufen als zwei Cluster weiter — ein
-weiterer Grund, warum ein Produktions-Deployment `lease-majority`
-oder eine andere [Downing-Strategie](/de/cluster/downing-strategies/)
-konfiguriert.
-Und ein abgelaufener Tombstone wird entfernt, sobald der größere
-Wert von seiner Lebensdauer und `tombstone.min-retention` verstrichen
-ist. So oder so bleibt nichts zum Vergleichen übrig, und der Zweig,
-der eine Erstsichtung ablegt, hat überhaupt keine untere
-Versionsgrenze. Die übrigen Entfernungen — ein `down()` des
-Operators, die Entscheidung einer Strategie, das `leave` eines
-Peers — hinterlassen einen Tombstone, der den Mitschnitt bis zu
-diesem Aufräumen überbietet; mit konfigurierter Strategie oder unter
-`auto-down = off` entfernt der Detector selbst niemanden. Ein
+und ein Weg löscht einen: Ein abgelaufener Tombstone wird entfernt,
+sobald der größere Wert von seiner Lebensdauer und
+`tombstone.min-retention` verstrichen ist. Dann bleibt nichts zum
+Vergleichen übrig, und der Zweig, der eine Erstsichtung ablegt, hat
+überhaupt keine untere Versionsgrenze. Jede Entfernung — ein
+`down()` des Operators, die Entscheidung einer Strategie, das
+`leave` eines Peers und das eigene Entfernen des Failure Detectors
+unter dem Default `failure-detector.auto-down = on` — hinterlässt
+einen Tombstone, der den Mitschnitt bis zu diesem Aufräumen
+überbietet; mit konfigurierter Strategie oder unter
+`auto-down = off` entfernt der Detector selbst niemanden. Der Weg
+des Detectors löschte den Eintrag bis
+[Issue #1834](https://github.com/pathosDev/actor-ts/issues/1834)
+rundheraus und war damit ein zweiter Weg zum selben Exploit. Ein
 Neustart, der einen lebenden Eintrag seines vorherigen Laufs
 ersetzt, löscht diesen Eintrag ebenfalls, aber der Eintrag des neuen
 Laufs übernimmt den Schlüssel im selben Schritt mit höherer Version,
@@ -1332,12 +1320,10 @@ genau der Wire-Bruch von oben.
 Zweitens lässt eine fehlende Marke alles zu, und es gibt drei Wege,
 keine zu haben — nur einer davon ist die Evakuierung des Absenders
 selbst. Ein evakuiertes Member verliert seine Marke mit seinem
-Eintrag, aus dem Grund von oben: sofort auf dem eigenen
-`auto-down`-Weg des Detectors, der löscht, und bei jeder anderen
-Entfernung erst, wenn der Tombstone aufgeräumt wird, denn ein
-Tombstone behält die Marke zusammen mit dem Eintrag. Unter dem
-Default `auto-down` trifft eine gewöhnliche Partition Absender und
-Subjekt gemeinsam, dieser Weg kommt also gebrauchsfertig; mit
+Eintrag, aus dem Grund von oben: erst, wenn der Tombstone aufgeräumt
+wird, denn ein Tombstone behält die Marke zusammen mit dem Eintrag —
+bei jeder Entfernung, seit #1834 auch auf dem eigenen
+`auto-down`-Weg des Detectors, der früher sofort löschte. Mit
 konfigurierter Strategie oder unter `auto-down = off` evakuiert eine
 Partition niemanden, bis etwas entscheidet — beide werden geparkt,
 die Marken bleiben —, und hinter einem Tombstone lebt die Marke

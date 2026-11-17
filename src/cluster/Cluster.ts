@@ -412,6 +412,20 @@ export class Cluster {
   private readonly reachability = new Map<string, boolean>();
 
   /**
+   * The members this node holds `unreachable` on a peer's word rather than its
+   * own, each with the moment the mark arrived on {@link ActorSystem.clock}
+   * (#1828).  {@link clearsUnreachableMark} reads it to tell a mark this node
+   * may clear on a heartbeat from one it may not clear yet.
+   *
+   * Written only by the gossip merge, where a record moves a member to
+   * `unreachable`; a mark this node makes itself — its detector, a parked
+   * peer, a refusal — leaves no entry.  Dropped by {@link setMember} once the
+   * status is anything else and by {@link deleteMember}, so it is bounded by
+   * the cap on {@link members}.
+   */
+  private readonly unreachableOnPeerWordSince = new Map<string, number>();
+
+  /**
    * Cumulative counts of member records the merge path refused, split by the
    * guard that refused them.  `onGossip` diffs this across a frame to collapse
    * a frame's worth of refusals into one log line and one counter increment
@@ -1884,7 +1898,7 @@ export class Cluster {
     const downed = member.withStatus('down');
     // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
     this.updateMember(downed);
-    const removed = downed.withRemoved(Date.now());
+    const removed = this.tombstoneOf(downed);
     this.setMember(removed);
     this.emit(new MemberRemoved(removed));
     this.log.info(`operator force-down: ${member.address}`);
@@ -2974,8 +2988,10 @@ export class Cluster {
     this.transport.send(peer, { kind: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
 
     // If the peer was unreachable and we see traffic again, flip it back —
-    // unless it has told this node it no longer has it (#940).
-    if (existing && existing.status === 'unreachable' && !this.refusedBy.has(peer.toString())) {
+    // unless it has told this node it no longer has it (#940), or the mark is
+    // another node's that this node may not clear yet (#1828).
+    if (existing && existing.status === 'unreachable' && !this.refusedBy.has(peer.toString())
+      && this.clearsUnreachableMark(existing)) {
       this.updateMember(existing.withStatus('up'));
       // `updateMember` has announced `MemberUp`, and a listener may have acted
       // on it — downed the peer, say.  A member that is no longer `up` is not
@@ -2986,6 +3002,43 @@ export class Cluster {
       const recovered = this.members.get(peer.toString());
       if (recovered?.status === 'up') this.emit(new MemberReachable(recovered));
     }
+  }
+
+  /**
+   * Whether a heartbeat from `member`, which this node holds `unreachable`,
+   * may set it back to `up` here (#1828).
+   *
+   * At once when this node's own detector made the mark: its verdict is the
+   * one the heartbeat answers, and that is how a parked peer comes back after
+   * a partition heals (#930).  A mark that arrived in a peer's gossip is that
+   * peer's observation, and a heartbeat reaching *this* node says nothing about
+   * it — under a one-way partition the member is heard here and not there.
+   * Clearing it anyway wrote `up` at a higher version, the observer adopted
+   * it, re-marked the member on its next detection tick, and the status flapped
+   * at heartbeat cadence, a `MemberReachable` / `MemberUnreachable` pair and a
+   * leader-change line each time.  So such a mark is cleared here only once it
+   * has stood for `stable-after` while the member kept talking to this node:
+   * the observer clears its own mark when it hears the member again, and the
+   * window is only the way out when the observer cannot — it crashed or was
+   * removed with the mark standing.  Under a lasting one-way partition the flap
+   * this leaves runs at `stable-after`, not at heartbeat cadence.
+   *
+   * The wire carries no observer per record, so a mark counts as another
+   * node's when it arrived through the merge ({@link unreachableOnPeerWordSince})
+   * — and as this node's own again once its own detector holds the member
+   * unreachable too ({@link reachability}).
+   */
+  private clearsUnreachableMark(member: Member): boolean {
+    const key = member.address.toString();
+    const since = this.unreachableOnPeerWordSince.get(key);
+    if (since === undefined || this.reachability.get(key) === false) return true;
+    return this.system.clock.now() - since >= this.stableAfterMs;
+  }
+
+  /** Note a mark that arrived through the merge as another node's (#1828). */
+  private noteUnreachableOnPeerWord(previous: MemberStatus | undefined, stored: Member): void {
+    if (stored.status !== 'unreachable' || previous === 'unreachable') return;
+    this.unreachableOnPeerWordSince.set(stored.address.toString(), this.system.clock.now());
   }
 
   /**
@@ -3325,10 +3378,10 @@ export class Cluster {
    * so a frame captured off the wire stays byte-for-byte valid indefinitely.
    * Against a converged receiver that is harmless — every record loses the
    * `incoming.version <= existing.version` comparison in {@link mergeMember}.
-   * What makes it an exploit is an entry the receiver has **deleted**: the
-   * failure-detector down path (under `auto-down = on`) deletes outright, and
-   * {@link tombstonePruneTick} deletes an expired
-   * tombstone.  Either leaves `existing === undefined`, and that branch of
+   * What makes it an exploit is an entry the receiver has **deleted**:
+   * {@link tombstonePruneTick} deletes an expired tombstone (the
+   * failure-detector down path under `auto-down = on` deleted outright too,
+   * until #1834).  That leaves `existing === undefined`, and that branch of
    * `mergeMember` has no lower version bound at all — so replaying a downed
    * member's own pre-down record brings it back at its old version, `up`, and
    * carrying the roles it had, which is what shard placement, singleton
@@ -3753,7 +3806,7 @@ export class Cluster {
     if (!existing) return;
     this.log.info(`${peer} left the cluster (graceful leave; was ${existing.status} v${existing.version})`);
     const leaving = existing.withStatus('leaving');
-    const removed = leaving.withRemoved(Date.now());
+    const removed = this.tombstoneOf(leaving);
     // Tombstone (don't delete) so a stale `up` gossip from a peer that
     // hasn't seen the leave yet can't resurrect this address —
     // `mergeMember`'s version check filters it out.  Public APIs
@@ -3878,32 +3931,28 @@ export class Cluster {
         const downed = member.withStatus('down');
         // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
         this.updateMember(downed);
-        // Deleted, where every other removal tombstones (`onLeave`,
-        // `evaluateDowning`'s force-down, `down()`): the one route with no
-        // refusal.  Nothing is left to refuse a later record for the address,
-        // so a peer whose view still carries it re-introduces it on the next
-        // merge — with two survivors that have not deleted it at the same
-        // instant, a crashed member comes back as `unreachable` and is removed
-        // again on every `down-after`, `MemberRemoved` and all — and the same
-        // run can come back after its remote watchers were told
-        // `addressTerminated`.  It used to be justified as letting a
-        // restart on the same `host:port` rejoin cleanly; a restart is a new
-        // incarnation whose base version out-versions a tombstone anyway (see
-        // `mergeMember`), so that reason never held.  Kept as it was — #1426
-        // made the route switchable, not different; whether it should
-        // tombstone is #940's.
+        // Tombstoned, as every other removal is (`onLeave`,
+        // `applyDowningDecision`, `down()`), so a peer whose view still carries
+        // the member cannot re-introduce it: its record is the same run at a
+        // lower version, and `mergeMember` refuses both.  It used to be
+        // deleted, and with two survivors that did not delete it in the same
+        // step a crashed member came back as `unreachable` from the other's
+        // gossip and was removed again on every `down-after`, `MemberRemoved`
+        // and all, while the same run could come back after its remote
+        // watchers were told `addressTerminated` (#1834).  A restart on the
+        // same `host:port` is a new incarnation and is readmitted over the
+        // tombstone at once (`isRestartOf`); the same run is refused until the
+        // prune, as after any other removal (#1477).  `removedAt` lets
+        // `tombstonePruneTick` reclaim the entry (#75).
         //
-        // Deleting does *not* buy a partition+heal recovery, and the note
-        // that used to stand here claimed it did.  It costs one: `heartbeatTick`
-        // and `gossipTick` keep addressing a member held `unreachable`, which
-        // is how a parked peer is heard again once a partition heals (#930),
-        // but after this delete the peer is not in the map at all, so a
-        // symmetric partition that outlasts `down-after` under auto-down
-        // leaves neither side with a way to hear the other again.
-        this.deleteMember(member.address.toString());
-        // Transient `removed` Member only used for the event emit —
-        // not stored, so the missing `removedAt` here is intentional.
-        const removed = downed.withStatus('removed');
+        // Neither the delete nor the tombstone buys a partition+heal recovery:
+        // under auto-down a symmetric partition that outlasts `down-after`
+        // leaves each side holding the other's runs as removed, and they
+        // rejoin only by restarting — the fork the docs describe, and why a
+        // deployment that cannot afford it configures a strategy or turns
+        // auto-down off (#930, #1426).
+        const removed = this.tombstoneOf(downed);
+        this.setMember(removed);
         this.emit(new MemberRemoved(removed));
       }
     }
@@ -4213,7 +4262,7 @@ export class Cluster {
       // haven't seen the force-down can't resurrect this address.
       // `removedAt` lets `tombstonePruneTick` reclaim the entry
       // after `tombstoneTtlMs` (#75).
-      const removed = downed.withRemoved(Date.now());
+      const removed = this.tombstoneOf(downed);
       this.setMember(removed);
       this.emit(new MemberRemoved(removed));
     }
@@ -4474,10 +4523,8 @@ export class Cluster {
    * moment it is merged, and nothing ever heartbeats for it, so the detector
    * declares it `down` — both implementations do, φ measuring the silence from
    * registration.  Under the default `failure-detector.auto-down = on` that
-   * verdict reclaims it, `downAfterMs` after the attacker stops feeding it —
-   * and only for good once no other node still carries it, because that route
-   * deletes without a tombstone and any node that has not deleted it yet
-   * gossips it back.  With a strategy configured or auto-down off it is parked
+   * verdict moves it to a tombstone, `downAfterMs` after the attacker stops
+   * feeding it, which frees its live slot (#1834).  With a strategy configured or auto-down off it is parked
    * at `unreachable` like any silent peer instead, and holds a live slot until
    * a strategy or an operator removes it (#1426).  A
    * record gossiped as `removed` is watched by nothing at all, so only
@@ -4641,6 +4688,7 @@ export class Cluster {
       );
     }
     this.setMember(incoming);
+    this.noteUnreachableOnPeerWord(existing.status, incoming);
     this.checkStorageIdentityAgreement(incoming);
     this.checkConfigurationAgreement(incoming);
     this.emitStatusTransition(existing, incoming);
@@ -4711,6 +4759,7 @@ export class Cluster {
    */
   private admitFirstSighting(incoming: Member): void {
     this.setMember(incoming);
+    this.noteUnreachableOnPeerWord(undefined, incoming);
     this.checkStorageIdentityAgreement(incoming);
     this.checkConfigurationAgreement(incoming);
     if (incoming.status !== 'removed') this.failureDetector.register(incoming.address);
@@ -4892,6 +4941,19 @@ export class Cluster {
   }
 
   /**
+   * The `removed` record a local removal leaves for `member` — `leave`,
+   * `down()`, a downing decision and auto-down alike (#1834).
+   *
+   * Stamped from the wall clock, not {@link ActorSystem.clock}: `removedAt`
+   * travels in gossip, and every peer's merge and {@link tombstonePruneTick}
+   * age it against their own `Date.now()`, so a stamp on a virtual clock would
+   * read as a tombstone that expired long ago.
+   */
+  private tombstoneOf(member: Member): Member {
+    return member.withRemoved(Date.now());
+  }
+
+  /**
    * The single write door into {@link members}, so {@link tombstoneCount}
    * cannot drift from the map it describes.  Every mutation goes through here
    * or {@link deleteMember} — a `this.members.set(…)` elsewhere would silently
@@ -4915,9 +4977,14 @@ export class Cluster {
     if (previous?.status === 'up') this.upCount--;
     if (member.status === 'up') this.upCount++;
     this.members.set(key, member);
+    if (member.status !== 'unreachable') this.unreachableOnPeerWordSince.delete(key);
     this.publishMembersUp();
     if (member.status === 'removed') {
       this.failureDetector.forget(member.address);
+      // The verdict goes with the sample, in the same step: left until the
+      // next tick it would be a reachability entry for a member that is gone,
+      // and on a revival it would read as a recovery (#161, #1834).
+      this.reachability.delete(key);
       // A refusal is about a peer this node can no longer count on; once the
       // peer is a tombstone itself there is nothing left to count on (#940).
       this.refusedBy.delete(key);
@@ -4935,6 +5002,7 @@ export class Cluster {
     // Same key space, same lifetime.  A verdict left behind here would make the
     // address's next incarnation look like a peer that had recovered.
     this.reachability.delete(key);
+    this.unreachableOnPeerWordSince.delete(key);
     // Likewise, or the next incarnation's parking would go unreported (#1426).
     this.parkedWithoutResolver.delete(key);
     this.parkedForProvider.delete(key);

@@ -617,9 +617,8 @@ declare it `down` — φ measuring the silence from that moment.
 What that verdict does is the downing configuration's call. Under
 the default — no strategy, `failure-detector.auto-down = on` — the
 detector removes it, `down-after` after the attacker stops feeding
-it, and for good only once no other node still carries it, because
-that route deletes without a tombstone and a node that has not
-deleted the phantom yet gossips it back. With a strategy
+it, into a tombstone that frees its live slot and holds a
+`max-tombstones` slot until the prune (#1834). With a strategy
 configured, or under `auto-down = off`, the phantom is parked at
 `unreachable` like any silent peer and holds its live slot until a
 strategy or an operator removes it. A frame's *sender* field is no
@@ -688,8 +687,9 @@ at most one per seed, bounded by `max-members` and the seed list
 (#1103).
 
 :::note[The order these landed in mattered]
-The failure detector's `down → delete` cascade used to be what
-bounded phantom *live* members to seconds. That deletion is now
+The failure detector's `down → removed` cascade used to be what
+bounded phantom *live* members to seconds (a delete until #1834, a
+tombstone since). That removal is now
 gated — a configured `DowningProvider` takes the decision over, and
 with none `failure-detector.auto-down` decides, which ships on — so
 wherever a strategy is configured or `auto-down` is off the implicit
@@ -1084,28 +1084,19 @@ off the wire stays *valid* indefinitely. Against a converged
 receiver that costs nothing: every record in it loses the
 "higher version wins" comparison to the record already on file.
 What makes it an exploit is an entry the receiver has
-**deleted**, and two paths delete one. The failure detector's own
-removal — the default with no strategy configured, under
-`failure-detector.auto-down = on` — deletes outright rather than
-leaving a tombstone. That was once justified as letting a healed
-partition re-discover the peer, and deleting buys no such thing: a
-deleted peer is not in the map to address at all, so after a
-symmetric partition neither side hears from the other again — where
-a peer parked at `unreachable` keeps being heartbeated and returns
-once the network heals
-([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
-Under the default, both sides of a real partition therefore remove
-each other and run on as two clusters, which is one more reason a
-production deployment configures `lease-majority` or another
-[downing strategy](/cluster/downing-strategies/).
-And an expired tombstone is pruned once the larger of its
-time-to-live and `tombstone.min-retention` has passed. Either way
-there is nothing left to compare against, and the branch that files
-a first sighting has no lower version bound at all. The other
-removals — an operator's `down()`, a strategy's decision, a peer's
-`leave` — leave a tombstone that out-versions the recording until
-that prune; with a strategy configured or under `auto-down = off`,
-the detector itself removes no one. A restart that replaces a live
+**deleted**, and one path deletes one: an expired tombstone is
+pruned once the larger of its time-to-live and
+`tombstone.min-retention` has passed. Then there is nothing left to
+compare against, and the branch that files a first sighting has no
+lower version bound at all. Every removal — an operator's `down()`,
+a strategy's decision, a peer's `leave` and the failure detector's
+own removal under the default `failure-detector.auto-down = on` —
+leaves a tombstone that out-versions the recording until that
+prune; with a strategy configured or under `auto-down = off`, the
+detector itself removes no one. The detector's route deleted the
+entry outright until
+[issue #1834](https://github.com/pathosDev/actor-ts/issues/1834),
+which made it a second path to the same exploit. A restart that replaces a live
 record of its previous run deletes that record too, but the new
 run's record takes the key at a higher version in the same step, so
 a recording of the old run still loses the comparison.
@@ -1211,15 +1202,13 @@ carried, which is the wire break above.
 Second, a missing mark admits everything, and there are three ways
 to be missing one — only one of which is the sender's own
 eviction. An evicted member's mark goes when its entry does, for
-the reason above: at once on the detector's own `auto-down` route,
-which deletes, and on every other removal only when the tombstone is
-pruned, since a tombstone keeps the mark along with the entry.
-Under the default `auto-down` an ordinary partition takes out
-sender and subject together, so that route arrives ready to use;
-with a strategy configured or under `auto-down = off` a partition
-evicts nobody until something decides — both are parked, marks
-intact — and behind a tombstone the mark lasts exactly as long as
-the refusal does. A fresh or restarted process starts with none at
+the reason above: only when the tombstone is pruned, since a
+tombstone keeps the mark along with the entry — on every removal,
+the detector's own `auto-down` route included since #1834, which
+used to delete at once. With a strategy configured or under
+`auto-down = off` a partition evicts nobody until something decides
+— both are parked, marks intact — and behind a tombstone the mark
+lasts exactly as long as the refusal does. A fresh or restarted process starts with none at
 all. And a member learned
 **third-party** never had one: gossip is epidemic, so a node files
 C as `up` on B's word and has still never seen a frame *from* C.

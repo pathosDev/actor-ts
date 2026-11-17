@@ -388,8 +388,10 @@ describe('repeated fault episodes against one cluster (#1379)', () => {
   test('join churn — every role rejoins in turn, after a restart, a crash or a leave — leaves no residue', async () => {
     // `KeepMajority` for the episodes that wait for the removal: it tombstones
     // the crashed node, so the survivors converge on its absence once.  The
-    // detector's own auto-down deletes instead, and survivors re-introduce
-    // the deleted member to each other (#1806), so a removal never converges.
+    // detector's own auto-down deleted instead, and survivors re-introduced
+    // the deleted member to each other (#1806), so a removal never converged.
+    // Since #1834 auto-down tombstones too, and this scenario passes under it
+    // with no strategy; `KeepMajority` is kept as the scenario was written.
     const options = MultiNodeSpecOptions.create()
       .withRoles([...ROLES])
       .withFailureDetector({ ...FAILURE_DETECTOR })

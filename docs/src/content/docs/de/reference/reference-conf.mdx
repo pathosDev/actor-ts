@@ -743,10 +743,15 @@ actor-ts {
       #
       # No upper bound against failure-detector.down-after: with a strategy
       # configured the detector parks an unreachable peer and evicts nothing,
-      # so the window has no deadline to out-run.  Ignored entirely when
-      # active-strategy = off -- there is no decision to delay then: the
-      # detector removes the peer at down-after (failure-detector.auto-down =
-      # on, the default), or parks it when auto-down = off.
+      # so the window has no deadline to out-run.  With active-strategy = off
+      # there is no decision to delay: the detector removes the peer at
+      # down-after (failure-detector.auto-down = on, the default), or parks it
+      # when auto-down = off.
+      #
+      # Also, with or without a strategy, how long an unreachable mark this
+      # node holds on another node's word must stand, while the member keeps
+      # talking to this node, before a heartbeat may clear it here.  The node
+      # whose detector made the mark clears it on the first heartbeat.
       stable-after = 20s
 
       # Down EVERY member, self included, when the view never once holds still

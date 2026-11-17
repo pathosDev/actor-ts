@@ -170,7 +170,7 @@ stateDiagram-v2
   up --> leaving: cluster.leave()
   leaving --> removed
   down --> removed
-  removed --> [*]: Tombstone-TTL, bei auto-down sofort
+  removed --> [*]: Tombstone-TTL
   classDef happy   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn    fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef gone    fill:#1e293b,stroke:#475569,color:#94a3b8;
@@ -206,11 +206,10 @@ stateDiagram-v2
   `failure-detector.auto-down = on` — die des Failure Detectors
   selbst. Geht direkt weiter zu `removed`.
 - **`removed`** — nicht mehr im Cluster. Ein Leave, die Entscheidung
-  einer Strategie und das Downing durch einen Operator halten es für
-  eine TTL (Standard 24 h) als Tombstone, damit veralteter Gossip von
-  einem langsamen Peer es nicht versehentlich wiederbelebt. Der
-  `auto-down`-Weg löscht den Eintrag stattdessen, weshalb ein Peer,
-  der das Mitglied noch führt, es zurückbringen kann — siehe
+  einer Strategie, das Downing durch einen Operator und `auto-down`
+  des Failure Detectors halten es alle für eine TTL (Standard 24 h)
+  als Tombstone, damit veralteter Gossip von einem langsamen Peer es
+  nicht versehentlich wiederbelebt — siehe
   [den Failure Detector](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht).
 
 Der Event-Stream des Clusters legt jeden Übergang offen — abonniere
@@ -443,9 +442,9 @@ Seite die anderen im selben Moment entfernt und beide Hälften als
 zwei Cluster weiterlaufen, die nicht wieder zusammenfinden, wenn das
 Netz heilt ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 Für Produktion konfiguriere also `lease-majority` oder eine andere
-Strategie. Mit zwei oder mehr Überlebenden kann der Gossip des einen
-ein Mitglied, das der andere gerade entfernt hat, als `unreachable`
-zurückbringen, bis es wieder entfernt wird — siehe
+Strategie. Das Entfernen hinterlässt einen Tombstone, also wird ein
+abgestürztes Mitglied auch mit zwei oder mehr Überlebenden einmal
+entfernt — siehe
 [den Failure Detector](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht).
 `auto-down = off` ist das Opt-out: Der Detector parkt das Mitglied
 auf `unreachable`, seine Shards bleiben ihm zugeordnet, und seine
