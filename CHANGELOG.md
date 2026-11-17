@@ -141,6 +141,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   actor processes a message, that every death is reported exactly once, and
   that restart budgets hold per child name.
 
+- **`canonicalOrderKey` in `actor-ts/util`** (#1841): the injective,
+  deterministic total order behind the built-in last-writer-wins tie-breaks.
+  Custom resolvers can use it to rank a full tie the same way.
+- **Every line v0.19.0 changed is now held by a test that fails when the line
+  is altered** (#1842–#1845). A mutation run over those lines
+  (`--since v0.18.0 --changed-lines`, 1 275 mutants) left 205 survivors that
+  no test in the repository detected. Each now has a test the runner has shown
+  to kill it, or a written proof that it is equivalent. Among the gaps: a lease
+  whose acquire rejects, the gossip clock reset (#1262), the HTTP/1.1 bounds on
+  Bun's HTTP/2 listener (#1756), the replicated-ES drain on stop (#1732), the
+  `eventsByTag` poll path every SQL and NoSQL backend takes (#957), and
+  `BunSocket.peerCertificate()`, which on Bun is the cluster's only input to
+  the certificate-identity check. The `testMap` in
+  `scripts/mutation-config.json` maps every new test to its source file.
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -362,6 +377,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   attached.
 - **Property tests generate inputs up to the `maxLength` they state**
   (#1774). fast-check's default size had capped every length at ten.
+
+- **`LWWRegister.merge` and `LastWriterWinsResolver.resolve` converge on a
+  full `(timestamp, replica)` tie for every pair of values** (#1841). The
+  tie-break key was a JSON rendering, so several distinct values got the same
+  key: `1n` and `"1n"`, `undefined` and any function, `-0` and `0`, and a
+  field holding `undefined` and a missing field. The two argument orders then
+  kept different values, and replicas could diverge, which #950 had set out to
+  end. The key is now the injective, never-throwing `canonicalOrderKey`.
+  `LWWRegister.equals` (and `LWWMap.equals` through it) no longer throws on a
+  `bigint` value and no longer calls `{ v: undefined }` equal to `{}`. Objects
+  that differ only in key order now compare equal.
+- **A replicated event-sourced actor whose restart ran out of
+  `recovery-timeout` no longer lets the next instance recover early**
+  (#1732, #1844). The restart's start failed while it was still waiting for its
+  predecessor's in-flight journal append. Its `postStop` then handed over only
+  its own drain, so the next instance could recover without that event and
+  reuse its `seqAtReplica`.
+- **On Bun, the Hono backend treats a `requestDeadlineMs` of `0` as "no
+  deadline"**, as `0` means everywhere else (#1843). An explicit
+  `idleTimeoutMs` is no longer reported as cutting before a deadline that does
+  not exist, and an unset one keeps Bun's default instead of a derived 8 s.
+  This only affected a runner or backend called directly:
+  `HttpExtension.bind` always passes a positive deadline.
 
 ### Changed
 
