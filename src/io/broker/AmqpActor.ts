@@ -236,13 +236,21 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
   }
 
   protected async disconnectImplementation(): Promise<void> {
-    // Every outstanding reply is moot: its delivery tag dies with the channel
-    // and RabbitMQ requeues the delivery on its own.
+    // Out of service first, then the replies cancelled (#1846).  Every
+    // outstanding reply is moot: its delivery tag dies with the channel and
+    // RabbitMQ requeues the delivery on its own.  The cancellation rejects
+    // each wait, and the rejection reaches `requeueOn` while `close()` below
+    // is awaited — with the field still pointing at this channel, that nacked
+    // on a channel being closed (or already gone, on a connection loss), and
+    // each refused nack was reported as a `BrokerAcknowledgmentFailed`.
+    // Cleared here, the channel is no longer current, so `requeueOn` skips it
+    // exactly as `acknowledgeOn` skips a replaced one — on an orderly stop too.
+    const channel = this.channel;
+    this.channel = null;
     this.acknowledgments?.cancelAll('AmqpActor: disconnecting before the target replied');
     this.acknowledgments = null;
     this.pendingAcks.clear();
-    try { await this.channel?.close(); } catch { /* ignore */ }
-    this.channel = null;
+    try { await channel?.close(); } catch { /* ignore */ }
     try { await this.connection?.close(); } catch { /* ignore */ }
     this.connection = null;
   }

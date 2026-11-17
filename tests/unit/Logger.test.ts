@@ -437,6 +437,36 @@ describe('the stock loggers are total over their arguments', () => {
       expect(typeof error.stack).toBe('string');
       expect(proxy).toBe('[unrenderable value]');
     });
+
+    /**
+     * One argument the serialiser cannot walk replaces that argument only
+     * (#1832).  The fallback used to drop the whole `args` array, so the
+     * readable arguments beside a hostile one vanished with it.
+     */
+    test('one argument with a throwing getter is replaced on its own, and the others stay', () => {
+      const lines: string[] = [];
+      const log = new JsonLogger(LogLevel.Debug, '', { app: 'demo' }, { write: (line) => { lines.push(line); } });
+      const getterThrows = { get boom(): never { throw new Error('getter boom'); } };
+      const toJsonThrows = { toJSON(): never { throw new Error('toJSON boom'); } };
+      log.warn('mixed', { items: 42 }, getterThrows, 'kept', toJsonThrows, 7n, undefined);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]!.endsWith('\n')).toBe(true);
+      const record = JSON.parse(lines[0]!);
+      expect(record.msg).toBe('mixed');
+      expect(record.app).toBe('demo');
+      expect(record.args).toEqual([
+        { items: 42 }, '[unrenderable value]', 'kept', '[unrenderable value]', '7', null,
+      ]);
+    });
+
+    test('a sink whose write throws does not escape the log call', () => {
+      let attempts = 0;
+      const log = new JsonLogger(LogLevel.Debug, '', {}, {
+        write: () => { attempts++; throw new Error('sink boom'); },
+      });
+      expect(() => log.error('lifecycle', { items: 1 })).not.toThrow();
+      expect(attempts).toBe(1);
+    });
   });
 
   describe('ConsoleLogger', () => {

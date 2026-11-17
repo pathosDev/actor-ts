@@ -441,6 +441,11 @@
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
       "tests/unit/io/broker/ForgedMqttSignals.test.ts"
     ],
+    "src/Logger.ts": [
+      "tests/unit/EventStreamUnrenderableFailure.test.ts",
+      "tests/unit/Logger.test.ts",
+      "tests/unit/logging/LogFormat.test.ts"
+    ],
     "src/logging/JsonSafe.ts": [
       "tests/integration/in-process/cluster/ClusterAccess.test.ts",
       "tests/integration/in-process/cluster/ClusterEventsReplay.test.ts",
@@ -535,6 +540,7 @@
     "src/persistence/PersistentActor.ts": [
       "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
       "tests/integration/in-process/persistence/PersistentActor.test.ts",
+      "tests/integration/in-process/persistence/PersistentActorStoreFailure.test.ts",
       "tests/integration/in-process/persistence/migration/WrapLegacy.test.ts",
       "tests/integration/in-process/persistence/replicated/LocalSequenceAcrossRestart.test.ts",
       "tests/integration/in-process/persistence/replicated/RecoveryGuards.test.ts",

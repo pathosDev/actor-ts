@@ -562,6 +562,14 @@ The framework writes a snapshot via the snapshot store; on
 recovery, it loads the snapshot first and only replays events
 *after* that snapshot's seqNr.
 
+The policy's snapshot is taken after the append, so a save that
+fails there does not fail the command: its events are already
+durable.  The actor logs a warning, the failure is counted in
+`persistence_snapshot_failures_total{operation="save"}`, the
+`persist` callback runs as usual, and the next snapshot the policy
+asks for retries the save.  An explicit `saveSnapshot()` still
+throws on a failed save.
+
 `everyNEvents(N)` is the common case.  For custom policies (snapshot
 on a specific event kind, time-based), implement:
 
