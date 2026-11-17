@@ -452,6 +452,12 @@
       "tests/unit/runtime/tcp/TlsClientAuth.test.ts",
       "tests/unit/runtime/tcp/TlsListenerCredential.test.ts"
     ],
+    "src/runtime/tcp/DenoTcpBackend.ts": [
+      "tests/unit/runtime/tcp/ConnectAbort.test.ts",
+      "tests/unit/runtime/tcp/DenoTcpBackpressure.test.ts",
+      "tests/unit/runtime/tcp/TlsClientAuth.test.ts",
+      "tests/unit/runtime/tcp/TlsListenerCredential.test.ts"
+    ],
     "src/testkit/FaultInjectingJournal.ts": [
       "tests/integration/in-process/persistence/replicated/JournalBreaker.test.ts",
       "tests/integration/in-process/persistence/replicated/RemoteAppendChain.test.ts",
