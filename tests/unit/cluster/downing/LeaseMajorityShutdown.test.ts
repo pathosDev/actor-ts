@@ -48,7 +48,13 @@ class GatedLease implements Lease {
   }
 
   checkAlive(): boolean { return this.held; }
-  onLost(): () => void { return () => { /* never lost in this fixture */ }; }
+  /** The `onLost` listeners subscribed and not yet unsubscribed; the fixture never reports a loss. */
+  readonly lostListeners = new Set<(reason: string) => void>();
+
+  onLost(handler: (reason: string) => void): () => void {
+    this.lostListeners.add(handler);
+    return () => { this.lostListeners.delete(handler); };
+  }
 
   /** Whether an `acquire()` is waiting for its answer. */
   get acquiring(): boolean { return this.pending !== null; }
@@ -130,6 +136,19 @@ describe('LeaseMajority.shutdown (#1454)', () => {
     await awaitCondition(() => lease.releaseCalls === 2, { label: 'the late win was released' });
     expect(lease.held).toBe(false);
     expect(strategy.decide(evenSplit)).toEqual(new Set());
+  });
+
+  test('it stops watching the lease: the onLost subscription is given back', async () => {
+    // A listener left on the lease outlives the strategy for as long as the
+    // lease object does, and keeps the stopped strategy reachable from it.
+    const lease = new GatedLease();
+    const strategy = strategyOver(lease);
+    await wonArbitration(lease, strategy);
+    expect(lease.lostListeners.size).toBe(1);
+
+    await strategy.shutdown();
+
+    expect(lease.lostListeners.size).toBe(0);
   });
 
   test('a second shutdown releases nothing more', async () => {

@@ -58,6 +58,11 @@ describe('NodeAddress', () => {
     expect(() => NodeAddress.parse('tcp://my-app@10.0.0.5:2552')).toThrow(/scheme/);
   });
 
+  test('parse refuses a scheme separator at the very start of the system name', () => {
+    // `indexOf` answers 0 here, the one position a `> 0` test would miss.
+    expect(() => NodeAddress.parse('://my-app@10.0.0.5:2552')).toThrow(/scheme/);
+  });
+
   // The same trap one field over: `parseInt` stops at the first non-digit, so
   // an actor path pasted where a node address belongs read as port 2552 and
   // the rest was dropped without a word.

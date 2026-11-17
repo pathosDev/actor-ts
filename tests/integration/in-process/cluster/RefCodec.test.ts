@@ -458,6 +458,13 @@ describe('RefCodec — round-trip through JSON.stringify', () => {
       const decodedField = Object.getOwnPropertyDescriptor(decoded, '__proto__')?.value as Record<string, unknown>;
       expect(decodedField.note).toBe('data');
       expect(decodedField.replyTo).toBe(local);
+
+      // An ordinary data property both ways, as `JSON.parse` makes one — a
+      // receiver that writes to or deletes the field must be able to.
+      const ordinary = { enumerable: true, writable: true, configurable: true };
+      expect(Object.getOwnPropertyDescriptor(encoded, '__proto__')).toMatchObject(ordinary);
+      expect(Object.getOwnPropertyDescriptor(decoded, '__proto__')).toMatchObject(ordinary);
+      expect(Object.getOwnPropertyDescriptor(JSON.parse('{"__proto__":{}}'), '__proto__')).toMatchObject(ordinary);
     } finally {
       await cluster.leave();
       await system.terminate();
