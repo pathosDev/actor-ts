@@ -483,6 +483,12 @@
       "tests/unit/http/ShutdownDrain.test.ts",
       "tests/unit/management/BuiltInHealthChecks.test.ts"
     ],
+    "src/parallelism/ParallelismExtension.ts": [
+      "tests/unit/parallelism/ClusterRouterOverMesh.test.ts",
+      "tests/unit/parallelism/DisabledByDefault.test.ts",
+      "tests/unit/parallelism/ParallelismExtension.test.ts",
+      "tests/unit/parallelism/SpawnProtocol.test.ts"
+    ],
     "src/persistence/journals/CassandraJournal.ts": [
       "tests/integration/in-process/persistence/CassandraJournal.test.ts",
       "tests/integration/in-process/persistence/CassandraTagIndex.test.ts",
@@ -664,6 +670,12 @@
       "tests/unit/UtilExports.test.ts",
       "tests/unit/crdt/Properties.test.ts",
       "tests/integration/in-process/persistence/replicated/ConflictResolver.test.ts"
+    ],
+    "src/worker/WorkerMesh.ts": [
+      "tests/integration/in-process/cluster/WorkerMesh.test.ts",
+      "tests/unit/parallelism/ParallelismExtension.test.ts",
+      "tests/unit/worker/WorkerMesh.test.ts",
+      "tests/unit/worker/WorkerMeshBootstrap.test.ts"
     ]
   },
   "sets": {

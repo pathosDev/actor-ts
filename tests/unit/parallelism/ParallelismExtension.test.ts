@@ -468,6 +468,53 @@ describe('ParallelismExtension — actors on workers from config alone (#1563)',
     }
   }, 20_000);
 
+  /**
+   * #1826 — once a phase budget abandons the orderly shutdown, the pipeline
+   * moves on to `cluster-leave`, whose `worker-mesh-terminate` used to find
+   * the mesh still open and stop the threads while the abandoned run was still
+   * waiting for their acknowledgments.  It now waits for that run first, up to
+   * its own phase budget, so no thread is stopped before the run hands off.
+   *
+   * The acknowledgments are withheld, so the run waits out its own bound (the
+   * drain timeout plus a second) — well past the abandoning 20 ms and well
+   * inside `cluster-leave`'s default budget.
+   */
+  test('worker-mesh-terminate waits for an abandoned orderly shutdown before it stops the threads (#1826)', async () => {
+    const r = rig({
+      hardStop: true,
+      name: 'para-mesh-waits',
+      config: {
+        system: { 'shutdown-drain-timeout': '100ms' },
+        'coordinated-shutdown': { phases: { 'before-cluster-shutdown': { timeout: '20ms' } } },
+      },
+    });
+    const threadsStoppedAtHandOff: boolean[] = [];
+    const realTerminate = WorkerMesh.prototype.terminate;
+    const terminateSpy = spyOn(WorkerMesh.prototype, 'terminate').mockImplementation(function (this: WorkerMesh) {
+      threadsStoppedAtHandOff.push(r.backend.spawned.some((worker) => worker.terminated));
+      return realTerminate.call(this);
+    });
+    try {
+      const ref = r.system.spawn(Lifecycle, 'lifecycle');
+      const extension = r.system.extension(ParallelismExtensionId);
+      await extension.whenReady();
+      await awaitCondition(() => (ref as PendingRemoteActorRef).isResolved, { timeoutMs: 12_000, label: 'spawn acknowledged' });
+      (extension as unknown as { onWorkerTerminated: () => void }).onWorkerTerminated = () => {};
+
+      await r.system.extension(CoordinatedShutdownId).run();
+
+      expect(threadsStoppedAtHandOff).toEqual([false]);
+      expect(r.backend.spawned.every((worker) => worker.terminated)).toBe(true);
+    } finally {
+      terminateSpy.mockRestore();
+      await r.system.terminate();
+      for (const hosted of r.hosted) {
+        const node = await hosted.catch(() => null);
+        if (node !== null) await node.system.terminate();
+      }
+    }
+  }, 20_000);
+
   test('terminate() before the mesh is up still tears the workers down and fails what was waiting', async () => {
     const r = rig();
     const ref = r.system.spawn(Where, 'never');
