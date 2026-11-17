@@ -68,6 +68,7 @@ import type {
 import {
   ClusterClientOptionsValidator,
   DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
+  DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE,
   DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
   withClusterClientConfigDefaults,
 } from './ClusterClientOptions.js';
@@ -109,6 +110,17 @@ type ContactPointConnection = {
   socket: TcpSocketLike | null;
   /** Filled by the `hello-ack` that made this the client's connection. */
   peer: NodeAddress | null;
+  /**
+   * Whether the socket's last write answered `false` and no `onDrain` has come
+   * since (#1827) — while it is set, every frame goes into {@link outbox}.
+   */
+  backPressured: boolean;
+  /**
+   * Encoded frames held behind a socket that pushed back, oldest first, at
+   * most `outboundQueueSize` of them; written in order on the socket's
+   * `onDrain` until it pushes back again.  Whole frames, never parts of one.
+   */
+  readonly outbox: Uint8Array[];
   /**
    * Set once the attempt has failed or been given up, and never cleared.
    * Nothing that happens on an ended attempt changes the client.
@@ -220,6 +232,8 @@ export class ClusterClient {
   private readonly tls: TlsTransportOptionsType | null;
   private readonly askTimeoutMs: number;
   private readonly connectTimeoutMs: number;
+  /** Frames held behind a socket that pushed back before a send is refused (#1827). */
+  private readonly outboundQueueSize: number;
   private readonly log: Logger;
   /** The connection a `hello-ack` completed; `null` until then and after it closes. */
   private connection: ContactPointConnection | null = null;
@@ -291,6 +305,8 @@ export class ClusterClient {
     this.askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     this.connectTimeoutMs =
       resolvedOptions.connectTimeoutMs ?? DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS;
+    this.outboundQueueSize =
+      resolvedOptions.outboundQueueSize ?? DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE;
     this.log = resolvedOptions.logger ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
   }
 
@@ -345,6 +361,10 @@ export class ClusterClient {
       askId,
       body: message,
     };
+    // Written before the ask is registered, so a frame refused for a contact
+    // point that is not reading (#1827) rejects the ask with nothing left
+    // behind.  No reply can overtake it: replies arrive on a later I/O turn.
+    this.writeFrame(env as unknown as WireMessage);
     return new Promise<R>((resolve, reject) => {
       const ms = timeoutMs ?? this.askTimeoutMs;
       // Chained rather than one `setTimeout`: a host timer fires a delay past
@@ -362,7 +382,6 @@ export class ClusterClient {
         resolve: (v: unknown) => resolve(v as R),
         reject, timer,
       });
-      this.writeFrame(env as unknown as WireMessage);
     });
   }
 
@@ -385,6 +404,11 @@ export class ClusterClient {
       // client no longer has.
       this.connection = null;
       if (connection.socket !== null) {
+        // What the outbox holds goes out ahead of the FIN, as the transport's
+        // orderly close does (#931): every `send` behind it already resolved,
+        // so its caller believes it sent.  Bounded already, and the socket
+        // queues it whatever it answers.
+        for (const frame of connection.outbox.splice(0)) connection.socket.write(frame);
         try { connection.socket.end(); } catch { /* ignore */ }
       }
     }
@@ -468,6 +492,8 @@ export class ClusterClient {
         decoder: new FrameDecoder(undefined, this.readConstraints, this.wireDecode),
         socket: null,
         peer: null,
+        backPressured: false,
+        outbox: [],
         ended: false,
         fail: (error) => {
           if (connection.ended || connection.peer !== null) return;
@@ -510,6 +536,7 @@ export class ClusterClient {
           onData: (s, chunk) => this.onData(connection, s, chunk),
           onClose: () => this.onConnectionClose(connection),
           onError: (_s, err) => this.onConnectionError(connection, err),
+          onDrain: () => this.onConnectionDrain(connection),
         },
       }).then(
         (s) => {
@@ -536,7 +563,7 @@ export class ClusterClient {
       minWireVersion: MIN_CLUSTER_WIRE_VERSION,
     };
     try {
-      socket.write(encodeFrame(hello));
+      connection.backPressured = socket.write(encodeFrame(hello)) === false;
     } catch (e) {
       connection.fail(e instanceof Error ? e : new Error(String(e)));
     }
@@ -670,6 +697,10 @@ export class ClusterClient {
   }
 
   private onSocketClose(): void {
+    // Nothing held can reach anyone now.  Every waiting ask is failed below;
+    // a `send` resolved when its frame was taken, so say what was lost.
+    const held = this.connection?.outbox.splice(0).length ?? 0;
+    if (held > 0) this.log.warn(`ClusterClient: connection closed with ${held} frame(s) still held for it; dropped`);
     this.connection = null;
     // Pending asks fail — the user can retry, which will reconnect.
     for (const [id, p] of this.pending) {
@@ -680,12 +711,53 @@ export class ClusterClient {
     this.pending.clear();
   }
 
+  /**
+   * Hand one frame to the socket — or, while the socket is pushing back, to the
+   * connection's {@link ContactPointConnection.outbox} (#1827).
+   *
+   * Every write used to go straight to the socket whatever it answered, and
+   * since #931 every adapter keeps what it is handed, so a contact point that
+   * stopped reading grew this process's heap by every envelope sent to it.
+   * After a `false` nothing more is written until `onDrain`, and at most
+   * `outboundQueueSize` frames are held.  Over that bound the frame is
+   * refused with a throw, which `send` and `ask` turn into a rejection: unlike
+   * the transport, which drops the oldest because newer gossip supersedes it,
+   * every envelope here is a command a caller is waiting on.  `=== false`, as
+   * in `TcpTransport`: a socket that answers nothing never pushes back.
+   */
   private writeFrame(message: WireMessage): void {
-    const socket = this.connection?.socket ?? null;
-    if (socket === null) {
+    const connection = this.connection;
+    const socket = connection?.socket ?? null;
+    if (connection === null || socket === null) {
       throw new Error('ClusterClient: not connected — call send()/ask() which awaits ensureConnected()');
     }
-    socket.write(encodeFrame(message));
+    const frame = encodeFrame(message);
+    if (!connection.backPressured) {
+      connection.backPressured = socket.write(frame) === false;
+      return;
+    }
+    if (connection.outbox.length >= this.outboundQueueSize) {
+      throw new Error(
+        `ClusterClient: contact point ${connection.peer ?? connection.target} is not reading; `
+        + `${this.outboundQueueSize} frame(s) are already held for it, so this one is refused `
+        + '(actor-ts.cluster.client.outbound-queue-size)',
+      );
+    }
+    connection.outbox.push(frame);
+  }
+
+  /**
+   * The socket can take more again: write the held frames, in order, until it
+   * pushes back or none are left (#1827).  An attempt that never became the
+   * client's connection has nothing held.
+   */
+  private onConnectionDrain(connection: ContactPointConnection): void {
+    const socket = connection.socket;
+    if (connection.ended || socket === null) return;
+    connection.backPressured = false;
+    while (connection.outbox.length > 0 && !connection.backPressured) {
+      connection.backPressured = socket.write(connection.outbox.shift()!) === false;
+    }
   }
 }
 

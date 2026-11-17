@@ -740,6 +740,7 @@ hands out a per-node value.
 | `cluster.client.system-name` | `"cluster-client"` | Synthetic system name the client puts in its `hello`.  It names the client's side of the handshake and is not an identity. |
 | `cluster.client.ask-timeout` | `5s` | Deadline for `ask(path, message)` when the call itself names none.  A per-call `timeoutMs` still wins. |
 | `cluster.client.connect-timeout` | `5s` | How long **one** contact point gets to answer the `hello` handshake before the client gives up on it and dials the next. |
+| `cluster.client.outbound-queue-size` | `1000` | Frames held for a contact point whose socket has pushed back and not yet drained; past it the next `send` or `ask` is refused with an error rather than buffered without bound.  Held frames go in order once the socket drains. |
 | `cluster.client.receptionist.ask-timeout` | `5s` | Deadline for the ask a cluster node makes on a client's behalf when an arriving envelope carries an `askId`. |
 
 This block is read differently from every other one on this page, and

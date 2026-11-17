@@ -91,6 +91,19 @@
       "tests/unit/cluster/downing/LeaseMajorityLostWin.test.ts",
       "tests/unit/cluster/downing/LeaseMajorityTerminate.test.ts"
     ],
+    "src/cluster/ClusterClient.ts": [
+      "tests/integration/in-process/cluster/ClusterClient.askId.test.ts",
+      "tests/unit/cluster/ClusterClientBackpressure.test.ts",
+      "tests/unit/cluster/ClusterClientConnect.test.ts",
+      "tests/unit/cluster/ClusterClientLongDeadline.test.ts",
+      "tests/unit/cluster/ClusterClientWireDecode.test.ts",
+      "tests/unit/config/ClusterClientConfigDefaults.test.ts"
+    ],
+    "src/cluster/ClusterClientOptions.ts": [
+      "tests/unit/cluster/ClusterClientBackpressure.test.ts",
+      "tests/unit/cluster/ClusterClientOptions.test.ts",
+      "tests/unit/config/ClusterClientConfigDefaults.test.ts"
+    ],
     "src/cluster/ClusterOptions.ts": [
       "tests/integration/in-process/cluster/ClusterAccess.test.ts",
       "tests/integration/in-process/cluster/ClusterEventsReplay.test.ts",
@@ -226,10 +239,10 @@
       "tests/unit/worker/MetricsRelay.test.ts"
     ],
     "src/crdt/LWWRegister.ts": [
+      "tests/unit/cluster/sharding/DistributedDataCoordinatorStateStore.test.ts",
       "tests/unit/crdt/CrdtWireValidation.test.ts",
       "tests/unit/crdt/LWWRegisterEquals.test.ts",
       "tests/unit/crdt/Properties.test.ts",
-      "tests/unit/cluster/sharding/DistributedDataCoordinatorStateStore.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
     ],
     "src/http/backend/ExpressBackend.ts": [
@@ -452,10 +465,24 @@
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
       "tests/unit/io/broker/ForgedMqttSignals.test.ts"
     ],
+    "src/io/broker/TcpServerActor.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/TcpServerActor.test.ts",
+      "tests/unit/io/broker/TcpServerBackpressure.test.ts"
+    ],
+    "src/io/broker/TcpServerOptions.ts": [
+      "tests/unit/io/broker/TcpServerBackpressure.test.ts",
+      "tests/unit/io/broker/TcpServerOptions.test.ts"
+    ],
     "src/Logger.ts": [
       "tests/unit/EventStreamUnrenderableFailure.test.ts",
       "tests/unit/Logger.test.ts",
       "tests/unit/logging/LogFormat.test.ts"
+    ],
+    "src/logging/GelfSink.ts": [
+      "tests/unit/logging/GelfSink.test.ts",
+      "tests/unit/logging/TcpLogSinkBackpressure.test.ts",
+      "tests/unit/logging/TcpLogSinkDial.test.ts"
     ],
     "src/logging/JsonSafe.ts": [
       "tests/integration/in-process/cluster/ClusterAccess.test.ts",
@@ -483,6 +510,14 @@
       "tests/unit/logging/SeqSink.test.ts",
       "tests/unit/logging/SplunkSink.test.ts",
       "tests/unit/logging/SyslogSink.test.ts",
+      "tests/unit/logging/TcpLogSinkDial.test.ts"
+    ],
+    "src/logging/StreamDrain.ts": [
+      "tests/unit/logging/TcpLogSinkBackpressure.test.ts"
+    ],
+    "src/logging/SyslogSink.ts": [
+      "tests/unit/logging/SyslogSink.test.ts",
+      "tests/unit/logging/TcpLogSinkBackpressure.test.ts",
       "tests/unit/logging/TcpLogSinkDial.test.ts"
     ],
     "src/management/HealthCheckExtension.ts": [
@@ -634,6 +669,8 @@
       "tests/unit/runtime/tcp/TlsListenerCredential.test.ts"
     ],
     "src/serialization/CborCodec.ts": [
+      "tests/unit/cluster/FrameDecoderFuzz.test.ts",
+      "tests/unit/http/EntityCborAllowList.test.ts",
       "tests/unit/serialization/CborCodec.test.ts",
       "tests/unit/serialization/CborDecoderFuzz.test.ts",
       "tests/unit/serialization/CborDecoderTagAllowListEdges.test.ts",
@@ -641,9 +678,7 @@
       "tests/unit/serialization/ReadConstraints.test.ts",
       "tests/unit/serialization/RichTypeParity.test.ts",
       "tests/unit/serialization/SerializationProperties.test.ts",
-      "tests/unit/serialization/WideBigintWriteRefusal.test.ts",
-      "tests/unit/cluster/FrameDecoderFuzz.test.ts",
-      "tests/unit/http/EntityCborAllowList.test.ts"
+      "tests/unit/serialization/WideBigintWriteRefusal.test.ts"
     ],
     "src/testkit/FaultInjectingJournal.ts": [
       "tests/integration/in-process/persistence/replicated/JournalBreaker.test.ts",
@@ -668,10 +703,10 @@
       "tests/unit/testkit/FaultInjectingStores.test.ts"
     ],
     "src/util/CanonicalOrderKey.ts": [
-      "tests/unit/util/CanonicalOrderKey.test.ts",
+      "tests/integration/in-process/persistence/replicated/ConflictResolver.test.ts",
       "tests/unit/UtilExports.test.ts",
       "tests/unit/crdt/Properties.test.ts",
-      "tests/integration/in-process/persistence/replicated/ConflictResolver.test.ts"
+      "tests/unit/util/CanonicalOrderKey.test.ts"
     ]
   },
   "sets": {

@@ -27,6 +27,7 @@ import { expectExactOptions } from '../../util/ExactOptions.js';
 import {
   ClusterClientOptions,
   DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
+  DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE,
   DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
   readClusterClientOptionsFromConfig,
   withClusterClientConfigDefaults,
@@ -221,6 +222,7 @@ describe('readClusterClientOptionsFromConfig', () => {
         system-name     = "checkout-client"
         ask-timeout     = 250ms
         connect-timeout = 750ms
+        outbound-queue-size = 64
       }
     `);
 
@@ -229,6 +231,7 @@ describe('readClusterClientOptionsFromConfig', () => {
       systemName: 'checkout-client',
       askTimeoutMs: 250,
       connectTimeoutMs: 750,
+      outboundQueueSize: 64,
     });
   });
 
@@ -253,6 +256,7 @@ describe('readClusterClientOptionsFromConfig', () => {
       systemName: DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
       askTimeoutMs: DEFAULT_ASK_TIMEOUT_MS,
       connectTimeoutMs: DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
+      outboundQueueSize: DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE,
     });
   });
 

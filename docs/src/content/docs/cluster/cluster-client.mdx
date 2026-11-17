@@ -71,6 +71,7 @@ type ClusterClientOptionsType = {
   clientIdentity?: { host: string; port: number }; // identity announced in the client's hello
   askTimeoutMs?: number;                           // default ask timeout (ms; default 5000)
   connectTimeoutMs?: number;                       // per-contact-point wait for hello-ack (ms; default 5000)
+  outboundQueueSize?: number;                      // frames held while the socket pushes back (default 1000)
   tls?: TlsTransportOptionsType;                   // must match the cluster's
   logger?: Logger;                                 // default: ConsoleLogger at WARN
 };
@@ -118,6 +119,7 @@ actor-ts.cluster.client {
   system-name     = "checkout-client"
   ask-timeout     = 5s
   connect-timeout = 5s
+  outbound-queue-size = 1000
 
   receptionist {
     ask-timeout = 5s
@@ -307,6 +309,23 @@ class OrderActor extends Actor<OrderCommand> {
 A successful reply is passed through untouched; only failures are
 redacted.  That keeps the domain contract explicit instead of
 turning whatever an exception happened to say into an API.
+
+### A contact point that stops reading
+
+A contact point that accepts the connection and then reads slowly, or
+not at all, pushes back through the socket.  The client then writes
+nothing more until the socket drains, and holds at most
+`outbound-queue-size` frames (default 1000, `withOutboundQueueSize`)
+in order for it.  Past that, `send` and `ask` reject at once:
+
+```
+ClusterClient: contact point … is not reading; 1000 frame(s) are already held for it, so this one is refused (actor-ts.cluster.client.outbound-queue-size)
+```
+
+Refused rather than dropped, because every envelope is a command a
+caller is waiting on, and only the caller knows whether to retry,
+shed or give up.  The held frames are written ahead of the FIN on
+`close()`.
 
 ## Comparison with cluster-aware ActorRef
 

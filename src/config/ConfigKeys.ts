@@ -619,6 +619,8 @@ export const ConfigKeys = {
         bindPort: 'actor-ts.io.broker.tcp-server.bind-port',
         /** The admission cap; unset means unlimited. */
         maxConnections: 'actor-ts.io.broker.tcp-server.max-connections',
+        /** Bytes held for one connection that pushes back before it is failed (#1827). */
+        maxBufferedBytes: 'actor-ts.io.broker.tcp-server.max-buffered-bytes',
         framing: tcpFramingKeysUnder('actor-ts.io.broker.tcp-server.framing'),
       },
       /** `UdpSocketActor`. */
@@ -2023,6 +2025,8 @@ export const ConfigKeys = {
       systemName: 'actor-ts.cluster.client.system-name',
       askTimeout: 'actor-ts.cluster.client.ask-timeout',
       connectTimeout: 'actor-ts.cluster.client.connect-timeout',
+      /** Frames held behind a contact point that pushes back before a send is refused (#1827). */
+      outboundQueueSize: 'actor-ts.cluster.client.outbound-queue-size',
       receptionist: {
         askTimeout: 'actor-ts.cluster.client.receptionist.ask-timeout',
       },
