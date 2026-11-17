@@ -484,6 +484,29 @@ describe('broker actors forward TLS material to their driver', () => {
     }
   });
 
+  test('KafkaActor with no `ssl` configured hands kafkajs the built-in false', async () => {
+    // reference.conf publishes no `ssl` leaf, so the built-in default is the
+    // only thing that decides this — and `undefined` would leave the choice
+    // to whatever kafkajs defaults to.  #1845 G10.
+    const system: ActorSystem = createTestActorSystem({ name: 'tls-kafka-default' });
+    const reference = { current: null as RecordingKafkaActor | null };
+    const options = KafkaOptions.create().withBrokers(['kafka.internal:9092']);
+    system.spawn(() => {
+      const actor = new RecordingKafkaActor(options);
+      reference.current = actor;
+      return actor;
+    }, 'kafka');
+    try {
+      await awaitDriverCall(
+        'kafkajs was constructed',
+        () => (reference.current?.module.calls.length ?? 0) > 0,
+      );
+      expect(reference.current!.module.calls[0]!.ssl).toBe(false);
+    } finally {
+      await system.terminate();
+    }
+  });
+
   test('an actor with no TLS configured calls its driver exactly as before', async () => {
     const system: ActorSystem = createTestActorSystem({ name: 'tls-absent' });
     const reference = { current: null as RecordingAmqpActor | null };

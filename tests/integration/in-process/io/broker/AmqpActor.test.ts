@@ -39,15 +39,27 @@ class FakeAmqpChannel implements AmqpChannelLike {
   publishResult = true;
   readonly published: Array<{ exchange: string; routingKey: string; content: Uint8Array }> = [];
   readonly acked: AmqpRawMessage[] = [];
-  readonly nacked: Array<{ message: AmqpRawMessage; requeue: boolean }> = [];
+  readonly nacked: Array<{ message: AmqpRawMessage; allUpTo: boolean; requeue: boolean }> = [];
+  /** Every `prefetch`, `assertQueue` and `bindQueue` call, in order — the consumer setup. */
+  readonly prefetches: number[] = [];
+  readonly assertedQueues: Array<{ queue: string; options: unknown }> = [];
+  readonly boundQueues: Array<{ queue: string; exchange: string; routingKey: string }> = [];
   /** Throws from `ack` when set — a closing channel, a stale delivery tag. */
   ackError: Error | null = null;
+  /** Throws from `nack` when set. */
+  nackError: Error | null = null;
   private readonly listeners = new Map<ChannelEvent, Set<(...args: unknown[]) => void>>();
   private consumer: ((message: AmqpRawMessage | null) => void) | null = null;
 
-  async prefetch(): Promise<void> {}
-  async assertQueue(): Promise<unknown> { return undefined; }
-  async bindQueue(): Promise<unknown> { return undefined; }
+  async prefetch(count: number): Promise<void> { this.prefetches.push(count); }
+  async assertQueue(queue: string, options: unknown): Promise<unknown> {
+    this.assertedQueues.push({ queue, options });
+    return undefined;
+  }
+  async bindQueue(queue: string, exchange: string, routingKey: string): Promise<unknown> {
+    this.boundQueues.push({ queue, exchange, routingKey });
+    return undefined;
+  }
   async consume(_queue: string, onMessage: (message: AmqpRawMessage | null) => void): Promise<unknown> {
     this.consumer = onMessage;
     return undefined;
@@ -60,8 +72,9 @@ class FakeAmqpChannel implements AmqpChannelLike {
     if (this.ackError) throw this.ackError;
     this.acked.push(message);
   }
-  nack(message: AmqpRawMessage, _allUpTo: boolean, requeue: boolean): void {
-    this.nacked.push({ message, requeue });
+  nack(message: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void {
+    if (this.nackError) throw this.nackError;
+    this.nacked.push({ message, allUpTo, requeue });
   }
   once(event: ChannelEvent, listener: (...args: never[]) => void): void {
     const wrapped = (...args: unknown[]): void => {
@@ -214,7 +227,9 @@ describe('AmqpActor — acknowledges on the target\'s reply (#976)', () => {
       const { channel } = await bootConsuming(system, 'negative');
       const message = channel.deliver('order-1');
       await awaitCondition(() => channel.nacked.length === 1, { timeoutMs: 4_000, label: 'the negative reply nacked' });
-      expect(channel.nacked[0]).toEqual({ message, requeue: true });
+      // `allUpTo` false: only this delivery goes back, not every one the
+      // channel delivered before it and the target has not settled yet.
+      expect(channel.nacked[0]).toEqual({ message, allUpTo: false, requeue: true });
       expect(channel.acked).toEqual([]);
     } finally {
       await system.terminate();
@@ -225,8 +240,9 @@ describe('AmqpActor — acknowledges on the target\'s reply (#976)', () => {
     const system = createTestActorSystem({ name: 'amqp-on-reply-timeout' });
     try {
       const { channel } = await bootConsuming(system, 'hold', (o) => o.withAcknowledgmentTimeoutMs(50));
-      channel.deliver('order-1');
+      const message = channel.deliver('order-1');
       await awaitCondition(() => channel.nacked.length === 1, { timeoutMs: 4_000, label: 'the timeout nacked' });
+      expect(channel.nacked[0]).toEqual({ message, allUpTo: false, requeue: true });
       expect(channel.acked).toEqual([]);
     } finally {
       await system.terminate();
@@ -267,6 +283,40 @@ describe('AmqpActor — acknowledges on the target\'s reply (#976)', () => {
       await system.terminate();
     }
   });
+
+  test('a broker that refuses the requeue nack is reported with the queue, not swallowed', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-reply-nack-fails' });
+    try {
+      const failures = collectAcknowledgmentFailures(system);
+      const { channel } = await bootConsuming(system, 'negative');
+      channel.nackError = new Error('channel closing');
+      channel.deliver('order-1');
+      await awaitCondition(() => failures.length === 1, { timeoutMs: 4_000, label: 'the refused nack was published' });
+      expect(failures[0]!.source).toBe('orders');
+      expect(failures[0]!.cause.message).toBe('channel closing');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('stopping the actor with a reply outstanding gives the delivery back on its own channel', async () => {
+    // Teardown gives up on every outstanding reply before it closes the
+    // channel, and the requeue that follows still finds the channel current —
+    // so RabbitMQ gets the delivery back at once rather than when the closed
+    // channel's unacknowledged set is swept.
+    const system = createTestActorSystem({ name: 'amqp-on-reply-stop' });
+    try {
+      const { actor, target, channel } = await bootConsuming(system, 'hold');
+      const message = channel.deliver('order-1');
+      await awaitCondition(() => target.received.length === 1, { timeoutMs: 4_000, label: 'the delivery reached the target' });
+      system.stop(actor);
+      await awaitCondition(() => channel.nacked.length === 1, { timeoutMs: 4_000, label: 'teardown requeued the delivery' });
+      expect(channel.nacked[0]).toEqual({ message, allUpTo: false, requeue: true });
+      expect(channel.acked).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
 });
 
 describe('AmqpActor — acknowledgment = on-delivery', () => {
@@ -299,6 +349,32 @@ describe('AmqpActor — acknowledgment = on-delivery', () => {
       await system.terminate();
     }
   });
+
+  test('a delivery on a channel that was replaced is neither acked nor handed over', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-delivery-stale' });
+    try {
+      const { instance, target, channel } = await bootConsuming(
+        system, 'hold', (o) => o
+          .withAcknowledgment('on-delivery')
+          .withReconnect({ initialDelayMs: 5, randomFactor: 0 }),
+      );
+      instance.publicSimulateLoss();
+      await awaitCondition(
+        () => instance.module.channels.length === 2 && instance.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh channel' },
+      );
+      // amqplib can still hand over a delivery the old channel had buffered.
+      // Its tag means nothing on the new channel, and RabbitMQ redelivers it
+      // there anyway, so this copy must go nowhere.
+      channel.deliver('order-1');
+      await sleep(SETTLE_MS);  // the claim is "never handed over"; see SETTLE_MS
+      expect(channel.acked).toEqual([]);
+      expect(instance.module.channel.acked).toEqual([]);
+      expect(target.received).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
 });
 
 describe('AmqpActor — autoAcknowledge = false', () => {
@@ -319,6 +395,92 @@ describe('AmqpActor — autoAcknowledge = false', () => {
       await awaitCondition(() => target.received.length === 2, { timeoutMs: 4_000, label: 'the second delivery arrived' });
       actor.tell({ kind: 'acknowledgment', delivery: target.received[1]! });
       await awaitCondition(() => failures.length === 1, { timeoutMs: 4_000, label: 'the refused ack was published' });
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a negative acknowledgment nacks that delivery alone, requeueing unless told not to', async () => {
+    const system = createTestActorSystem({ name: 'amqp-manual-nack' });
+    try {
+      const { actor, target, channel } = await bootConsuming(system, 'hold', (o) => o.withAutoAcknowledge(false));
+      const first = channel.deliver('order-1');
+      const second = channel.deliver('order-2');
+      await awaitCondition(() => target.received.length === 2, { timeoutMs: 4_000, label: 'both deliveries arrived' });
+
+      actor.tell({ kind: 'negativeAcknowledgment', delivery: target.received[0]! });
+      await awaitCondition(() => channel.nacked.length === 1, { timeoutMs: 4_000, label: 'the first nack' });
+      expect(channel.nacked[0]).toEqual({ message: first, allUpTo: false, requeue: true });
+
+      actor.tell({ kind: 'negativeAcknowledgment', delivery: target.received[1]!, requeue: false });
+      await awaitCondition(() => channel.nacked.length === 2, { timeoutMs: 4_000, label: 'the second nack' });
+      expect(channel.nacked[1]).toEqual({ message: second, allUpTo: false, requeue: false });
+      expect(channel.acked).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a refused negative acknowledgment is reported with the queue', async () => {
+    const system = createTestActorSystem({ name: 'amqp-manual-nack-fails' });
+    try {
+      const failures = collectAcknowledgmentFailures(system);
+      const { actor, target, channel } = await bootConsuming(system, 'hold', (o) => o.withAutoAcknowledge(false));
+      channel.nackError = new Error('channel closing');
+      channel.deliver('order-1');
+      await awaitCondition(() => target.received.length === 1, { timeoutMs: 4_000, label: 'the delivery arrived' });
+      actor.tell({ kind: 'negativeAcknowledgment', delivery: target.received[0]! });
+      await awaitCondition(() => failures.length === 1, { timeoutMs: 4_000, label: 'the refused nack was published' });
+      expect(failures[0]!.source).toBe('orders');
+      expect(failures[0]!.cause.message).toBe('channel closing');
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+describe('AmqpActor — consumer setup on connect', () => {
+  test('prefetch defaults to 1, a queue is declared durable, and only a binding with an exchange is bound', async () => {
+    const system = createTestActorSystem({ name: 'amqp-setup-defaults' });
+    try {
+      const targetRef = system.spawn(() => new DeliveryTarget('hold'), 'setup-target');
+      const amqpOptions = AmqpOptions.create()
+        .withUrl('amqp://fake:5672')
+        .withBindings([
+          { queue: 'orders', target: targetRef },
+          { queue: 'audit', exchange: 'events', target: targetRef },
+          { queue: 'billing', exchange: 'events', routingKey: 'billing.#', target: targetRef },
+        ]);
+      const { instance } = await bootAmqp(system, amqpOptions);
+      const channel = instance.module.channel;
+      expect(channel.prefetches).toEqual([1]);
+      expect(channel.assertedQueues).toEqual([
+        { queue: 'orders', options: { durable: true } },
+        { queue: 'audit', options: { durable: true } },
+        { queue: 'billing', options: { durable: true } },
+      ]);
+      expect(channel.boundQueues).toEqual([
+        { queue: 'audit', exchange: 'events', routingKey: '' },
+        { queue: 'billing', exchange: 'events', routingKey: 'billing.#' },
+      ]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a configured prefetch and queue options reach the channel as given', async () => {
+    const system = createTestActorSystem({ name: 'amqp-setup-configured' });
+    try {
+      const targetRef = system.spawn(() => new DeliveryTarget('hold'), 'setup-target');
+      const amqpOptions = AmqpOptions.create()
+        .withUrl('amqp://fake:5672')
+        .withPrefetch(7)
+        .withBindings([{ queue: 'scratch', queueOptions: { durable: false, autoDelete: true }, target: targetRef }]);
+      const { instance } = await bootAmqp(system, amqpOptions);
+      const channel = instance.module.channel;
+      expect(channel.prefetches).toEqual([7]);
+      expect(channel.assertedQueues).toEqual([{ queue: 'scratch', options: { durable: false, autoDelete: true } }]);
+      expect(channel.boundQueues).toEqual([]);
     } finally {
       await system.terminate();
     }
@@ -422,6 +584,49 @@ describe('AmqpActor — channel backpressure is bounded (#981)', () => {
       expect(channel.listenerCount('close')).toBe(0);
       expect(channel.listenerCount('error')).toBe(0);
     } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a drain that does come also clears the drain timer', async () => {
+    // The timer is not unref'd, so one left running holds the event loop for
+    // the whole drain timeout after every drain that succeeded.  Its late
+    // reject is a no-op on a settled promise — nothing but the timer itself
+    // tells the two apart, so the test watches the timer.  The odd delay is
+    // what picks it out of every other timer the system sets.
+    const drainTimeoutMs = 987_654;
+    const armed = new Set<unknown>();
+    const cleared = new Set<unknown>();
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    globalThis.setTimeout = ((handler: () => void, delay?: number, ...rest: unknown[]) => {
+      const handle = originalSetTimeout(handler, delay, ...rest);
+      if (delay === drainTimeoutMs) armed.add(handle);
+      return handle;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle?: Parameters<typeof clearTimeout>[0]) => {
+      if (armed.has(handle)) cleared.add(handle);
+      originalClearTimeout(handle);
+    }) as typeof clearTimeout;
+    FakeAmqpActor.drainTimeout = drainTimeoutMs;
+    const system = createTestActorSystem({ name: 'amqp-drain-timer' });
+    try {
+      const amqpOptions = AmqpOptions.create().withUrl('amqp://fake:5672');
+      const { actor, instance } = await bootAmqp(system, amqpOptions);
+      const channel = instance.module.channel;
+      channel.publishResult = false;
+      actor.tell({ kind: 'publish', publish: { exchange: 'x', routingKey: 'k', content: 'one' } });
+      await awaitCondition(() => channel.listenerCount('drain') === 1, {
+        timeoutMs: 4_000, label: 'the publish is parked on drain',
+      });
+      expect(armed.size).toBe(1);
+      channel.emit('drain');
+      expect([...cleared]).toEqual([...armed]);
+    } finally {
+      for (const handle of armed) originalClearTimeout(handle as Parameters<typeof clearTimeout>[0]);
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+      FakeAmqpActor.drainTimeout = 30_000;
       await system.terminate();
     }
   });

@@ -651,6 +651,21 @@ describe('KafkaActor — options parsing', () => {
     }
   });
 
+  test('with no producer block anywhere, the producer gets the built-in defaults (#1845 G10)', async () => {
+    // reference.conf publishes no producer leaf, so these two are decided by
+    // `builtInDefaultOptions` alone — an idempotent producer by accident would
+    // need the cluster's idempotence ACL, and auto-created topics would hide a
+    // typo'd topic name.
+    const sys = createTestActorSystem({ name: 'kafka-producer-defaults' });
+    try {
+      const kafkaOptions = KafkaOptions.create().withBrokers(['fake:9092']);
+      const { mock } = await bootActor(sys, kafkaOptions);
+      expect(mock.producerConfigs[0]).toEqual({ idempotent: false, allowAutoTopicCreation: false });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('HOCON producer { … } reaches the kafkajs producer (#871)', async () => {
     const sys = createTestActorSystem({
       name: 'kafka-producer-hocon',
