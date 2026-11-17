@@ -475,6 +475,13 @@
       "tests/integration/in-process/io/broker/Phase2.smoke.test.ts",
       "tests/unit/io/broker/BrokerConfigReaders.test.ts",
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts"
+    ],
+    "src/io/broker/AmqpActor.ts": [
+      "tests/integration/in-process/io/broker/AmqpActor.test.ts",
+      "tests/integration/in-process/io/broker/Phase2.smoke.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
+      "tests/unit/docs/EnvironmentJsonReadDocumented.test.ts"
     ]
   },
   "sets": {
