@@ -34,6 +34,7 @@ import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
 import {
   AuthenticatedShardingMessage,
+  type ClusterShardingStats,
   type GetClusterShardingStats,
   type HandOffComplete,
   type RegionHeartbeat,
@@ -267,6 +268,72 @@ describe('the coordinator acts on its turn (#1750)', () => {
 
     // The last answer completed the query; the deadline found nothing to cut short.
     expect(calls).toEqual(['onShardRegionStats', 'answerStatsQuery']);
+  }, 20_000);
+
+  test('the statistics deadline answers with the regions that did answer, and only once', async () => {
+    const harness = await startCoordinator('1750-stats-partial', 44_630);
+    // The answer goes back to whoever asked through `replyTo`, which is read
+    // here rather than at a recipient: the coordinator resolves only regions
+    // locally, and the answer's content is what the case is about.
+    const answers: ClusterShardingStats[] = [];
+    const internals = harness.coordinator as unknown as Record<string, (...parameters: unknown[]) => unknown>;
+    const replyTo = internals['replyTo']!;
+    internals['replyTo'] = function (this: unknown, ...parameters: unknown[]): unknown {
+      const message = parameters[2] as ShardingMessage;
+      if (message.kind === 'sharding.ClusterShardingStats') answers.push(message);
+      return replyTo.apply(this, parameters);
+    };
+    // A second region that never answers in time.
+    const silent = new NodeAddress('1750-stats-partial-silent', 'h', 44_631);
+    const silentPath = '/system/cluster-sharding/region-entity';
+    harness.coordinator.regions.set(`${silent}|${silentPath}`, {
+      node: silent,
+      path: silentPath,
+      proxy: false,
+      shards: new Set(),
+      lastSeenAtMs: Date.now(),
+      lastHeartbeatAtMs: null,
+      seededFromSnapshot: false,
+    });
+    const query: GetClusterShardingStats = {
+      kind: 'sharding.GetClusterShardingStats',
+      correlationId: 7,
+      requester: harness.regionPath,
+      requesterNode: harness.cluster.selfAddress.toJSON(),
+      timeoutMs: STATS_TIMEOUT_MS,
+    };
+    harness.tell(query);
+    await awaitCondition(
+      () => Array.from(harness.coordinator.statsQueries.values()).some((q) => q.awaiting.size === 1),
+      { timeoutMs: 4_000, label: 'the local region answered and the silent one is still awaited' },
+    );
+    const [queryId] = Array.from(harness.coordinator.statsQueries.keys());
+    expect(answers).toEqual([]);
+
+    harness.scheduler.fire(STATS_TIMEOUT_MS);
+    await awaitCondition(() => answers.length === 1, { timeoutMs: 4_000, label: 'the deadline answered the query' });
+    // The local region's count, and nothing from the region that stayed silent.
+    expect(answers[0]!.correlationId).toBe(7);
+    expect(answers[0]!.shards).toEqual([{
+      shardId: SHARD,
+      node: harness.cluster.selfAddress.toJSON(),
+      regionPath: harness.regionPath,
+      entityCount: 1,
+      resident: true,
+    }]);
+
+    // The silent region answers late: the query is closed, so nothing more goes out.
+    const calls = recordCalls(harness.coordinator, ['onShardRegionStats']);
+    const late: ShardRegionStats = {
+      kind: 'sharding.ShardRegionStats',
+      queryId: queryId!,
+      region: silentPath,
+      node: silent.toJSON(),
+      shards: [{ shardId: (SHARD + 1) % NUM_SHARDS, entityCount: 3, resident: true }],
+    };
+    harness.tell(late, silent);
+    await awaitCondition(() => calls.length === 1, { timeoutMs: 4_000, label: 'the late answer was handled' });
+    expect(answers).toHaveLength(1);
   }, 20_000);
 
   test('the shard-map publish runs behind a frame already queued', async () => {

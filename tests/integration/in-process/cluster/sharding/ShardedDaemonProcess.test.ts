@@ -110,6 +110,39 @@ describe('ShardedDaemonProcess — single node', () => {
     await nodeA.system.terminate();
   });
 
+  test('an object message reaches the daemon and leaves it running: only the retire marker retires (#951)', async () => {
+    // The host tells the retire marker apart from a user message by its
+    // `kind`.  Reading any object as the marker would stop the daemon on its
+    // first object message, drop that message, and start a fresh copy on the
+    // next one.
+    const nodeA = await startNode('sdp-objects', 'h', 53009);
+    const probe = nodeA.kit.createTestProbe();
+    type Job = { readonly kind: 'job'; readonly sequence: number };
+
+    class JobWorker extends Actor<Job> {
+      override preStart(): void { probe.tell('start'); }
+      override onReceive(job: Job): void { probe.tell(`job-${job.sequence}`); }
+    }
+
+    const daemonOptions = ShardedDaemonProcessOptions.create<Job>()
+      .withName('job-workers')
+      .withNumDaemons(1)
+      .withActorFor(() => JobWorker);
+    const handle = ShardedDaemonProcess.init<Job>(nodeA.system, nodeA.cluster, daemonOptions);
+    expect(await probe.expectMessage('start', 1_000)).toBe('start');
+
+    handle.tell(0, { kind: 'job', sequence: 1 });
+    expect(await probe.expectMessage('job-1', 1_000)).toBe('job-1');
+    handle.tell(0, { kind: 'job', sequence: 2 });
+    expect(await probe.expectMessage('job-2', 1_000)).toBe('job-2');
+    // Still the first instance: no second start behind the two jobs.
+    await probe.expectNoMessage(200);
+
+    handle.stop();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+
   test('100 daemons start on 100 distinct shards, daemon i on shard i (#951)', async () => {
     // More than 64, the default shard count, and enough that hashing the bare
     // index put four daemons on one shard.  Each daemon reports its index and

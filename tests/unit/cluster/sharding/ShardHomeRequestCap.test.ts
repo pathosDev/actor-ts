@@ -143,8 +143,8 @@ async function startVictim(systemName: string, port: number): Promise<Victim> {
   return victim;
 }
 
-async function attacker(name: string, port: number): Promise<InMemoryTransport> {
-  const transport = new InMemoryTransport(new NodeAddress(name, 'h', port));
+async function attacker(name: string, port: number, host = 'h'): Promise<InMemoryTransport> {
+  const transport = new InMemoryTransport(new NodeAddress(name, host, port));
   transport.setHandler(() => { /* replies are not read */ });
   await transport.start();
   transports.push(transport);
@@ -183,6 +183,35 @@ describe('the coordinator bounds the GetShardHome requests waiting on a shard (#
     );
 
     expect(waitingOn(victim)).toBe(2);
+  }, 20_000);
+
+  test('a request from the same region path on another node is not a repeat: host and port both count', async () => {
+    // Regions of one type share their path, and nodes of one cluster share the
+    // system name, so only the host and the port tell two regions' requests
+    // apart.  Either one dropped from the comparison takes the second node's
+    // request for a repeat of the first, and that node never hears where the
+    // shard went.
+    const victim = await startVictim('1219-nodes', 44_224);
+    const regionPath = '/system/sharding/region';
+    const first = await attacker('1219-peer', 44_225);
+    const otherHost = await attacker('1219-peer', 44_225, 'h2');
+    const otherPort = await attacker('1219-peer', 44_226);
+
+    askForHome(first, victim, regionPath);
+    askForHome(otherHost, victim, regionPath);
+    askForHome(otherPort, victim, regionPath);
+    askForHome(first, victim, '/system/sharding/fence');
+    await awaitCondition(
+      () => victim.coordinator().pending.get(SHARD)?.some((r) => r.requester === '/system/sharding/fence') ?? false,
+      { timeoutMs: 4_000, label: 'the coordinator handled every request' },
+    );
+
+    const waiting = victim.coordinator().pending.get(SHARD)!.filter((r) => r.requester === regionPath);
+    expect(waiting.map((r) => `${r.requesterNode.host}:${r.requesterNode.port}`)).toEqual([
+      'h:44225',
+      'h2:44225',
+      'h:44226',
+    ]);
   }, 20_000);
 
   test('past the cap the newest request goes to dead letters, with one warning', async () => {

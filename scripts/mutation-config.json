@@ -137,6 +137,7 @@
       "tests/unit/cluster/sharding/RememberEntitiesCompaction.test.ts",
       "tests/unit/cluster/sharding/SeededRefusedRegionRebalance.test.ts",
       "tests/unit/cluster/sharding/ShardCoordinatorAuthority.test.ts",
+      "tests/unit/cluster/sharding/ShardCoordinatorLeaseCycle.test.ts",
       "tests/unit/cluster/sharding/ShardCoordinatorTimersOnTurn.test.ts",
       "tests/unit/cluster/sharding/ShardCountRefusal.test.ts",
       "tests/unit/cluster/sharding/ShardHomeRequestCap.test.ts",
@@ -175,6 +176,7 @@
       "tests/unit/cluster/singleton/SingletonConfigDefaults.test.ts",
       "tests/unit/cluster/singleton/SingletonConfigFromHocon.test.ts",
       "tests/unit/cluster/singleton/SingletonInternalCommands.test.ts",
+      "tests/unit/cluster/singleton/SingletonManagerTimers.test.ts",
       "tests/unit/cluster/SingletonAcquireRetryDocumented.test.ts",
       "tests/unit/cluster/SingletonWarmHandOverBudget.test.ts",
       "tests/unit/coordination/SingletonLeasePrecedence.test.ts"
