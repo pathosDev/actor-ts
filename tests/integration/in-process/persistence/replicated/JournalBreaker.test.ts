@@ -353,6 +353,40 @@ async function landLateThenPersist(replica: Replica, journal: HeldAppendJournal)
   expect(replica.observations.current!.value).toBe(3);
 }
 
+/**
+ * `add 1`'s append lands late — `land` makes it — with the mailbox held, and
+ * `add 2` persists behind the hold, so the journal's head moves past the late
+ * event before its fold runs.  A snapshot taken then must stop short of the
+ * late event, and a recovery from it must hold both (#1732).
+ */
+async function snapshotBetweenLandingAndFold(replica: Replica, land: () => void): Promise<void> {
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  replica.ref.tell({ kind: 'hold', gate: new Promise<void>((resolve) => { releaseFirst = resolve; }) });
+  replica.ref.tell({ kind: 'add', amount: 2 });
+  replica.ref.tell({ kind: 'hold', gate: new Promise<void>((resolve) => { releaseSecond = resolve; }) });
+  try {
+    land();
+    await awaitCondition(async () => (await replica.extension.journal.highestSeq(replica.persistenceId)) === 1, {
+      ...WAIT, label: 'the first event landed',
+    });
+    releaseFirst();
+    await awaitCondition(() => replica.observations.persisted.includes(2), { ...WAIT, label: 'the second event persisted' });
+
+    await replica.observations.current!.snapshotNow();
+    const snapshot = await latestSnapshot(replica);
+    expect(snapshot?.state).toEqual({ value: 2 });
+    expect(snapshot?.journalSeqAtSnapshot).toBe(0);
+
+    releaseSecond();
+    await awaitCondition(() => replica.observations.current!.value === 3, { ...WAIT, label: 'the late event was folded' });
+    expect(await restartedState(replica, 'counter-from-early-snapshot')).toEqual({ value: 3 });
+  } finally {
+    releaseFirst?.();
+    releaseSecond?.();
+  }
+}
+
 type Restarted = {
   readonly ref: ActorRef<Command | ReplicatedEventEnvelope<Event>>;
   readonly state: State;
@@ -492,6 +526,60 @@ describe('ReplicatedEventSourcedActor — an append of unknown outcome is settle
       expect(await restartedState(replica, 'counter-after-early-snapshot')).toEqual({ value: 1 });
     } finally {
       release?.();
+      journal.landAll();
+      await stopReplica(replica);
+    }
+  });
+
+  test('a late landing seen through the cut call itself keeps its position when a later persist moves the journal on', async () => {
+    const journal = new HeldAppendJournal(new InMemoryJournal());
+    const replica = await startReplica('journal-breaker-late-position', 83_113, journal, 'jb-late-position', CALL_TIMEOUT);
+    try {
+      replica.ref.tell({ kind: 'add', amount: 1 });
+      await awaitCondition(() => replica.observations.persistFailures.length === 1, {
+        ...WAIT, label: 'the held append was cut at the call-timeout',
+      });
+      await snapshotBetweenLandingAndFold(replica, () => journal.landAll());
+    } finally {
+      journal.landAll();
+      await stopReplica(replica);
+    }
+  });
+
+  test('a late landing found by reading the journal back keeps its position when a later persist moves the journal on', async () => {
+    const journal = firstAnswerLostJournal();
+    const replica = await startReplica('journal-breaker-found-position', 83_114, journal, 'jb-found-position');
+    try {
+      // Lands at once, answered as failed; the holds queue up behind it in the
+      // same synchronous stretch, ahead of the fold its read-back schedules.
+      replica.ref.tell({ kind: 'add', amount: 1 });
+      await snapshotBetweenLandingAndFold(replica, () => {});
+    } finally {
+      await stopReplica(replica);
+    }
+  });
+
+  test('an append cut before its turn in the chain came is never written, and never folded', async () => {
+    const journal = new HeldAppendJournal(new InMemoryJournal());
+    const replica = await startReplica('journal-breaker-cancelled', 83_115, journal, 'jb-cancelled', CALL_TIMEOUT);
+    try {
+      replica.ref.tell({ kind: 'add', amount: 1 });
+      await awaitCondition(() => replica.observations.persistFailures.length === 1, {
+        ...WAIT, label: 'the held append was cut at the call-timeout',
+      });
+      // Queued behind the held append, and cut before the journal is asked.
+      replica.ref.tell({ kind: 'add', amount: 2 });
+      await awaitCondition(() => replica.observations.persistFailures.length === 2, {
+        ...WAIT, label: 'the queued append was cut before its turn',
+      });
+      expect(journal.heldCount).toBe(1);
+
+      journal.landAll();
+      await awaitCondition(() => replica.observations.current!.value === 1, { ...WAIT, label: 'the held append landed and was folded' });
+      // The successor waits for every settling of the stopped instance.
+      expect(await restartedState(replica, 'counter-after-cancel')).toEqual({ value: 1 });
+      expect((await storedEnvelopes(journal, replica.persistenceId)).map((e) => e.event.amount)).toEqual([1]);
+    } finally {
       journal.landAll();
       await stopReplica(replica);
     }
