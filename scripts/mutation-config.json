@@ -87,6 +87,19 @@
       "tests/unit/cluster/downing/LeaseMajorityLostWin.test.ts",
       "tests/unit/cluster/downing/LeaseMajorityTerminate.test.ts"
     ],
+    "src/cluster/ClusterClient.ts": [
+      "tests/integration/in-process/cluster/ClusterClient.askId.test.ts",
+      "tests/unit/cluster/ClusterClientBackpressure.test.ts",
+      "tests/unit/cluster/ClusterClientConnect.test.ts",
+      "tests/unit/cluster/ClusterClientLongDeadline.test.ts",
+      "tests/unit/cluster/ClusterClientWireDecode.test.ts",
+      "tests/unit/config/ClusterClientConfigDefaults.test.ts"
+    ],
+    "src/cluster/ClusterClientOptions.ts": [
+      "tests/unit/cluster/ClusterClientBackpressure.test.ts",
+      "tests/unit/cluster/ClusterClientOptions.test.ts",
+      "tests/unit/config/ClusterClientConfigDefaults.test.ts"
+    ],
     "src/cluster/ClusterOptions.ts": [
       "tests/integration/in-process/cluster/ClusterAccess.test.ts",
       "tests/integration/in-process/cluster/ClusterEventsReplay.test.ts",

@@ -75,6 +75,7 @@ type ClusterClientOptionsType = {
   clientIdentity?: { host: string; port: number }; // im Hello des Clients angekündigte Identität
   askTimeoutMs?: number;                           // Standard-Ask-Timeout (ms; Standard 5000)
   connectTimeoutMs?: number;                       // Wartezeit je Kontaktpunkt auf hello-ack (ms; Standard 5000)
+  outboundQueueSize?: number;                      // gehaltene Frames, solange der Socket zurückdrückt (Standard 1000)
   tls?: TlsTransportOptionsType;                   // muss zum Cluster passen
   logger?: Logger;                                 // Standard: ConsoleLogger auf WARN
 };
@@ -125,6 +126,7 @@ actor-ts.cluster.client {
   system-name     = "checkout-client"
   ask-timeout     = 5s
   connect-timeout = 5s
+  outbound-queue-size = 1000
 
   receptionist {
     ask-timeout = 5s
@@ -325,6 +327,24 @@ Eine erfolgreiche Antwort wird unverändert durchgereicht;
 redigiert werden nur Fehlschläge.  So bleibt der Domänenvertrag
 explizit, statt das, was eine Exception zufällig sagt, zur API zu
 machen.
+
+### Ein Kontaktpunkt, der nicht mehr liest
+
+Ein Kontaktpunkt, der die Verbindung annimmt und dann langsam oder
+gar nicht mehr liest, drückt über den Socket zurück.  Der Client
+schreibt dann nichts mehr, bis der Socket wieder aufnimmt, und hält
+höchstens `outbound-queue-size` Frames (Default 1000,
+`withOutboundQueueSize`) der Reihe nach für ihn.  Darüber hinaus
+weisen `send` und `ask` sofort ab:
+
+```
+ClusterClient: contact point … is not reading; 1000 frame(s) are already held for it, so this one is refused (actor-ts.cluster.client.outbound-queue-size)
+```
+
+Abgewiesen statt verworfen, weil jeder Umschlag ein Befehl ist, auf
+den ein Aufrufer wartet, und nur der Aufrufer weiß, ob er es erneut
+versucht, Last abwirft oder aufgibt.  Die gehaltenen Frames werden
+bei `close()` vor dem FIN geschrieben.
 
 ## Vergleich mit Cluster-fähigem ActorRef
 
