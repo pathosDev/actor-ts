@@ -193,6 +193,14 @@ way.  Without that bound one attempt waited for the operating system's own
 connect timeout, 21 s on Windows and about two minutes on Linux, with every
 record behind it held.  The 10 s are fixed; no option sets them yet.
 
+A Graylog that accepts the connection and then reads slowly, or stops
+reading, pushes back through the socket.  The sink writes no further record
+until the socket drains, so the records wait in the sink's own bounded
+`delivery` queue, which drops and reports what does not fit, instead of in a
+socket buffer that grows without bound.  A connection that takes nothing for
+**10 s** after pushing back is torn down and fails the batch retryably, so
+the retry dials afresh.
+
 ## Parseable
 
 ```ts
@@ -490,7 +498,9 @@ certificate and key themselves.
 connection is open — over `tls`, once the handshake is done — a refused
 connection fails the batch at once and retryably, and a collector that does
 not answer at all is given up after a fixed **10 s** for the connect and the
-handshake together.
+handshake together.  A collector that stops reading is waited for, not
+written past: the sink holds its next record until the socket drains, and
+tears the connection down after **10 s** without a drain.
 
 ## Related
 

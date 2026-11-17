@@ -441,6 +441,11 @@
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
       "tests/unit/io/broker/ForgedMqttSignals.test.ts"
     ],
+    "src/logging/GelfSink.ts": [
+      "tests/unit/logging/GelfSink.test.ts",
+      "tests/unit/logging/TcpLogSinkBackpressure.test.ts",
+      "tests/unit/logging/TcpLogSinkDial.test.ts"
+    ],
     "src/logging/JsonSafe.ts": [
       "tests/integration/in-process/cluster/ClusterAccess.test.ts",
       "tests/integration/in-process/cluster/ClusterEventsReplay.test.ts",
@@ -467,6 +472,14 @@
       "tests/unit/logging/SeqSink.test.ts",
       "tests/unit/logging/SplunkSink.test.ts",
       "tests/unit/logging/SyslogSink.test.ts",
+      "tests/unit/logging/TcpLogSinkDial.test.ts"
+    ],
+    "src/logging/StreamDrain.ts": [
+      "tests/unit/logging/TcpLogSinkBackpressure.test.ts"
+    ],
+    "src/logging/SyslogSink.ts": [
+      "tests/unit/logging/SyslogSink.test.ts",
+      "tests/unit/logging/TcpLogSinkBackpressure.test.ts",
       "tests/unit/logging/TcpLogSinkDial.test.ts"
     ],
     "src/management/HealthCheckExtension.ts": [

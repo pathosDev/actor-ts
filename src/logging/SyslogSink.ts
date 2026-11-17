@@ -6,6 +6,7 @@ import { BatchingSink, SinkDeliveryError } from './BatchingSink.js';
 import type { DgramSocketLike } from './GelfSink.js';
 import type { LogRecord } from './LogRecord.js';
 import type { LogSinkContext } from './LogSink.js';
+import { abandonStreamSocket, StreamDrain } from './StreamDrain.js';
 import {
   DEFAULT_SYSLOG_FACILITY,
   frameForStream,
@@ -209,6 +210,8 @@ const SYSLOG_CONNECT_TIMEOUT_MS = 10_000;
 class StreamSyslogWire implements SyslogWire {
   private socket: TcpSocketLike | undefined;
   private connecting: Promise<TcpSocketLike> | undefined;
+  /** Holds the batch while the socket pushes back (#1827). */
+  private readonly drain: StreamDrain;
 
   constructor(
     private readonly host: string,
@@ -216,11 +219,24 @@ class StreamSyslogWire implements SyslogWire {
     private readonly framing: SyslogFraming,
     private readonly tls: TlsTransportOptionsType | undefined,
     private readonly backend: () => Promise<TcpBackend>,
-  ) {}
+  ) {
+    this.drain = new StreamDrain(`syslog connection to ${host}:${port}`);
+  }
 
+  /**
+   * Resolves once the socket can take the next message — at once, unless this
+   * write met back-pressure (#1827).  A connection that stalls or goes while
+   * it pushes back is let go here, so the retry dials afresh.
+   */
   async send(message: string): Promise<void> {
     const socket = await this.ensureConnected();
-    socket.write(ENCODER.encode(frameForStream(message, this.framing)));
+    try {
+      await this.drain.write(socket, ENCODER.encode(frameForStream(message, this.framing)));
+    } catch (error) {
+      this.forget(socket);
+      abandonStreamSocket(socket);
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
@@ -252,8 +268,9 @@ class StreamSyslogWire implements SyslogWire {
         onOpen: () => {},
         // A syslog collector says nothing back.
         onData: () => {},
-        onClose: () => { this.forget(socket); },
-        onError: () => { this.forget(socket); },
+        onClose: () => { this.forget(socket); this.drain.lost(socket, 'closed'); },
+        onError: () => { this.forget(socket); this.drain.lost(socket, 'failed'); },
+        onDrain: () => { this.drain.drained(socket); },
       },
     }, SYSLOG_CONNECT_TIMEOUT_MS);
     this.socket = socket;
