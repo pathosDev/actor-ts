@@ -4,20 +4,19 @@
  * The cluster has no quarantine state, and the decision recorded for #1477 is
  * that it gets no second one: the refusal a downed peer meets is its `removed`
  * tombstone, kept for `max(tombstone.time-to-live, tombstone.min-retention)` —
- * 24 h at the defaults — and then pruned.  The routes that remove a member do
- * not all leave one behind, and `cluster/downing-strategies.mdx` ("What a
- * downed address may do next") states the difference as behaviour an operator
- * can rely on.  This file is what holds that page to the tree:
+ * 24 h at the defaults — and then pruned.  Every route that removes a member
+ * leaves one behind, and `cluster/downing-strategies.mdx` ("What a downed
+ * address may do next") states it as behaviour an operator can rely on.  This
+ * file is what holds that page to the tree:
  *
- * - `Cluster.down()`, a resolver decision and the peer's own `leave` write a
- *   tombstone, so the **same run** of the peer — same incarnation, the version
- *   it was removed at — is refused until the prune, and comes back with its
- *   old roles after it.
- * - The failure detector's own removal (`failure-detector.auto-down = on`, the
- *   default, no provider) deletes the entry: the one route with no refusal, so
- *   the same run is readmitted on its next frame.  Under the opt-out
- *   (`auto-down = off`) it removes nothing at all — the peer is parked at
- *   `unreachable`, and its next heartbeat brings it back.
+ * - `Cluster.down()`, a resolver decision, the peer's own `leave` and the
+ *   failure detector's own removal (`failure-detector.auto-down = on`, the
+ *   default, no provider) write a tombstone, so the **same run** of the peer —
+ *   same incarnation, the version it was removed at — is refused until the
+ *   prune, and comes back with its old roles after it.  The detector's route
+ *   deleted the entry until #1834, and the same run was readmitted on its next
+ *   frame.  Under the opt-out (`auto-down = off`) it removes nothing at all —
+ *   the peer is parked at `unreachable`, and its next heartbeat brings it back.
  * - The tombstone refuses the run, not only its version.  A restart (new
  *   incarnation, version from a fresh wall clock) out-versions it and is
  *   readmitted at once; the same run restamping its version is refused, since
@@ -433,8 +432,8 @@ describe('the routes that write a tombstone refuse the same run until the prune 
   });
 });
 
-describe("the failure detector's route — the one with no refusal (#1477, #1426)", () => {
-  test('auto-down = on deletes the entry, and the same run is readmitted on its next frame', async () => {
+describe("the failure detector's route (#1477, #1426, #1834)", () => {
+  test('auto-down = on tombstones the entry, and the same run is refused, announced gone once', async () => {
     const { cluster } = await startNode('refusal-auto-down', 9_476, { autoDown: true });
     const run = peerRun('refusal-auto-down', 9_576, 'run-1');
     const version = Date.now();
@@ -448,14 +447,13 @@ describe("the failure detector's route — the one with no refusal (#1477, #1426
 
     lastHeardFrom(cluster, run, SILENT_PAST_DOWN_MS);
     tick(cluster);
-    // Deleted, not tombstoned: nothing is left to refuse the address with.
-    expect(entryFor(cluster, run)).toBeUndefined();
-
-    announce(cluster, run, version);
-    expectReadmitted(cluster, run, version);
-    // Announced gone, and then back — the same run, after everything that
-    // acts on `MemberRemoved` has acted on it.
-    expect(announced).toEqual([`removed ${run}`, `up ${run}`]);
+    // Tombstoned, like every other removal: it used to be deleted, and the same
+    // run came back on its next frame, after everything that acts on
+    // `MemberRemoved` had acted on it (#1834).
+    const tombstone = tombstoneOf(cluster, run);
+    sameRunKeepsTalking(cluster, run, version);
+    expectRefused(cluster, run, tombstone);
+    expect(announced).toEqual([`removed ${run}`]);
   });
 
   test('under auto-down = off the peer is parked, never removed, and its next heartbeat brings it back', async () => {

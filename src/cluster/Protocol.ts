@@ -31,12 +31,9 @@ import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
  *     gossip can't resurrect the address; the tombstone is reclaimed
  *     once `tombstoneTtlMs` (default 24 h) elapses.  The
  *     **FD-driven** path — no downing provider configured and
- *     `failure-detector.auto-down = on`, the default (#1426) — deletes
- *     the entry outright instead.  That buys no recovery: heartbeats and
- *     gossip still reach a member parked at `unreachable` (#930), but a
- *     deleted one is not addressed at all, so after a symmetric partition
- *     neither side hears the other again — and with no tombstone left to
- *     refuse it, a peer still carrying the address re-introduces it.  Public APIs (`getMembers`, `upMembers`,
+ *     `failure-detector.auto-down = on`, the default (#1426) — tombstones
+ *     the entry the same way, so a peer still carrying the address cannot
+ *     re-introduce it (#1834).  Public APIs (`getMembers`, `upMembers`,
  *     `reachableMembers`) and `Member.isReachable()` all filter
  *     `removed` out — only direct iteration of the raw map needs
  *     to check the status explicitly.  See #75 + the

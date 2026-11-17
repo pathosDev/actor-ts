@@ -45,6 +45,7 @@ async function startNode(
   port: number,
   seeds: string[] = [],
   failureDetectorAutoDown = false,
+  tombstoneTtlMs?: number,
 ): Promise<NodeHandle> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -59,6 +60,10 @@ async function startNode(
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
     .withFailureDetectorAutoDown(failureDetectorAutoDown)
     .withGossipIntervalMs(80);
+  if (tombstoneTtlMs !== undefined) {
+    clusterOptions.withTombstoneTtlMs(tombstoneTtlMs);
+    clusterOptions.withTombstoneMinRetentionMs(tombstoneTtlMs);
+  }
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address };
 }
@@ -1477,13 +1482,12 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
    * so a frame captured off the wire stays byte-for-byte valid indefinitely.
    * Against a converged receiver that is harmless: every record loses
    * `mergeMember`'s `incoming.version <= existing.version` comparison.  What
-   * makes it an exploit is an entry the receiver has **deleted**.  The failure
-   * detector's down path deletes outright rather than tombstoning, so a healed
-   * partition can re-discover the peer — and that is exactly what leaves
+   * makes it an exploit is an entry the receiver has **deleted**, which leaves
    * nothing behind for a replay to be compared against: the no-existing-entry
-   * branch of the merge has no lower version bound at all.  Since #1426 that
-   * path is opt-in (`failure-detector.auto-down`), so the node below opts in:
-   * the default parks the victim instead and deletes nothing.
+   * branch of the merge has no lower version bound at all.  The failure
+   * detector's down path deleted outright until #1834; it now tombstones, and
+   * the prune of an expired tombstone is the route that deletes, so the node
+   * below runs auto-down with a one-millisecond tombstone life and prunes.
    *
    * So replaying a downed member's own pre-down record brought it back at its
    * old version, `up`, carrying the roles it had — and roles are what shard
@@ -1496,7 +1500,10 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
    */
   test('exploit: replaying a downed member\'s own record does not bring it back', async () => {
     const port = 60_100 + Math.floor(Math.random() * 300);
-    const node = await startNode('csecreplay', port, [], true);
+    // A short tombstone life, so the prune deletes the victim's entry within
+    // the test: the delete is what leaves the merge no record to compare a
+    // replay against, and since #1834 the prune is the one route that makes it.
+    const node = await startNode('csecreplay', port, [], true, 1);
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
@@ -1524,9 +1531,10 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
     inject(node.cluster, peer, captured);
     expect(rawMember(node.cluster, victim)?.status).toBe('up');
 
-    // The victim falls silent and the failure detector evicts it, deleting the
-    // entry.  Heartbeats keep the *peer* alive meanwhile — `handleWire` credits
-    // the connection, so any frame from it is enough.
+    // The victim falls silent, the failure detector evicts it into a tombstone
+    // (#1834), and the prune deletes the entry.  Heartbeats keep the *peer*
+    // alive meanwhile — `handleWire` credits the connection, so any frame from
+    // it is enough.
     let beat = 0;
     const keepPeerAlive = setInterval(() => {
       beat += 1;
@@ -1535,7 +1543,11 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
       });
     }, 40);
     try {
-      await waitFor(() => rawMember(node.cluster, victim) === undefined, 5_000);
+      await waitFor(() => rawMember(node.cluster, victim)?.status === 'removed', 5_000);
+      await waitFor(() => {
+        (node.cluster as unknown as { tombstonePruneTick(): void }).tombstonePruneTick();
+        return rawMember(node.cluster, victim) === undefined;
+      }, 5_000);
     } finally {
       clearInterval(keepPeerAlive);
     }

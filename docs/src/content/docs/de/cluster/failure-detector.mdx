@@ -189,17 +189,20 @@ stattdessen, und ein abgestürzter Node bleibt Mitglied, bis ein
 Operator oder eine Strategie ihn entfernt oder er auf derselben
 Adresse neu startet.
 
-`auto-down` löscht das Mitglied, statt einen Tombstone anzulegen,
-also bleibt danach nichts, das die Adresse abweisen würde: Ein Peer,
-dessen Sicht das Mitglied noch führt, führt es mit seinem nächsten
-Gossip wieder ein, als `unreachable`, und der Detector entfernt es
-bei `down-after` erneut. Mit zwei oder mehr Überlebenden, die nicht
-im selben Augenblick löschen, kommt ein abgestürztes Mitglied immer
-wieder — gemessen an drei In-Process-Nodes verkündete jeder
-Überlebende 50-mal in 20 Sekunden `MemberRemoved` für den toten.
-Die erste Meldung ist die, die Shards bewegt und Death Watch auslöst;
-Code, der Entfernungen zählt oder loggt, sieht alle. Das Entfernen
-durch eine Strategie legt einen Tombstone an und tut das nicht.
+`auto-down` legt für das Mitglied einen Tombstone an, wie das
+Entfernen durch eine Strategie, also kann ein Peer, dessen Sicht es
+noch führt, es nicht wieder einführen: Sein Eintrag ist derselbe Lauf
+in einer niedrigeren Version, und der Tombstone weist ihn ab, bis er
+aufgeräumt ist
+([was eine gedownte Adresse danach darf](/de/cluster/downing-strategies/#was-eine-gedownte-adresse-danach-darf)).
+Mit zwei oder mehr Überlebenden entfernt jeder das abgestürzte
+Mitglied einmal und verkündet `MemberRemoved` einmal. Bis v0.19.0
+löschte dieser Weg den Eintrag stattdessen, und ein Überlebender, der
+ihn noch nicht entfernt hatte, brachte ihn per Gossip als
+`unreachable` zurück, um bei jedem `down-after` erneut entfernt zu
+werden ([Issue #1834](https://github.com/pathosDev/actor-ts/issues/1834)).
+Ein Neustart auf derselben Adresse ist ein neuer Lauf und wird sofort
+wieder aufgenommen.
 
 ### Ein geparktes Mitglied bleibt geparkt
 

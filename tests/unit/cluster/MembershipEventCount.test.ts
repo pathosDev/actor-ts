@@ -196,7 +196,7 @@ describe('one membership transition, one announcement (#1428)', () => {
     expect(namesOf(announced)).toEqual([
       'ReachabilityChanged', 'MemberUnreachable', 'MemberDown', 'MemberRemoved',
     ]);
-    expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
+    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
   });
 
   test('the detector with no provider and auto-down on: up → down in one round announces down once', async () => {
