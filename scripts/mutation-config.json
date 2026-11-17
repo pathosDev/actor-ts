@@ -470,6 +470,16 @@
       "tests/integration/in-process/persistence/replicated/RemoteAppendChain.test.ts",
       "tests/unit/cluster/sharding/RememberEntitiesCompaction.test.ts",
       "tests/unit/testkit/FaultInjectingStores.test.ts"
+    ],
+    "src/testkit/FaultInjectingSnapshotStore.ts": [
+      "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
+      "tests/integration/in-process/persistence/PersistentActorStoreFailure.test.ts",
+      "tests/unit/testkit/FaultInjectingStores.test.ts"
+    ],
+    "src/testkit/FaultInjectingSnapshotStoreOptions.ts": [
+      "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
+      "tests/integration/in-process/persistence/PersistentActorStoreFailure.test.ts",
+      "tests/unit/testkit/FaultInjectingStores.test.ts"
     ]
   },
   "sets": {
