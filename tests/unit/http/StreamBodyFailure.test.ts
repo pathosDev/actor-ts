@@ -13,6 +13,8 @@ function countingSource(): { readonly body: ReadableStream<Uint8Array>; readonly
   return { body, reads: () => reads };
 }
 
+// The assertions after each settle are absences (no read happened), so a fixed
+// delay is the wait: it gives a read-ahead the chance to happen before the count.
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
 
 describe('reportingSourceFailure', () => {
