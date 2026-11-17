@@ -24,6 +24,7 @@ import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner
 import { closeIdleConnectionsWhileDraining, nodeTlsServerOptions, type NodeTlsServerFields } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
+import { reportingSourceFailure } from './StreamBodyFailure.js';
 
 // `@fastify/websocket` is an optional peer dep — lazy-import it (cached),
 // so projects that never use websocket() routes don't pull it in.
@@ -202,6 +203,7 @@ export class FastifyBackend implements HttpServerBackend {
   private userErrorHandler:
     | ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse)
     | null = null;
+  private streamFailureHandler: ((err: unknown, request: HttpRequest | undefined) => void) | null = null;
   private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
 
   constructor(options: object = {}) {
@@ -274,7 +276,7 @@ export class FastifyBackend implements HttpServerBackend {
         const adapted = this.adaptRequest(req);
         try {
           const out = await route.handler(adapted);
-          this.writeResponse(reply, out);
+          this.writeResponse(reply, out, adapted);
         } catch (err) {
           await this.emitError(reply, adapted, err);
         }
@@ -296,7 +298,7 @@ export class FastifyBackend implements HttpServerBackend {
     this.app.setNotFoundHandler(async (req: FastifyRequest, reply: FastifyReply) => {
       const adapted = this.adaptRequest(req);
       const response = await handler(adapted);
-      this.writeResponse(reply, response);
+      this.writeResponse(reply, response, adapted);
       return reply;
     });
   }
@@ -312,6 +314,10 @@ export class FastifyBackend implements HttpServerBackend {
     // route handlers — caught in registerRoute's try/catch, which never
     // reaches Fastify core — route through it too.
     this.userErrorHandler = handler;
+  }
+
+  setStreamFailureHandler(handler: (err: unknown, request: HttpRequest | undefined) => void): void {
+    this.streamFailureHandler = handler;
   }
 
   async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
@@ -614,7 +620,7 @@ export class FastifyBackend implements HttpServerBackend {
     for (const [key, value] of Object.entries(this.defaultResponseHeaders)) reply.header(key, value);
   }
 
-  private writeResponse(reply: FastifyReply, response: HttpResponse): void {
+  private writeResponse(reply: FastifyReply, response: HttpResponse, request?: HttpRequest): void {
     reply.status(response.status);
     this.applyDefaultResponseHeaders(reply);
     if (response.headers) for (const [key, value] of Object.entries(response.headers)) reply.header(key, value);
@@ -635,12 +641,34 @@ export class FastifyBackend implements HttpServerBackend {
     }
     if (typeof ReadableStream !== 'undefined' && response.body instanceof ReadableStream) {
       if (!response.contentType && !response.headers?.['content-type']) reply.header('content-type', 'application/octet-stream');
-      reply.send(response.body);
+      reply.send(this.reportingCommittedFailure(reply, response.body, request));
       return;
     }
     // Plain object → JSON.
     if (!response.contentType) reply.header('content-type', 'application/json; charset=utf-8');
     reply.send(JSON.stringify(response.body));
+  }
+
+  /**
+   * The stream body Fastify is handed, observed for a source failure after
+   * the response was committed (#1829).
+   *
+   * Fastify decides on `res.headersSent` itself (`sendWebStream`'s
+   * `onReadError`): before the first chunk is written a failure goes to the
+   * app-level error hook, and so to `withErrorHandler`, like any other; after
+   * it Fastify destroys the socket and logs through its own logger, which an
+   * application usually has off.  Reporting on the same test keeps the two
+   * paths disjoint — a failure reaches the error handler or the
+   * stream-failure handler, never both.
+   */
+  private reportingCommittedFailure(
+    reply: FastifyReply,
+    body: ReadableStream<Uint8Array>,
+    request: HttpRequest | undefined,
+  ): ReadableStream<Uint8Array> {
+    return reportingSourceFailure(body.getReader(), (err) => {
+      if (reply.raw.headersSent) this.streamFailureHandler?.(err, request);
+    });
   }
 
   /**
@@ -653,7 +681,7 @@ export class FastifyBackend implements HttpServerBackend {
   private async emitError(reply: FastifyReply, request: HttpRequest, err: unknown): Promise<void> {
     if (this.userErrorHandler) {
       try {
-        this.writeResponse(reply, await this.userErrorHandler(err, request));
+        this.writeResponse(reply, await this.userErrorHandler(err, request), request);
         return;
       } catch (inner) {
         this.writeError(reply, inner);

@@ -9,10 +9,4 @@ runHttpBackendSuite({
   // Fastify takes its body and header caps at construction, and refuses a
   // server option that disagrees with them at `listen()` (#1488).
   makeBackendFor: (serverOptions) => new FastifyBackend({ logger: false, ...fastifyFactoryOptions(serverOptions) }),
-  knownDefects: {
-    committedStreamFailureUnreported: {
-      finding: 'FastifyBackend has no setStreamFailureHandler: a stream body failing after the response was '
-        + 'committed is truncated but never logged.  ExpressBackend implements the hook (#979).',
-    },
-  },
 });

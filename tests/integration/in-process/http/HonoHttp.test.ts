@@ -22,15 +22,4 @@ runHttpBackendSuite({
       noConnectionCap: bunServe('connection cap'),
     }
     : {},
-  knownDefects: {
-    committedStreamFailureUnreported: {
-      finding: 'HonoBackend has no setStreamFailureHandler: a stream body failing after the response was '
-        + 'committed is truncated but never logged.  ExpressBackend implements the hook (#979).',
-    },
-    streamFailureBeforeFirstByteBypassesErrorHandler: {
-      finding: 'HonoBackend.writeResponse hands the stream to new Response(...) and returns, so the runtime pulls it '
-        + 'after every error path is gone: under Bun a source that fails before its first byte resets the connection '
-        + '(no status line at all) and never reaches withErrorHandler.  Express and Fastify answer through it.',
-    },
-  },
 });
