@@ -154,3 +154,52 @@ describe('BunSocket keeps what the kernel did not take (#931)', () => {
     expect(native.wire).toHaveLength(4);
   });
 });
+
+describe('BunSocket edges the backlog tests do not reach', () => {
+  test('a write to a natively closed socket with nothing held answers false', () => {
+    const native = nativeStandIn(1_000);
+    native.closed = true;
+    const socket = new BunSocket(native);
+
+    expect(socket.write(run(0, 8))).toBe(false);
+    // Nothing is held for a socket that is gone: reopening it writes nothing back.
+    native.closed = false;
+    expect(socket.flushBacklog()).toBe(true);
+    expect(native.wire).toEqual([]);
+  });
+
+  test('peerCertificate() reads the native certificate: on Bun the only input to the identity check', () => {
+    // `Transport.certificateAdmits` skips the certificate-vs-claimed-address
+    // comparison when this answers `undefined`, so a wrapper that lost the
+    // read would admit every mTLS peer on Bun — and the transport contract's
+    // fake socket brings its own `peerCertificate`, so only this reaches it.
+    const native = {
+      ...nativeStandIn(0),
+      getPeerCertificate: () => ({
+        subject: { CN: 'node-a@127.0.0.1' },
+        subjectaltname: 'DNS:node-a, IP Address:127.0.0.1',
+      }),
+    };
+    const socket = new BunSocket(native);
+
+    expect(socket.peerCertificate()).toEqual({
+      commonName: 'node-a@127.0.0.1',
+      subjectAlternativeNames: ['node-a', '127.0.0.1'],
+    });
+  });
+
+  test('peerCertificate() is read on demand, not captured when the wrapper is made', () => {
+    // Bun runs `open` before the handshake completes: a certificate read then is empty.
+    let presented: object = {};
+    const native = { ...nativeStandIn(0), getPeerCertificate: () => presented };
+    const socket = new BunSocket(native);
+    expect(socket.peerCertificate()).toBeUndefined();
+
+    presented = { subject: { CN: 'node-b' } };
+    expect(socket.peerCertificate()).toEqual({ commonName: 'node-b', subjectAlternativeNames: [] });
+  });
+
+  test('a plaintext socket, which has no getPeerCertificate, reports none', () => {
+    expect(new BunSocket(nativeStandIn(0)).peerCertificate()).toBeUndefined();
+  });
+});
