@@ -1393,6 +1393,7 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.tcpServer.bindHost, '127.0.0.1'],
     [ConfigKeys.io.broker.tcpServer.bindPort, 7001],
     [ConfigKeys.io.broker.tcpServer.maxConnections, 64],
+    [ConfigKeys.io.broker.tcpServer.maxBufferedBytes, '4M'],
     [ConfigKeys.io.broker.tcpServer.framing.kind, 'lines'],
     [ConfigKeys.io.broker.tcpServer.framing.delimiter, '\r\n'],
     [ConfigKeys.io.broker.tcpServer.framing.maxLineBytes, '64K'],

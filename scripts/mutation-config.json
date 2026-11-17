@@ -454,6 +454,15 @@
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
       "tests/unit/io/broker/ForgedMqttSignals.test.ts"
     ],
+    "src/io/broker/TcpServerActor.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/TcpServerActor.test.ts",
+      "tests/unit/io/broker/TcpServerBackpressure.test.ts"
+    ],
+    "src/io/broker/TcpServerOptions.ts": [
+      "tests/unit/io/broker/TcpServerBackpressure.test.ts",
+      "tests/unit/io/broker/TcpServerOptions.test.ts"
+    ],
     "src/logging/GelfSink.ts": [
       "tests/unit/logging/GelfSink.test.ts",
       "tests/unit/logging/TcpLogSinkBackpressure.test.ts",

@@ -619,6 +619,8 @@ export const ConfigKeys = {
         bindPort: 'actor-ts.io.broker.tcp-server.bind-port',
         /** The admission cap; unset means unlimited. */
         maxConnections: 'actor-ts.io.broker.tcp-server.max-connections',
+        /** Bytes held for one connection that pushes back before it is failed (#1827). */
+        maxBufferedBytes: 'actor-ts.io.broker.tcp-server.max-buffered-bytes',
         framing: tcpFramingKeysUnder('actor-ts.io.broker.tcp-server.framing'),
       },
       /** `UdpSocketActor`. */

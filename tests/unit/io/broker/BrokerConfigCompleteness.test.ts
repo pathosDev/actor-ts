@@ -336,6 +336,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
       target: ACTOR_REF,
       tls: TLS_MATERIAL,
       maxConnections: hocon('max-connections'),
+      maxBufferedBytes: hocon('max-buffered-bytes'),
     },
   },
   {
