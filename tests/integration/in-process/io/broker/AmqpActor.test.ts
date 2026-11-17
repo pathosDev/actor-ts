@@ -72,7 +72,12 @@ class FakeAmqpChannel implements AmqpChannelLike {
     if (this.ackError) throw this.ackError;
     this.acked.push(message);
   }
+  /** Every `nack` call, the refused ones included. */
+  nackAttempts = 0;
+  /** Set once `close` was called. */
+  closed = false;
   nack(message: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void {
+    this.nackAttempts++;
     if (this.nackError) throw this.nackError;
     this.nacked.push({ message, allUpTo, requeue });
   }
@@ -93,7 +98,7 @@ class FakeAmqpChannel implements AmqpChannelLike {
       if (candidate === listener || (candidate as { original?: unknown }).original === listener) set.delete(candidate);
     }
   }
-  async close(): Promise<void> {}
+  async close(): Promise<void> { this.closed = true; }
 
   /** How many listeners are attached for `event` — the leak check. */
   listenerCount(event: ChannelEvent): number { return this.listeners.get(event)?.size ?? 0; }
@@ -299,20 +304,60 @@ describe('AmqpActor — acknowledges on the target\'s reply (#976)', () => {
     }
   });
 
-  test('stopping the actor with a reply outstanding gives the delivery back on its own channel', async () => {
-    // Teardown gives up on every outstanding reply before it closes the
-    // channel, and the requeue that follows still finds the channel current —
-    // so RabbitMQ gets the delivery back at once rather than when the closed
-    // channel's unacknowledged set is swept.
+  /**
+   * Teardown takes the channel out of service before it gives up on the
+   * outstanding replies (#1846), so the requeue those rejections lead to
+   * finds a channel that is no longer current and sends nothing on it.  The
+   * closing channel gives every unacknowledged delivery back to RabbitMQ on
+   * its own.  A real amqplib channel refuses a nack while it closes, which
+   * is what `nackError` stands for: the requeue used to be attempted and
+   * reported as a spurious `BrokerAcknowledgmentFailed` per delivery.
+   */
+  test('stopping the actor with replies outstanding nacks nothing on the closing channel', async () => {
     const system = createTestActorSystem({ name: 'amqp-on-reply-stop' });
     try {
+      const failures = collectAcknowledgmentFailures(system);
       const { actor, target, channel } = await bootConsuming(system, 'hold');
-      const message = channel.deliver('order-1');
-      await awaitCondition(() => target.received.length === 1, { timeoutMs: 4_000, label: 'the delivery reached the target' });
+      channel.nackError = new Error('channel closing');
+      channel.deliver('order-1');
+      channel.deliver('order-2');
+      await awaitCondition(() => target.received.length === 2, { timeoutMs: 4_000, label: 'the deliveries reached the target' });
       system.stop(actor);
-      await awaitCondition(() => channel.nacked.length === 1, { timeoutMs: 4_000, label: 'teardown requeued the delivery' });
-      expect(channel.nacked[0]).toEqual({ message, allUpTo: false, requeue: true });
+      await awaitCondition(() => channel.closed, { timeoutMs: 4_000, label: 'teardown closed the channel' });
+      await sleep(SETTLE_MS);  // the claim is "nothing nacked, nothing reported"; see SETTLE_MS
+      expect(channel.nackAttempts).toBe(0);
       expect(channel.acked).toEqual([]);
+      expect(failures).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a connection loss with replies outstanding nacks nothing on the dying channel', async () => {
+    const system = createTestActorSystem({ name: 'amqp-on-reply-loss' });
+    try {
+      const failures = collectAcknowledgmentFailures(system);
+      const { instance, target, channel } = await bootConsuming(system, 'hold', (o) => o.withReconnect({ initialDelayMs: 5, randomFactor: 0 }));
+      channel.nackError = new Error('channel closed');
+      channel.deliver('order-1');
+      channel.deliver('order-2');
+      await awaitCondition(() => target.received.length === 2, { timeoutMs: 4_000, label: 'the deliveries reached the target' });
+      // The reconnect tears the lost transport down before it dials again.
+      instance.publicSimulateLoss();
+      await awaitCondition(
+        () => channel.closed && instance.module.channels.length === 2 && instance.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor tore the lost channel down and reconnected' },
+      );
+      await sleep(SETTLE_MS);  // the claim is "nothing nacked, nothing reported"; see SETTLE_MS
+      expect(channel.nackAttempts).toBe(0);
+      expect(instance.module.channel.nackAttempts).toBe(0);
+      expect(failures).toEqual([]);
+      // A reply that arrives afterwards settles nothing on either channel.
+      acknowledgeDelivery(target.received[0]!);
+      await sleep(SETTLE_MS);  // the claim is "nothing acked"; see SETTLE_MS
+      expect(channel.acked).toEqual([]);
+      expect(instance.module.channel.acked).toEqual([]);
+      expect(failures).toEqual([]);
     } finally {
       await system.terminate();
     }

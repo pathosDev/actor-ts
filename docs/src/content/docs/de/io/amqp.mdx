@@ -154,6 +154,13 @@ geht.  Ein ACK, den der Broker ablehnt, wird nie verschluckt — er wird mit
 der Queue auf `warn` geloggt und als `BrokerAcknowledgmentFailed`-Event
 veröffentlicht, damit man ihn zählen kann.
 
+Stoppt der Actor oder verliert er seine Verbindung, während noch Antworten
+ausstehen, sendet er nichts mehr auf dem Channel, den er schließt: RabbitMQ
+stellt jede Delivery, die dieser Channel unbestätigt zurücklässt, selbst
+wieder in die Queue, und eine Antwort, die danach eintrifft, bestätigt
+nichts mehr.  Weder ein Stopp noch ein Verbindungsabbruch erzeugt daher ein
+`BrokerAcknowledgmentFailed`-Event.
+
 **`acknowledgment: 'on-delivery'`** ackt jede Delivery bei der Übergabe an
 die Mailbox des Targets und erwartet keine Antwort (`replyTo` fehlt, beide
 Helfer tun nichts).  Das ist at-most-once: Eine Delivery, die nach der

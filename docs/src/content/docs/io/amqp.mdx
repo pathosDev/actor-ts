@@ -149,6 +149,12 @@ processed, if the reply or the ack is lost.  An ack the broker refuses is
 never swallowed — it is logged at `warn` with the queue and published as a
 `BrokerAcknowledgmentFailed` event, so it can be counted.
 
+When the actor stops or loses its connection while replies are still
+outstanding, it sends nothing on the channel it is closing: RabbitMQ
+requeues every delivery that channel left unacknowledged, and a reply that
+arrives afterwards settles nothing.  So neither a stop nor a dropped
+connection produces a `BrokerAcknowledgmentFailed` event.
+
 **`acknowledgment: 'on-delivery'`** acks each delivery as it is handed to the
 target's mailbox and expects no reply (`replyTo` is absent and both helpers
 do nothing).  That is at-most-once: a delivery lost after the hand-over — a
