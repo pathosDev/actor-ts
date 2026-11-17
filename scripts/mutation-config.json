@@ -320,7 +320,8 @@
     ],
     "src/http/backend/StreamBodyFailure.ts": [
       "tests/integration/in-process/http/FastifyHttp.test.ts",
-      "tests/integration/in-process/http/HonoHttp.test.ts"
+      "tests/integration/in-process/http/HonoHttp.test.ts",
+      "tests/unit/http/StreamBodyFailure.test.ts"
     ],
     "src/http/HttpExtension.ts": [
       "tests/integration/in-process/http/websocket/BackendTransportFrameCap.test.ts",

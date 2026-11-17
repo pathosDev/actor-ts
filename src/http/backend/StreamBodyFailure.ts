@@ -73,9 +73,6 @@ export async function readFirstChunk(
   else signal?.addEventListener('abort', cancelOnAbort, { once: true });
   try {
     return await reader.read();
-  } catch (err) {
-    reader.releaseLock();
-    throw err;
   } finally {
     signal?.removeEventListener('abort', cancelOnAbort);
   }
