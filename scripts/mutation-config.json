@@ -219,6 +219,14 @@
       "tests/unit/parallelism/SpawnProtocol.test.ts",
       "tests/unit/worker/MetricsRelay.test.ts"
     ],
+    "src/config/HoconParser.ts": [
+      "tests/unit/config/HoconObjectPrototypeKeys.test.ts",
+      "tests/unit/config/HoconParser.test.ts",
+      "tests/unit/config/HoconParserFuzz.test.ts",
+      "tests/unit/config/HoconProperties.test.ts",
+      "tests/unit/config/ResolveLayer.test.ts",
+      "tests/unit/config/SubstitutionChainLength.test.ts"
+    ],
     "src/crdt/LWWRegister.ts": [
       "tests/unit/crdt/CrdtWireValidation.test.ts",
       "tests/unit/crdt/LWWRegisterEquals.test.ts",
