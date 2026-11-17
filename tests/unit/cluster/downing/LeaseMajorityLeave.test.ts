@@ -302,6 +302,35 @@ describe('both leave routes reach the provider\'s shutdown hook (#1454)', () => 
     expect(provider.shutdowns).toBe(1);
   });
 
+  test('the leave settles only once the hook has: a release still in flight holds it', async () => {
+    let finishRelease: () => void = () => {};
+    let releaseStarted = false;
+    const slow: DowningProvider = {
+      decide: () => new Set(),
+      shutdown: () => new Promise<void>((resolve) => {
+        releaseStarted = true;
+        finishRelease = resolve;
+      }),
+    };
+    const node = await startNode('hook-awaited', 64_661, { downing: slow });
+    const transportShutdown = spyOn(node.cluster.transport, 'shutdown');
+
+    let left = false;
+    const leaving = node.cluster.leave().then(() => { left = true; });
+    await awaitCondition(() => releaseStarted && transportShutdown.mock.calls.length === 1, {
+      timeoutMs: 3_000, label: 'the leave reached both the hook and the transport',
+    });
+    await transportShutdown.mock.results[0]!.value;
+    // One macrotask turn drains every microtask continuation of the leave: had
+    // it not been waiting on the hook, it would have settled by now.
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(left).toBe(false);
+
+    finishRelease();
+    await leaving;
+    expect(left).toBe(true);
+  });
+
   test('a hook that rejects is logged, and the leave completes all the same', async () => {
     const logger = new RecordingLogger();
     const rejecting: DowningProvider = {

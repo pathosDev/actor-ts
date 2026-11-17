@@ -47,8 +47,10 @@ type NodeHandle = { readonly system: ActorSystem; readonly cluster: Cluster };
 interface ClusterInternals {
   handleWire(from: NodeAddress, message: GossipMessage): void;
   nextGossipSequence(): number;
+  deleteMember(key: string): void;
   readonly members: Map<string, Member>;
   readonly acceptedGossipSequences: Map<string, number>;
+  readonly gossipSenderClocks: Map<string, unknown>;
 }
 
 const internals = (cluster: Cluster): ClusterInternals => cluster as unknown as ClusterInternals;
@@ -203,6 +205,26 @@ describe('the mark is held per (member, incarnation) (#1262)', () => {
     setNow(now + 1_000);
     gossipFrom(node.cluster, nextRun, now, [selfRecord(nextRun, now)]);
     expect(internals(node.cluster).members.get(nextRun.toString())?.address.incarnation).toBe('run-2');
+  });
+
+  test('a deleted member takes its clock reading along: the next run at an address without an incarnation starts fresh', async () => {
+    // Without an incarnation on either run, nothing but the delete tells the
+    // old reading from a new one — kept, it would hold the next process's
+    // first frames to the previous process's clock.
+    setNow(Date.parse('2026-11-14T13:30:00Z'));
+    const node = await startNode('pin-delete', 9_656);
+    const peer = new NodeAddress('pin-delete', PEER_HOST, 9_657);
+    gossipFrom(node.cluster, peer, now, [selfRecord(peer, now)]);
+    expect(holds(node.cluster, peer)).toBe(true);
+
+    internals(node.cluster).deleteMember(peer.toString());
+    expect(internals(node.cluster).gossipSenderClocks.has(peer.toString())).toBe(false);
+
+    // The next process at the address runs on a clock two minutes ahead —
+    // inside the skew budget a first frame is held to, far past the lead.
+    setNow(now + 1_000);
+    gossipFrom(node.cluster, peer, now + 2 * MINUTE_MS, [selfRecord(peer, now)]);
+    expect(holds(node.cluster, peer)).toBe(true);
   });
 });
 
