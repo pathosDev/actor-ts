@@ -482,6 +482,16 @@
       "tests/unit/io/broker/BrokerConfigReaders.test.ts",
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
       "tests/unit/docs/EnvironmentJsonReadDocumented.test.ts"
+    ],
+    "src/io/broker/MqttActor.ts": [
+      "tests/integration/in-process/io/broker/MqttActor.test.ts",
+      "tests/integration/in-process/io/broker/MqttOptions.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
+      "tests/unit/io/broker/ForgedMqttSignals.test.ts",
+      "tests/unit/ci/HoconLeafSpelling.test.ts",
+      "tests/unit/docs/BrokerPageSamplesAreRead.test.ts",
+      "tests/unit/docs/EnvironmentJsonReadDocumented.test.ts"
     ]
   },
   "sets": {
