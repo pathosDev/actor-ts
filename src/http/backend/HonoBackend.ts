@@ -22,6 +22,7 @@ import {
   serverOptionsReportOf,
   transportFrameCapOf,
 } from './HttpServerBackend.js';
+import { readFirstChunk, reportingSourceFailure } from './StreamBodyFailure.js';
 import type {
   HttpServerBackend,
   NodeHttpServerLike,
@@ -177,6 +178,28 @@ type HonoContextLike = {
   readonly env?: unknown;
 };
 
+/**
+ * The request a response answers: the adapted one the stream-failure handler
+ * is told about, and the runtime request whose abort signal says the client
+ * went away before the first chunk of a stream body existed.
+ */
+type ResponseOrigin = {
+  readonly request: HttpRequest;
+  readonly context: HonoContextLike;
+};
+
+/**
+ * The abort signal of the runtime request behind a Hono context — a client
+ * that disconnects aborts it on Bun, on Deno and under `@hono/node-server`.
+ * Probed structurally for the reason {@link requestBodyStream} is.
+ */
+function requestAbortSignal(context: HonoContextLike): AbortSignal | undefined {
+  const raw = context.req.raw;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const signal = (raw as { signal?: unknown }).signal;
+  return typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal ? signal : undefined;
+}
+
 type HonoHandler = (context: HonoContextLike) => Promise<Response> | Response;
 type HonoErrorHandler = (err: unknown, context: HonoContextLike) => Promise<Response> | Response;
 type HonoNotFoundHandler = (context: HonoContextLike) => Promise<Response> | Response;
@@ -315,6 +338,7 @@ export class HonoBackend implements HttpServerBackend {
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private streamFailureHandler: ((err: unknown, request: HttpRequest | undefined) => void) | null = null;
   private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
   /**
    * Bodies already read off a context, so a request that reaches the error
@@ -366,6 +390,10 @@ export class HonoBackend implements HttpServerBackend {
     this.errorHandler = handler;
   }
 
+  setStreamFailureHandler(handler: (err: unknown, request: HttpRequest | undefined) => void): void {
+    this.streamFailureHandler = handler;
+  }
+
   setDefaultResponseHeaders(headers: Readonly<Record<string, string>>): void {
     this.defaultResponseHeaders = headers;
   }
@@ -392,7 +420,7 @@ export class HonoBackend implements HttpServerBackend {
         if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
         const request = this.buildRequest(context, read.body);
         const response = await handler(request);
-        return this.writeResponse(response);
+        return this.writeResponse(response, { request, context });
       });
     }
 
@@ -401,7 +429,10 @@ export class HonoBackend implements HttpServerBackend {
       if (this.errorHandler) {
         try {
           const response = await this.errorHandler(err, request);
-          return this.writeResponse(response);
+          // Awaited inside the `try`: a stream body the error handler returns
+          // can fail before its first byte too, and then the default mapping
+          // below answers instead.
+          return await this.writeResponse(response, { request, context });
         } catch (inner) { err = inner; }
       }
       if (err instanceof HttpError) {
@@ -534,7 +565,7 @@ export class HonoBackend implements HttpServerBackend {
         ? { ...request, params: { ...request.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
         : request;
       const out = await route.handler(finalRequest);
-      return this.writeResponse(out);
+      return this.writeResponse(out, { request: finalRequest, context: c });
     };
     const method = route.method.toLowerCase() as Lowercase<HttpMethod>;
     match(method)
@@ -757,7 +788,13 @@ export class HonoBackend implements HttpServerBackend {
     };
   }
 
-  private writeResponse(response: HttpResponse): Response {
+  /**
+   * A stream body makes this asynchronous — see {@link writeStreamResponse} —
+   * and every other body stays synchronous, so a plain response pays no
+   * extra turn.  `origin` is the request the response answers, absent only
+   * where none was adapted.
+   */
+  private writeResponse(response: HttpResponse, origin?: ResponseOrigin): Response | Promise<Response> {
     const status = responseStatusOrServerError(response.status);
     const headers = new Headers();
     // Server-wide defaults go in first; `Headers.set` is case-insensitive, so
@@ -782,10 +819,39 @@ export class HonoBackend implements HttpServerBackend {
     }
     if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
       if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
-      return new Response(body as unknown as BodyInit, { status, headers });
+      return this.writeStreamResponse(body, status, headers, origin);
     }
     if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8');
     return new Response(JSON.stringify(body), { status, headers });
+  }
+
+  /**
+   * Read the first chunk of a stream body before the `Response` exists
+   * (#1830).  Handing the stream to `new Response(...)` as it came left the
+   * runtime to pull it after every error path had returned: under Bun a source
+   * that failed before its first byte reset the connection with no status line
+   * and never reached `withErrorHandler`.  Until the first chunk the status is
+   * still open, so a failure there rejects, Hono's `onError` receives it, and
+   * the error handler answers like it does for any other throw — what Express
+   * (#979) and Fastify already do.
+   *
+   * After it the headers are the runtime's to send and a `200` cannot be taken
+   * back: the source is re-wrapped so a later failure is reported once to
+   * {@link setStreamFailureHandler} before the runtime truncates the body
+   * (#1829).
+   */
+  private async writeStreamResponse(
+    body: ReadableStream<Uint8Array>,
+    status: number,
+    headers: Headers,
+    origin: ResponseOrigin | undefined,
+  ): Promise<Response> {
+    const reader = body.getReader();
+    const first = await readFirstChunk(reader, origin === undefined ? undefined : requestAbortSignal(origin.context));
+    if (first.done) return new Response(null, { status, headers });
+    const request = origin?.request;
+    const report = (err: unknown): void => { this.streamFailureHandler?.(err, request); };
+    return new Response(reportingSourceFailure(reader, report, first.value) as unknown as BodyInit, { status, headers });
   }
 
   private async createHonoApp(): Promise<HonoAppLike> {

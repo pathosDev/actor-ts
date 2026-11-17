@@ -90,30 +90,6 @@ export type HttpBackendDeviations = {
   readonly noConnectionCap?: BackendDeviation;
 };
 
-/**
- * A divergence from the contract that is a **defect**, not a design choice:
- * the case asserts what the backend does today, so the fix turns it red and
- * the entry has to be removed in the same change.  `finding` says what should
- * happen instead, and where.
- */
-export type KnownDefect = { readonly finding: string };
-
-/** Known defects, by the contract clause they break. */
-export type HttpBackendKnownDefects = {
-  /**
-   * `setStreamFailureHandler` is not implemented, so a `ReadableStream` body
-   * whose source fails after the response was committed is truncated and
-   * reported nowhere — `HttpExtension` wires that hook to the system log.
-   */
-  readonly committedStreamFailureUnreported?: KnownDefect;
-  /**
-   * A `ReadableStream` body whose source fails before its first byte does not
-   * reach the error handler installed with `withErrorHandler`, which the
-   * `setStreamFailureHandler` contract says it must.
-   */
-  readonly streamFailureBeforeFirstByteBypassesErrorHandler?: KnownDefect;
-};
-
 export type HttpBackendSuiteFixture = {
   /** The label the suite's `describe` blocks carry. */
   readonly label: string;
@@ -128,7 +104,6 @@ export type HttpBackendSuiteFixture = {
    */
   readonly makeBackendFor?: (serverOptions: HttpServerOptions) => HttpServerBackend;
   readonly deviations?: HttpBackendDeviations;
-  readonly knownDefects?: HttpBackendKnownDefects;
 };
 
 type ErrorHandler = (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
@@ -379,7 +354,6 @@ function slowRoute(): { route: Route; entered: Promise<void> } {
 export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
   const { label, makeBackend, makeBackendWithBodyCap } = fixture;
   const deviations = fixture.deviations ?? {};
-  const knownDefects = fixture.knownDefects ?? {};
   const makeBackendFor = fixture.makeBackendFor ?? ((): HttpServerBackend => makeBackend());
 
   describe(`HTTP backend contract — ${label}`, () => {
@@ -710,23 +684,35 @@ export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
 
       // Contract (`setStreamFailureHandler`): "A failure before the first byte
       // is not reported here: it goes to setErrorHandler like any other."
-      test('a failure before the first byte reaches the registered error handler', async () => {
+      test('a failure before the first byte reaches the registered error handler, and not the stream-failure handler', async () => {
+        const backend = makeBackend();
         const seen: unknown[] = [];
+        const streamFailures: unknown[] = [];
         const url = await urlOf(get(() => ({ status: Status.OK, body: failingAtOnce() })), {
+          backend,
           errorHandler: (err) => {
             seen.push(err);
             return { status: 502, body: 'upstream failed', contentType: 'text/plain' };
           },
         });
+        backend.setStreamFailureHandler!((err) => { streamFailures.push(err); });
         const outcome = await outcomeOf(`${url}/`);
-        if (knownDefects.streamFailureBeforeFirstByteBypassesErrorHandler === undefined) {
-          expect(outcome).toEqual({ status: 502, completed: true, body: 'upstream failed' });
-          expect(seen.length).toBe(1);
-          expect((seen[0] as Error).message).toBe('upstream row cursor died');
-        } else {
-          expect(seen).toEqual([]);
-          expect(outcome.status).not.toBe(502);
-        }
+        expect(outcome).toEqual({ status: 502, completed: true, body: 'upstream failed' });
+        expect(seen.length).toBe(1);
+        expect((seen[0] as Error).message).toBe('upstream row cursor died');
+        // Answered by the error handler, so nothing was truncated to report.
+        expect(streamFailures).toEqual([]);
+      });
+
+      // What the client sees differs — Express and Hono fall back to the
+      // default 500, Fastify keeps the handler's 502 — but every backend answers
+      // with a status line, where a reset (status 0) is how #1830 showed.
+      test('an error handler whose own stream body fails before its first byte still answers with a server error', async () => {
+        const url = await urlOf(get(() => { throw new Error('handler failed'); }), {
+          errorHandler: () => ({ status: 502, body: failingAtOnce() }),
+        });
+        const outcome = await outcomeOf(`${url}/`);
+        expect(outcome.status).toBeGreaterThanOrEqual(500);
       });
 
       // Contract: "register the listener for a ReadableStream body whose source
@@ -735,10 +721,6 @@ export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
       test('a failure after the response was committed reaches the stream-failure handler once, with the request', async () => {
         const backend = makeBackend();
         const failures: Array<{ err: unknown; request: HttpRequest | undefined }> = [];
-        if (knownDefects.committedStreamFailureUnreported !== undefined) {
-          expect(backend.setStreamFailureHandler).toBeUndefined();
-          return;
-        }
         expect(backend.setStreamFailureHandler).toBeDefined();
         const encoder = new TextEncoder();
         // Installed after bind: `HttpExtension` wires the system log in first,
@@ -784,8 +766,7 @@ export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
         const response = await fetch(`${url}/`, { signal: AbortSignal.timeout(3_000) });
         expect(response.status).toBe(200);
         expect(await response.text()).toBe('');
-      });
-    });
+      });    });
 
     // ── Body-size caps (#357, #1488) ─────────────────────────────────────────
     describe('request body-size cap', () => {
