@@ -197,7 +197,10 @@ const LEVEL_TAG: Record<LogLevel, string> = {
  *
  * **JSON-safety.**  Values are sent through `JSON.stringify` with a
  * replacer that handles `BigInt`, circular references, and
- * `undefined`/function values gracefully — a log call never throws.
+ * `undefined`/function values gracefully — a log call never throws.  An
+ * argument that still cannot be serialised (a getter or `toJSON` that
+ * throws) becomes `[unrenderable value]` on its own, and a sink whose
+ * `write` throws loses that record rather than raising it (#1832).
  */
 export class JsonLogger implements Logger {
   constructor(
@@ -221,20 +224,24 @@ export class JsonLogger implements Logger {
       ...this.staticFields,
       ...LogContext.get(),
     };
-    if (args.length > 0) {
-      record['args'] = args.map(normaliseArg);
-    }
+    const normalised = args.map(normaliseArg);
+    if (normalised.length > 0) record['args'] = normalised;
     let line: string;
     try {
       line = JSON.stringify(record, jsonSafeReplacer());
     } catch {
-      // Replacer should already handle everything we hit; this is the
-      // last-ditch "the user did something truly weird" path.  Drop
-      // the args, keep the core record so the log line still appears.
-      const { args: _drop, ...core } = record;
-      line = JSON.stringify(core);
+      const fallback = renderArgumentByArgument(record, normalised);
+      if (fallback === null) return;
+      line = fallback;
     }
-    this.sink.write(line + '\n');
+    // A sink is caller-supplied and may throw — a closed stream, a full
+    // buffer.  Contained like the console logger contains its own write
+    // (#1832): the record is dropped, the log call never throws.
+    try {
+      this.sink.write(line + '\n');
+    } catch {
+      // Nowhere left to report it.
+    }
   }
 
   debug(message: string, ...args: unknown[]): void { this.emit(LogLevel.Debug, message, args); }
@@ -291,6 +298,40 @@ function writeToConsole(write: (...data: unknown[]) => void, line: string, args:
     write.call(console, line, ...args.map(placeholderUnlessPrimitive));
   } catch {
     // A console that cannot print a string either: nothing left to try.
+  }
+}
+
+/**
+ * `JsonLogger`'s rendering when the whole record would not serialise:
+ * each argument is serialised on its own, and only one that throws — a
+ * getter or a `toJSON` that throws — becomes {@link UNRENDERABLE_VALUE}
+ * (#1832).  The fallback used to drop the whole `args` array, so one
+ * hostile argument took every readable one beside it out of the record.
+ *
+ * The core record is serialised first and `args` spliced into its closing
+ * brace, which keeps the key order of the fast path (`args` last).  `null`
+ * when even the core will not serialise — a non-primitive smuggled into the
+ * MDC past its type — and the caller then writes nothing rather than throw.
+ */
+function renderArgumentByArgument(record: Record<string, unknown>, args: readonly unknown[]): string | null {
+  const { args: _replaced, ...core } = record;
+  let head: string;
+  try {
+    head = JSON.stringify(core, jsonSafeReplacer());
+  } catch {
+    return null;
+  }
+  if (args.length === 0) return head;
+  const rendered = args.map(renderOneArgument).join(',');
+  return `${head.slice(0, -1)},"args":[${rendered}]}`;
+}
+
+/** One argument as a JSON array element: `null` for what JSON drops, the placeholder for what throws. */
+function renderOneArgument(value: unknown): string {
+  try {
+    return JSON.stringify(value, jsonSafeReplacer()) ?? 'null';
+  } catch {
+    return JSON.stringify(UNRENDERABLE_VALUE);
   }
 }
 
