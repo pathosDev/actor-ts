@@ -772,4 +772,26 @@ describe('actor-ts.projection.lookback-window sizes a by-tag projection\'s re-re
     expect(spawn).toThrow('lookbackWindowMs');
     await fixture.system.terminate();
   });
+
+  test.each([Number.NaN, Number.POSITIVE_INFINITY])('a non-finite window (%p) is refused by the factory', async (window) => {
+    const fixture = newFixture('proj-config-lookback-non-finite', '');
+    const spawn = (): void => {
+      const projectionOptions = ByTagProjectionOptions.create<CountedEvent>()
+        .withName('lookback-non-finite')
+        .withQuery(fixture.query)
+        .withTag('orders')
+        .withLookbackWindowMs(window)
+        .withHandle(() => {});
+      ProjectionActor.byTag<CountedEvent>(fixture.system, projectionOptions);
+    };
+    expect(spawn).toThrow(OptionsError);
+    expect(spawn).toThrow('lookbackWindowMs');
+    await fixture.system.terminate();
+  });
+
+  test('a zero window is accepted and reads forward-only from the cursor', async () => {
+    const fixture = newFixture('proj-config-lookback-zero', '');
+    expect(await firstReadStamp(fixture, 'lookback-zero', 0)).toBe(STORED_CURSOR_STAMP_MS);
+    await fixture.system.terminate();
+  });
 });

@@ -1030,6 +1030,51 @@ describe('WorkerCluster — what the pool reports (#1276)', () => {
     }
   });
 
+  /**
+   * How many restarts slot 0's backoff tally holds.  Private state, read on
+   * purpose: under an unlimited budget the tally's bound changes no delay once
+   * the ceiling is reached, so its length is the only place a tally that grows
+   * for the process lifetime shows.
+   */
+  const backoffTallyLength = (cluster: WorkerCluster): number =>
+    (cluster as unknown as { restartStates: Map<number, { backoffTally: { recordedRestarts: number } }> })
+      .restartStates.get(0)!.backoffTally.recordedRestarts;
+
+  test('under an unlimited budget a zero minimum backoff stays at 0 ms past the 31st respawn', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend)
+      .withMaxRestarts(-1)
+      .withRestartMinBackoffMs(0)
+      .withRestartMaxBackoffMs(1_000);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      for (let crash = 0; crash < 33; crash++) await crashAndAwaitRespawn(backend);
+      expect(announcedDelays(logger)).toEqual(Array.from({ length: 33 }, () => 0));
+      expect(backoffTallyLength(cluster)).toBe(1);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('under an unlimited budget with no window the backoff tally stops at the ceiling', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend)
+      .withMaxRestarts(-1)
+      .withRestartWindowMs(0)
+      .withRestartMaxBackoffMs(16);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      for (let crash = 0; crash < 8; crash++) await crashAndAwaitRespawn(backend);
+      expect(announcedDelays(logger)).toEqual([2, 4, 8, 16, 16, 16, 16, 16]);
+      // 2 → 16 is reached at the fourth restart; nothing past it is kept.
+      expect(backoffTallyLength(cluster)).toBe(4);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
   test('an error event is reported at error with the failure text inside the line', async () => {
     const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     const logger = new RecordingLogger();

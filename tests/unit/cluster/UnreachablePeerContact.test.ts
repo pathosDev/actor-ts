@@ -130,6 +130,20 @@ describe('gossip reaches unreachable members on every n-th round (#930)', () => 
     expect(framesTo(node, peer, 'gossip')).toBe(4);
   });
 
+  test('with every member reachable a round sends one frame: the extra target is drawn from unreachable members only', async () => {
+    // Every round is an unreachable-gossip round here, so a target picked
+    // from anything but unreachable members would show up as a second frame.
+    const node = await startNode(19_636, 1);
+    const first = new NodeAddress(SYSTEM, PEER_HOST, 19_637);
+    const second = new NodeAddress(SYSTEM, PEER_HOST, 19_638);
+    holdPeerAs(node, first, 'up');
+    holdPeerAs(node, second, 'up');
+    node.sent.length = 0;
+
+    for (let round = 0; round < 6; round++) internals(node.cluster).gossipTick();
+    expect(node.sent.filter((frame) => frame.kind === 'gossip')).toHaveLength(6);
+  });
+
   test('0 sends unreachable members no gossip', async () => {
     const node = await startNode(19_641, 0);
     const peer = new NodeAddress(SYSTEM, PEER_HOST, 19_642);

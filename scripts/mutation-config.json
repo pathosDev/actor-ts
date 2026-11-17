@@ -83,6 +83,7 @@
       "tests/unit/cluster/SplitBrainStabilityWindow.test.ts",
       "tests/unit/cluster/UnreachablePeerContact.test.ts",
       "tests/unit/cluster/WeaklyUpPromotionTie.test.ts",
+      "tests/unit/cluster/downing/LeaseMajorityLeave.test.ts",
       "tests/unit/cluster/downing/LeaseMajorityLostWin.test.ts",
       "tests/unit/cluster/downing/LeaseMajorityTerminate.test.ts"
     ],
@@ -137,6 +138,7 @@
       "tests/unit/cluster/sharding/RememberEntitiesCompaction.test.ts",
       "tests/unit/cluster/sharding/SeededRefusedRegionRebalance.test.ts",
       "tests/unit/cluster/sharding/ShardCoordinatorAuthority.test.ts",
+      "tests/unit/cluster/sharding/ShardCoordinatorLeaseCycle.test.ts",
       "tests/unit/cluster/sharding/ShardCoordinatorTimersOnTurn.test.ts",
       "tests/unit/cluster/sharding/ShardCountRefusal.test.ts",
       "tests/unit/cluster/sharding/ShardHomeRequestCap.test.ts",
@@ -172,11 +174,12 @@
       "tests/integration/in-process/cluster/singleton/ClusterSingletonLease.test.ts",
       "tests/integration/in-process/cluster/singleton/ClusterSingletonRestart.test.ts",
       "tests/integration/in-process/cluster/singleton/ClusterSingletonWarmHandOver.test.ts",
+      "tests/unit/cluster/SingletonAcquireRetryDocumented.test.ts",
+      "tests/unit/cluster/SingletonWarmHandOverBudget.test.ts",
       "tests/unit/cluster/singleton/SingletonConfigDefaults.test.ts",
       "tests/unit/cluster/singleton/SingletonConfigFromHocon.test.ts",
       "tests/unit/cluster/singleton/SingletonInternalCommands.test.ts",
-      "tests/unit/cluster/SingletonAcquireRetryDocumented.test.ts",
-      "tests/unit/cluster/SingletonWarmHandOverBudget.test.ts",
+      "tests/unit/cluster/singleton/SingletonManagerTimers.test.ts",
       "tests/unit/coordination/SingletonLeasePrecedence.test.ts"
     ],
     "src/cluster/Transport.ts": [
@@ -216,6 +219,57 @@
       "tests/unit/parallelism/SpawnProtocol.test.ts",
       "tests/unit/worker/MetricsRelay.test.ts"
     ],
+    "src/crdt/LWWRegister.ts": [
+      "tests/unit/crdt/CrdtWireValidation.test.ts",
+      "tests/unit/crdt/LWWRegisterEquals.test.ts",
+      "tests/unit/crdt/Properties.test.ts",
+      "tests/unit/cluster/sharding/DistributedDataCoordinatorStateStore.test.ts",
+      "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/http/backend/ExpressBackend.ts": [
+      "tests/integration/in-process/http/ExpressHttp.test.ts",
+      "tests/integration/in-process/http/websocket/BackendTransportFrameCap.test.ts",
+      "tests/integration/in-process/http/websocket/ExpressWebsocket.test.ts",
+      "tests/unit/http/BodySizeParity.test.ts",
+      "tests/unit/http/BodyStreamingCap.test.ts",
+      "tests/unit/http/ConnectionCapOnDeno.test.ts",
+      "tests/unit/http/DrainSweep.test.ts",
+      "tests/unit/http/ExpressBackend.test.ts",
+      "tests/unit/http/ExpressClosedSocketsReleased.test.ts",
+      "tests/unit/http/HeaderDeadlineOnDeno.test.ts",
+      "tests/unit/http/HeaderSizeParity.test.ts",
+      "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/http/ServerTuningParity.test.ts",
+      "tests/unit/http/StreamBody.test.ts",
+      "tests/unit/http/TimeoutsOnDeno.test.ts",
+      "tests/unit/http/middleware/HstsDocumented.test.ts",
+      "tests/unit/http/static/StaticFiles.test.ts",
+      "tests/unit/http/websocket/CloseArgumentsOnBackends.test.ts"
+    ],
+    "src/http/backend/FastifyBackend.ts": [
+      "tests/integration/in-process/http/FastifyHttp.test.ts",
+      "tests/integration/in-process/http/websocket/BackendTransportFrameCap.test.ts",
+      "tests/integration/in-process/http/websocket/FastifyWebsocket.test.ts",
+      "tests/integration/in-process/http/websocket/WebsocketClientActor.test.ts",
+      "tests/unit/http/BodySizeParity.test.ts",
+      "tests/unit/http/BodyStreamingCap.test.ts",
+      "tests/unit/http/DrainSweep.test.ts",
+      "tests/unit/http/EntityCborAllowList.test.ts",
+      "tests/unit/http/EntityTagAllowList.test.ts",
+      "tests/unit/http/ErrorLogging.test.ts",
+      "tests/unit/http/Fallback.test.ts",
+      "tests/unit/http/FastifyBackend.test.ts",
+      "tests/unit/http/HeaderSizeParity.test.ts",
+      "tests/unit/http/HttpConfigDefaults.test.ts",
+      "tests/unit/http/HttpExtension.test.ts",
+      "tests/unit/http/HttpServerClientCertificates.test.ts",
+      "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/http/ServerTuningParity.test.ts",
+      "tests/unit/http/TimeoutsOnDeno.test.ts",
+      "tests/unit/http/middleware/HstsDocumented.test.ts",
+      "tests/unit/http/static/StaticFiles.test.ts",
+      "tests/unit/http/websocket/CloseArgumentsOnBackends.test.ts"
+    ],
     "src/http/backend/HonoBackend.ts": [
       "tests/integration/in-process/http/HonoHttp.test.ts",
       "tests/integration/in-process/http/websocket/HonoWebsocket.test.ts",
@@ -229,6 +283,7 @@
       "tests/unit/http/middleware/HstsDocumented.test.ts",
       "tests/unit/http/static/StaticFiles.test.ts",
       "tests/unit/http/websocket/CloseArgumentsOnBackends.test.ts",
+      "tests/unit/http/websocket/HonoOnNodePong.test.ts",
       "tests/unit/http/websocket/TransportFrameCap.test.ts"
     ],
     "src/http/backend/HttpServerBackend.ts": [
@@ -253,13 +308,43 @@
       "tests/unit/http/HonoBunIdleTimeout.test.ts",
       "tests/unit/http/HonoWebsocketTerminate.test.ts",
       "tests/unit/http/Http1OnHttp2Listener.test.ts",
+      "tests/unit/http/Http1OnHttp2ListenerTimers.test.ts",
       "tests/unit/http/Http2SessionIdle.test.ts",
       "tests/unit/http/Http2StreamDeadlineExpiry.test.ts",
       "tests/unit/http/HttpConfigDefaults.test.ts",
       "tests/unit/http/HttpExtension.test.ts",
       "tests/unit/http/HttpServerClientCertificates.test.ts",
       "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/http/ServerBoundsGating.test.ts",
       "tests/unit/http/TimeoutsOnDeno.test.ts"
+    ],
+    "src/http/HttpExtension.ts": [
+      "tests/integration/in-process/http/websocket/BackendTransportFrameCap.test.ts",
+      "tests/integration/in-process/http/websocket/ExpressWebsocket.test.ts",
+      "tests/integration/in-process/http/websocket/WebsocketClientActor.test.ts",
+      "tests/unit/http/BindRequestDeadline.test.ts",
+      "tests/unit/http/BodySizeParity.test.ts",
+      "tests/unit/http/BodyStreamingCap.test.ts",
+      "tests/unit/http/ConnectionCapOnDeno.test.ts",
+      "tests/unit/http/EntityCborAllowList.test.ts",
+      "tests/unit/http/EntityTagAllowList.test.ts",
+      "tests/unit/http/ErrorLogging.test.ts",
+      "tests/unit/http/ExpressBackend.test.ts",
+      "tests/unit/http/Fallback.test.ts",
+      "tests/unit/http/FastifyBackend.test.ts",
+      "tests/unit/http/HeaderDeadlineOnDeno.test.ts",
+      "tests/unit/http/HeaderSizeParity.test.ts",
+      "tests/unit/http/HonoBackend.test.ts",
+      "tests/unit/http/HonoBunIdleTimeout.test.ts",
+      "tests/unit/http/HonoWebsocketTerminate.test.ts",
+      "tests/unit/http/Http1OnHttp2Listener.test.ts",
+      "tests/unit/http/Http2SessionIdle.test.ts",
+      "tests/unit/http/Http2StreamRequestTimeout.test.ts",
+      "tests/unit/http/HttpConfigDefaults.test.ts",
+      "tests/unit/http/HttpExtension.test.ts",
+      "tests/unit/http/HttpServerClientCertificates.test.ts",
+      "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/http/ShutdownDrainTask.test.ts"
     ],
     "src/http/middleware/ClientIp.ts": [
       "tests/unit/http/middleware/ClientIp.test.ts",
@@ -277,11 +362,13 @@
       "tests/unit/http/websocket/ConnectionCloseAndAbort.test.ts",
       "tests/unit/http/websocket/ConnectionMailboxBound.test.ts",
       "tests/unit/http/websocket/ForgedHubSignals.test.ts",
+      "tests/unit/http/websocket/HonoOnNodePong.test.ts",
       "tests/unit/http/websocket/HubControlLane.test.ts",
       "tests/unit/http/websocket/HubLifecycleSignals.test.ts",
       "tests/unit/http/websocket/PreAttachBufferCap.test.ts",
       "tests/unit/http/websocket/RefusedConnectionSend.test.ts",
       "tests/unit/http/websocket/RouteFrameCapWiring.test.ts",
+      "tests/unit/http/websocket/RuntimeSocketHelpers.test.ts",
       "tests/unit/http/websocket/ServerHeartbeat.test.ts",
       "tests/unit/http/websocket/WebsocketServerActor.test.ts"
     ],
@@ -291,6 +378,10 @@
       "tests/unit/http/websocket/ServerHeartbeat.test.ts"
     ],
     "src/internal/ActorCell.ts": [
+      "tests/unit/DeathWatchOnBoundedMailbox.test.ts",
+      "tests/unit/DrainingShutdown.test.ts",
+      "tests/unit/Supervision.test.ts",
+      "tests/unit/SupervisionStress.test.ts",
       "tests/unit/internal/ActorBatching.test.ts",
       "tests/unit/internal/ActorBlueprint.test.ts",
       "tests/unit/internal/ActorCellFailurePaths.test.ts",
@@ -302,13 +393,22 @@
       "tests/unit/internal/SyncReceiveFastPath.test.ts",
       "tests/unit/internal/TerminationDrainDeadLetters.test.ts",
       "tests/unit/internal/WatchProvenance.test.ts",
-      "tests/unit/Supervision.test.ts",
-      "tests/unit/SupervisionStress.test.ts",
-      "tests/unit/DeathWatchOnBoundedMailbox.test.ts",
-      "tests/unit/DrainingShutdown.test.ts",
-      "tests/unit/mailbox/UndroppableStashReplay.test.ts",
       "tests/unit/mailbox/MailboxDropDeadLetters.test.ts",
+      "tests/unit/mailbox/UndroppableStashReplay.test.ts",
       "tests/unit/pattern/BackoffSupervisor.test.ts"
+    ],
+    "src/io/broker/AmqpActor.ts": [
+      "tests/integration/in-process/io/broker/AmqpActor.test.ts",
+      "tests/integration/in-process/io/broker/Phase2.smoke.test.ts",
+      "tests/unit/docs/EnvironmentJsonReadDocumented.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerTlsForwarding.test.ts"
+    ],
+    "src/io/broker/BrokerAcknowledgment.ts": [
+      "tests/integration/in-process/io/broker/AmqpActor.test.ts",
+      "tests/integration/in-process/io/broker/KafkaActor.test.ts",
+      "tests/integration/in-process/io/broker/MqttActor.test.ts",
+      "tests/unit/io/broker/BrokerAcknowledgmentTracker.test.ts"
     ],
     "src/io/broker/BrokerOptions.ts": [
       "tests/integration/in-process/io/broker/AmqpActor.test.ts",
@@ -324,6 +424,22 @@
       "tests/unit/io/broker/BrokerPathsNamedInSource.test.ts",
       "tests/unit/io/broker/BrokerShutdownPhase.test.ts",
       "tests/unit/io/broker/GrpcServerOptionsSurface.test.ts"
+    ],
+    "src/io/broker/KafkaActor.ts": [
+      "tests/integration/in-process/io/broker/KafkaActor.test.ts",
+      "tests/integration/in-process/io/broker/Phase2.smoke.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerTlsForwarding.test.ts"
+    ],
+    "src/io/broker/MqttActor.ts": [
+      "tests/integration/in-process/io/broker/MqttActor.test.ts",
+      "tests/integration/in-process/io/broker/MqttOptions.test.ts",
+      "tests/unit/ci/HoconLeafSpelling.test.ts",
+      "tests/unit/docs/BrokerPageSamplesAreRead.test.ts",
+      "tests/unit/docs/EnvironmentJsonReadDocumented.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
+      "tests/unit/io/broker/ForgedMqttSignals.test.ts"
     ],
     "src/logging/JsonSafe.ts": [
       "tests/integration/in-process/cluster/ClusterAccess.test.ts",
@@ -427,9 +543,43 @@
       "tests/unit/persistence/PersistenceBreakers.test.ts",
       "tests/unit/persistence/PersistenceMetrics.test.ts"
     ],
+    "src/persistence/query/InMemoryQuery.ts": [
+      "tests/integration/in-process/persistence/projection/ProjectionActor.test.ts",
+      "tests/integration/in-process/persistence/projection/ProjectionCursorLoadVisibility.test.ts",
+      "tests/integration/in-process/persistence/query/PersistenceIds.test.ts",
+      "tests/integration/in-process/persistence/query/PersistenceQuery.test.ts",
+      "tests/integration/in-process/persistence/query/PushBasedQuery.test.ts",
+      "tests/integration/in-process/persistence/query/RelationalQuery.test.ts",
+      "tests/integration/in-process/persistence/query/TagFilterValidation.test.ts",
+      "tests/unit/persistence/InMemoryQueryLiveStreams.test.ts",
+      "tests/unit/persistence/ProjectionConfig.test.ts",
+      "tests/unit/persistence/ProjectionFailureStrategy.test.ts",
+      "tests/unit/persistence/ProjectionGroupedHandler.test.ts",
+      "tests/unit/persistence/ProjectionHandlerThis.test.ts",
+      "tests/unit/persistence/ProjectionRequiredOptions.test.ts",
+      "tests/unit/persistence/TagLookbackWindow.test.ts"
+    ],
     "src/persistence/relational/RelationalJournal.ts": [
       "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
       "tests/unit/persistence/CollationAdvisory.test.ts"
+    ],
+    "src/persistence/replicated/ConflictResolver.ts": [
+      "tests/integration/in-process/persistence/replicated/ConflictResolver.test.ts",
+      "tests/integration/in-process/persistence/replicated/ResolverWiring.test.ts",
+      "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/persistence/ReplicatedEventSourcedActor.ts": [
+      "tests/integration/in-process/persistence/replicated/EnvelopeAuthorship.test.ts",
+      "tests/integration/in-process/persistence/replicated/EnvelopeTrust.test.ts",
+      "tests/integration/in-process/persistence/replicated/JournalBreaker.test.ts",
+      "tests/integration/in-process/persistence/replicated/JournalWorkAfterStop.test.ts",
+      "tests/integration/in-process/persistence/replicated/Lease.test.ts",
+      "tests/integration/in-process/persistence/replicated/LocalSequenceAcrossRestart.test.ts",
+      "tests/integration/in-process/persistence/replicated/RecoveryGuards.test.ts",
+      "tests/integration/in-process/persistence/replicated/RemoteAppendChain.test.ts",
+      "tests/integration/in-process/persistence/replicated/ResolverWiring.test.ts",
+      "tests/integration/in-process/persistence/replicated/SingleWriter.test.ts",
+      "tests/integration/in-process/persistence/replicated/Snapshotting.test.ts"
     ],
     "src/runtime/http/BunHonoRunner.ts": [
       "tests/integration/in-process/http/websocket/HonoWebsocket.test.ts",
@@ -440,17 +590,43 @@
       "tests/unit/runtime/HonoRunnerFrameCap.test.ts",
       "tests/unit/runtime/HonoRunnerServeOptionsPrecedence.test.ts"
     ],
+    "src/runtime/http/NodeHonoRunner.ts": [
+      "tests/unit/http/DrainSweep.test.ts",
+      "tests/unit/http/HeaderSizeParity.test.ts",
+      "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/runtime/HonoRunnerFrameCap.test.ts",
+      "tests/unit/runtime/NodeHonoRunnerServeOptions.test.ts"
+    ],
     "src/runtime/tcp/BunTcpBackend.ts": [
       "tests/unit/cluster/TcpTransportBackpressureSockets.test.ts",
       "tests/unit/cluster/TcpTransportOutboundDial.test.ts",
       "tests/unit/io/broker/TcpServerActor.test.ts",
       "tests/unit/logging/TcpLogSinkDial.test.ts",
+      "tests/unit/runtime/tcp/BunDialDrain.test.ts",
       "tests/unit/runtime/tcp/BunHandshakeVerdict.test.ts",
       "tests/unit/runtime/tcp/BunSocketBacklog.test.ts",
       "tests/unit/runtime/tcp/ConnectAbort.test.ts",
       "tests/unit/runtime/tcp/ConnectSettlement.test.ts",
       "tests/unit/runtime/tcp/TlsClientAuth.test.ts",
       "tests/unit/runtime/tcp/TlsListenerCredential.test.ts"
+    ],
+    "src/runtime/tcp/DenoTcpBackend.ts": [
+      "tests/unit/runtime/tcp/ConnectAbort.test.ts",
+      "tests/unit/runtime/tcp/DenoTcpBackpressure.test.ts",
+      "tests/unit/runtime/tcp/TlsClientAuth.test.ts",
+      "tests/unit/runtime/tcp/TlsListenerCredential.test.ts"
+    ],
+    "src/serialization/CborCodec.ts": [
+      "tests/unit/serialization/CborCodec.test.ts",
+      "tests/unit/serialization/CborDecoderFuzz.test.ts",
+      "tests/unit/serialization/CborDecoderTagAllowListEdges.test.ts",
+      "tests/unit/serialization/CodecDifferentialFuzz.test.ts",
+      "tests/unit/serialization/ReadConstraints.test.ts",
+      "tests/unit/serialization/RichTypeParity.test.ts",
+      "tests/unit/serialization/SerializationProperties.test.ts",
+      "tests/unit/serialization/WideBigintWriteRefusal.test.ts",
+      "tests/unit/cluster/FrameDecoderFuzz.test.ts",
+      "tests/unit/http/EntityCborAllowList.test.ts"
     ],
     "src/testkit/FaultInjectingJournal.ts": [
       "tests/integration/in-process/persistence/replicated/JournalBreaker.test.ts",
@@ -463,6 +639,22 @@
       "tests/integration/in-process/persistence/replicated/RemoteAppendChain.test.ts",
       "tests/unit/cluster/sharding/RememberEntitiesCompaction.test.ts",
       "tests/unit/testkit/FaultInjectingStores.test.ts"
+    ],
+    "src/testkit/FaultInjectingSnapshotStore.ts": [
+      "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
+      "tests/integration/in-process/persistence/PersistentActorStoreFailure.test.ts",
+      "tests/unit/testkit/FaultInjectingStores.test.ts"
+    ],
+    "src/testkit/FaultInjectingSnapshotStoreOptions.ts": [
+      "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
+      "tests/integration/in-process/persistence/PersistentActorStoreFailure.test.ts",
+      "tests/unit/testkit/FaultInjectingStores.test.ts"
+    ],
+    "src/util/CanonicalOrderKey.ts": [
+      "tests/unit/util/CanonicalOrderKey.test.ts",
+      "tests/unit/UtilExports.test.ts",
+      "tests/unit/crdt/Properties.test.ts",
+      "tests/integration/in-process/persistence/replicated/ConflictResolver.test.ts"
     ]
   },
   "sets": {

@@ -263,6 +263,43 @@ describe('LWWRegister — CRDT laws', () => {
   });
 });
 
+/**
+ * **Values a tie-break key could confuse** (#1841).  A full tie is ranked by a
+ * key derived from the value, so the law has to see the pairs a careless key
+ * maps alike: a `bigint` and its string spelling (`1n` against `"1n"`),
+ * `undefined` against a function (both rendered to the empty JSON key), `-0`
+ * against `0`, a field holding `undefined` against a missing one, distinct
+ * objects, and a cycle against a plain value.  Compared by the identity of the
+ * kept value rather than by `equals`, which renders through `JSON.stringify`
+ * and so throws on a `bigint`.
+ */
+const cyclicValue: { self?: unknown } = {};
+cyclicValue.self = cyclicValue;
+const otherCyclicValue: { other?: unknown } = {};
+otherCyclicValue.other = otherCyclicValue;
+const tieBreakFunction = (): number => 1;
+const confusableValue: fc.Arbitrary<unknown> = fc.constantFrom<unknown>(
+  1n, '1n', 1, '1', 0, -0, undefined, null, 'null', tieBreakFunction, '',
+  { v: 1 }, { v: 2 }, { v: 1n }, { v: '1n' }, { v: undefined }, {}, [1n], ['1n'],
+  cyclicValue, otherCyclicValue, true, 'true',
+);
+const confusableLwwArb: fc.Arbitrary<LWWRegister<unknown>> = fc.record({
+  replica: fc.constantFrom('node-a', 'node-b'),
+  value: confusableValue,
+  timestamp: fc.integer({ min: 1, max: 2 }),
+}).map((op) => LWWRegister.empty<unknown>().assign(op.replica, op.value, op.timestamp));
+
+describe('LWWRegister — commutativity over values a tie-break key could confuse (#1841)', () => {
+  test('merge(a, b) and merge(b, a) keep the same value, full ties included', () => {
+    let fullTies = 0;
+    fc.assert(fc.property(confusableLwwArb, confusableLwwArb, (a, b) => {
+      if (a.timestamp() === b.timestamp() && a.toJSON().replica === b.toJSON().replica) fullTies += 1;
+      expect(Object.is(a.merge(b).value(), b.merge(a).value())).toBe(true);
+    }));
+    expect(fullTies).toBeGreaterThan(0);
+  });
+});
+
 /* ---------------------------- GCounterMap ---------------------------- */
 
 const mapKey = fc.constantFrom('page-views', 'clicks', 'signups');
@@ -512,5 +549,25 @@ describe('counterexample corpus', () => {
 
     expect(left.merge(right).value()).toBe(right.merge(left).value());
     expect(left.merge(right).equals(right.merge(left))).toBe(true);
+  });
+
+  test('LWWRegister: a full tie between 1n and "1n" converges on one value (#1841)', () => {
+    // Found by the mutation triage of #1368 (group C, C13), not by a property:
+    // the JSON tie-break key rendered a bigint as its digits with an `n`, which
+    // is the string's own spelling, so the two values tied and each merge kept
+    // its receiver.
+    const bigint = LWWRegister.empty<unknown>().assign('node-a', 1n, 5);
+    const string = LWWRegister.empty<unknown>().assign('node-a', '1n', 5);
+
+    expect(typeof bigint.merge(string).value()).toBe(typeof string.merge(bigint).value());
+  });
+
+  test('LWWRegister: a full tie between undefined and a function converges on one value (#1841)', () => {
+    // `JSON.stringify` answers `undefined` for both, and the old key turned
+    // that into the empty string for both.
+    const undefinedValue = LWWRegister.empty<unknown>().assign('node-a', undefined, 5);
+    const functionValue = LWWRegister.empty<unknown>().assign('node-a', () => 1, 5);
+
+    expect(typeof undefinedValue.merge(functionValue).value()).toBe(typeof functionValue.merge(undefinedValue).value());
   });
 });

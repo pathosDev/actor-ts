@@ -117,6 +117,30 @@ describe('TcpTransport delivers a frame addressed to its own node (#1813)', () =
       .toHaveLength(1);
   });
 
+  test('a frame over maxFrameBytes is dropped and logged, with nothing thrown from the delivery', async () => {
+    // The decode runs on a microtask, so an exception escaping it would be
+    // nobody's to catch: it would surface as an uncaught error, not a log line.
+    const log = new RecordingLogger();
+    const transport = new TcpTransport(self, log, { maxFrameBytes: 1_024 });
+    transports.push(transport);
+    const delivered: WireMessage[] = [];
+    transport.setHandler((_from, message) => { delivered.push(message); });
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    process.on('uncaughtException', onUncaught);
+    try {
+      transport.send(self, envelope('x'.repeat(4_096)));
+      await settle();
+    } finally {
+      process.off('uncaughtException', onUncaught);
+    }
+
+    expect(uncaught).toEqual([]);
+    expect(delivered).toEqual([]);
+    expect(log.records.filter((record) => record.level === 'warn' && record.message.startsWith('frame-decoder error')))
+      .toHaveLength(1);
+  });
+
   test('a frame that fails the shape check is dropped like an inbound one', async () => {
     const { transport, log, delivered } = startTransport();
 

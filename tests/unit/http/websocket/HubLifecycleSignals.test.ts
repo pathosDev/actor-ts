@@ -25,7 +25,8 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorOptions } from '../../../../src/ActorOptions.js';
-import type { ActorRef } from '../../../../src/ActorRef.js';
+import { ActorPath } from '../../../../src/ActorPath.js';
+import { ActorRef } from '../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import type { HttpRequest } from '../../../../src/http/Types.js';
@@ -33,6 +34,7 @@ import { wireConnection } from '../../../../src/http/websocket/ConnectionWiring.
 import type { WebsocketListeners, WebsocketSocketAdapter } from '../../../../src/http/websocket/SocketAdapter.js';
 import type { WebsocketCloseInfo } from '../../../../src/http/websocket/Types.js';
 import { jsonCodec } from '../../../../src/http/websocket/WebsocketCodec.js';
+import { WebsocketConnectionActor } from '../../../../src/http/websocket/WebsocketConnectionActor.js';
 import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
 import type { WebsocketServerMessage, WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
 import { DEFAULT_WEBSOCKET_POLICY, type ResolvedWebsocketPolicy } from '../../../../src/http/websocket/WebsocketPolicy.js';
@@ -388,5 +390,48 @@ describe('a client that went away leaves the hub, whatever its queue sheds (#986
     );
     expect(h.record.clients()).toEqual([x.id]);
     expect(h.record.events).toEqual([`connected:${x.id}`]);
+  });
+});
+
+/**
+ * A hub ref that is not a `LocalActorRef` — the shape a remote hub takes — and
+ * records what is told to it.  It has no cell, so the lifecycle signals cannot
+ * take the exempt envelope and go out through its plain `tell`.
+ */
+class RecordingRemoteHubRef extends ActorRef<unknown> {
+  readonly path = new ActorPath('remote-hub');
+  readonly told: Array<{ readonly message: unknown; readonly sender: ActorRef | null | undefined }> = [];
+  tell(message: unknown, sender?: ActorRef | null): void {
+    this.told.push({ message, sender });
+  }
+}
+
+describe('a hub that is not hosted locally still hears the lifecycle (#986)', () => {
+  test('connected, then disconnected, reach it through its plain tell, each from the connection', async () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new RecordingLogger(LogLevel.Warn))
+      .withLogLevel(LogLevel.Warn);
+    const system = ActorSystem.create('hub-lifecycle-remote', systemOptions);
+    systems.push(system);
+    const hub = new RecordingRemoteHubRef();
+    const socket = new MockSocket();
+    system.spawn(() => new WebsocketConnectionActor<PongMessage, PingMessage>({
+      socket,
+      codec: jsonCodec<PongMessage, PingMessage>(),
+      policy: POLICY,
+      hub: hub as unknown as WebsocketServerRef<PongMessage, PingMessage>,
+      id: 'remote-connection',
+      upgrade: { path: '/ws', params: {}, query: {}, headers: {} },
+    }), 'connection');
+
+    await awaitCondition(() => hub.told.length === 1, { timeoutMs: 4_000, label: 'the hub heard connected' });
+    socket.hangUp();
+    await awaitCondition(() => hub.told.length === 2, { timeoutMs: 4_000, label: 'the hub heard disconnected' });
+
+    const kinds = hub.told.map((entry) => (entry.message as { readonly kind: string }).kind);
+    expect(kinds).toEqual(['websocket-connected', 'websocket-disconnected']);
+    const connection = (hub.told[0]!.message as { readonly connection: WebsocketConnection<PongMessage> }).connection;
+    expect(connection.id).toBe('remote-connection');
+    for (const entry of hub.told) expect(entry.sender).toBe(connection as unknown as ActorRef);
   });
 });

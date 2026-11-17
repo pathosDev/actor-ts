@@ -176,6 +176,22 @@ describe('ref.ask()', () => {
     expect(reply).toBe('via-replyTo');
     await sys.terminate();
   });
+
+  test('a null or undefined message is delivered as it is and the reply resolves', async () => {
+    const received: unknown[] = [];
+    class Recorder extends Actor<null | undefined> {
+      override onReceive(m: null | undefined): void {
+        received.push(m);
+        this.sender.forEach((sender) => sender.tell(`got:${String(m)}`));
+      }
+    }
+    const sys = newSystem();
+    const ref = sys.spawn(Recorder, 'recorder');
+    expect(await ref.ask<string>(null, 500)).toBe('got:null');
+    expect(await ref.ask<string>(undefined, 500)).toBe('got:undefined');
+    expect(received).toEqual([null, undefined]);
+    await sys.terminate();
+  });
 });
 
 describe('ask — reply-ref naming (#119)', () => {

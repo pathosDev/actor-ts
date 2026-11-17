@@ -61,6 +61,7 @@ import {
 import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { RecordingLogger } from '../../../util/RecordingLogger.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { none } from '../../../../src/util/Option.js';
 
 const TYPE_NAME = 'pending';
 const NUM_SHARDS = 8;
@@ -1037,6 +1038,27 @@ describe('a reply is bound to the node that was asked (#1268)', () => {
     await harness.fence();
     await drain(stats);
     expect(answersOf('stats')).toEqual([[]]);
+  }, 20_000);
+
+  test('a shards() query not yet put to any coordinator is settled by no answer', async () => {
+    // With no leader the region knows no coordinator node, so the query waits
+    // with nobody recorded as asked.  No peer can be the one it was put to —
+    // not another member, and not this node either.
+    const harness = await startRegion({ systemName: '1268-stats-unasked', port: 44_330, lifetimeMs: LIFETIME_FLOOR_MS });
+    harness.cluster.leader = () => none;
+    harness.cluster._publishClusterEvent(new LeaderChanged(none));
+    await harness.fence();
+    const stats = harness.recorder('stats');
+    harness.region.tell(statsQuery(), stats);
+    await harness.fence();
+    const [correlationId] = statsCorrelationsOf(harness.instance());
+
+    harness.answerStatsFrom(harness.remoteNode, correlationId!);
+    harness.answerStats(correlationId!);
+    await harness.fence();
+    await drain(stats);
+    expect(answerCountOf('stats')).toBe(0);
+    expect(statsCorrelationsOf(harness.instance())).toEqual([correlationId!]);
   }, 20_000);
 
   test('a forwarding hop asks under its own correlation and relays the answer to the origin', async () => {

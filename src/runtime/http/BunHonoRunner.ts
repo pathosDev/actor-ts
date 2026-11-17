@@ -218,6 +218,12 @@ function earliestCutMsOf(seconds: number): number {
  * **Neither**, nothing is written and Bun keeps its own default: a runner
  * called directly, without the policy `HttpExtension.bind` resolves, behaves
  * exactly as it did before either member existed.
+ *
+ * A `requestDeadlineMs` of `0` is no deadline — `0` turns a bound off
+ * throughout the project — so it derives nothing, and a set value is never
+ * reported as falling short of it.  Read as a deadline, it made a set value
+ * report an earliest cut "before" a deadline that does not exist, and an
+ * unset one derive 8 s in place of Bun's own default.
  */
 export function bunIdleTimeoutOf(options: Pick<HonoServeOptions, 'idleTimeoutMs' | 'requestDeadlineMs'>): BunIdleTimeout {
   const { idleTimeoutMs, requestDeadlineMs } = options;
@@ -235,13 +241,13 @@ export function bunIdleTimeoutOf(options: Pick<HonoServeOptions, 'idleTimeoutMs'
           + `${BUN_MAX_IDLE_TIMEOUT_SECONDS} — at most ${BUN_MAX_IDLE_TIMEOUT_SECONDS * 1_000} ms.`,
       );
     }
-    if (requestDeadlineMs === undefined || !Number.isFinite(requestDeadlineMs) || requestDeadlineMs < 0) {
+    if (requestDeadlineMs === undefined || !Number.isFinite(requestDeadlineMs) || requestDeadlineMs <= 0) {
       return { seconds };
     }
     const earliestCutMs = earliestCutMsOf(seconds);
     return earliestCutMs >= requestDeadlineMs + IDLE_CUT_MARGIN_SECONDS * 1_000 ? { seconds } : { seconds, earliestCutMs };
   }
-  if (requestDeadlineMs === undefined) return {};
+  if (requestDeadlineMs === undefined || requestDeadlineMs === 0) return {};
   if (!Number.isFinite(requestDeadlineMs) || requestDeadlineMs < 0) {
     throw new RangeError(`requestDeadlineMs = ${requestDeadlineMs} is no deadline to derive an idle timeout from.`);
   }

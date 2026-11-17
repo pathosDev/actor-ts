@@ -201,6 +201,24 @@ function failingAtOnce(): ReadableStream<Uint8Array> {
   });
 }
 
+/**
+ * A source whose first chunk never comes: `pulled` resolves once something
+ * asked it for one, and `onCancel` records the release.  `highWaterMark: 0`,
+ * so it is asked only by a read and not eagerly when it is built.
+ */
+function neverFirstChunk(onCancel: () => void): { readonly body: ReadableStream<Uint8Array>; readonly pulled: Promise<void> } {
+  let signalPulled!: () => void;
+  const pulled = new Promise<void>((resolve) => { signalPulled = resolve; });
+  const body = new ReadableStream<Uint8Array>({
+    pull() {
+      signalPulled();
+      return new Promise<void>(() => { /* the first chunk never arrives */ });
+    },
+    cancel() { onCancel(); },
+  }, { highWaterMark: 0 });
+  return { body, pulled };
+}
+
 /** An endless source that records whether it was cancelled — the release of whatever it reads from. */
 function endlessStream(onCancel: () => void): ReadableStream<Uint8Array> {
   const chunk = new Uint8Array(1024).fill(7);
@@ -746,6 +764,26 @@ export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
         await reader.cancel().catch(() => {});
         await awaitCondition(() => cancelled, { timeoutMs: 3_000, label: 'the source was cancelled' });
         expect(cancelled).toBe(true);
+      });
+
+      test('a client that disconnects before the first chunk cancels the source', async () => {
+        let cancelled = false;
+        const source = neverFirstChunk(() => { cancelled = true; });
+        const url = await urlOf(get(() => ({ status: Status.OK, body: source.body })));
+        const controller = new AbortController();
+        const response = fetch(`${url}/`, { signal: controller.signal }).catch(() => undefined);
+        await source.pulled;
+        controller.abort();
+        await response;
+        await awaitCondition(() => cancelled, { timeoutMs: 3_000, label: 'the source was cancelled' });
+        expect(cancelled).toBe(true);
+      });
+
+      test('a stream that closes without a chunk is a complete, empty 200', async () => {
+        const url = await urlOf(get(() => ({ status: Status.OK, body: streamOf([]) })));
+        const response = await fetch(`${url}/`, { signal: AbortSignal.timeout(3_000) });
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe('');
       });
     });
 

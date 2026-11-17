@@ -112,7 +112,9 @@ protected override resolver(): ConflictResolver<Event> {
 Höherer `timestamp` gewinnt; bei Gleichstand gewinnt die höhere
 (lexikografische) `replica`-ID, und ein Gleichstand in beidem —
 eine Replica stempelt zwei Events in derselben Millisekunde — geht
-an das Event, dessen JSON-Darstellung höher sortiert.  So hängt der
+an das Event, dessen typisierter, kanonischer Schlüssel
+(`canonicalOrderKey` aus `actor-ts/util`, dieselbe Ordnung wie bei
+`LWWRegister`) höher sortiert.  So hängt der
 Gewinner nie von der Argumentreihenfolge ab, und jede Replica
 konvergiert.
 Einfach und oft „gut genug".  Vorbehalt: setzt grob vergleichbare

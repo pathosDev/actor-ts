@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Journal } from '../../../src/persistence/Journal.js';
+import type { SnapshotStore } from '../../../src/persistence/SnapshotStore.js';
 import { InMemoryJournal, InMemorySnapshotStore } from '../../../src/persistence/index.js';
 import {
   FaultInjectingJournal,
@@ -141,7 +142,37 @@ describe('FaultInjectingJournal — what it forwards', () => {
     };
     const wrappedMinimal = new FaultInjectingJournal(minimal);
     expect(wrappedMinimal.raiseCompactionMark).toBeUndefined();
+    expect(wrappedMinimal.persistenceIdsPaginated).toBeUndefined();
+    expect(wrappedMinimal.storageIdentity).toBeUndefined();
+    // An invented `start` would be called by the extension and throw on the missing inner one.
+    expect(wrappedMinimal.start).toBeUndefined();
     expect(wrappedMinimal.close).toBeUndefined();
+  });
+
+  test('each optional member it forwards delegates to the wrapped journal', async () => {
+    const inner = await seeded(1);
+    const calls: string[] = [];
+    const full: Journal = {
+      append: (persistenceId, entries, expectedSeq) => inner.append(persistenceId, entries, expectedSeq),
+      read: (persistenceId, fromSeq, toSeq) => inner.read(persistenceId, fromSeq, toSeq),
+      highestSeq: (persistenceId) => inner.highestSeq(persistenceId),
+      delete: (persistenceId, toSeq) => inner.delete(persistenceId, toSeq),
+      persistenceIds: () => inner.persistenceIds(),
+      persistenceIdsPaginated: async (after, limit) => {
+        calls.push(`persistenceIdsPaginated ${after} ${limit}`);
+        return ['q'];
+      },
+      storageIdentity: async () => { calls.push('storageIdentity'); return 'journal-identity'; },
+      start: async () => { calls.push('start'); },
+      close: async () => { calls.push('close'); },
+    };
+    const wrapped = new FaultInjectingJournal(full);
+
+    expect(await wrapped.persistenceIdsPaginated!('p', 5)).toEqual(['q']);
+    expect(await wrapped.storageIdentity!()).toBe('journal-identity');
+    await wrapped.start!();
+    await wrapped.close!();
+    expect(calls).toEqual(['persistenceIdsPaginated p 5', 'storageIdentity', 'start', 'close']);
   });
 });
 
@@ -209,5 +240,64 @@ describe('FaultInjectingSnapshotStore', () => {
   test('refuses an operation the store does not have', () => {
     const snapshotFaults = { failOn: ['append' as never] };
     expect(() => new FaultInjectingSnapshotStore(new InMemorySnapshotStore(), snapshotFaults)).toThrow(OptionsError);
+  });
+
+  test('refuses a negative count and an unknown failure point', () => {
+    const inner = new InMemorySnapshotStore();
+    expect(() => new FaultInjectingSnapshotStore(inner, { failAfterCalls: -1 })).toThrow(OptionsError);
+    expect(() => new FaultInjectingSnapshotStore(inner, { failurePoint: 'during' as never })).toThrow(OptionsError);
+  });
+
+  test('withError returns the builder, and a failing call rejects with the error it builds', async () => {
+    const builder = FaultInjectingSnapshotStoreOptions.create();
+    const snapshotFaults = builder
+      .withFailOn('save')
+      .withError((operation) => new RangeError(`no ${operation} today`));
+    expect(snapshotFaults).toBe(builder);
+    const store = new FaultInjectingSnapshotStore(new InMemorySnapshotStore(), snapshotFaults);
+
+    const error = await rejection(store.save('p', 1, { n: 1 }));
+    expect(error).toBeInstanceOf(RangeError);
+    expect((error as Error).message).toBe('no save today');
+  });
+});
+
+describe('FaultInjectingSnapshotStore — what it forwards', () => {
+  test('each optional member delegates to the wrapped store when it has one', async () => {
+    const inner = new InMemorySnapshotStore();
+    const calls: string[] = [];
+    const full: SnapshotStore = {
+      save: (persistenceId, seq, state, options) => inner.save(persistenceId, seq, state, options),
+      loadLatest: (persistenceId, options) => inner.loadLatest(persistenceId, options),
+      loadBefore: (persistenceId, seq, options) => inner.loadBefore(persistenceId, seq, options),
+      delete: (persistenceId, toSeq) => inner.delete(persistenceId, toSeq),
+      encryptsAtRest: (persistenceId) => { calls.push(`encryptsAtRest ${persistenceId}`); return true; },
+      storageIdentity: async () => { calls.push('storageIdentity'); return 'snapshot-identity'; },
+      start: async () => { calls.push('start'); },
+      close: async () => { calls.push('close'); },
+    };
+    const wrapped = new FaultInjectingSnapshotStore(full);
+
+    expect(wrapped.encryptsAtRest!('p')).toBe(true);
+    expect(await wrapped.storageIdentity!()).toBe('snapshot-identity');
+    await wrapped.start!();
+    await wrapped.close!();
+    expect(calls).toEqual(['encryptsAtRest p', 'storageIdentity', 'start', 'close']);
+  });
+
+  test('leaves out every optional member the wrapped store leaves out', () => {
+    const inner = new InMemorySnapshotStore();
+    const minimal: SnapshotStore = {
+      save: (persistenceId, seq, state, options) => inner.save(persistenceId, seq, state, options),
+      loadLatest: (persistenceId, options) => inner.loadLatest(persistenceId, options),
+      loadBefore: (persistenceId, seq, options) => inner.loadBefore(persistenceId, seq, options),
+      delete: (persistenceId, toSeq) => inner.delete(persistenceId, toSeq),
+    };
+    const wrapped = new FaultInjectingSnapshotStore(minimal);
+
+    expect(wrapped.encryptsAtRest).toBeUndefined();
+    expect(wrapped.storageIdentity).toBeUndefined();
+    expect(wrapped.start).toBeUndefined();
+    expect(wrapped.close).toBeUndefined();
   });
 });

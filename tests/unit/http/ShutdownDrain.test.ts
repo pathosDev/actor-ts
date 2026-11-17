@@ -73,4 +73,30 @@ describe('a health-check registry first built while a shutdown runs (#997)', () 
     expect(draining, `readiness carried no shutdown check: ${JSON.stringify(readiness)}`).toBeDefined();
     expect(draining!.status).toBe(false);
   });
+
+  test('built in a phase ahead of before-service-unbind, it carries the shutdown check once', async () => {
+    // Red from the moment it is built — and not also registered for the
+    // before-service-unbind task, which has not run yet and would add the
+    // same check a second time.
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('shutdown-drain-early-registry', options);
+    systems.push(system);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    // Phases with no dependencies run in name order, so this one runs first.
+    const earlyPhase = 'a-phase-ahead-of-unbind';
+    shutdown.addPhase({ name: earlyPhase, timeoutMs: 5_000, dependsOn: [], recover: true });
+    shutdown.addTask(earlyPhase, 'test-early-registry', () => { healthChecksOf(system); });
+    let readiness: ReadonlyArray<{ name: string; status: boolean }> | undefined;
+    shutdown.addTask(Phases.ServiceUnbind, 'test-read-readiness', async () => {
+      readiness = await healthChecksOf(system).checkReadiness();
+    });
+
+    await shutdown.run();
+
+    expect(readiness).toBeDefined();
+    const shutdownChecks = readiness!.filter((result) => result.name === SHUTDOWN_READINESS_CHECK_NAME);
+    expect(shutdownChecks).toEqual([expect.objectContaining({ status: false })]);
+  });
 });

@@ -208,6 +208,17 @@ describe('the held frames are bounded by outboundQueueSize (#931)', () => {
     expect(sequencesWritten(socket)).toEqual([1]);
   });
 
+  test('a drain on a socket the transport does not know is ignored', () => {
+    // A runtime may report a drain for a socket whose connection has already
+    // been forgotten — closed and unregistered between the write and the event.
+    const { transport, socket } = connected();
+    const stranger = throttledSocket();
+
+    expect(() => internals(transport).onDrain(stranger)).not.toThrow();
+    expect(stranger.writes).toEqual([]);
+    expect(socket.writes).toEqual([]);
+  });
+
   test('an orderly disconnect writes what is held before the FIN', () => {
     const { transport, socket } = connected();
     socket.accepting = false;

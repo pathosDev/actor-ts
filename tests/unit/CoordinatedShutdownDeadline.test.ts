@@ -14,7 +14,7 @@
  *   - a task its phase budget abandons is reported at ERROR, and `exit-process`
  *     waits for it — up to the overall deadline — rather than exiting under it.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { CoordinatedShutdownId, Phases } from '../../src/CoordinatedShutdown.js';
@@ -168,6 +168,37 @@ describe('overall-timeout bounds the whole run (#920)', () => {
     expect(errorsOf(log).filter((m) => m.includes('overall deadline'))).toEqual([]);
     expect(system.isTerminated).toBe(true);
   });
+
+  test('a completed run leaves no deadline timer armed', async () => {
+    // The deadline is an unreferenced host timer, so one left armed keeps
+    // nothing alive and fires into a promise nobody awaits: the host timer
+    // calls are the only place it shows.  A delay no other timer uses picks it out.
+    const deadlineMs = 987_654;
+    const armed: unknown[] = [];
+    const cleared: unknown[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const setSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delayMs?: number) => {
+      const handle = realSetTimeout(callback, delayMs);
+      if (delayMs === deadlineMs) armed.push(handle);
+      return handle;
+    }) as typeof setTimeout);
+    const clearSpy = spyOn(globalThis, 'clearTimeout').mockImplementation(((handle: ReturnType<typeof setTimeout>) => {
+      cleared.push(handle);
+      realClearTimeout(handle);
+    }) as typeof clearTimeout);
+    try {
+      const { system } = withRecordedLog('overall-deadline-cancelled', { 'overall-timeout': `${deadlineMs}ms` });
+      const shutdown = system.extension(CoordinatedShutdownId);
+      shutdown.addTask(Phases.ServiceUnbind, 'quick', () => {});
+      await shutdown.run();
+      expect(armed).toHaveLength(1);
+      expect(cleared).toContain(armed[0]);
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
+  });
 });
 
 describe('an abandoned task is reported, and exit-process does not exit under it (#920)', () => {
@@ -226,5 +257,30 @@ describe('an abandoned task is reported, and exit-process does not exit under it
     const gaveUp = errorsOf(log).filter((m) => m.includes('overall deadline'));
     expect(gaveUp).toHaveLength(1);
     expect(gaveUp[0]).toContain('never-settles');
+  });
+
+  test("the abandoned line lists what is pending in its own phase, not an earlier phase's leftovers", async () => {
+    const { system, log } = withRecordedLog('abandoned-task-own-phase', {
+      phases: {
+        'before-service-unbind': { timeout: '10ms' },
+        'service-unbind': { timeout: '10ms' },
+      },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const releases: Array<() => void> = [];
+    const heldOpen = (): Promise<void> => new Promise<void>((resolve) => { releases.push(resolve); });
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'earlier', heldOpen);
+    shutdown.addTask(Phases.ServiceUnbind, 'later', heldOpen);
+
+    await shutdown.run();
+    for (const release of releases) release();
+
+    const abandoned = errorsOf(log).filter((m) => m.includes('abandoned, the pipeline moves on'));
+    expect(abandoned).toHaveLength(2);
+    const [first, second] = abandoned;
+    expect(first).toContain('(still pending in "before-service-unbind": "before-service-unbind/earlier")');
+    // The earlier task is still pending here too, but it is not this phase's.
+    expect(second).toContain('(still pending in "service-unbind": "service-unbind/later")');
+    expect(second).not.toContain('earlier');
   });
 });

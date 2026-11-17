@@ -253,3 +253,72 @@ describe('JournalRememberEntitiesStore — what a compaction costs, and how ofte
   });
 });
 
+/** Write a snapshot of `size` live entities straight into the stream, as a compaction would have. */
+async function writeSnapshot(journal: InMemoryJournal, size: number): Promise<void> {
+  const entityIds = Array.from({ length: size }, (_, index) => `snapshotted-${index}`);
+  const snapshot = { kind: 'snapshot', entities: [[0, entityIds]] };
+  const head = await journal.highestSeq(PERSISTENCE_ID);
+  await journal.append(PERSISTENCE_ID, [{ event: snapshot, tags: ['sharding-remember'] }], head);
+}
+
+describe('JournalRememberEntitiesStore — the schedule a load or a clear leaves behind (#649)', () => {
+  // The counter and the interval live in the store instance, so a fresh
+  // coordinator's store has to take both from what `load` read, and `clear`
+  // has to drop both: a stale counter or interval moves every later
+  // compaction.
+  const minimum = REMEMBER_ENTITIES_COMPACTION_MIN_EVENTS;
+  const start = (store: JournalRememberEntitiesStore, entityId: string): Promise<void> =>
+    store.append(TYPE_NAME, { kind: 'started', shardId: 0, entityId });
+
+  test('a load that finds MIN − 1 tail events counts them: the next append compacts', async () => {
+    const journal = new SnapshotCountingJournal();
+    const writer = new JournalRememberEntitiesStore(journal);
+    for (let index = 0; index < minimum - 1; index++) await start(writer, `tail-${index}`);
+    expect(journal.snapshotsWritten).toBe(0);
+
+    const reader = new JournalRememberEntitiesStore(journal);
+    await reader.load(TYPE_NAME);
+    await start(reader, 'one-more');
+    expect(journal.snapshotsWritten).toBe(1);
+  });
+
+  test('a load that finds a snapshot larger than MIN waits that many appends before compacting', async () => {
+    const size = minimum + minimum / 2;
+    const journal = new SnapshotCountingJournal();
+    await writeSnapshot(journal, size);
+    const written = journal.snapshotsWritten;
+
+    const store = new JournalRememberEntitiesStore(journal);
+    await store.load(TYPE_NAME);
+    for (let index = 0; index < size - 1; index++) await start(store, `after-${index}`);
+    // In particular none at MIN: the interval is the loaded snapshot's size.
+    expect(journal.snapshotsWritten).toBe(written);
+    await start(store, 'last');
+    expect(journal.snapshotsWritten).toBe(written + 1);
+  });
+
+  test('a clear restarts the counter from zero', async () => {
+    const journal = new SnapshotCountingJournal();
+    const store = new JournalRememberEntitiesStore(journal);
+    for (let index = 0; index < minimum / 2; index++) await start(store, `before-${index}`);
+    await store.clear(TYPE_NAME);
+
+    for (let index = 0; index < minimum - 1; index++) await start(store, `after-${index}`);
+    expect(journal.snapshotsWritten).toBe(0);
+    await start(store, 'last');
+    expect(journal.snapshotsWritten).toBe(1);
+  });
+
+  test('a clear restarts the interval at MIN, whatever snapshot the store loaded before', async () => {
+    const journal = new SnapshotCountingJournal();
+    await writeSnapshot(journal, minimum * 2);
+    const store = new JournalRememberEntitiesStore(journal);
+    await store.load(TYPE_NAME);
+    await store.clear(TYPE_NAME);
+    const written = journal.snapshotsWritten;
+
+    for (let index = 0; index < minimum; index++) await start(store, `after-${index}`);
+    expect(journal.snapshotsWritten).toBe(written + 1);
+  });
+});
+

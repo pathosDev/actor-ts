@@ -21,6 +21,7 @@ import type { MetricsRegistry } from '../../../../../src/metrics/Metrics.js';
 import { DeadLetter } from '../../../../../src/SystemMessages.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
+import { ManualScheduler } from '../../../../../src/testkit/ManualScheduler.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 import { RecordingLogger, type RecordedLog } from '../../../../util/RecordingLogger.js';
 import { acknowledgeDelivery, negativelyAcknowledgeDelivery } from '../../../../../src/io/broker/BrokerAcknowledgment.js';
@@ -121,6 +122,16 @@ class FakeMqttClient implements MqttClientLike {
     hook(packet, () => { this.released.push(packet); });
   }
 
+  /**
+   * The second half of {@link firePublish} on its own, for a packet whose
+   * `message` was fired earlier: mqtt.js never hands a packet over this late,
+   * but `attach` has a branch for exactly that case.
+   */
+  handOverLate(packet: MqttInboundPacketLike): void {
+    if (!this.handleMessage) throw new Error('fake mqtt client: no handleMessage hook installed');
+    this.handleMessage(packet, () => { this.released.push(packet); });
+  }
+
   fireConnect(): void { for (const listener of [...this.connectListeners]) listener(); }
   fireMessage(topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike): void {
     for (const listener of [...this.messageListeners]) listener(topic, payload, packet);
@@ -167,6 +178,7 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
   }
 
   override onMessage(message: MqttMessage<T>): void | Promise<void> {
+    this.startedCount++;
     // Touch entity() so a malformed payload surfaces to onInvalidMessage.
     if (this.decodeOnReceive) message.payload.entity();
     if (this.failOnReceive) throw new Error('handler failed');
@@ -178,11 +190,16 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
   failOnReceive = false;
   /** Hold `onMessage` until this settles — a handler still processing. */
   gate: Promise<void> | null = null;
+  /** `onMessage` calls begun, gated or not — how a test knows the handler is running. */
+  startedCount = 0;
+  /** Make `onInvalidMessage` rethrow — a handler that declines to absorb the decode error. */
+  rethrowInvalid = false;
 
   protected override onConnected(): void { this.connectedCount++; }
   protected override onDisconnected(): void { this.disconnectedCount++; }
   protected override onInvalidMessage(error: MqttDecodeError, message: MqttMessage<T>): void {
     this.decodeErrors.push({ error, message });
+    if (this.rethrowInvalid) throw error;
   }
   protected override onSelfMessage(message: TSelf): void { this.selfMessages.push(message); }
 
@@ -1537,6 +1554,295 @@ describe('MqttActor acknowledges a message only once it was processed (#977)', (
       expect(client.released).toHaveLength(1);
       await awaitCondition(() => inbox.received.length === 1, { timeoutMs: 4_000, label: 'the target got the message' });
       expect(inbox.received[0]!.replyTo).toBeUndefined();
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a QoS 0 message is not released before onMessage has finished with it', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#' }] });
+      let finish: () => void = () => undefined;
+      actor.gate = new Promise<void>((resolve) => { finish = resolve; });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      const packet: MqttInboundPacketLike = { qos: 0 };
+      client.firePublish('orders/1', enc.encode('{}'), packet);
+      await awaitCondition(() => actor.startedCount === 1, { timeoutMs: 4_000, label: 'onMessage began' });
+      await sleep(SETTLE_MS);  // the claim is "not yet released"; see SETTLE_MS
+      expect(client.released).toEqual([]);
+
+      finish();
+      await awaitCondition(() => client.released.length === 1, {
+        timeoutMs: 4_000, label: 'the processed QoS 0 message was released',
+      });
+      expect(client.released[0]).toBe(packet);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ------------- inbound acknowledgment: settle once, teardown (#977) ------------- */
+
+/**
+ * A system on virtual time, with its log kept: the acknowledgment deadline,
+ * the reconnect backoff and every ask timeout run on `scheduler`, so a test
+ * decides exactly when each one fires — and a deadline that must *not* fire
+ * is proven by advancing past it.
+ */
+function makeVirtualSystem(): { sys: ActorSystem; scheduler: ManualScheduler; log: RecordingLogger } {
+  const scheduler = new ManualScheduler();
+  const log = new RecordingLogger();
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(log)
+    .withScheduler(scheduler);
+  return { sys: ActorSystem.create(`mqtt-unit-${++sysCounter}`, sysOptions), scheduler, log };
+}
+
+/** Warn lines `abandonForRedelivery` wrote — one per connection dropped to have a message redelivered. */
+const abandonments = (log: RecordingLogger): RecordedLog[] =>
+  log.records.filter((r) => r.level === 'warn' && r.message.includes('dropping the connection without acknowledging it'));
+
+/**
+ * The actor's per-connection set of unsettled inbound acknowledgments.  It is
+ * private and nothing outside the actor reads it; a settled entry left in it
+ * changes no behaviour and only grows the set for the connection's lifetime,
+ * so its size is the only observation there is.
+ */
+function unsettledInboundAcknowledgments(actor: TestMqttActor): number {
+  return (actor as unknown as { readonly inboundAcknowledgments: ReadonlySet<unknown> }).inboundAcknowledgments.size;
+}
+
+describe('MqttActor inbound acknowledgment settles once and dies with its connection (#977)', () => {
+  test('a reply that arrives after the deadline dropped the connection releases nothing', async () => {
+    const { sys, scheduler, log } = makeVirtualSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withAcknowledgmentTimeoutMs(1_000)
+        .withReconnect({ initialDelayMs: 60_000, randomFactor: 0 });
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1 }] });
+      let finish: () => void = () => undefined;
+      actor.gate = new Promise<void>((resolve) => { finish = resolve; });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      client.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => actor.startedCount === 1, { timeoutMs: 4_000, label: 'onMessage began' });
+
+      scheduler.advance(1_000);
+      expect(client.endedForcefully).toBe(true);
+      expect(abandonments(log)).toHaveLength(1);
+
+      // The handler finishes after all: its outcome has already been decided.
+      finish();
+      await awaitCondition(() => actor.inbound.length === 1, { timeoutMs: 4_000, label: 'onMessage finished late' });
+      await sleep(SETTLE_MS);  // the claim is "nothing released"; see SETTLE_MS
+      expect(client.released).toEqual([]);
+      expect(abandonments(log)).toHaveLength(1);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('after the connection dropped and the actor reconnected, a late reply releases nothing on the old client', async () => {
+    const { sys, scheduler } = makeVirtualSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withAcknowledgmentTimeoutMs(10_000)
+        .withReconnect({ initialDelayMs: 100, randomFactor: 0 });
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1 }] });
+      let finish: () => void = () => undefined;
+      actor.gate = new Promise<void>((resolve) => { finish = resolve; });
+      await boot(sys, actor);
+      const old = actor.module.last();
+      old.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => actor.startedCount === 1, { timeoutMs: 4_000, label: 'onMessage began' });
+
+      old.fireClose();
+      // The reconnect attempt tears the old connection down before it dials,
+      // so a second client means the teardown has run.  (Its `connected`
+      // signal waits in the mailbox behind the gated message.)
+      scheduler.advance(100);
+      await awaitCondition(() => actor.module.clients.length === 2, {
+        timeoutMs: 4_000, label: 'the actor tore the old connection down and dialled again',
+      });
+
+      finish();
+      await awaitCondition(() => actor.inbound.length === 1, { timeoutMs: 4_000, label: 'onMessage finished late' });
+      await sleep(SETTLE_MS);  // the claim is "nothing released"; see SETTLE_MS
+      // A PUBACK on the old client would acknowledge on a connection the
+      // broker has already given up on, for a message it is redelivering.
+      expect(old.released).toEqual([]);
+      expect(actor.module.last().released).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('after the connection was torn down, the deadline neither fires an abandon nor warns', async () => {
+    const { sys, scheduler, log } = makeVirtualSystem();
+    let finish: () => void = () => undefined;
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withAcknowledgmentTimeoutMs(10_000)
+        .withReconnect({ initialDelayMs: 100, randomFactor: 0 });
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1 }] });
+      actor.gate = new Promise<void>((resolve) => { finish = resolve; });
+      await boot(sys, actor);
+      const old = actor.module.last();
+      old.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => actor.startedCount === 1, { timeoutMs: 4_000, label: 'onMessage began' });
+
+      old.fireClose();
+      scheduler.advance(100);
+      await awaitCondition(() => actor.module.clients.length === 2, {
+        timeoutMs: 4_000, label: 'the actor tore the old connection down and dialled again',
+      });
+      expect(unsettledInboundAcknowledgments(actor)).toBe(0);
+
+      // The handler is still running: only the deadline could settle it now.
+      scheduler.advance(10_000);
+      expect(old.endedForcefully).toBe(false);
+      expect(actor.module.last().endedForcefully).toBe(false);
+      expect(abandonments(log)).toEqual([]);
+    } finally {
+      finish();
+      await sys.terminate();
+    }
+  });
+
+  test('an onInvalidMessage that rethrows drops the connection at once, not at the deadline', async () => {
+    const { sys } = makeVirtualSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withAcknowledgmentTimeoutMs(30_000)
+        .withReconnect({ initialDelayMs: 60_000, randomFactor: 0 });
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1 }] });
+      actor.decodeOnReceive = true;
+      actor.rethrowInvalid = true;
+      await boot(sys, actor);
+      const client = actor.module.last();
+      client.firePublish('orders/1', enc.encode('{not json'), { ...qos1 });
+      // Virtual time never moves here, so the 30 s deadline cannot be what
+      // drops the connection — only the failure itself can.
+      await awaitCondition(() => client.endedForcefully, {
+        timeoutMs: 1_000, label: 'the escalated decode error dropped the connection for redelivery',
+      });
+      expect(actor.decodeErrors).toHaveLength(1);
+      expect(client.released).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a message dropped for redelivery takes the actor out of connected and reconnects, with no close from the client', async () => {
+    const { sys, scheduler } = makeVirtualSystem();
+    try {
+      const inbox = new ReplyingInbox<unknown>('negative');
+      const inboxRef = sys.spawn(() => inbox, 'inbox');
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withReconnect({ initialDelayMs: 100, randomFactor: 0 });
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1, target: inboxRef }] });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      client.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => client.endedForcefully, {
+        timeoutMs: 4_000, label: 'the refused message dropped the connection',
+      });
+      // The fake's forced `end` emits no `close`, so the actor has to report
+      // the connection down itself rather than wait for the client to.
+      await awaitCondition(() => actor.disconnectedCount === 1, {
+        timeoutMs: 4_000, label: 'the actor saw its connection go down',
+      });
+      scheduler.advance(100);
+      await awaitCondition(() => actor.module.clients.length === 2 && actor.connectedCount === 2, {
+        timeoutMs: 4_000, label: 'the actor reconnected on a fresh client',
+      });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an acknowledged message leaves no deadline scheduled and nothing in the unsettled set', async () => {
+    const { sys, scheduler } = makeVirtualSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withAcknowledgmentTimeoutMs(10_000);
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1 }] });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      const scheduledBefore = scheduler.pendingCount;
+      for (let i = 1; i <= 3; i++) {
+        client.firePublish(`orders/${i}`, enc.encode('{}'), { ...qos1 });
+      }
+      await awaitCondition(() => client.released.length === 3, {
+        timeoutMs: 4_000, label: 'every processed message was released',
+      });
+      expect(scheduler.pendingCount).toBe(scheduledBefore);
+      expect(unsettledInboundAcknowledgments(actor)).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+describe('MqttActor inbound acknowledgment handed over after it settled (#977)', () => {
+  /** Fire `message` alone, let the outcome settle, then hand the packet over. */
+  async function settleThenHandOver(
+    sys: ActorSystem, qos: MqttQos, reply: 'acknowledge' | 'negative',
+  ): Promise<{ readonly client: FakeMqttClient; readonly packet: MqttInboundPacketLike }> {
+    const inbox = new ReplyingInbox<unknown>(reply);
+    const inboxRef = sys.spawn(() => inbox, 'inbox');
+    const mqttOptions = MqttOptions.create()
+      .withBrokerUrl('mqtt://x')
+      .withReconnect({ initialDelayMs: 60_000, randomFactor: 0 });
+    const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos, target: inboxRef }] });
+    await boot(sys, actor);
+    const client = actor.module.last();
+    const packet: MqttInboundPacketLike = { qos };
+    client.fireMessage('orders/1', enc.encode('{}'), packet);
+    await awaitCondition(() => inbox.received.length === 1, { timeoutMs: 4_000, label: 'the target got the message' });
+    await awaitCondition(() => unsettledInboundAcknowledgments(actor) === 0, {
+      timeoutMs: 4_000, label: "the target's reply settled the acknowledgment",
+    });
+    client.handOverLate(packet);
+    return { client, packet };
+  }
+
+  test('an acknowledged message is released at once', async () => {
+    const { sys } = makeVirtualSystem();
+    try {
+      const { client, packet } = await settleThenHandOver(sys, 1, 'acknowledge');
+      expect(client.released).toEqual([packet]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a failed QoS 0 message is released at once — there is nothing to redeliver', async () => {
+    const { sys } = makeVirtualSystem();
+    try {
+      const { client, packet } = await settleThenHandOver(sys, 0, 'negative');
+      expect(client.released).toEqual([packet]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a failed QoS 1 message is never released', async () => {
+    const { sys } = makeVirtualSystem();
+    try {
+      const { client } = await settleThenHandOver(sys, 1, 'negative');
+      expect(client.released).toEqual([]);
+      expect(client.endedForcefully).toBe(true);
     } finally {
       await sys.terminate();
     }

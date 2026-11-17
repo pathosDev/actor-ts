@@ -21,7 +21,7 @@
  * is not configurable (the `HonoRunnerServeOptionsPrecedence.test.ts` shape).
  */
 import { describe, expect, test } from 'bun:test';
-import { BunHonoRunner } from '../../../src/runtime/http/BunHonoRunner.js';
+import { BunHonoRunner, bunIdleTimeoutOf } from '../../../src/runtime/http/BunHonoRunner.js';
 import type { HonoServeOptions, HonoServerHandle } from '../../../src/runtime/http/HonoServerRunner.js';
 
 const hello = (): Response => new Response('hello');
@@ -232,5 +232,29 @@ describe('BunHonoRunner — the typed members decide the idle timeout, never the
 
     expect(bag.websocket).toBe(websocket);
     expect(bag.idleTimeout).toBe(2);
+  });
+});
+
+describe('bunIdleTimeoutOf — a deadline of 0 is no deadline', () => {
+  // `0` turns a bound off throughout the project, so a server with no request
+  // deadline neither derives an idle timeout from one nor reports an explicit
+  // idle timeout as short of it.
+  test.each([
+    [Number.POSITIVE_INFINITY],
+    [Number.NaN],
+    [-1],
+    [0],
+  ])('an explicit idleTimeoutMs under a %p ms deadline is held as given, with no earliest cut', (requestDeadlineMs) => {
+    expect(bunIdleTimeoutOf({ idleTimeoutMs: 1_000, requestDeadlineMs })).toEqual({ seconds: 1 });
+  });
+
+  test('a positive deadline the explicit value falls short of is still reported', () => {
+    expect(bunIdleTimeoutOf({ idleTimeoutMs: 1_000, requestDeadlineMs: 1 })).toHaveProperty('earliestCutMs');
+  });
+
+  test('with no idleTimeoutMs, a 0 ms deadline derives nothing and Bun keeps its own default', async () => {
+    expect(bunIdleTimeoutOf({ requestDeadlineMs: 0 })).toEqual({});
+    const { bag } = await serveWith({ requestDeadlineMs: 0 });
+    expect(bag).not.toHaveProperty('idleTimeout');
   });
 });

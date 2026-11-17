@@ -127,6 +127,111 @@ describe('TagLookbackWindow', () => {
     const a1 = tagged(eventOf('a', 1, 1_000));
     expect(keysOf(window.admit([a1, a1]))).toEqual(['a#1']);
   });
+
+  /** A probe on the private mark map: `cursor()` filters exactly, so only the map shows whether prune ran. */
+  const markIdsOf = (window: TagLookbackWindow): string[] =>
+    [...(window as unknown as { marks: Map<string, unknown> }).marks.keys()];
+
+  describe('a loaded floor is validated before it is trusted', () => {
+    test('a well-formed floor ahead of the lookback is where the next read starts, and nothing behind it is admitted', () => {
+      const floor = { timestamp: 9_500, persistenceId: 'f', sequenceNr: 2 };
+      const window = TagLookbackWindow.resuming(
+        { timestamp: 10_000, persistenceId: 'b', sequenceNr: 1, delivered: [], floor },
+        WINDOW_MS,
+      );
+      expect(window.readFrom()).toEqual(floor);
+      expect(keysOf(window.admit([
+        tagged(eventOf('a', 1, 9_400)),
+        tagged(eventOf('f', 2, 9_500)),
+        tagged(eventOf('g', 1, 9_600)),
+      ]))).toEqual(['g#1']);
+      expect(window.cursor().floor).toEqual(floor);
+    });
+
+    test('a floor at an infinite stamp is dropped: the window does not wedge there', () => {
+      const window = TagLookbackWindow.resuming(
+        {
+          timestamp: 10_000, persistenceId: 'b', sequenceNr: 1, delivered: [],
+          floor: { timestamp: Infinity, persistenceId: 'p', sequenceNr: 1 },
+        },
+        WINDOW_MS,
+      );
+      expect(window.readFrom()).toEqual({ ...offsetStart, timestamp: 9_000 });
+      expect(window.cursor().floor).toBeUndefined();
+      expect(keysOf(window.admit([tagged(eventOf('a', 1, 9_400))]))).toEqual(['a#1']);
+    });
+
+    test('a floor whose persistence id is not a string is dropped', () => {
+      const loaded = JSON.parse(
+        '{"timestamp":10000,"persistenceId":"b","sequenceNr":1,"delivered":[],'
+        + '"floor":{"timestamp":9500,"persistenceId":1,"sequenceNr":1}}',
+      ) as TagCursor;
+      const window = TagLookbackWindow.resuming(loaded, WINDOW_MS);
+      expect(window.readFrom()).toEqual({ ...offsetStart, timestamp: 9_000 });
+      expect(window.cursor().floor).toBeUndefined();
+    });
+
+    test('a floor already behind the horizon is pruned on resume', () => {
+      const window = TagLookbackWindow.resuming(
+        {
+          timestamp: 10_000, persistenceId: 'b', sequenceNr: 1, delivered: [],
+          floor: { timestamp: 5_000, persistenceId: 'a', sequenceNr: 1 },
+        },
+        WINDOW_MS,
+      );
+      expect(window.cursor().floor).toBeUndefined();
+    });
+  });
+
+  describe('the horizon boundary', () => {
+    test('a mark stamped exactly at the horizon is kept, saved, and still suppresses its re-read', () => {
+      const window = TagLookbackWindow.startingAt(offsetStart, WINDOW_MS);
+      const atHorizon = eventOf('a', 1, 9_000);
+      window.markDelivered(atHorizon);
+      window.markDelivered(eventOf('b', 1, 10_000));
+
+      expect(markIdsOf(window)).toEqual(['a', 'b']);
+      expect(keysOf(window.admit([tagged(atHorizon)]))).toEqual([]);
+      const saved = window.cursor();
+      expect(saved.delivered).toEqual([
+        { persistenceId: 'a', sequenceNr: 1, timestamp: 9_000 },
+        { persistenceId: 'b', sequenceNr: 1, timestamp: 10_000 },
+      ]);
+      expect(keysOf(TagLookbackWindow.resuming(saved, WINDOW_MS).admit([tagged(atHorizon)]))).toEqual([]);
+    });
+
+    test('a floor stamped exactly at the horizon still suppresses the events behind it', () => {
+      const plain: TagCursor = { timestamp: 10_000, persistenceId: 'b', sequenceNr: 1 };
+      const window = TagLookbackWindow.resuming(plain, WINDOW_MS);
+      window.markDelivered(eventOf('c', 1, 11_000));
+      expect(window.cursor().floor).toEqual(plain);
+      expect(keysOf(window.admit([
+        tagged(eventOf('a', 1, 10_000)),
+        tagged(eventOf('d', 1, 10_500)),
+      ]))).toEqual(['d#1']);
+    });
+  });
+
+  describe('the bound on the window state', () => {
+    test('after the clock moves two windows on, only the ids inside the window are held', () => {
+      const window = TagLookbackWindow.startingAt(offsetStart, WINDOW_MS);
+      for (let index = 0; index < 20; index++) window.markDelivered(eventOf(`id-${index}`, 1, 1_000 + index));
+      expect(markIdsOf(window)).toHaveLength(20);
+      window.markDelivered(eventOf('late', 1, 1_000 + 2 * WINDOW_MS));
+      expect(markIdsOf(window)).toEqual(['late']);
+    });
+
+    test('a re-marked id moves to the back of the prune order, so an older id behind it still leaves', () => {
+      const window = TagLookbackWindow.startingAt(offsetStart, WINDOW_MS);
+      window.markDelivered(eventOf('a', 1, 1_000));
+      window.markDelivered(eventOf('b', 1, 1_500));
+      window.markDelivered(eventOf('a', 2, 2_100));
+      expect(markIdsOf(window)).toEqual(['b', 'a']);
+      // Horizon 1_600: `b` is behind it, `a` is not.
+      window.markDelivered(eventOf('c', 1, 2_600));
+      expect(markIdsOf(window)).toEqual(['a', 'c']);
+    });
+  });
 });
 
 describe('the push-driven eventsByTag stream around its catch-up read', () => {

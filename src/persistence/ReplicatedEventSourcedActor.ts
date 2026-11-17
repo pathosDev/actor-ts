@@ -855,9 +855,16 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     // Hand what the journal calls still owe to a successor on this node, which
     // waits for it before its recovery reads (#1732).  `_journal` is unset when
     // `preStart` failed before the stores were resolved — nothing was written.
+    //
+    // What the instance before this one still owes is carried over: an
+    // instance whose recovery deadline expired while it waited for that work
+    // stops with nothing of its own in flight, and handing over only its own
+    // drain would let the next successor read before the earlier append lands.
     if (this._journal !== undefined) {
       const pending = getPendingJournalWorkForSystem(this.system);
-      const drained = this._drain();
+      const predecessor = pending.get(this.persistenceId);
+      const own = this._drain();
+      const drained = predecessor === undefined ? own : Promise.all([predecessor, own]).then(() => undefined);
       pending.set(this.persistenceId, drained);
       void drained.finally(() => {
         if (pending.get(this.persistenceId) === drained) pending.delete(this.persistenceId);

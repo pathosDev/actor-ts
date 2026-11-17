@@ -488,6 +488,45 @@ describe('RestartBudget', () => {
     expect(first.registerRestart()).toBe(false);
     expect(second.registerRestart()).toBe(true);
   });
+
+  // `holdsRestarts` and `windowed` are what a supervisor reads before it
+  // forgets the tally of a name with no live child, so the cell-level
+  // re-spawn tests below depend on both answering exactly.
+  test('holdsRestarts is false once every recorded restart has aged out', () => {
+    const clock = manualClock();
+    const strategy = new OneForOneStrategy(
+      () => Directive.Restart,
+      { maxRetries: 2, withinTimeRangeMs: 1_000 },
+    );
+    const budget = new RestartBudget(strategy, clock);
+    expect(budget.holdsRestarts()).toBe(false);
+    expect(budget.registerRestart()).toBe(true);
+    expect(budget.holdsRestarts()).toBe(true);
+    clock.advance(1_001);
+    expect(budget.holdsRestarts()).toBe(false);
+  });
+
+  test('a restart exactly withinTimeRangeMs old still counts', () => {
+    const clock = manualClock();
+    const strategy = new OneForOneStrategy(
+      () => Directive.Restart,
+      { maxRetries: 1, withinTimeRangeMs: 1_000 },
+    );
+    const budget = new RestartBudget(strategy, clock);
+    expect(budget.registerRestart()).toBe(true);
+    clock.advance(1_000);
+    expect(budget.holdsRestarts()).toBe(true);
+    expect(budget.registerRestart()).toBe(false);
+    clock.advance(1);
+    expect(budget.registerRestart()).toBe(true);
+  });
+
+  test('windowed is true only for a positive window', () => {
+    const windowless = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2, withinTimeRangeMs: 0 });
+    const windowed = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2, withinTimeRangeMs: 1 });
+    expect(new RestartBudget(windowless).windowed).toBe(false);
+    expect(new RestartBudget(windowed).windowed).toBe(true);
+  });
 });
 
 /**
@@ -922,6 +961,50 @@ describe('the per-child restart budget survives re-creation under the same name'
       parent.tell({ kind: 'fail' });
       await awaitCondition(() => starts === 6, { label: 'outside the window the failure was restarted' });
       expect(stopped).toHaveLength(2);
+    } finally {
+      await kit.shutdown();
+    }
+  });
+
+  // With no window a tally never empties by itself, so keeping it for a gone
+  // name would make the map grow for the process lifetime: the supervisor
+  // forgets it on termination, and the name starts from a whole allowance.
+  test('without a window a re-spawned child starts from a fresh tally', async () => {
+    const { kit } = TestKit.withManualScheduler('supervision-respawn-budget-windowless');
+    try {
+      let starts = 0;
+      const stopped: number[] = [];
+      class Kid extends Actor<string> {
+        override preStart(): void { starts++; }
+        override onReceive(): void { throw new FooError(); }
+      }
+      const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2 });
+      class Parent extends Actor<ParentCommand | Terminated> {
+        override supervisorStrategy(): SupervisorStrategy { return strategy; }
+        override onReceive(message: ParentCommand | Terminated): void {
+          if (message instanceof Terminated) { stopped.push(starts); return; }
+          if (message.kind === 'spawn') this.context.watch(this.context.spawn(Kid, 'kid'));
+          else this.context.child('kid').forEach((kid) => kid.tell('fail' as never));
+        }
+      }
+      const parent = kit.system.spawn(Parent, 'windowless-parent');
+
+      parent.tell({ kind: 'spawn' });
+      await awaitCondition(() => starts === 1, { label: 'the first kid started' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => starts === 2, { label: 'first restart granted' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => starts === 3, { label: 'second restart granted' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => stopped.length === 1, { label: 'the third failure spent the allowance and stopped the kid' });
+
+      parent.tell({ kind: 'spawn' });
+      await awaitCondition(() => starts === 4, { label: 'the kid was spawned again under its name' });
+      parent.tell({ kind: 'fail' });
+      await awaitCondition(() => starts === 5, {
+        label: 'the re-spawned kid was restarted on its first failure: the lifetime tally was not inherited',
+      });
+      expect(stopped).toHaveLength(1);
     } finally {
       await kit.shutdown();
     }
