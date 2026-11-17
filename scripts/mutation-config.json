@@ -371,6 +371,7 @@
       "tests/unit/http/websocket/ServerHeartbeat.test.ts"
     ],
     "src/internal/ActorCell.ts": [
+      "tests/unit/Supervision.test.ts",
       "tests/unit/internal/ActorBatching.test.ts",
       "tests/unit/internal/ActorBlueprint.test.ts",
       "tests/unit/internal/ActorCellFailurePaths.test.ts",
