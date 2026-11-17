@@ -80,6 +80,15 @@ describe('frameByteLength over arbitrary strings', () => {
     expect(utf8ByteLength('𐀀')).toBe(4);
   });
 
+  test('a pair whose low half is U+DFFF, the last low surrogate, is one four-byte code point', () => {
+    // The pinned-seed property never draws U+DFFF as a low half, so the upper
+    // bound of the low-surrogate range is pinned here; `\u{10000}` above pins
+    // the lower one (U+DC00).
+    const text = '\u{10FFFF}';
+    expect(frameByteLength({ kind: 'text', data: text })).toBe(4);
+    expect(frameByteLength({ kind: 'text', data: text })).toBe(new TextEncoder().encode(text).byteLength);
+  });
+
   test('property: the size the frame cap is held against is the UTF-8 size of the text', () => {
     fc.assert(fc.property(anyString, (text) => {
       expect(frameByteLength({ kind: 'text', data: text })).toBe(new TextEncoder().encode(text).byteLength);

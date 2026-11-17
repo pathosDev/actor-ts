@@ -304,6 +304,7 @@
       "tests/unit/http/middleware/HstsDocumented.test.ts",
       "tests/unit/http/static/StaticFiles.test.ts",
       "tests/unit/http/websocket/CloseArgumentsOnBackends.test.ts",
+      "tests/unit/http/websocket/HonoOnNodePong.test.ts",
       "tests/unit/http/websocket/TransportFrameCap.test.ts"
     ],
     "src/http/backend/HttpServerBackend.ts": [
@@ -354,11 +355,13 @@
       "tests/unit/http/websocket/ConnectionCloseAndAbort.test.ts",
       "tests/unit/http/websocket/ConnectionMailboxBound.test.ts",
       "tests/unit/http/websocket/ForgedHubSignals.test.ts",
+      "tests/unit/http/websocket/HonoOnNodePong.test.ts",
       "tests/unit/http/websocket/HubControlLane.test.ts",
       "tests/unit/http/websocket/HubLifecycleSignals.test.ts",
       "tests/unit/http/websocket/PreAttachBufferCap.test.ts",
       "tests/unit/http/websocket/RefusedConnectionSend.test.ts",
       "tests/unit/http/websocket/RouteFrameCapWiring.test.ts",
+      "tests/unit/http/websocket/RuntimeSocketHelpers.test.ts",
       "tests/unit/http/websocket/ServerHeartbeat.test.ts",
       "tests/unit/http/websocket/WebsocketServerActor.test.ts"
     ],
