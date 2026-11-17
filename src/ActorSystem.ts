@@ -321,6 +321,15 @@ export class ActorSystem {
    * spawns a framework actor, so a plain system keeps its three-cell tree.
    */
   private readonly systemGroupCells = new Map<string, ActorCell<unknown>>();
+  /**
+   * Last uid handed to a cell — one counter for the whole system, not one per
+   * parent (#1833).  A per-parent counter restarted with every incarnation of
+   * the parent, so a parent stopped and spawned again issued its new children
+   * the `path#uid` its previous children had, and death watch, which keys on
+   * exactly that pair, conflated the two.  A number stays exact up to 2^53, a
+   * bound no system's lifetime reaches one spawn at a time.
+   */
+  private _actorUidCounter = 0;
 
   /**
    * @internal Profiling hook, `null` unless a profiler is running.
@@ -849,6 +858,9 @@ export class ActorSystem {
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
     return this.spawnAnonymous(typedActor<T>(behavior));
   }
+
+  /** @internal The uid for a new cell's path; never repeats within this system. */
+  _nextActorUid(): number { return ++this._actorUidCounter; }
 
   /**
    * @internal Spawn a framework-owned actor under `/system/<group>`.

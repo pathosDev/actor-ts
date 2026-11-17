@@ -124,7 +124,10 @@ govern naming:
 
 The `uid` field on `ActorPath` distinguishes successive incarnations
 of the same path — if `my-foo` stops and is then re-spawned at the
-same path, the second one has a different `uid`.  Most code never
+same path, the second one has a different `uid`.  The `uid` comes
+from one counter per actor system, so it is never reused while the
+system runs — not even by the children of a parent that was itself
+stopped and spawned again.  Most code never
 looks at `uid`; the framework uses it internally to make sure
 messages aimed at the *old* incarnation don't accidentally land in
 the new one.

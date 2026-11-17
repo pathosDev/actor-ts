@@ -54,6 +54,14 @@
       "tests/unit/ActorRef.test.ts",
       "tests/unit/Ask.test.ts"
     ],
+    "src/ActorSystem.ts": [
+      "tests/unit/ActorSystemConfigSpread.test.ts",
+      "tests/unit/CoordinatedShutdown.test.ts",
+      "tests/unit/DeathWatch.test.ts",
+      "tests/unit/DrainingShutdown.test.ts",
+      "tests/unit/ShutdownOrder.test.ts",
+      "tests/unit/SpawnShapes.test.ts"
+    ],
     "src/cluster/Cluster.ts": [
       "tests/Cluster.test.ts",
       "tests/integration/in-process/cluster/ClusterEventsReplay.test.ts",
@@ -378,6 +386,7 @@
       "tests/unit/http/websocket/ServerHeartbeat.test.ts"
     ],
     "src/internal/ActorCell.ts": [
+      "tests/unit/DeathWatch.test.ts",
       "tests/unit/DeathWatchOnBoundedMailbox.test.ts",
       "tests/unit/DrainingShutdown.test.ts",
       "tests/unit/Supervision.test.ts",

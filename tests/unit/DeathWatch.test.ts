@@ -12,6 +12,7 @@ import {
   OneForOneStrategy,
   type SupervisorStrategy,
 } from '../../src/Supervision.js';
+import { gracefulStop } from '../../src/pattern/GracefulStop.js';
 import { ActorStopped, Terminated } from '../../src/SystemMessages.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 import { RecordingLogger } from '../util/RecordingLogger.js';
@@ -447,6 +448,77 @@ describe('watchWith', () => {
       label: 'both incarnations of the worker were reported',
     });
     expect(seen).toEqual(['lost:1', 'lost:2']);
+    await sys.terminate();
+  });
+
+  test('a re-spawned parent hands its new child a fresh uid, so a racing watch is kept (#1833)', async () => {
+    // The uid used to come from a counter on the parent's cell, so a parent
+    // stopped and spawned again started over and issued its new child the
+    // path#uid the previous incarnation's child had.  The watcher below calls
+    // `watch(successor)` while the old child's `Terminated` is still in its
+    // mailbox: with the two incarnations sharing one watch key, the new
+    // registration was dropped as already present, the old `Terminated`
+    // retired it, and the successor's death arrived as unwatched.
+    const children: ActorRef[] = [];
+    const seen: string[] = [];
+    class Child extends Actor<'noop'> {
+      override onReceive(_: 'noop'): void {}
+    }
+    class Parent extends Actor<'noop'> {
+      override preStart(): void { children.push(this.context.spawn(Child, 'child')); }
+      override onReceive(_: 'noop'): void {}
+    }
+    type RaceCommand = { readonly kind: 'race'; readonly respawn: () => Promise<ActorRef> };
+    type WatcherMessage = RaceCommand | Terminated;
+    class Watcher extends Actor<WatcherMessage> {
+      override async onReceive(message: WatcherMessage): Promise<void> {
+        if (message instanceof Terminated) {
+          seen.push(`terminated:${message.actor.path.uid}`);
+          return;
+        }
+        this.context.watch(children[0]!);
+        // The handler is awaited, so the old child's Terminated queues behind
+        // it while the parent is stopped and spawned again.
+        const successor = await message.respawn();
+        this.context.watch(successor);
+        successor.stop();
+      }
+    }
+
+    const sys = newSystem('watch-respawned-parent');
+    const firstParent = sys.spawn(Parent, 'parent');
+    await awaitCondition(() => children.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first child was spawned',
+    });
+    const respawn = async (): Promise<ActorRef> => {
+      await gracefulStop(firstParent, 4_000);
+      await awaitCondition(() => {
+        try {
+          sys.spawn(Parent, 'parent');
+          return true;
+        } catch {
+          return false;
+        }
+      }, { timeoutMs: 4_000, label: 'the parent name was free again' });
+      await awaitCondition(() => children.length === 2, {
+        timeoutMs: 4_000,
+        label: 'the second child was spawned',
+      });
+      return children[1]!;
+    };
+    sys.spawn(Watcher, 'watcher').tell({ kind: 'race', respawn });
+
+    await awaitCondition(() => seen.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both incarnations of the child were reported',
+    });
+    expect(children[0]!.path.toString()).toBe(children[1]!.path.toString());
+    expect(children[0]!.path.uid).not.toBe(children[1]!.path.uid);
+    expect(seen).toEqual([
+      `terminated:${children[0]!.path.uid}`,
+      `terminated:${children[1]!.path.uid}`,
+    ]);
     await sys.terminate();
   });
 });
