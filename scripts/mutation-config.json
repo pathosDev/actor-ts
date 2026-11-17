@@ -253,12 +253,14 @@
       "tests/unit/http/HonoBunIdleTimeout.test.ts",
       "tests/unit/http/HonoWebsocketTerminate.test.ts",
       "tests/unit/http/Http1OnHttp2Listener.test.ts",
+      "tests/unit/http/Http1OnHttp2ListenerTimers.test.ts",
       "tests/unit/http/Http2SessionIdle.test.ts",
       "tests/unit/http/Http2StreamDeadlineExpiry.test.ts",
       "tests/unit/http/HttpConfigDefaults.test.ts",
       "tests/unit/http/HttpExtension.test.ts",
       "tests/unit/http/HttpServerClientCertificates.test.ts",
       "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/http/ServerBoundsGating.test.ts",
       "tests/unit/http/TimeoutsOnDeno.test.ts"
     ],
     "src/http/middleware/ClientIp.ts": [
