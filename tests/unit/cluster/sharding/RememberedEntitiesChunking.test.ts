@@ -255,6 +255,15 @@ describe('rememberedEntityChunks', () => {
     expect(rememberedEntityChunks(['a', 'b', 'c'], 12)).toEqual([['a', 'b'], ['c']]);
   });
 
+  test('every chunk, not only the first, pays for its brackets', () => {
+    // Two ids are 9 bytes and three are 13, so a budget of 11 holds two per
+    // chunk — and any chunk that started counting from 0 would fit a third.
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    const chunks = rememberedEntityChunks(ids, 11);
+    for (const chunk of chunks) expect(arrayBytes(chunk)).toBeLessThanOrEqual(11);
+    expect(chunks).toEqual([['a', 'b'], ['c', 'd'], ['e', 'f'], ['g']]);
+  });
+
   test('a registry that fits travels in one chunk', () => {
     expect(rememberedEntityChunks(['a', 'b', 'c'], 1_024)).toEqual([['a', 'b', 'c']]);
   });
