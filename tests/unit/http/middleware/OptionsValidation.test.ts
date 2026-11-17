@@ -14,6 +14,10 @@ import {
   type JwtAuthOptionsType,
 } from '../../../../src/http/middleware/JwtAuthOptions.js';
 import { systemClock } from '../../../../src/Clock.js';
+import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
+import { idempotent } from '../../../../src/http/cache/IdempotencyKey.js';
+import { DefaultMetricsRegistry } from '../../../../src/metrics/Metrics.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 // WP7 — the HTTP middleware / directive options merged after the options-
 // validator sweep and were only checked with ad-hoc bare `Error`s (or not at
@@ -168,6 +172,37 @@ describe('rateLimit / idempotent option builders + validators', () => {
     expect(() => validator.validate({ ...built })).not.toThrow();
     expect(() => validator.validate({ ttlMs: 0 })).toThrow(/ttlMs/);
     expect(() => validator.validate({ missingHeader: 'bogus' as never })).toThrow(/missingHeader/);
+  });
+
+  test('RateLimitOptions builder: withOnBackendError / withLogger / withMetrics chain and set their fields', () => {
+    const onBackendError = () => {};
+    const logger = new RecordingLogger();
+    const metrics = new DefaultMetricsRegistry();
+    const built = RateLimitOptions.create()
+      .withOnBackendError(onBackendError)
+      .withLogger(logger)
+      .withMetrics(metrics)
+      .build();
+    expect(built.onBackendError).toBe(onBackendError);
+    expect(built.logger).toBe(logger);
+    expect(built.metrics).toBe(metrics);
+  });
+
+  test('idempotent refuses cacheStatuses that are not HTTP status codes, by field name', () => {
+    const cache = new InMemoryCache();
+    for (const status of [99, 600, 200.5]) {
+      let thrown: unknown;
+      try {
+        idempotent({ cache, cacheStatuses: [200, status] });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OptionsError);
+      expect((thrown as OptionsError).field).toBe('cacheStatuses');
+      expect((thrown as OptionsError).value).toBe(status);
+    }
+    // Both ends of the range are status codes.
+    expect(() => idempotent({ cache, cacheStatuses: [100, 599] })).not.toThrow();
   });
 });
 
