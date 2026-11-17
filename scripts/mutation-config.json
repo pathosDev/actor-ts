@@ -58,6 +58,7 @@
       "tests/Cluster.test.ts",
       "tests/integration/in-process/cluster/ClusterEventsReplay.test.ts",
       "tests/integration/in-process/cluster/WeaklyUp.test.ts",
+      "tests/multi-node/AsymmetricReachability.test.ts",
       "tests/multi-node/AutoDownTombstone.test.ts",
       "tests/unit/cluster/ClusterEventsSubscription.test.ts",
       "tests/unit/cluster/ClusterReadiness.test.ts",

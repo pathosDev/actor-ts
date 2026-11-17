@@ -309,6 +309,21 @@ member is considered globally unreachable when *enough* peers
 report it that way — the threshold is configurable in some
 downing strategies (see KeepMajority, KeepReferee).
 
+A heartbeat clears an `unreachable` mark at once only on the node
+whose own detector made it.  In the picture above n2 learns n1's mark
+on n3 through gossip, and n3's heartbeats reaching n2 say nothing
+about the link n1 lost, so n2 keeps the mark: n1 clears it when it
+hears n3 again.  n2 clears a mark it holds on another node's word
+only once it has stood for `split-brain-resolver.stable-after` while
+n3 kept talking to it, which is the way out when n1 crashed or was
+removed with its mark standing.  Before v0.19.0 n2 cleared it on the
+first heartbeat, n1 marked n3 again on its next detection tick, and
+under a one-way partition the member flapped between `up` and
+`unreachable` at heartbeat cadence
+([issue #1828](https://github.com/pathosDev/actor-ts/issues/1828)).
+A lasting one-way partition still flips the member back once per
+`stable-after`.
+
 ## Choosing the φ-accrual detector
 
 The detector described above is intentionally simple — plain

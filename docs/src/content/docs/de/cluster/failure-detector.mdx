@@ -338,6 +338,23 @@ Mitglied gilt global als unreachable, wenn *genug* Peers es so
 melden — der Schwellwert ist in manchen Downing-Strategien
 konfigurierbar (siehe KeepMajority, KeepReferee).
 
+Ein Heartbeat hebt eine `unreachable`-Markierung nur auf dem Node
+sofort auf, dessen eigener Detector sie gesetzt hat. Im Bild oben
+erfährt n2 die Markierung von n1 auf n3 per Gossip, und n3s
+Heartbeats, die n2 erreichen, sagen nichts über die Verbindung, die
+n1 verloren hat — also behält n2 die Markierung: n1 hebt sie auf,
+sobald es n3 wieder hört. Eine Markierung, die n2 nur auf das Wort
+eines anderen Nodes hin hält, hebt es erst auf, wenn sie
+`split-brain-resolver.stable-after` lang bestanden hat, während n3
+weiter mit ihm sprach — der Ausweg, wenn n1 mit stehender Markierung
+abgestürzt ist oder entfernt wurde. Vor v0.19.0 hob n2 sie beim
+ersten Heartbeat auf, n1 markierte n3 beim nächsten Detection-Tick
+erneut, und unter einer Einweg-Partition pendelte das Mitglied im
+Heartbeat-Takt zwischen `up` und `unreachable`
+([Issue #1828](https://github.com/pathosDev/actor-ts/issues/1828)).
+Eine anhaltende Einweg-Partition kippt das Mitglied weiterhin einmal
+pro `stable-after` zurück.
+
 ## Den φ-Accrual-Detector wählen
 
 Der oben beschriebene Detector ist bewusst einfach — einfache

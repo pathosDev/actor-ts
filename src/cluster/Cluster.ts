@@ -412,6 +412,20 @@ export class Cluster {
   private readonly reachability = new Map<string, boolean>();
 
   /**
+   * The members this node holds `unreachable` on a peer's word rather than its
+   * own, each with the moment the mark arrived on {@link ActorSystem.clock}
+   * (#1828).  {@link clearsUnreachableMark} reads it to tell a mark this node
+   * may clear on a heartbeat from one it may not clear yet.
+   *
+   * Written only by the gossip merge, where a record moves a member to
+   * `unreachable`; a mark this node makes itself — its detector, a parked
+   * peer, a refusal — leaves no entry.  Dropped by {@link setMember} once the
+   * status is anything else and by {@link deleteMember}, so it is bounded by
+   * the cap on {@link members}.
+   */
+  private readonly unreachableOnPeerWordSince = new Map<string, number>();
+
+  /**
    * Cumulative counts of member records the merge path refused, split by the
    * guard that refused them.  `onGossip` diffs this across a frame to collapse
    * a frame's worth of refusals into one log line and one counter increment
@@ -2974,8 +2988,10 @@ export class Cluster {
     this.transport.send(peer, { kind: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
 
     // If the peer was unreachable and we see traffic again, flip it back —
-    // unless it has told this node it no longer has it (#940).
-    if (existing && existing.status === 'unreachable' && !this.refusedBy.has(peer.toString())) {
+    // unless it has told this node it no longer has it (#940), or the mark is
+    // another node's that this node may not clear yet (#1828).
+    if (existing && existing.status === 'unreachable' && !this.refusedBy.has(peer.toString())
+      && this.clearsUnreachableMark(existing)) {
       this.updateMember(existing.withStatus('up'));
       // `updateMember` has announced `MemberUp`, and a listener may have acted
       // on it — downed the peer, say.  A member that is no longer `up` is not
@@ -2986,6 +3002,43 @@ export class Cluster {
       const recovered = this.members.get(peer.toString());
       if (recovered?.status === 'up') this.emit(new MemberReachable(recovered));
     }
+  }
+
+  /**
+   * Whether a heartbeat from `member`, which this node holds `unreachable`,
+   * may set it back to `up` here (#1828).
+   *
+   * At once when this node's own detector made the mark: its verdict is the
+   * one the heartbeat answers, and that is how a parked peer comes back after
+   * a partition heals (#930).  A mark that arrived in a peer's gossip is that
+   * peer's observation, and a heartbeat reaching *this* node says nothing about
+   * it — under a one-way partition the member is heard here and not there.
+   * Clearing it anyway wrote `up` at a higher version, the observer adopted
+   * it, re-marked the member on its next detection tick, and the status flapped
+   * at heartbeat cadence, a `MemberReachable` / `MemberUnreachable` pair and a
+   * leader-change line each time.  So such a mark is cleared here only once it
+   * has stood for `stable-after` while the member kept talking to this node:
+   * the observer clears its own mark when it hears the member again, and the
+   * window is only the way out when the observer cannot — it crashed or was
+   * removed with the mark standing.  Under a lasting one-way partition the flap
+   * this leaves runs at `stable-after`, not at heartbeat cadence.
+   *
+   * The wire carries no observer per record, so a mark counts as another
+   * node's when it arrived through the merge ({@link unreachableOnPeerWordSince})
+   * — and as this node's own again once its own detector holds the member
+   * unreachable too ({@link reachability}).
+   */
+  private clearsUnreachableMark(member: Member): boolean {
+    const key = member.address.toString();
+    const since = this.unreachableOnPeerWordSince.get(key);
+    if (since === undefined || this.reachability.get(key) === false) return true;
+    return this.system.clock.now() - since >= this.stableAfterMs;
+  }
+
+  /** Note a mark that arrived through the merge as another node's (#1828). */
+  private noteUnreachableOnPeerWord(previous: MemberStatus | undefined, stored: Member): void {
+    if (stored.status !== 'unreachable' || previous === 'unreachable') return;
+    this.unreachableOnPeerWordSince.set(stored.address.toString(), this.system.clock.now());
   }
 
   /**
@@ -4635,6 +4688,7 @@ export class Cluster {
       );
     }
     this.setMember(incoming);
+    this.noteUnreachableOnPeerWord(existing.status, incoming);
     this.checkStorageIdentityAgreement(incoming);
     this.checkConfigurationAgreement(incoming);
     this.emitStatusTransition(existing, incoming);
@@ -4705,6 +4759,7 @@ export class Cluster {
    */
   private admitFirstSighting(incoming: Member): void {
     this.setMember(incoming);
+    this.noteUnreachableOnPeerWord(undefined, incoming);
     this.checkStorageIdentityAgreement(incoming);
     this.checkConfigurationAgreement(incoming);
     if (incoming.status !== 'removed') this.failureDetector.register(incoming.address);
@@ -4922,6 +4977,7 @@ export class Cluster {
     if (previous?.status === 'up') this.upCount--;
     if (member.status === 'up') this.upCount++;
     this.members.set(key, member);
+    if (member.status !== 'unreachable') this.unreachableOnPeerWordSince.delete(key);
     this.publishMembersUp();
     if (member.status === 'removed') {
       this.failureDetector.forget(member.address);
@@ -4946,6 +5002,7 @@ export class Cluster {
     // Same key space, same lifetime.  A verdict left behind here would make the
     // address's next incarnation look like a peer that had recovered.
     this.reachability.delete(key);
+    this.unreachableOnPeerWordSince.delete(key);
     // Likewise, or the next incarnation's parking would go unreported (#1426).
     this.parkedWithoutResolver.delete(key);
     this.parkedForProvider.delete(key);
