@@ -241,6 +241,14 @@ await spec.advanceUntil(
 spec.restore('a', 'b');
 ```
 
+On the virtual clock, `advance` and `advanceUntil` move the clock and then let
+every node run until all of them are quiet at once — the `/system` actors
+included, where sharding regions and coordinators, the singleton manager and
+pub-sub live. So a step never moves the clock past a cross-node reply that is
+merely still queued: work that needs no time has landed by the time the step
+returns, and only work waiting on a timer is left for the next one
+([issue #1835](https://github.com/pathosDev/actor-ts/issues/1835)).
+
 Every field is optional and defaults to "no fault", so a profile names only what
 it changes. `degrade` is bidirectional like `partition`; for a one-way
 degradation reach for `spec.faultsFor(role).degradeTo(address, profile)`.

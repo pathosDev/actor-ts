@@ -658,6 +658,14 @@
       "tests/integration/in-process/persistence/PersistentActorStoreFailure.test.ts",
       "tests/unit/testkit/FaultInjectingStores.test.ts"
     ],
+    "src/testkit/MultiNodeSpec.ts": [
+      "tests/multi-node/AdvanceSettlesSystemTree.test.ts",
+      "tests/multi-node/DowningVirtualClock.test.ts",
+      "tests/multi-node/PartitionHeal.test.ts",
+      "tests/multi-node/RepeatedFaultEpisodes.test.ts",
+      "tests/unit/testkit/MultiNodeSpec.test.ts",
+      "tests/unit/testkit/MultiNodeSpecClock.test.ts"
+    ],
     "src/util/CanonicalOrderKey.ts": [
       "tests/unit/util/CanonicalOrderKey.test.ts",
       "tests/unit/UtilExports.test.ts",

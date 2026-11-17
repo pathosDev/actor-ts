@@ -8,7 +8,6 @@ import { StartSingletonOptions } from '../../src/cluster/singleton/index.js';
 import { ManualScheduler } from '../../src/testkit/ManualScheduler.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeSpecOptions } from '../../src/testkit/MultiNodeSpecOptions.js';
-import { sleep } from '../util/AwaitCondition.js';
 import { bookkeepingViolations, converged, incarnationSeen } from './internal/ClusterBookkeeping.js';
 
 /**
@@ -182,60 +181,37 @@ afterEach(() => {
   regions.clear();
 });
 
-/** Event-loop turns given to `/system` actors before the virtual clock moves on. */
-const TURNS_PER_STEP = 200;
 /** An ask's deadline, in virtual time. */
 const ASK_TIMEOUT_MS = 5_000;
 /** What the workload may take to settle after a recovery, in virtual time. */
 const WORKLOAD_SETTLE_BUDGET_MS = 6_000;
 
 /**
- * One event-loop turn for the `/system` actors — not a delay: their work is
- * already queued and only needs the loop to reach it (see `settleUntil`).
- */
-function nextTurn(): Promise<void> {
-  return sleep(0); // a turn, not a delay: see above
-}
-
-/**
- * Wait until `cond()` holds, advancing the virtual clock only once the event
- * loop has had its turns; throws, naming `describe()`, when it has not held
- * within `budgetMs` of virtual time.
+ * `spec.advanceUntil` in gossip steps, failing with `describe()` as it reads
+ * when the budget runs out rather than with a label fixed up front.
  *
- * A virtual-clock wait, the counterpart of `spec.advanceUntil` and not of
- * `awaitCondition`: the budget is virtual time, which no real-time poll can
- * spend, and an expiry fails loudly with a label rather than falling through.
- *
- * Not `spec.advanceUntil` itself: `MultiNodeSpec.advance` settles each node's `/user`
- * tree, and every actor the workload runs on — region, shard, entity,
- * singleton manager — lives under `/system`, so an advance returns while a
- * cross-node reply is still a few turns from landing.  Each later step then
- * moves the clock a gossip interval on with the reply still queued.  Measured
- * with `advanceUntil`: of the asks sent from the second region 4 of 24 timed
- * out on virtual time without ever having been slow, from the third and the
- * fourth every remote one did, and a node's shard map read stale against the
- * leader's in five runs of six.  So each step first yields turns until the
- * condition holds or the turn budget is spent, and only then advances — the
- * clock moves for work that needs a timer, never past work that merely has
- * not run yet.
+ * This used to be a wait of its own, which yielded up to two hundred
+ * event-loop turns before each step, because `advance` settled only `/user`
+ * and every actor the workload runs on — region, shard, entity, singleton
+ * manager — lives under `/system`.  An advance returned with a cross-node
+ * reply still a few turns from landing, and the next step moved the clock on
+ * past it: of the asks sent from the second region 4 of 24 timed out on
+ * virtual time without ever having been slow, from the third and the fourth
+ * every remote one did, and a node's shard map read stale against the
+ * leader's in five runs of six.  `advance` settles `/system` too since #1835,
+ * so the harness's own wait is the right one again.
  */
 async function settleUntil(
   spec: MultiNodeSpec,
   cond: () => boolean,
   options: { readonly budgetMs: number; readonly describe: () => string },
 ): Promise<void> {
-  for (let elapsed = 0; elapsed <= options.budgetMs; elapsed += GOSSIP_INTERVAL_MS) {
-    for (let turn = 0; turn < TURNS_PER_STEP; turn++) {
-      if (cond()) return;
-      await nextTurn();
-    }
-    await spec.advance(GOSSIP_INTERVAL_MS);
+  try {
+    await spec.advanceUntil(cond, { budgetMs: options.budgetMs, stepMs: GOSSIP_INTERVAL_MS });
+  } catch (error) {
+    throw new Error(`settleUntil: not within ${options.budgetMs} ms of virtual time — ${options.describe()}`, { cause: error });
   }
-  if (!cond()) throw new Error(`settleUntil: not within ${options.budgetMs} ms of virtual time — ${options.describe()}`);
 }
-
-/** Event-loop turns per step while traffic flows — enough for a hop or two, not a whole round. */
-const TRAFFIC_TURNS_PER_STEP = 20;
 
 /**
  * Keep every running region telling every entity, once per gossip step, until
@@ -254,7 +230,6 @@ async function trafficUntilRecovered(spec: MultiNodeSpec, description: string): 
     if (recoveredAt === null && converged(spec, ROLES)) recoveredAt = elapsed;
     if (recoveredAt !== null && elapsed - recoveredAt >= SETTLE_MS) return;
     for (const region of regions.values()) for (const id of entityIds) region.tell({ kind: 'ping', id });
-    for (let turn = 0; turn < TRAFFIC_TURNS_PER_STEP; turn++) await nextTurn();
     await spec.advance(GOSSIP_INTERVAL_MS);
   }
   throw new Error(`${description}: not every node saw all four members up within ${RECOVERY_BUDGET_MS} ms of virtual time`);
