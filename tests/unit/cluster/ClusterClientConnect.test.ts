@@ -159,6 +159,9 @@ class VirtualHostTimers implements HostTimers {
 
   clearInterval(): void { /* nothing armed */ }
 
+  /** How many timers are armed and not yet fired or cleared. */
+  get armed(): number { return this.pending.size; }
+
   advance(ms: number): void {
     this.now += ms;
     for (const [handle, timer] of [...this.pending]) {
@@ -281,6 +284,31 @@ describe('every way out of a connect attempt settles it (#938)', () => {
     redial.open();
     redial.acknowledgeHello();
     expect(await sent.outcome).toBe('resolved');
+  });
+
+  test('a refused dial disarms the attempt\'s deadline', async () => {
+    // `send` arms no timer of its own, so the connect deadline is the only
+    // one there is; a failed attempt that left it armed would hold a host
+    // timer for the whole connect-timeout over nothing.
+    const { client, backend, timers } = clientOf([2551]);
+    const sent = track(client.send('/user/service', { kind: 'ping' }));
+    const dial = await backend.dialTo(2551);
+    expect(timers.armed).toBe(1);
+    dial.refuse(new Error('connect ECONNREFUSED'));
+    expect(await sent.outcome).toContain('connect ECONNREFUSED');
+    expect(timers.armed).toBe(0);
+  });
+
+  test('a hello whose write throws rejects the attempt at once, not at the deadline', async () => {
+    const { client, backend } = clientOf([2551]);
+    const sent = track(client.send('/user/service', { kind: 'ping' }));
+    const dial = await backend.dialTo(2551);
+    dial.socket.write = (): boolean => { throw new Error('write EPIPE'); };
+    dial.open();
+    await drain();
+    // No virtual time has passed.
+    expect(sent.settled).toBe(true);
+    expect(await sent.outcome).toContain('write EPIPE');
   });
 
   test('close() rejects a connect attempt in flight, gives up its socket and dials nothing else', async () => {
