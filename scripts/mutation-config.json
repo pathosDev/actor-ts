@@ -80,6 +80,7 @@
       "tests/unit/cluster/MembershipTransitionLogs.test.ts",
       "tests/unit/cluster/NodeIncarnation.test.ts",
       "tests/unit/cluster/OwnPromotionRoles.test.ts",
+      "tests/unit/cluster/PeerWordUnreachableWindow.test.ts",
       "tests/unit/cluster/RestartedIncarnation.test.ts",
       "tests/unit/cluster/SelfClaimRefusalNoise.test.ts",
       "tests/unit/cluster/ShutdownAfterUnsuccessfulJoin.test.ts",
