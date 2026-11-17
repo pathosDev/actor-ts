@@ -128,6 +128,9 @@ Drei Regeln gelten beim Namen:
 Das `uid`-Feld auf `ActorPath` unterscheidet aufeinanderfolgende
 Inkarnationen desselben Pfads — wenn `my-foo` stoppt und dann am
 selben Pfad neu gespawnt wird, hat die zweite eine andere `uid`.
+Die `uid` stammt aus einem Zähler pro Aktorsystem und wird daher nie
+wiederverwendet, solange das System läuft — auch nicht von den Kindern
+eines Elternaktors, der selbst gestoppt und neu gespawnt wurde.
 Die meiste Code schaut nie auf `uid`; das Framework verwendet es
 intern, um sicherzustellen, dass Nachrichten an die *alte*
 Inkarnation nicht versehentlich in der neuen landen.

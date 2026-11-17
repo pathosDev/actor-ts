@@ -54,6 +54,14 @@
       "tests/unit/ActorRef.test.ts",
       "tests/unit/Ask.test.ts"
     ],
+    "src/ActorSystem.ts": [
+      "tests/unit/ActorSystemConfigSpread.test.ts",
+      "tests/unit/CoordinatedShutdown.test.ts",
+      "tests/unit/DeathWatch.test.ts",
+      "tests/unit/DrainingShutdown.test.ts",
+      "tests/unit/ShutdownOrder.test.ts",
+      "tests/unit/SpawnShapes.test.ts"
+    ],
     "src/cluster/Cluster.ts": [
       "tests/Cluster.test.ts",
       "tests/integration/in-process/cluster/ClusterEventsReplay.test.ts",
@@ -402,6 +410,7 @@
       "tests/unit/http/websocket/ServerHeartbeat.test.ts"
     ],
     "src/internal/ActorCell.ts": [
+      "tests/unit/DeathWatch.test.ts",
       "tests/unit/DeathWatchOnBoundedMailbox.test.ts",
       "tests/unit/DrainingShutdown.test.ts",
       "tests/unit/Supervision.test.ts",
@@ -524,6 +533,12 @@
       "tests/unit/cluster/ParkedPeerReadiness.test.ts",
       "tests/unit/http/ShutdownDrain.test.ts",
       "tests/unit/management/BuiltInHealthChecks.test.ts"
+    ],
+    "src/parallelism/ParallelismExtension.ts": [
+      "tests/unit/parallelism/ClusterRouterOverMesh.test.ts",
+      "tests/unit/parallelism/DisabledByDefault.test.ts",
+      "tests/unit/parallelism/ParallelismExtension.test.ts",
+      "tests/unit/parallelism/SpawnProtocol.test.ts"
     ],
     "src/persistence/journals/CassandraJournal.ts": [
       "tests/integration/in-process/persistence/CassandraJournal.test.ts",
@@ -707,6 +722,12 @@
       "tests/unit/UtilExports.test.ts",
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/worker/WorkerMesh.ts": [
+      "tests/integration/in-process/cluster/WorkerMesh.test.ts",
+      "tests/unit/parallelism/ParallelismExtension.test.ts",
+      "tests/unit/worker/WorkerMesh.test.ts",
+      "tests/unit/worker/WorkerMeshBootstrap.test.ts"
     ]
   },
   "sets": {

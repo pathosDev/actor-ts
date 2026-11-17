@@ -146,7 +146,11 @@ die ein SIGTERM ausführt, hält dasselbe Versprechen: Sie fährt die Systeme
 der Worker in `before-cluster-shutdown` herunter, nachdem die
 Service-Schicht gestoppt ist und bevor `cluster-leave` einen Thread
 stoppt — eine Nachricht, die ein Actor des Main-Threads danach an einen
-ausgelagerten schickt, wird also zum Dead Letter.
+ausgelagerten schickt, wird also zum Dead Letter.  Kürzt ein Operator
+`before-cluster-shutdown` unter das, was die Worker brauchen, geht die
+Pipeline weiter, während dieser Shutdown noch läuft, und `cluster-leave`
+wartet bis zu seinem eigenen Phasenbudget darauf, bevor es die Threads
+stoppt.
 
 ## Drei Grenzen, jede mit einem lauten Fehler
 
