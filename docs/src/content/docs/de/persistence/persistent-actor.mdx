@@ -590,6 +590,15 @@ Das Framework schreibt einen Snapshot über den Snapshot Store; bei
 der Recovery lädt es den Snapshot zuerst und spielt nur Events
 *nach* der seqNr dieses Snapshots ab.
 
+Den Snapshot der Policy nimmt das Framework nach dem Append, deshalb
+lässt ein dort fehlgeschlagenes Speichern das Command nicht
+scheitern: Seine Events sind bereits dauerhaft geschrieben.  Der
+Actor loggt eine Warnung, der Fehler wird in
+`persistence_snapshot_failures_total{operation="save"}` gezählt, der
+`persist`-Callback läuft wie gewohnt, und der nächste Snapshot, den
+die Policy verlangt, versucht das Speichern erneut.  Ein explizites
+`saveSnapshot()` wirft bei einem fehlgeschlagenen Speichern weiterhin.
+
 `everyNEvents(N)` ist der häufige Fall.  Für individuelle Policies
 (Snapshot bei einer bestimmten Event-Art, zeitbasiert),
 implementiere:

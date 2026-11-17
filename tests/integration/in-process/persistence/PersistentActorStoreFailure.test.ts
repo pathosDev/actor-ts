@@ -25,6 +25,7 @@ import {
   InjectedFaultError,
 } from '../../../../src/testkit/index.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 /**
  * What `PersistentActor` does when a store call fails (#1024).
@@ -130,11 +131,13 @@ async function makeHarness(
   wrap: {
     readonly journal?: (inner: InMemoryJournal) => Journal;
     readonly snapshots?: (inner: InMemorySnapshotStore) => FaultInjectingSnapshotStore;
+    /** Records warnings and worse instead of discarding every line. */
+    readonly logger?: RecordingLogger;
   },
 ): Promise<Harness> {
   const systemOptions = ActorSystemOptions.create()
-    .withLogger(new NoopLogger())
-    .withLogLevel(LogLevel.Off);
+    .withLogger(wrap.logger ?? new NoopLogger())
+    .withLogLevel(wrap.logger ? LogLevel.Warn : LogLevel.Off);
   const system = ActorSystem.create(name, systemOptions);
   const journal = new InMemoryJournal();
   const snapshots = new InMemorySnapshotStore();
@@ -394,13 +397,15 @@ describe('PersistentActor — a command that arrives while persistAll is in flig
 });
 
 describe('PersistentActor — a snapshot save that fails after the append succeeded', () => {
-  test('leaves the event durable and recovers it after the restart', async () => {
+  test('completes the command, runs its callback, warns, and the next snapshot retries', async () => {
     let faulty: FaultInjectingSnapshotStore | undefined;
     const snapshotFaults = FaultInjectingSnapshotStoreOptions.create()
       .withFailOn('save')
       .withFailOnce();
-    const { system, journal, snapshots } = await makeHarness('snapshot-save-fails', {
+    const logger = new RecordingLogger(LogLevel.Warn);
+    const { system, journal, snapshots, lifecycle } = await makeHarness('snapshot-save-fails', {
       snapshots: (inner) => (faulty = new FaultInjectingSnapshotStore(inner, snapshotFaults)),
+      logger,
     });
     const observations = newObservations();
     const ref = system.spawn(() => {
@@ -410,26 +415,33 @@ describe('PersistentActor — a snapshot save that fails after the append succee
     await awaitCondition(() => observations.recovered.length === 1, { label: 'the first incarnation recovered' });
 
     ref.tell({ kind: 'deposit', amounts: [5] });
-    await awaitCondition(() => observations.recovered.length === 2, {
-      label: 'the failed snapshot save restarted the actor',
+    await awaitCondition(() => observations.callbacks.length === 1, {
+      label: 'the command whose snapshot save failed ran its callback',
     });
 
-    // The append committed before the save was attempted, so the event is in
-    // the journal and the restart folds it in — nothing is lost or doubled.
+    // The append committed before the save was attempted, so the event is
+    // durable and the command completes: a snapshot is an optimisation, and
+    // its failure neither skips the callback nor fails the actor (#1822).
+    expect(observations.callbacks).toEqual([{ balance: 5 }]);
     expect(await amountsIn(journal, 'acct-snapshot')).toEqual([5]);
-    expect(observations.recovered).toEqual([{ balance: 0 }, { balance: 5 }]);
     expect(faulty!.callsTo('save')).toBe(1);
     expect((await snapshots.loadLatest('acct-snapshot')).isSome()).toBe(false);
+    const warnings = logger.records.filter((r) => r.level === 'warn' && r.message.includes('snapshot save'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.message).toContain('acct-snapshot');
 
-    // The next write snapshots normally, at the head the restart recovered.
+    // The next write snapshots normally, and the actor never restarted.
     ref.tell({ kind: 'deposit', amounts: [2] });
-    await awaitCondition(() => observations.callbacks.length > 0 && faulty!.callsTo('save') === 2, {
+    await awaitCondition(() => observations.callbacks.length === 2 && faulty!.callsTo('save') === 2, {
       label: 'the next deposit was persisted and snapshotted',
     });
     expect(observations.callbacks.at(-1)).toEqual({ balance: 7 });
     const latest = await snapshots.loadLatest<State>('acct-snapshot');
     expect(latest.isSome() && latest.value.sequenceNr).toBe(2);
     expect(latest.isSome() && latest.value.state).toEqual({ balance: 7 });
+    expect(observations.incarnations).toBe(1);
+    expect(observations.recovered).toEqual([{ balance: 0 }]);
+    expect(lifecycle.some((e) => e instanceof ActorRestarted)).toBe(false);
     await system.terminate();
   });
 });

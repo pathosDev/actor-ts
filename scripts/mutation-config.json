@@ -535,6 +535,7 @@
     "src/persistence/PersistentActor.ts": [
       "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
       "tests/integration/in-process/persistence/PersistentActor.test.ts",
+      "tests/integration/in-process/persistence/PersistentActorStoreFailure.test.ts",
       "tests/integration/in-process/persistence/migration/WrapLegacy.test.ts",
       "tests/integration/in-process/persistence/replicated/LocalSequenceAcrossRestart.test.ts",
       "tests/integration/in-process/persistence/replicated/RecoveryGuards.test.ts",
