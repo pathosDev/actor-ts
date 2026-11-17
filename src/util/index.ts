@@ -32,6 +32,11 @@ export type { BidirectionalMapJson } from './BidirectionalMap.js';
 export { BidirectionalMultiMap } from './BidirectionalMultiMap.js';
 export type { BidirectionalMultiMapJson } from './BidirectionalMultiMap.js';
 
+// The injective, never-throwing total order behind the last-writer-wins
+// tie-breaks — public so a custom resolver can rank a full tie the way the
+// built-in one does (#1841).
+export { canonicalOrderKey } from './CanonicalOrderKey.js';
+
 // CIDR matching and the address-pin rules built on it — the primitive behind
 // both the HTTP IP allowlist and the cluster seed providers' pin lists.
 export {

@@ -26,6 +26,7 @@ import {
   TokenBucket,
   addressMatchesPins,
   addressPinRejection,
+  canonicalOrderKey,
   cidrMatches,
   classNameOf,
   escapeHtml,
@@ -314,6 +315,13 @@ describe('the rest of the util toolbox is reachable on actor-ts/util (#1404)', (
       // the assertion that can tell the difference.
       const untouched = '/orders';
       expect(stripTrailing(untouched, '/')).toBe(untouched);
+    });
+  });
+
+  describe('CanonicalOrderKey', () => {
+    test('keys a bigint apart from its string spelling', () => {
+      expect(canonicalOrderKey(1n)).not.toBe(canonicalOrderKey('1n'));
+      expect(canonicalOrderKey({ b: 1, a: 2 })).toBe(canonicalOrderKey({ a: 2, b: 1 }));
     });
   });
 

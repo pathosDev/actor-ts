@@ -38,8 +38,11 @@ The contract:
   timestamp + different replicas = lexicographically-later wins.
   Same timestamp + same replica ID is not necessarily the same
   write — one replica can write twice in one millisecond — so that
-  tie is broken on the value's JSON rendering, and every node keeps
-  the same one whatever order the two writes arrive in.
+  tie is broken on a typed canonical key of the value
+  (`canonicalOrderKey`), and every node keeps the same one whatever
+  order the two writes arrive in.  The key tells apart values a JSON
+  rendering confuses — `1n` and `"1n"`, `undefined` and a function —
+  and only structurally equal values tie.
 - **Last write wins, *silently*.**  Concurrent writes don't surface
   to the caller — one of them is just gone.
 

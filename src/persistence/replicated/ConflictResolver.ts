@@ -1,5 +1,6 @@
 import type { ReplicaId } from '../../crdt/Crdt.js';
 import type { VectorClock } from './VectorClock.js';
+import { canonicalOrderKey } from '../../util/CanonicalOrderKey.js';
 
 /**
  * Resolution strategy for two events that {@link VectorClock} flags
@@ -52,9 +53,10 @@ export type ConflictCandidate<E> = {
  * Last-writer-wins on `(timestamp, replicaId)`.  Higher timestamp
  * wins; on ties the higher (lexicographic) replicaId wins so every
  * replica converges deterministically.  A tie on both — one replica
- * stamping two events in one millisecond — goes to the event whose JSON
- * rendering ranks higher, so the winner never depends on which candidate
- * is `a` (the same last key `LWWRegister` uses since #950).
+ * stamping two events in one millisecond — goes to the event whose canonical
+ * order key ranks higher, so the winner never depends on which candidate
+ * is `a` (the same last key `LWWRegister` uses since #950, injective since
+ * #1841).
  *
  * Caveat: relies on wall-clock timestamps being roughly comparable
  * across replicas.  Same trade-off as `LWWRegister`.
@@ -70,25 +72,11 @@ export class LastWriterWinsResolver<E> implements ConflictResolver<E> {
     // argument, so two replicas meeting the pair in opposite orders kept
     // different events.  The payload is the last key of the order: any
     // deterministic rank works, as long as it never depends on argument order.
-    return tieBreakKey(b.event) > tieBreakKey(a.event) ? b.event : a.event;
-  }
-}
-
-/**
- * An event's rank in a full `(timestamp, replica)` tie — its JSON rendering,
- * which is what the journal and the wire carry, so two events that render
- * alike are the same event to every replica and it does not matter which one
- * wins.  Total: a `bigint` renders as its decimal form with an `n`, and
- * anything `JSON.stringify` cannot render ranks as the empty key rather than
- * throwing inside a fold.  A private copy of `LWWRegister`'s helper rather
- * than an import, so the persistence layer takes no dependency on the CRDT
- * module for four lines.
- */
-function tieBreakKey(value: unknown): string {
-  try {
-    return JSON.stringify(value, (_key, inner: unknown) => (typeof inner === 'bigint' ? `${inner}n` : inner)) ?? '';
-  } catch {
-    return '';
+    // The key is injective (#1841), so two events that tie on it are equal and
+    // answering `a` is indistinguishable from answering `b`.  It lives in
+    // `src/util/` so this layer shares `LWWRegister`'s order without depending
+    // on the CRDT module.
+    return canonicalOrderKey(b.event) > canonicalOrderKey(a.event) ? b.event : a.event;
   }
 }
 

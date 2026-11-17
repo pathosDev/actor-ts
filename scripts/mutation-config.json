@@ -463,6 +463,36 @@
       "tests/integration/in-process/persistence/replicated/RemoteAppendChain.test.ts",
       "tests/unit/cluster/sharding/RememberEntitiesCompaction.test.ts",
       "tests/unit/testkit/FaultInjectingStores.test.ts"
+    ],
+    "src/crdt/LWWRegister.ts": [
+      "tests/unit/crdt/CrdtWireValidation.test.ts",
+      "tests/unit/crdt/LWWRegisterEquals.test.ts",
+      "tests/unit/crdt/Properties.test.ts",
+      "tests/unit/cluster/sharding/DistributedDataCoordinatorStateStore.test.ts",
+      "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/persistence/replicated/ConflictResolver.ts": [
+      "tests/integration/in-process/persistence/replicated/ConflictResolver.test.ts",
+      "tests/integration/in-process/persistence/replicated/ResolverWiring.test.ts",
+      "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/util/CanonicalOrderKey.ts": [
+      "tests/unit/util/CanonicalOrderKey.test.ts",
+      "tests/unit/UtilExports.test.ts",
+      "tests/unit/crdt/Properties.test.ts",
+      "tests/integration/in-process/persistence/replicated/ConflictResolver.test.ts"
+    ],
+    "src/serialization/CborCodec.ts": [
+      "tests/unit/serialization/CborCodec.test.ts",
+      "tests/unit/serialization/CborDecoderFuzz.test.ts",
+      "tests/unit/serialization/CborDecoderTagAllowListEdges.test.ts",
+      "tests/unit/serialization/CodecDifferentialFuzz.test.ts",
+      "tests/unit/serialization/ReadConstraints.test.ts",
+      "tests/unit/serialization/RichTypeParity.test.ts",
+      "tests/unit/serialization/SerializationProperties.test.ts",
+      "tests/unit/serialization/WideBigintWriteRefusal.test.ts",
+      "tests/unit/cluster/FrameDecoderFuzz.test.ts",
+      "tests/unit/http/EntityCborAllowList.test.ts"
     ]
   },
   "sets": {
