@@ -427,6 +427,22 @@
       "tests/unit/persistence/PersistenceBreakers.test.ts",
       "tests/unit/persistence/PersistenceMetrics.test.ts"
     ],
+    "src/persistence/query/InMemoryQuery.ts": [
+      "tests/integration/in-process/persistence/projection/ProjectionActor.test.ts",
+      "tests/integration/in-process/persistence/projection/ProjectionCursorLoadVisibility.test.ts",
+      "tests/integration/in-process/persistence/query/PersistenceIds.test.ts",
+      "tests/integration/in-process/persistence/query/PersistenceQuery.test.ts",
+      "tests/integration/in-process/persistence/query/PushBasedQuery.test.ts",
+      "tests/integration/in-process/persistence/query/RelationalQuery.test.ts",
+      "tests/integration/in-process/persistence/query/TagFilterValidation.test.ts",
+      "tests/unit/persistence/InMemoryQueryLiveStreams.test.ts",
+      "tests/unit/persistence/ProjectionConfig.test.ts",
+      "tests/unit/persistence/ProjectionFailureStrategy.test.ts",
+      "tests/unit/persistence/ProjectionGroupedHandler.test.ts",
+      "tests/unit/persistence/ProjectionHandlerThis.test.ts",
+      "tests/unit/persistence/ProjectionRequiredOptions.test.ts",
+      "tests/unit/persistence/TagLookbackWindow.test.ts"
+    ],
     "src/persistence/relational/RelationalJournal.ts": [
       "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
       "tests/unit/persistence/CollationAdvisory.test.ts"
