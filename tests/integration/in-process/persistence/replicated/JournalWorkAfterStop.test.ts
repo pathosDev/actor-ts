@@ -422,6 +422,42 @@ describe('ReplicatedEventSourcedActor — journal work still running when the ac
     }
   });
 
+  test('a successor whose recovery deadline expires while it waits still leaves the wait to the next one', async () => {
+    // The successor of an instance with an append still in flight waits for it
+    // under `recovery-timeout`, and fails its start when that runs out.  Its
+    // own `postStop` then hands over its work — none — and that must not
+    // replace what the instance before it still owes.
+    const config: ConfigObject = {
+      'actor-ts': {
+        'circuit-breaker': { 'persistence-journal': { 'call-timeout': '50ms' } },
+        persistence: { 'recovery-timeout': '100ms' },
+      },
+    };
+    const journal = new HeldAppendJournal(new InMemoryJournal());
+    const replica = await startReplica('journal-work-deadline', 87_306, journal, 'jw-deadline', config);
+    try {
+      replica.ref.tell({ kind: 'add', amount: 1 });
+      await awaitCondition(() => replica.observations.persistFailures.length === 1, {
+        ...WAIT, label: 'the held append was cut at the call-timeout',
+      });
+      expect(await gracefulStop(replica.ref, TEARDOWN_BUDGET_MS)).toBe(true);
+
+      spawnSuccessor(replica, 'counter-2');
+      // An absence: across several recovery deadlines — the successor's and
+      // whatever supervision makes of its failed start — no instance may
+      // recover while the first one's append is still held.
+      await sleep(500);
+      expect(replica.observations.recovered.length).toBe(1);
+
+      journal.landAll();
+      await awaitRecoveries(replica, 2, 'an instance recovered once the held append landed');
+      expect(replica.observations.recovered[1]).toEqual({ value: 1 });
+    } finally {
+      journal.landAll();
+      await stopReplica(replica);
+    }
+  });
+
   test('a stopped instance stops backing off, and does not tell its dead self that the retries ran out', async () => {
     const journal = new LosesFirstAppendsJournal(new InMemoryJournal(), REPLICATED_JOURNAL_RETRY_ATTEMPTS);
     const replica = await startReplica('journal-work-exhausted', 87_304, journal, 'jw-exhausted');
