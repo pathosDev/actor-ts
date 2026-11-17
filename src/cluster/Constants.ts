@@ -383,6 +383,21 @@ export const MAX_REMEMBERED_ENTITY_ID_LENGTH = 1_024;
 export const MAX_REMEMBERED_ENTITIES_PER_SHARD = 100_000;
 
 /**
+ * The most entity-id bytes one `sharding.RememberedEntities` message carries
+ * (#1825); a shard's registry larger than that travels in several.
+ *
+ * The two caps above put a shard's registry at up to ~100 MB of ids, and more
+ * once UTF-8 and JSON escaping are paid, against a 16 MiB default
+ * `max-frame-bytes` — and a peer refuses a frame past its cap on the length
+ * prefix and drops the connection.  256 KiB is a small fraction of that cap,
+ * so the envelope around the ids (target path, MDC, trace context) has room
+ * to spare, and still ships the worst-case registry in a few hundred frames.
+ * The coordinator also clamps it to a quarter of the transport's own cap, so a
+ * lowered `max-frame-bytes` lowers the chunk with it.
+ */
+export const REMEMBERED_ENTITIES_CHUNK_BYTES = 256 * 1024;
+
+/**
  * How long the singleton manager waits before re-spawning a child that died
  * unexpectedly (#1175).
  *

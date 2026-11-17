@@ -10,6 +10,7 @@ import {
   MAX_PENDING_SHARD_HOME_REQUESTS,
   MAX_REMEMBERED_ENTITIES_PER_SHARD,
   MAX_REMEMBERED_ENTITY_ID_LENGTH,
+  REMEMBERED_ENTITIES_CHUNK_BYTES,
   SHARD_MAP_PUBLISH_DELAY_MS,
 } from '../Constants.js';
 import { DeadLetter } from '../../SystemMessages.js';
@@ -398,6 +399,39 @@ type EligibleSetRecord = {
 
 /** A registry entry together with the key it is filed under. */
 type RegionEntry = readonly [key: string, info: RegionInfo];
+
+const utf8 = new TextEncoder();
+
+/**
+ * Split a shard's remembered ids into runs whose JSON array costs at most
+ * `budgetBytes` on the wire (#1825).
+ *
+ * Measured, not counted: an id's wire size is its JSON string's UTF-8 bytes,
+ * which a multi-byte or escaped character makes up to six times its length,
+ * so a batch by id count would still overflow on exactly the registries the
+ * caps allow.  An id larger than the budget on its own travels alone — a
+ * chunk always carries at least one id, or the loop would never finish — and
+ * the budget is sized far above the longest id the registry admits.
+ */
+export function rememberedEntityChunks(entityIds: Iterable<string>, budgetBytes: number): string[][] {
+  const chunks: string[][] = [];
+  let chunk: string[] = [];
+  // The brackets of the array, paid once per chunk.
+  let bytes = 2;
+  for (const entityId of entityIds) {
+    const idBytes = utf8.encode(JSON.stringify(entityId)).byteLength;
+    // Plus the comma in front of every id but a chunk's first.
+    if (chunk.length > 0 && bytes + 1 + idBytes > budgetBytes) {
+      chunks.push(chunk);
+      chunk = [];
+      bytes = 2;
+    }
+    bytes += (chunk.length === 0 ? 0 : 1) + idBytes;
+    chunk.push(entityId);
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
 
 function regionKey(node: NodeAddress, path: string): string {
   return `${node}|${path}`;
@@ -3162,16 +3196,37 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.pendingOverflowWarned.delete(shardId);
   }
 
+  /**
+   * Ship a shard's registry to its owner, in as many messages as it takes to
+   * keep each one inside a frame (#1825).
+   *
+   * One message per shard put up to ~100 MB of ids into one frame, which the
+   * owner's transport refuses on the length prefix — so the region never
+   * learned what to start.  Several messages need nothing new on the receiving
+   * side: a region has always treated a `RememberedEntities` as "start these
+   * too", never as "this is the whole set", and starts each run whether the
+   * shard is new, already running, or queued for paced recovery.
+   */
   private shipRememberedEntities(shardId: number): void {
     const set = this.entitiesPerShard.get(shardId);
     if (!set || set.size === 0) return;
     const home = this.shardHome.get(shardId);
     if (!home) return;
-    this.sendToRegion(home, {
-      kind: 'sharding.RememberedEntities',
-      shardId,
-      entityIds: Array.from(set),
-    });
+    for (const entityIds of rememberedEntityChunks(set, this.rememberedChunkBudgetBytes())) {
+      this.sendToRegion(home, { kind: 'sharding.RememberedEntities', shardId, entityIds });
+    }
+  }
+
+  /**
+   * The id bytes one `RememberedEntities` may carry: the fixed chunk size, or
+   * a quarter of the transport's frame cap where that is smaller, so a lowered
+   * `max-frame-bytes` keeps room for the envelope.  `undefined` from the
+   * transport means it frames nothing — the in-memory and multi-node ones hand
+   * the object over — and only the fixed size applies.
+   */
+  private rememberedChunkBudgetBytes(): number {
+    const frameCap = this.options.cluster.transport.maxFrameBytes ?? Number.POSITIVE_INFINITY;
+    return Math.min(REMEMBERED_ENTITIES_CHUNK_BYTES, Math.floor(frameCap / 4));
   }
 
   private sendToRegion(key: string, message: ShardingMessage): void {
