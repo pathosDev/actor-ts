@@ -469,6 +469,12 @@
       "tests/integration/in-process/io/broker/KafkaActor.test.ts",
       "tests/integration/in-process/io/broker/MqttActor.test.ts",
       "tests/unit/io/broker/BrokerAcknowledgmentTracker.test.ts"
+    ],
+    "src/io/broker/KafkaActor.ts": [
+      "tests/integration/in-process/io/broker/KafkaActor.test.ts",
+      "tests/integration/in-process/io/broker/Phase2.smoke.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerTlsForwarding.test.ts"
     ]
   },
   "sets": {
