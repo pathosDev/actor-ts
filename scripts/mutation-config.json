@@ -83,6 +83,7 @@
       "tests/unit/cluster/SplitBrainStabilityWindow.test.ts",
       "tests/unit/cluster/UnreachablePeerContact.test.ts",
       "tests/unit/cluster/WeaklyUpPromotionTie.test.ts",
+      "tests/unit/cluster/downing/LeaseMajorityLeave.test.ts",
       "tests/unit/cluster/downing/LeaseMajorityLostWin.test.ts",
       "tests/unit/cluster/downing/LeaseMajorityTerminate.test.ts"
     ],

@@ -510,4 +510,52 @@ describe('a downing provider decides, whatever auto-down says (#1426)', () => {
     expect(statusOf(node.cluster, peer)).toBe('unreachable');
     expect(parkingWarnings(node.log)).toEqual([]);
   });
+
+  // The provider's twin of the parking warning is an info line, once per
+  // parking.  The two cases below are the auto-down-off ones above with a
+  // provider in place: each edge that forgets a parking must forget this one too.
+
+  test('a peer heard from again and silent a second time is handed to the provider a second time, and said so', async () => {
+    const node = await startNode('park-provider-again', 9_455, { downing: NEVER_DECIDES });
+    const peer = peerAddress('park-provider-again', 9_556);
+    gossipSelfRecord(node.cluster, peer, 'up');
+
+    lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
+    tick(node.cluster, 3);
+    expect(providerParkingLines(node.log)).toHaveLength(1);
+    lastHeardFrom(node.cluster, peer, 0);
+    tick(node.cluster);
+    lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
+    tick(node.cluster, 3);
+
+    expect(providerParkingLines(node.log)).toHaveLength(2);
+  });
+
+  test('a parked run that restarts and falls silent again is handed over again — the line leaves with the old run\'s entry', async () => {
+    // As for the warning: no detection tick runs between the restart and the
+    // new run's silence, so only the delete of the old entry can forget it.
+    const node = await startNode('park-provider-restart', 9_456, { downing: NEVER_DECIDES });
+    const firstRun = new NodeAddress('park-provider-restart', PEER_HOST, 9_557, 'run-1');
+    const secondRun = new NodeAddress('park-provider-restart', PEER_HOST, 9_557, 'run-2');
+    gossipSelfRecord(node.cluster, firstRun, 'up');
+    lastHeardFrom(node.cluster, firstRun, SILENT_PAST_DOWN_MS);
+    tick(node.cluster);
+    expect(providerParkingLines(node.log)).toHaveLength(1);
+
+    internals(node.cluster).mergeMember(secondRun, 'unreachable', {
+      address: secondRun.toJSON(), status: 'joining', version: Date.now() + 1_000, roles: [],
+    });
+    expect(internals(node.cluster).members.get(secondRun.toString())?.address.incarnation).toBe('run-2');
+    lastHeardFrom(node.cluster, secondRun, SILENT_PAST_DOWN_MS);
+    tick(node.cluster);
+
+    expect(providerParkingLines(node.log)).toHaveLength(2);
+  });
 });
+
+/** The info lines saying the detector handed a peer to the downing provider (#994). */
+function providerParkingLines(log: RecordingLogger): ReadonlyArray<RecordedLog> {
+  return log.records.filter(
+    (record) => record.level === 'info' && record.message.includes('the downing provider decides'),
+  );
+}

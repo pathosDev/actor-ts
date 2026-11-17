@@ -26,8 +26,11 @@ import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import {
   GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS,
+  GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES,
   GOSSIP_SEQUENCE_LEAD_MS,
+  GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS,
 } from '../../../src/cluster/Constants.js';
+import { DEFAULT_MAX_VERSION_SKEW_MS } from '../../../src/cluster/ClusterOptions.js';
 import type { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { GossipMessage, MemberData } from '../../../src/cluster/Protocol.js';
@@ -44,8 +47,10 @@ type NodeHandle = { readonly system: ActorSystem; readonly cluster: Cluster };
 interface ClusterInternals {
   handleWire(from: NodeAddress, message: GossipMessage): void;
   nextGossipSequence(): number;
+  deleteMember(key: string): void;
   readonly members: Map<string, Member>;
   readonly acceptedGossipSequences: Map<string, number>;
+  readonly gossipSenderClocks: Map<string, unknown>;
 }
 
 const internals = (cluster: Cluster): ClusterInternals => cluster as unknown as ClusterInternals;
@@ -201,6 +206,26 @@ describe('the mark is held per (member, incarnation) (#1262)', () => {
     gossipFrom(node.cluster, nextRun, now, [selfRecord(nextRun, now)]);
     expect(internals(node.cluster).members.get(nextRun.toString())?.address.incarnation).toBe('run-2');
   });
+
+  test('a deleted member takes its clock reading along: the next run at an address without an incarnation starts fresh', async () => {
+    // Without an incarnation on either run, nothing but the delete tells the
+    // old reading from a new one — kept, it would hold the next process's
+    // first frames to the previous process's clock.
+    setNow(Date.parse('2026-11-14T13:30:00Z'));
+    const node = await startNode('pin-delete', 9_656);
+    const peer = new NodeAddress('pin-delete', PEER_HOST, 9_657);
+    gossipFrom(node.cluster, peer, now, [selfRecord(peer, now)]);
+    expect(holds(node.cluster, peer)).toBe(true);
+
+    internals(node.cluster).deleteMember(peer.toString());
+    expect(internals(node.cluster).gossipSenderClocks.has(peer.toString())).toBe(false);
+
+    // The next process at the address runs on a clock two minutes ahead —
+    // inside the skew budget a first frame is held to, far past the lead.
+    setNow(now + 1_000);
+    gossipFrom(node.cluster, peer, now + 2 * MINUTE_MS, [selfRecord(peer, now)]);
+    expect(holds(node.cluster, peer)).toBe(true);
+  });
 });
 
 describe('a sender whose clock stepped forward is not silenced for good (#1262)', () => {
@@ -220,6 +245,106 @@ describe('a sender whose clock stepped forward is not silenced for good (#1262)'
       gossipFrom(node.cluster, peer, now + step, [subjectRecord(later, now)]);
     }
     expect(holds(node.cluster, later)).toBe(true);
+  });
+});
+
+describe('the forward-step reset lands on the frame that reaches both thresholds (#1262)', () => {
+  // The case above sends one frame past the threshold before it looks, so it
+  // cannot tell "the reset frame merged" from "the frame after it merged as a
+  // first frame" — the second is what a reset that deletes the clocks but
+  // refuses its own frame produces.  Nor does it look past that one frame, so
+  // a reset that kept the stale clock — and refused the sender again from the
+  // next frame on — passed it as well.  Here every frame names its own subject
+  // and the outcome is read after each one.
+
+  type SteppedFrame = { readonly sentAt: number; readonly merged: boolean };
+
+  /** One frame every `spacingMs`, each two minutes past the sender's learned clock and naming a fresh subject. */
+  async function sendSteppedFrames(systemName: string, port: number, spacingMs: number, frames: number): Promise<SteppedFrame[]> {
+    setNow(Date.parse('2026-11-14T17:00:00Z'));
+    const node = await startNode(systemName, port);
+    const peer = new NodeAddress(systemName, PEER_HOST, port + 1, 'peer-run');
+    gossipFrom(node.cluster, peer, now, [selfRecord(peer, now)]);
+    const start = now;
+    const step = 2 * MINUTE_MS;
+    const outcomes: SteppedFrame[] = [];
+    for (let frame = 1; frame <= frames; frame++) {
+      setNow(now + spacingMs);
+      const subject = new NodeAddress(systemName, SUBJECT_HOST, port + 1 + frame);
+      gossipFrom(node.cluster, peer, now + step, [subjectRecord(subject, now)]);
+      outcomes.push({ sentAt: now - start, merged: holds(node.cluster, subject) });
+    }
+    return outcomes;
+  }
+
+  test('frames 5 s apart: refused until the window has run, then every frame merges', async () => {
+    const outcomes = await sendSteppedFrames('reset-window', 9_700, 5_000, 18);
+    // The first refused frame (at +5 s) opens the window, so it completes at
+    // +5 s + the window.  That frame merges, and so does every frame after it:
+    // the clock learned from the reset frame is the stepped one.
+    const resetAt = 5_000 + GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS;
+    expect(outcomes).toEqual(outcomes.map(({ sentAt }) => ({ sentAt, merged: sentAt >= resetAt })));
+    // +65 s … +90 s: the reset frame and the five after it.
+    expect(outcomes.filter(({ merged }) => merged).length).toBe(6);
+  });
+
+  test('frames spaced so the minimum frame count is reached exactly as the window runs out', async () => {
+    // 30 s apart: the refused frames land at +30 s, +60 s, +90 s — the third is
+    // both the minimum count and exactly the window after the first.
+    expect(GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES).toBe(3);
+    const spacing = GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS / (GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES - 1);
+    const outcomes = await sendSteppedFrames('reset-count', 9_730, spacing, 5);
+    expect(outcomes.map(({ merged }) => merged)).toEqual([false, false, true, true, true]);
+  });
+});
+
+describe('the gossip-sequence bounds are inclusive (#1262)', () => {
+  test('a first frame exactly at now + maxVersionSkewMs is admitted', async () => {
+    setNow(Date.parse('2026-11-14T18:00:00Z'));
+    const node = await startNode('bound-skew', 9_760);
+    const peer = new NodeAddress('bound-skew', PEER_HOST, 9_761, 'peer-run');
+    // A first frame has no standing to speak for a third party, so what it
+    // can carry is the sender's own record.
+    gossipFrom(node.cluster, peer, now + DEFAULT_MAX_VERSION_SKEW_MS, [selfRecord(peer, now)]);
+    expect(holds(node.cluster, peer)).toBe(true);
+  });
+
+  test('a frame exactly one lead past the learned clock is admitted', async () => {
+    setNow(Date.parse('2026-11-14T18:10:00Z'));
+    const node = await startNode('bound-lead', 9_770);
+    const peer = new NodeAddress('bound-lead', PEER_HOST, 9_771, 'peer-run');
+    const subject = new NodeAddress('bound-lead', SUBJECT_HOST, 9_772);
+    gossipFrom(node.cluster, peer, now, [selfRecord(peer, now)]);
+    gossipFrom(node.cluster, peer, now + GOSSIP_SEQUENCE_LEAD_MS, [subjectRecord(subject, now)]);
+    expect(holds(node.cluster, subject)).toBe(true);
+  });
+
+  test('a frame exactly at the capped allowance keeps the drift banked before it', async () => {
+    // A long silence banks more drift than one lead, and the allowance is
+    // capped at offset + lead.  A frame landing exactly on that cap moves the
+    // offset up to it, but the drift line the allowance was cut from is still
+    // the one the next frame is measured against — so a frame a second later,
+    // a little past the new offset + lead, still fits the drifted allowance.
+    setNow(Date.parse('2026-11-14T19:00:00Z'));
+    const node = await startNode('bound-allowance', 9_780);
+    const peer = new NodeAddress('bound-allowance', PEER_HOST, 9_781, 'peer-run');
+    const subject = new NodeAddress('bound-allowance', SUBJECT_HOST, 9_782);
+    gossipFrom(node.cluster, peer, now, [selfRecord(peer, now)]);
+    const start = now;
+
+    const silenceMs = 3 * 60 * MINUTE_MS;
+    expect(silenceMs * GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS).toBeGreaterThan(GOSSIP_SEQUENCE_LEAD_MS);
+    setNow(start + silenceMs);
+    gossipFrom(node.cluster, peer, now + GOSSIP_SEQUENCE_LEAD_MS, [selfRecord(peer, now)]);
+    expect(markFor(node.cluster, peer)).toBe(now + GOSSIP_SEQUENCE_LEAD_MS);
+
+    setNow(now + 1_000);
+    const drifted = (now - start) * GOSSIP_SEQUENCE_OFFSET_DRIFT_PER_MS;
+    // Past the new offset (one lead) plus a second's fresh drift, inside the banked drift.
+    const ahead = GOSSIP_SEQUENCE_LEAD_MS + 500;
+    expect(ahead).toBeLessThan(drifted);
+    gossipFrom(node.cluster, peer, now + ahead + GOSSIP_SEQUENCE_LEAD_MS, [subjectRecord(subject, now)]);
+    expect(holds(node.cluster, subject)).toBe(true);
   });
 });
 
