@@ -431,3 +431,167 @@ describe('a logger that cannot render the failure never skips its supervision st
     });
   });
 });
+
+/* ----------------------- failure-path early returns ------------------------- */
+
+/**
+ * Two early returns on the failure path whose omission only shows in what is
+ * logged afterwards: a restart of an actor whose constructor threw has no
+ * instance to restart, and a strategy that threw leaves no strategy or
+ * directive to act on.  Running on past either reaches code written for an
+ * instance and a directive that do not exist.
+ */
+describe('the failure path stops where there is nothing left to act on', () => {
+  test('a Restart for a constructor that threw ends in the stop alone', async () => {
+    const logger = new CapturingLogger(LogLevel.Debug);
+    const system = quietSystem('constructor-failure-restart-quiet', logger);
+    class Unbuildable extends Actor<string> {
+      constructor() {
+        super();
+        throw new Error('constructor boom');
+      }
+      override onReceive(): void {}
+    }
+    const restartEverything = new OneForOneStrategy(() => Directive.Restart);
+    const seen: string[] = [];
+    let handled = 0;
+    class Parent extends Actor<string | Terminated> {
+      override supervisorStrategy(): SupervisorStrategy { return restartEverything; }
+      override preStart(): void { this.context.watch(this.context.spawn(Unbuildable, 'unbuildable')); }
+      override onReceive(message: string | Terminated): void {
+        if (message instanceof Terminated) seen.push(message.actor.path.name);
+        else handled++;
+      }
+    }
+    const parent = system.spawn(Parent, 'parent');
+    await awaitCondition(() => seen.includes('unbuildable'), { label: 'the unbuildable child was stopped' });
+    // One more turn through the parent, so anything the child's cell did after
+    // its stop has been logged by the time the records are read.
+    parent.tell('ping');
+    await awaitCondition(() => handled === 1, { label: 'the parent handled a message after the stop' });
+
+    expect(linesWith(logger, 'preRestart threw')).toEqual([]);
+    const errors = logger.records.filter((record) => record.level === 'error');
+    // Exactly the start failure and the supervision line for it: nothing from
+    // a restart that had no instance to run on.
+    expect(errors.map((record) => record.message)).toEqual([
+      'Actor initialization failed',
+      expect.stringMatching(/\/user\/parent\/unbuildable failed: ActorInitializationError: .* — restart$/),
+    ]);
+    expect(errors.some((record) => record.args.some((arg) => arg instanceof TypeError))).toBe(false);
+  });
+
+  test('a decider that throws escalates once and reports no directive for the child', async () => {
+    const logger = new CapturingLogger(LogLevel.Info);
+    const system = quietSystem('throwing-decider-once', logger);
+    let kidStarts = 0;
+    class Kid extends Actor<string> {
+      override preStart(): void { kidStarts++; }
+      override onReceive(): void { throw new Error('kid failed'); }
+    }
+    const throwingDecider = new OneForOneStrategy(() => { throw new RangeError('decider boom'); });
+    class Parent extends Actor<string> {
+      override supervisorStrategy(): SupervisorStrategy { return throwingDecider; }
+      override preStart(): void { this.context.spawn(Kid, 'kid'); }
+      override onReceive(message: string): void {
+        this.context.child('kid').forEach((kid) => kid.tell(message));
+      }
+    }
+    const parent = system.spawn(Parent, 'parent');
+    await awaitCondition(() => kidStarts === 1, { label: 'the child started' });
+    parent.tell('fail');
+    await awaitCondition(() => kidStarts === 2, { label: 'the escalated failure rebuilt the subtree' });
+
+    expect(linesWith(logger, 'supervisor strategy threw')).toHaveLength(1);
+    // The parent decided nothing for the kid, so no supervision line for the
+    // kid may name a directive — least of all `undefined`.
+    expect(linesWith(logger, '/user/parent/kid failed')).toEqual([]);
+    expect(linesWith(logger, 'undefined')).toEqual([]);
+  });
+
+  test('a supervisorStrategy() that throws escalates once and nothing throws after it', async () => {
+    const logger = new CapturingLogger(LogLevel.Info);
+    const system = quietSystem('throwing-strategy-getter', logger);
+    let kidStarts = 0;
+    let parentStarts = 0;
+    class Kid extends Actor<string> {
+      override preStart(): void { kidStarts++; }
+      override onReceive(): void { throw new Error('kid failed'); }
+    }
+    class Parent extends Actor<string> {
+      override supervisorStrategy(): SupervisorStrategy { throw new RangeError('strategy boom'); }
+      override preStart(): void { parentStarts++; this.context.spawn(Kid, 'kid'); }
+      override onReceive(message: string): void {
+        this.context.child('kid').forEach((kid) => kid.tell(message));
+      }
+    }
+    const parent = system.spawn(Parent, 'parent');
+    await awaitCondition(() => kidStarts === 1, { label: 'the child started' });
+    parent.tell('fail');
+    await awaitCondition(() => parentStarts === 2 && kidStarts === 2, {
+      label: 'the escalated failure restarted the parent and rebuilt the subtree',
+    });
+
+    expect(linesWith(logger, 'supervisor strategy threw')).toHaveLength(1);
+    expect(linesWith(logger, '/user/parent/kid failed')).toEqual([]);
+    const typeErrors = logger.records.filter((record) => record.args.some((arg) => arg instanceof TypeError));
+    expect(typeErrors).toEqual([]);
+  });
+});
+
+/* ------------------------- #916: the budget verdict -------------------------- */
+
+describe('the #916 failure line says whether the restart budget was spent', () => {
+  test('a granted restart is not reported as refused; the refused one is, with one threshold warning', async () => {
+    const logger = new CapturingLogger(LogLevel.Info);
+    const { kit } = TestKit.withManualScheduler('failure-budget-verdict', { logger, logLevel: LogLevel.Info });
+    try {
+      let starts = 0;
+      class Crasher extends Actor<string> {
+        override preStart(): void { starts++; }
+        override onReceive(): void { throw new TypeError('handler boom'); }
+      }
+      const once = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 1, withinTimeRangeMs: 60_000 });
+      const ref = kit.system.spawn(Crasher, 'crasher', { supervisorStrategy: once });
+      const lines = () => logger.records.filter((record) => record.message.includes('/user/crasher failed'));
+      const thresholds = () => logger.records.filter((record) => record.message.includes('Restart threshold exceeded'));
+
+      ref.tell('first');
+      await awaitCondition(() => starts === 2, { label: 'the first failure was restarted' });
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]!.message).toEndWith('— restart');
+      expect(thresholds()).toEqual([]);
+
+      // Past the per-child log throttle, so the second failure gets its own line.
+      await kit.advance(1_001);
+      ref.tell('second');
+      await awaitCondition(() => lines().length === 2, { label: 'the refused restart was logged' });
+      expect(lines()[1]!.message).toEndWith('— restart refused, restart budget spent — stop');
+      expect(thresholds()).toHaveLength(1);
+      expect(thresholds()[0]!.level).toBe('warn');
+    } finally {
+      await kit.shutdown();
+    }
+  });
+
+  test('a Resume line is not reported as a spent budget', async () => {
+    const logger = new CapturingLogger(LogLevel.Info);
+    const system = quietSystem('failure-resume-verdict', logger);
+    const resume = new OneForOneStrategy(() => Directive.Resume);
+    let handled = 0;
+    class ResumedCrash extends Actor<string> {
+      override onReceive(): void { handled++; throw new TypeError('handler boom'); }
+    }
+    const ref = system.spawn(ResumedCrash, 'resumed', { supervisorStrategy: resume });
+    ref.tell('work');
+    await awaitCondition(() => handled === 1 && linesWith(logger, '/user/resumed').length === 1, {
+      label: 'the resumed failure was logged',
+    });
+    expect(linesWith(logger, '/user/resumed')[0]!.message).toEndWith('— resume');
+    expect(linesWith(logger, 'Restart threshold exceeded')).toEqual([]);
+  });
+});
+
+function linesWith(logger: CapturingLogger, fragment: string): CapturedLog[] {
+  return logger.records.filter((record) => record.message.includes(fragment));
+}
