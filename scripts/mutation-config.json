@@ -463,6 +463,12 @@
       "tests/integration/in-process/persistence/replicated/RemoteAppendChain.test.ts",
       "tests/unit/cluster/sharding/RememberEntitiesCompaction.test.ts",
       "tests/unit/testkit/FaultInjectingStores.test.ts"
+    ],
+    "src/io/broker/BrokerAcknowledgment.ts": [
+      "tests/integration/in-process/io/broker/AmqpActor.test.ts",
+      "tests/integration/in-process/io/broker/KafkaActor.test.ts",
+      "tests/integration/in-process/io/broker/MqttActor.test.ts",
+      "tests/unit/io/broker/BrokerAcknowledgmentTracker.test.ts"
     ]
   },
   "sets": {
