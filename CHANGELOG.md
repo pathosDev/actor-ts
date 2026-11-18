@@ -46,7 +46,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **Broker acknowledgment settings and a failure event** (#975, #976, #977):
   HOCON `acknowledgment` and `acknowledgment-timeout` under the kafka, amqp
-  and mqtt blocks, `withAcknowledgment(…)` on their builders, the
+  and mqtt blocks, `withAcknowledgment(…)` and
+  `withAcknowledgmentTimeoutMs(…)` on their builders, the
   `acknowledgeDelivery` / `negativelyAcknowledgeDelivery` helpers, and a
   `BrokerAcknowledgmentFailed` event for an acknowledgment the broker
   refused. The Kafka consumer logs its commit mode at start.
@@ -88,7 +89,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `JsonSerializer`, `CborSerializer` and `CborDecoder`. Also
   `EntityOptions.withTags`, `WireDecodeOptions`,
   `TcpTransportOptions.withWireDecode`, `ClusterClientOptions.withWireDecode`,
-  `FrameDecoder.refusedFrames` / `lastRefusals()`, and the key
+  and the key
   `actor-ts.serialization.wire.admitted-tags` (#967, #1303).
 - **`HttpServerBackend.setStreamFailureHandler`**: a hook that reports a
   streamed response which fails after its first chunk was sent (#979).
@@ -144,11 +145,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`canonicalOrderKey` in `actor-ts/util`** (#1841): the injective,
   deterministic total order behind the built-in last-writer-wins tie-breaks.
   Custom resolvers can use it to rank a full tie the same way.
-- **Every line v0.19.0 changed is now held by a test that fails when the line
-  is altered** (#1842–#1845). A mutation run over those lines
-  (`--since v0.18.0 --changed-lines`, 1 275 mutants) left 205 survivors that
-  no test in the repository detected. Each now has a test the runner has shown
-  to kill it, or a written proof that it is equivalent. Among the gaps: a lease
+- **The mutation gaps in v0.19.0's own changes are closed** (#1842–#1845). A
+  mutation run over every line v0.19.0 changed
+  (`--since v0.18.0 --changed-lines`, 1 275 mutants) left 368 survivors.
+  Triage found 205 of them to be real gaps that no test in the repository
+  detected. The rest were mapping artefacts, now fixed in
+  `scripts/mutation-config.json`, or equivalent mutants, recorded in the
+  triage. Each of the 205 now has a test the runner has shown to kill it, or a
+  written proof that it is equivalent. Among the gaps: a lease
   whose acquire rejects, the gossip clock reset (#1262), the HTTP/1.1 bounds on
   Bun's HTTP/2 listener (#1756), the replicated-ES drain on stop (#1732), the
   `eventsByTag` poll path every SQL and NoSQL backend takes (#957), and
@@ -491,9 +495,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     `maxRetries` never applied. A strategy whose `maxRetries` or
     `withinTimeRangeMs` changes starts a new tally.
 
-  *Migration:* where siblings used to exhaust one shared budget, so that a
-  parent stopped its whole fan-out after `maxRetries + 1` unrelated
-  failures, each child now restarts up to `maxRetries` times. Use
+  *Migration:* where siblings used to exhaust one shared budget, so that
+  after `maxRetries` restarts among them every further failing child was
+  stopped, each child now restarts up to `maxRetries` times. Use
   `AllForOneStrategy` for children that are coupled. A parent whose
   per-call strategy never actually stopped a child now stops it after
   `maxRetries` restarts in the window, as documented.
@@ -588,10 +592,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that follow the WebSocket spec answer pings on their own. Set
   `heartbeat-interval = 0` to keep the old behaviour.
 
-- **The cluster wire's frame decoder refuses input with its own
-  `FrameDecodeError`** instead of a bare `Error` (#1369). A refusal can now
-  be told apart from a defect inside the decoder by its type.
-
 - **BREAKING: an auto-down removal now leaves a tombstone, as every other
   removal does** (#1834). With the shipped `auto-down = on` and no strategy, a
   crashed node is removed once and for good. Before, with two or more
@@ -627,6 +627,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     shown plus a 10 s lead, held per (member, incarnation).
   - That learned offset rises at most 1 ms/s and by no more than one lead in
     total, so a long-silent sender banks no extra allowance.
+  - A sender whose clock steps forward by more than the lead has its gossip
+    refused until a minute of such refusals has passed with nothing from it
+    accepted. Its next frame is then judged like a first frame.
   - A first frame still meets only the skew budget.
 
   No wire change. What remains is written in the replay section of the
@@ -680,9 +683,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     and logged, and the connection stays up.
   - A v0.18 node is refused at the handshake with a `hello-refused` that
     names both versions. **v0.18 and v0.19 nodes cannot form one cluster.**
-    This is the fourth consecutive release that breaks rolling upgrade, and
-    the first one the handshake refuses by name instead of leaving it to be
-    discovered.
+    This is the fourth consecutive release that breaks rolling upgrade; as in
+    v0.18.0, the handshake refuses the mismatch by name.
   - `ClusterClient` reads the same key and now honours
     `actor-ts.serialization.read-constraints`.
 
