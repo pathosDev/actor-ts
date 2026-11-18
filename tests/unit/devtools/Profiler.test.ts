@@ -43,6 +43,8 @@ function fakeServer(): {
     registerMethod(method: DevToolsRequestMethod, handler: DevToolsRequestHandler): void {
       handlers.set(method, handler);
     },
+    // Connection lifetimes are `ProfilerSessionBounds.test.ts`'s subject.
+    registerConnectionCloseListener(): void {},
   } as unknown as DevToolsServer;
   return {
     server,

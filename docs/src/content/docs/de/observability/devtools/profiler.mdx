@@ -73,14 +73,25 @@ vorher dort war. Außerhalb einer Session kostet es einen Null-Check pro
 Nachricht.
 
 Es läuft immer nur eine Session: Zwei überlappende Profile sähen je einen
-Teil des Bildes und keines wäre richtig. Eine Session, die weiterläuft,
-weil ein Browser-Tab geschlossen wurde, wird beim Detachen von DevTools
-gestoppt — der Hook überlebt also nie das, was ihn angefordert hat.
+Teil des Bildes und keines wäre richtig. Eine Session endet mit der
+DevTools-Verbindung, die sie gestartet hat: Schließt du den Tab, kommt der
+Observer herunter, und ein Detach stoppt, was dann noch läuft — der Hook
+überlebt also nie das, was ihn angefordert hat.
 
-Sessions können nach einer gesetzten Dauer selbst stoppen (`durationMs`,
-gedeckelt bei zehn Minuten). Ein Profiler ist eine Messung, kein
-Monitoring-Agent — für laufende Zahlen nimm
-[Metriken](/de/observability/metrics/core-metrics/).
+Jede Session stoppt selbst. `durationMs` legt fest, wann, bis zu zehn
+Minuten, und ein Start ohne Angabe läuft die vollen zehn Minuten — nie
+unbegrenzt. Ein Profiler ist eine Messung, kein Monitoring-Agent — für
+laufende Zahlen nimm
+[Metriken](/de/observability/metrics/core-metrics/). Eine Session, die
+selbst gestoppt hat, behält ihr Profil, bis es abgeholt wird, das Panel
+zeigt es also trotzdem an.
+
+Eine Wallclock-Session hält höchstens **10 000** verschiedene Paare aus
+Actor-Pfad und Nachrichtentyp. Unter Sharding nennt ein Actor-Pfad die
+Entity, die Zahl der Paare wächst also mit den Entities, die ein Knoten
+bedient; jenseits der Grenze kommt kein neues Paar hinzu, schon gehaltene
+Paare zählen weiter, und `droppedSamples` im Ergebnis sagt, wie viele
+Nachrichten außerhalb des Profils lagen.
 
 ## Abschalten
 

@@ -262,6 +262,29 @@
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
     ],
+    "src/devtools/DevToolsServer.ts": [
+      "tests/unit/devtools/ConfigMethods.test.ts",
+      "tests/unit/devtools/DeadLetterMethods.test.ts",
+      "tests/unit/devtools/DevTools.test.ts",
+      "tests/unit/devtools/DevToolsServerVersion.test.ts",
+      "tests/unit/devtools/EventStreamTap.test.ts",
+      "tests/unit/devtools/ExplainMethods.test.ts",
+      "tests/unit/devtools/HubInFlightCap.test.ts",
+      "tests/unit/devtools/OriginGuard.test.ts",
+      "tests/unit/devtools/Profiler.test.ts",
+      "tests/unit/devtools/ProfilerSessionBounds.test.ts",
+      "tests/unit/devtools/SendMethods.test.ts",
+      "tests/unit/devtools/SpanTap.test.ts",
+      "tests/unit/devtools/TimeTravel.test.ts"
+    ],
+    "src/devtools/internal/DevToolsHubActor.ts": [
+      "tests/unit/devtools/HubInFlightCap.test.ts",
+      "tests/unit/devtools/ProfilerSessionBounds.test.ts"
+    ],
+    "src/devtools/taps/ProfilerTap.ts": [
+      "tests/unit/devtools/Profiler.test.ts",
+      "tests/unit/devtools/ProfilerSessionBounds.test.ts"
+    ],
     "src/http/backend/ExpressBackend.ts": [
       "tests/integration/in-process/http/ExpressHttp.test.ts",
       "tests/integration/in-process/http/websocket/BackendTransportFrameCap.test.ts",
