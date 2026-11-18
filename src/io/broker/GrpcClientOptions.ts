@@ -41,6 +41,21 @@ import type { GrpcCredentials } from './GrpcClientActor.js';
  */
 export type GrpcChannelOptions = Readonly<Record<string, string | number>>;
 
+/**
+ * Built-in default of {@link GrpcClientOptionsType.streamIdleTimeoutMs}: five
+ * minutes.
+ *
+ * Long enough for a normal quiet stream.  A server stream that pushes on
+ * change rather than on a clock can sit idle for minutes, and the services
+ * that stay quiet longer than that usually send a heartbeat well inside it —
+ * thirty to sixty seconds is the common cadence.  It is also the figure the
+ * gRPC page suggests for `grpc.max_connection_idle_ms` on the server, so a
+ * stream outlives no connection that same advice would already have retired.
+ * Short enough to matter: a stream whose peer hung is reaped in minutes, not
+ * held for the life of the actor (#1222).
+ */
+export const DEFAULT_GRPC_STREAM_IDLE_TIMEOUT_MS = 300_000;
+
 export interface GrpcClientOptionsType extends BrokerCommonOptionsType {
   /** Path to the `.proto` file (or array of paths). */
   readonly protoPath?: string | ReadonlyArray<string>;
@@ -66,11 +81,31 @@ export interface GrpcClientOptionsType extends BrokerCommonOptionsType {
    * Not applied to the three streaming call classes: a gRPC deadline
    * bounds the whole RPC, so one value cannot both fail a unary call
    * promptly and let a long-lived stream run.  Bounding a stream whose
-   * peer has gone quiet is a channel-level concern — see
-   * {@link GrpcClientOptionsType.channelOptions} for the keepalive knobs
-   * that cover it.
+   * peer has gone quiet is {@link GrpcClientOptionsType.streamIdleTimeoutMs}'s
+   * job, and a peer that has died outright is the keepalive knobs' in
+   * {@link GrpcClientOptionsType.channelOptions}.
    */
   readonly deadlineMs?: number;
+  /**
+   * Cancel a server-stream, client-stream or bidi call after this many ms in
+   * which nothing crossed it.  Default
+   * {@link DEFAULT_GRPC_STREAM_IDLE_TIMEOUT_MS} (five minutes); `0` turns it
+   * off.  HOCON `stream-idle-timeout`.
+   *
+   * Not a deadline: it measures silence, not age, so a stream that keeps
+   * talking lives as long as it likes.  Every frame in either direction
+   * pushes it back — a chunk from the server, and a `clientStreamSend` /
+   * `bidiSend` from the caller, because a client stream receives nothing
+   * until its single reply and would otherwise be reaped while it was busy
+   * writing.  A half-closed client stream stays armed until its reply.
+   *
+   * On expiry the call is cancelled, its registry entry dropped, and the
+   * target receives one terminal frame naming the timeout — `stream-error`
+   * for a server or bidi stream, `rpc-error` for a client stream.  Keepalive
+   * in `channelOptions` covers a different failure: a peer that is gone,
+   * where this covers a peer that is there and has stopped answering (#1222).
+   */
+  readonly streamIdleTimeoutMs?: number;
   /**
    * grpc-js channel options, handed to the service-client constructor
    * verbatim — see {@link GrpcChannelOptions}, which is also where the
@@ -119,6 +154,15 @@ export class GrpcClientOptionsBuilder extends BrokerOptionsBuilder<GrpcClientOpt
   withChannelOptions(channelOptions: GrpcChannelOptions): this {
     return this.set('channelOptions', channelOptions);
   }
+
+  /**
+   * Cancel a stream after this many ms of silence in both directions.
+   * Default five minutes; `0` turns it off — see
+   * {@link GrpcClientOptionsType.streamIdleTimeoutMs}.
+   */
+  withStreamIdleTimeoutMs(ms: number): this {
+    return this.set('streamIdleTimeoutMs', ms);
+  }
 }
 
 /** Validates resolved {@link GrpcClientOptionsType} settings. */
@@ -129,6 +173,7 @@ export class GrpcClientOptionsValidator extends BrokerOptionsValidator<GrpcClien
   protected rules(_s: Partial<GrpcClientOptionsType>): void {
     this.commonRules(_s);
     this.positiveNumber('deadlineMs');
+    this.nonNegativeNumber('streamIdleTimeoutMs');
   }
 }
 

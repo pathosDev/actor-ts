@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
@@ -7,7 +7,13 @@ import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/o
 import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import { DurableStateConcurrencyError } from '../../../../../src/persistence/DurableStateStore.js';
-import { OBJECT_STORAGE_DURABLE_STATE_NAMESPACE } from '../../../../../src/persistence/Constants.js';
+import {
+  OBJECT_STORAGE_DURABLE_STATE_LEAF,
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+} from '../../../../../src/persistence/Constants.js';
+import { decodeBody, encodeBody } from '../../../../../src/persistence/object-storage/BodyCodec.js';
+import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
+import { encodePayload } from '../../../../../src/persistence/storage/PayloadCodec.js';
 
 let dir: string;
 let backend: FilesystemObjectStorageBackend;
@@ -165,5 +171,53 @@ describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
     await store.upsert('small',       0, { x: 'tiny' });
     expect(seen.get(`${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}big-payload/state.json`)).toBe('zstd');
     expect(seen.get(`${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}small/state.json`)).toBe('gzip');
+  });
+});
+
+/* ========== #1417 — the body names its entity, and load holds it to that ========== */
+
+describe('ObjectStorageDurableStateStore — the body carries its persistenceId (#1417)', () => {
+  /** The on-disk object of a durable-state record. */
+  const objectFileFor = (persistenceId: string): string =>
+    join(dir, OBJECT_STORAGE_DURABLE_STATE_NAMESPACE, persistenceId, OBJECT_STORAGE_DURABLE_STATE_LEAF);
+
+  /** A plaintext body put down the way a writer other than this store would. */
+  async function plantBody(persistenceId: string, payload: Record<string, unknown>): Promise<void> {
+    const body = await encodeBody(new TextEncoder().encode(encodePayload(payload)), { compression: 'none' });
+    await backend.put(
+      `${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}${persistenceId}/${OBJECT_STORAGE_DURABLE_STATE_LEAF}`,
+      body,
+      { contentType: 'application/json' },
+    );
+  }
+
+  test('upsert writes the persistenceId into the body', async () => {
+    await store.upsert('alice', 0, { balance: 1 });
+    const decoded = await decodeBody(new Uint8Array(readFileSync(objectFileFor('alice'))));
+    const payload = JSON.parse(new TextDecoder().decode(decoded.payload)) as Record<string, unknown>;
+    expect(payload.persistenceId).toBe('alice');
+  });
+
+  test('a record copied onto another entity\'s key is refused, with no authenticator configured', async () => {
+    await store.upsert('alice', 0, { balance: 1_000_000 });
+    await store.upsert('bob', 0, { balance: 1 });
+    writeFileSync(objectFileFor('bob'), readFileSync(objectFileFor('alice')));
+    store.forgetEtagForTest('bob');
+
+    let caught: unknown = null;
+    try { await store.load('bob'); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(JournalError);
+    expect((caught as Error).message).toMatch(/does not name the entity it was read for/);
+  });
+
+  test('a body with no persistenceId, the shape every earlier version wrote, is refused', async () => {
+    await plantBody('carol', { revision: 3, state: { balance: 5 }, timestamp: 1 });
+    await expect(store.load('carol')).rejects.toThrow(/does not name the entity it was read for/);
+  });
+
+  test('a body naming its own entity loads as that entity', async () => {
+    await plantBody('dave', { persistenceId: 'dave', revision: 3, state: { balance: 5 }, timestamp: 1 });
+    const loaded = (await store.load<{ balance: number }>('dave')).toNullable();
+    expect(loaded).toEqual({ persistenceId: 'dave', revision: 3, state: { balance: 5 }, timestamp: 1 });
   });
 });

@@ -928,12 +928,21 @@ const isHiddenPath = (path: string): boolean =>
  * command text, so an install hidden behind a shell variable, a `curl | sh`
  * or a composite action is not an install as far as it is concerned. A
  * novel spelling is a gap to close here, not a licence to add the step.
+ *
+ * Python's installers are here too (#1623). graphify.yml held `contents:
+ * write` while it ran `python3 -m pip install` and then the installed tool,
+ * and the write-access assertion passed over that job by vocabulary rather
+ * than by verification: the pattern only knew JavaScript package managers.
+ * `pip install` also covers `python3 -m pip install`; `uvx` is `uv tool run`,
+ * the Python `npx`.
  */
 const INSTALL_COMMAND = new RegExp(
   '\\b(bun[ \\t]+(?:install|add|i|x)|bunx'
   + '|npm[ \\t]+(?:ci|install|exec|add|i)|npx'
   + '|pnpm[ \\t]+(?:install|add|dlx|i)'
-  + '|yarn[ \\t]+(?:install|add|dlx))\\b',
+  + '|yarn[ \\t]+(?:install|add|dlx)'
+  + '|pip3?[ \\t]+install|pipx'
+  + '|uv[ \\t]+(?:pip[ \\t]+install|tool[ \\t]+(?:install|run)|add|sync)|uvx)\\b',
 );
 
 /**
@@ -1948,7 +1957,7 @@ describe('workflow hygiene', () => {
         .sort(),
     ).toEqual([
       'docs.yml#deploy',
-      'graphify.yml#rebuild',
+      'graphify.yml#push',
       'publish.yml#attach-sbom',
       'publish.yml#publish',
       'test.yml#badge',
@@ -2165,6 +2174,80 @@ describe('workflow hygiene', () => {
       'A bare `yarn` is now matched, so AGENTS.md naming it as one that gets past '
       + 'this guard is stale. Move the sentence with the pattern.',
     ).toBe(false);
+  });
+
+  /**
+   * #1623 — pinned here rather than through the real files, because once
+   * graphify.yml was split no privileged job runs pip any more, and the
+   * `test.each` above would stay green if the Python half of the pattern
+   * were deleted again.
+   */
+  test('the Python installers are installs too', () => {
+    for (const command of [
+      'python3 -m pip install --require-hashes -r requirements.txt',
+      'pip install graphifyy',
+      'pip3 install graphifyy',
+      'pipx run graphifyy',
+      'uv pip install graphifyy',
+      'uv tool install graphifyy',
+      'uv tool run graphify',
+      'uvx graphify',
+      'uv sync --frozen',
+      'uv add graphifyy',
+    ]) {
+      expect(INSTALL_COMMAND.test(`- run: ${command}`), command).toBe(true);
+    }
+    // And the neighbours that only look like one.
+    for (const command of ['pip list', 'pip freeze', 'uv --version', 'graphify update .']) {
+      expect(INSTALL_COMMAND.test(`- run: ${command}`), command).toBe(false);
+    }
+
+    const job: WorkflowJob = {
+      workflow: 'fixture.yml',
+      name: 'rebuild',
+      lines: [
+        '    permissions:',
+        '      contents: write',
+        '    steps:',
+        "      - run: python3 -m pip install --disable-pip-version-check 'graphifyy==0.9.46'",
+      ],
+    };
+    expect(privilegedWriteScopesOf(job)).toEqual(['contents']);
+    expect(thirdPartyCodeRunBy(job)).toBe("- run: python3 -m pip install --disable-pip-version-check 'graphifyy==0.9.46'");
+  });
+
+  /**
+   * #1623, the other half — pip has no lockfile, so the counterpart of
+   * `--frozen-lockfile` is a hashed requirements file. Without
+   * `--require-hashes` every transitive dependency resolves afresh on each
+   * run; without `--only-binary :all:` an sdist runs its build code at
+   * install time. Read across every workflow, so a new pip step anywhere has
+   * to carry both, not only the one that prompted this.
+   */
+  test('every pip install is hash-pinned and wheel-only', () => {
+    const installs = workflows.flatMap((file) => {
+      // A folded `run: >-` spreads one command over several lines; read each
+      // step's command as one string.
+      const commands: string[] = [];
+      let current: string | undefined;
+      for (const line of file.lines) {
+        if (/^\s+(?:-\s+)?run:/.test(line) || /^\s+-\s/.test(line) || /^\s+\w[\w-]*:/.test(line)) {
+          if (current !== undefined) commands.push(current);
+          current = /^\s+(?:-\s+)?run:/.test(line) ? line : undefined;
+        } else if (current !== undefined) {
+          current += ` ${line.trim()}`;
+        }
+      }
+      if (current !== undefined) commands.push(current);
+      return commands
+        .filter((command) => /\bpip3?[ \t]+install\b/.test(command))
+        .map((command) => ({ workflow: file.name, command }));
+    });
+    expect(installs.map(({ workflow }) => workflow), 'the pip install this guards is still there').toContain('graphify.yml');
+    for (const { workflow, command } of installs) {
+      expect(command, `${workflow}: pip install without --require-hashes`).toContain('--require-hashes');
+      expect(command, `${workflow}: pip install without --only-binary`).toMatch(/--only-binary[ =]'?:all:'?/);
+    }
   });
 
   test('a short spelling reached through a bun run script is seen too', () => {

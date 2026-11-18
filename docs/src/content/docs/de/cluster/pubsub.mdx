@@ -304,13 +304,15 @@ class Subscriber extends Actor<...> {
 
 Der Mediator hält drei Dinge, die ein Subscriber — oder der Gossip
 eines Peers — sonst unbegrenzt wachsen lassen könnte, und der
-Publish-Fan-out läuft über alle drei. Jedes hat eine Obergrenze:
+Publish-Fan-out läuft über alle drei. Jedes hat eine Obergrenze, und
+eine vierte begrenzt den Anteil eines Peers:
 
 | Option | HOCON-Leaf | Default | Begrenzt |
 | --- | --- | --- | --- |
 | `maxSubscribersPerTopic` | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Lokale Subscriber auf einem Topic |
-| `maxTopics` | `cluster.pub-sub.max-topics` | `10000` | Verschiedene Topics auf diesem Mediator |
+| `maxTopics` | `cluster.pub-sub.max-topics` | `10000` | Verschiedene Topics auf diesem Mediator, pro Pool (siehe unten) |
 | `maxRemoteNodesPerTopic` | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Peers, die Subscriber für ein Topic beanspruchen |
+| `maxTopicsClaimedPerSender` | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` | Topics, die ein Peer beanspruchen darf |
 
 ```ts
 const distributedPubSubOptions = DistributedPubSubOptions.create()
@@ -337,6 +339,19 @@ hat früher auf jedem empfangenden Node 100 000 Einträge angelegt —
 ganz ohne ein lokales `Subscribe`. Ansprüche über einer Grenze
 werden verworfen und geloggt; die Verbindung bleibt bestehen, denn
 ein lauter Peer soll keine gesunde Verbindung kosten.
+
+`maxTopics` zählt zwei Pools getrennt: die Topics mit lokalem
+Subscriber, die ein lokales `Subscribe` verbraucht, und die Topics,
+die nur Peers beanspruchen, die Gossip verbraucht. Die Ansprüche
+eines Peers lehnen also nie ein lokales `Subscribe` ab (#1074) —
+frei abonnierbar wird ein beanspruchtes Topic dadurch aber auch
+nicht, sein erster lokaler Subscriber belegt einen lokalen Platz.
+Innerhalb des Peer-Pools hält jeder Absender höchstens
+`maxTopicsClaimedPerSender` Ansprüche, damit der erste Peer, der ihn
+füllt, ihn den anderen nicht nehmen kann. Erhöhe diese Grenze, wenn
+ein Node mehr Topics abonniert: Ansprüche darüber erreichen die
+anderen Nodes nie, und deren Publishes auf diese Topics verfehlen
+ihn.
 
 ## Publishes, die niemanden erreichen
 

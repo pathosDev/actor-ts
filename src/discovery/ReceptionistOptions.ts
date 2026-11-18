@@ -8,6 +8,13 @@ import type { Cluster } from '../cluster/Cluster.js';
 export const DEFAULT_MAX_SUBSCRIBERS_PER_KEY = 1_000;
 /** Built-in default for {@link ReceptionistOptionsType.maxSubscriptionsTotal}. */
 export const DEFAULT_MAX_SUBSCRIPTIONS_TOTAL = 10_000;
+/**
+ * Built-in default for {@link ReceptionistOptionsType.maxRegistrationsClaimedPerSender}
+ * — the same order as {@link DEFAULT_MAX_SUBSCRIPTIONS_TOTAL}: registrations
+ * are per actor, so a node hosting a large worker pool registers far more of
+ * them than the mediator's per-sender topic quota would allow.
+ */
+export const DEFAULT_MAX_REGISTRATIONS_CLAIMED_PER_SENDER = 10_000;
 
 /** Plain options-object shape accepted by a {@link Receptionist}. */
 export type ReceptionistOptionsType = {
@@ -28,6 +35,18 @@ export type ReceptionistOptionsType = {
    * relation and the key map without limit (#1200).
    */
   readonly maxSubscriptionsTotal?: number;
+  /**
+   * Most registrations one gossip sender may claim (#1073): the actor paths
+   * it names, with a key that names none counted as one.  A claim past it is
+   * dropped whole and logged, with the sender named, not refused on the wire.
+   *
+   * A quota per sender rather than a cap on keys, because a cap shared by
+   * every peer is denied to all of them by the first that fills it (#1074).
+   * It bounds the key map and the path lists together.  Raise it on a
+   * deployment where one node registers more actors than this, or the ones
+   * past it are never discovered elsewhere.
+   */
+  readonly maxRegistrationsClaimedPerSender?: number;
 };
 
 /**
@@ -67,6 +86,11 @@ export class ReceptionistOptionsBuilder extends OptionsBuilder<ReceptionistOptio
   withMaxSubscriptionsTotal(maxSubscriptionsTotal: number): this {
     return this.set('maxSubscriptionsTotal', maxSubscriptionsTotal);
   }
+
+  /** Cap on the registrations one gossip sender may claim. */
+  withMaxRegistrationsClaimedPerSender(maxRegistrationsClaimedPerSender: number): this {
+    return this.set('maxRegistrationsClaimedPerSender', maxRegistrationsClaimedPerSender);
+  }
 }
 
 /** Validates resolved {@link ReceptionistOptionsType} settings. */
@@ -78,6 +102,7 @@ export class ReceptionistOptionsValidator extends OptionsValidator<ReceptionistO
     this.positiveNumber('gossipIntervalMs');
     this.positiveInt('maxSubscribersPerKey');
     this.positiveInt('maxSubscriptionsTotal');
+    this.positiveInt('maxRegistrationsClaimedPerSender');
   }
 }
 
@@ -99,6 +124,9 @@ export function readReceptionistOptionsFromConfig(config: Config): Partial<Recep
   }
   if (config.hasPath(keys.maxSubscriptionsTotal)) {
     out.maxSubscriptionsTotal = config.getInt(keys.maxSubscriptionsTotal);
+  }
+  if (config.hasPath(keys.maxRegistrationsClaimedPerSender)) {
+    out.maxRegistrationsClaimedPerSender = config.getInt(keys.maxRegistrationsClaimedPerSender);
   }
   return out;
 }

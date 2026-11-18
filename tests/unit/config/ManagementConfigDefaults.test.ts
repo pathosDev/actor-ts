@@ -6,8 +6,11 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import {
   DEFAULT_AUTH_PROTECT_HEALTH,
   DEFAULT_ENABLE_DOWN_ENDPOINT,
+  DEFAULT_ENABLE_LEADER_ENDPOINT,
   DEFAULT_ENABLE_LEAVE_ENDPOINT,
+  DEFAULT_ENABLE_MEMBERS_ENDPOINT,
   DEFAULT_ENABLE_METRICS_ENDPOINT,
+  DEFAULT_ENABLE_SHARDS_ENDPOINT,
   DEFAULT_LIVENESS_PATH,
   DEFAULT_READINESS_PATH,
   ManagementRoutesOptionsValidator,
@@ -51,6 +54,9 @@ describe('readManagementRoutesOptionsFromConfig', () => {
         enable-leave-endpoint   = true
         enable-down-endpoint    = true
         enable-metrics-endpoint = true
+        enable-members-endpoint = true
+        enable-leader-endpoint  = true
+        enable-shards-endpoint  = true
         auth-protect-health     = true
         liveness-path  = "alive"
         readiness-path = "serving"
@@ -61,6 +67,9 @@ describe('readManagementRoutesOptionsFromConfig', () => {
       enableLeaveEndpoint: true,
       enableDownEndpoint: true,
       enableMetricsEndpoint: true,
+      enableMembersEndpoint: true,
+      enableLeaderEndpoint: true,
+      enableShardsEndpoint: true,
       authProtectHealth: true,
       livenessPath: 'alive',
       readinessPath: 'serving',
@@ -102,6 +111,9 @@ describe('readManagementRoutesOptionsFromConfig', () => {
       enableLeaveEndpoint: DEFAULT_ENABLE_LEAVE_ENDPOINT,
       enableDownEndpoint: DEFAULT_ENABLE_DOWN_ENDPOINT,
       enableMetricsEndpoint: DEFAULT_ENABLE_METRICS_ENDPOINT,
+      enableMembersEndpoint: DEFAULT_ENABLE_MEMBERS_ENDPOINT,
+      enableLeaderEndpoint: DEFAULT_ENABLE_LEADER_ENDPOINT,
+      enableShardsEndpoint: DEFAULT_ENABLE_SHARDS_ENDPOINT,
       authProtectHealth: DEFAULT_AUTH_PROTECT_HEALTH,
       livenessPath: DEFAULT_LIVENESS_PATH,
       readinessPath: DEFAULT_READINESS_PATH,
@@ -186,6 +198,9 @@ describe('ConfigKeys.management', () => {
       enableLeaveEndpoint: 'actor-ts.management.enable-leave-endpoint',
       enableDownEndpoint: 'actor-ts.management.enable-down-endpoint',
       enableMetricsEndpoint: 'actor-ts.management.enable-metrics-endpoint',
+      enableMembersEndpoint: 'actor-ts.management.enable-members-endpoint',
+      enableLeaderEndpoint: 'actor-ts.management.enable-leader-endpoint',
+      enableShardsEndpoint: 'actor-ts.management.enable-shards-endpoint',
       authProtectHealth: 'actor-ts.management.auth-protect-health',
       livenessPath: 'actor-ts.management.liveness-path',
       readinessPath: 'actor-ts.management.readiness-path',

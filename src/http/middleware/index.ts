@@ -43,7 +43,8 @@ export {
 export type { CsrfOptionsType, CsrfCookieOptions, OriginScheme, SameOriginOptionsType } from './CsrfOptions.js';
 
 // Request id, HTTP Basic auth, request timeout.
-export { requestId, requestIdOf } from './RequestId.js';
+export { requestId, requestIdOf, requestIdOfError } from './RequestId.js';
+export type { RequestIdCorrelation } from './RequestId.js';
 export { DEFAULT_REQUEST_ID_HEADER } from './RequestIdOptions.js';
 export { RequestIdOptions, RequestIdOptionsBuilder } from './RequestIdOptions.js';
 export type { RequestIdOptionsType } from './RequestIdOptions.js';

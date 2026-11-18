@@ -58,6 +58,7 @@ actor-ts {
     weakly-up-after     = 0s      # 0 = opt-in only
     max-members         = 1000
     max-tombstones      = 10000
+    gossip-frames-per-second-per-sender = 50 # 0 = off
     tombstone {
       time-to-live   = 24h
       prune-interval = 5m
@@ -88,12 +89,14 @@ actor-ts {
       max-subscribers-per-topic  = 10000
       max-topics                 = 10000
       max-remote-nodes-per-topic = 1000
+      max-topics-claimed-per-sender = 1024
       send-to-dead-letters-when-no-subscribers = on
     }
     receptionist {
       gossip-interval         = 1s
       max-subscribers-per-key = 1000
       max-subscriptions-total   = 10000
+      max-registrations-claimed-per-sender = 10000
     }
   }
 
@@ -431,6 +434,7 @@ man daraus erneut zustellt.
 | `cluster.shutdown-after-unsuccessful-join` | `0s` | Wie lange ein Node `joining` oder `weakly-up` bleiben darf, bevor er den Join aufgibt.  Kann ihn zur Frist nichts mehr befördern, protokolliert er eine Warnung, verlässt den Cluster und führt die Coordinated-Shutdown-Pipeline mit `ClusterJoinUnsuccessfulReason` aus; andernfalls fragt er alle `seed-retry-interval` erneut.  `0` setzt keine Frist — siehe [Joining und Seeds](/de/cluster/joining-and-seeds/). |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
+| `cluster.gossip-frames-per-second-per-sender` | `50` | Gossip-Frames, die ein Absender diesem Node pro Sekunde zustellen darf; ein Frame über dem Budget wird ganz verworfen und unter `cluster_gossip_records_refused_total{reason="rate-limit"}` gezählt.  Es muss über der echten Rate eines Absenders bleiben: `1000 / gossip-interval-ms` mal einem Sicherheitsfaktor von mindestens 2.  Der Default deckt Intervalle bis etwa 40 ms ab.  `0` schaltet das Budget ab. |
 | `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
 | `cluster.role.<role>.minimum-members-before-up` | *(nicht gesetzt)* | Schwelle pro Rolle, mit der obigen als UND verknüpft.  In `reference.conf` nur als Kommentar, da Rollennamen zum Deployment gehören. |
 | `cluster.run-coordinated-shutdown-when-down` | `on` | Was ein Node tut, sobald ihn seine **eigene** Downing-Entscheidung entfernt.  `on` verlässt die Mitgliedschaft und führt danach die Coordinated-Shutdown-Pipeline mit `ClusterDowningReason` aus, die das Actor-System beendet; `off` verlässt sie und lässt seine Actors weiterlaufen.  Siehe unten. |
@@ -896,8 +900,9 @@ eine Konstante.
 | --- | --- | --- |
 | `cluster.pub-sub.gossip-interval` | `1s` | Wie oft ein Mediator seine Topic-Menge an einen zufälligen Peer schickt. |
 | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Obergrenze für lokale Subscriber eines Topics.  Ein `Subscribe` darüber wird mit `SubscribeRejected` beantwortet. |
-| `cluster.pub-sub.max-topics` | `10000` | Obergrenze für verschiedene Topics eines Mediators — gilt für gegossipte Topic-Ansprüche genauso wie für lokale Subscribes. |
+| `cluster.pub-sub.max-topics` | `10000` | Obergrenze für verschiedene Topics eines Mediators, in zwei getrennten Pools: Topics mit lokalem Subscriber (ein lokales `Subscribe` darüber wird abgelehnt) und Topics, die nur Peers beanspruchen (ein gegossipter Anspruch darüber wird verworfen).  Die Ansprüche eines Peers verbrauchen nie den lokalen Pool. |
 | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Obergrenze für Peers, die Subscriber für ein Topic beanspruchen dürfen. |
+| `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` | Obergrenze für Topics, die ein Gossip-Absender beanspruchen darf; Ansprüche darüber werden verworfen und mit dem Absender protokolliert.  Erhöhen, wenn ein Node mehr Topics abonniert. |
 | `cluster.pub-sub.send-to-dead-letters-when-no-subscribers` | `on` | Ein Publish, das niemanden erreicht hat, geht an `system.deadLetters`, statt verworfen zu werden. |
 
 Die drei Obergrenzen begrenzen, was ein Mediator überhaupt halten kann,
@@ -915,6 +920,7 @@ angelegt — ganz ohne lokales `Subscribe`.  Siehe
 | `cluster.receptionist.gossip-interval` | `1s` | Wie oft der Receptionist seine lokalen Registrierungen gossipt. |
 | `cluster.receptionist.max-subscribers-per-key` | `1000` | Obergrenze für Subscriber eines Service Keys.  Ein `Subscribe` darüber wird mit `ReceptionistSubscribeRejected` beantwortet. |
 | `cluster.receptionist.max-subscriptions-total` | `10000` | Obergrenze für Key/Subscriber-Paare über alle Keys dieses Nodes — ein Subscriber mit drei Keys zählt dreifach. |
+| `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` | Obergrenze für Registrierungen, die ein Gossip-Absender beanspruchen darf — die Actor-Pfade, die er nennt, ein Key ohne Pfad zählt als einer.  Ein Anspruch darüber wird verworfen und mit dem Absender protokolliert. |
 
 Beide Blöcke liegen unter dem, was dem `start(...)` der Extension
 übergeben wurde — ein explizites `withMaxTopics(…)` gewinnt also
@@ -2055,6 +2061,7 @@ beim ersten Zugriff auf die `HttpExtension`.
 | `reliable-delivery.consumer.max-producers` | `1024` | Für wie viele Producer der Consumer gleichzeitig Deduplizierungs-Zustand hält.  An der Grenze wird der am längsten unbenutzte Eintrag verdrängt.  `0` = unbegrenzt. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | Wie lange der Deduplizierungs-Eintrag eines Producers ohne Zustellung von ihm überlebt; der Sweep läuft in genau diesem Intervall.  `0` schaltet den Sweep ab. |
 | `reliable-delivery.consumer.max-out-of-order` | `1024` | Wie viele Sequenzen der Consumer für einen Producer oberhalb einer offenen Lücke höchstens behält.  An der Grenze wird ein Delivery abgewiesen — kein Handler-Aufruf, keine Bestätigung —, und dieser Producer steht, bis sich die Lücke schließt.  Halte den Wert über der `window-size` jedes Producers.  `0` = unbegrenzt. |
+| `reliable-delivery.consumer.max-incarnations-per-producer` | `4` | Für wie viele Inkarnationen einer `producerId` der Consumer höchstens ein Deduplizierungs-Fenster hält, die aktuelle eingeschlossen.  Eine neue Inkarnation wird neben der aktuellen gehalten und erst befördert, wenn die aktuelle `producer-idle-time-to-live` lang still war; über der Grenze wird ein Delivery unter einer weiteren Inkarnation abgewiesen — ein Dead Letter, kein Handler-Aufruf, keine Bestätigung.  `0` = unbegrenzt. |
 
 Beide Blöcke liegen unter dem, was `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` übergeben bekommt — ein explizites
@@ -2065,7 +2072,7 @@ danach injiziert —, deshalb behält ein Controller, den du selbst konstruierst
 und an `system.spawn` übergibst, seine eingebauten Defaults und sieht diesen
 Block nie.
 
-`0` ist die Schreibweise, mit der alle drei Consumer-Grenzen das `Infinity`
+`0` ist die Schreibweise, mit der alle vier Consumer-Grenzen das `Infinity`
 ihrer Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt
 nicht schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
 Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
@@ -2076,7 +2083,9 @@ auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0` bei
 Consumer behält: ein Eintrag je verschiedener Id, nie freigegeben.  `0` bei
 `max-out-of-order` tut dasselbe innerhalb eines Eintrags: ein Sender, der eine
 Sequenz zurückhält und die folgenden weiter schickt, lässt die Menge dieses
-Producers wachsen, solange er weitermacht.
+Producers wachsen, solange er weitermacht.  `0` bei
+`max-incarnations-per-producer` lässt einen Sender für jede erfundene
+Inkarnation eines Producers ein eigenes Deduplizierungs-Fenster anlegen.
 
 `max-out-of-order` ist eine Untergrenze ebenso wie eine Obergrenze.  Ein
 Producer hat `window-size` Sends unterwegs, wenn sich eine Lücke öffnet — eine
@@ -2155,6 +2164,9 @@ die Konfiguration lesen ließe — diese Naht ist Issue #967.
 | `management.enable-leave-endpoint` | `false` | `POST /cluster/leave` ausliefern ([HTTP-Endpunkte](/de/observability/management/http-endpoints/)). |
 | `management.enable-down-endpoint` | `false` | `POST /cluster/down` ausliefern — operator-initiiertes Force-Down eines Peers. |
 | `management.enable-metrics-endpoint` | `false` | `GET /metrics` im Prometheus-Textformat ausliefern. |
+| `management.enable-members-endpoint` | `false` | `GET /cluster/members` ausliefern — interne Adresse, Status und Rollen jedes Members. |
+| `management.enable-leader-endpoint` | `false` | `GET /cluster/leader` ausliefern. |
+| `management.enable-shards-endpoint` | `false` | `GET /cluster/shards?type=…` ausliefern — die Shard-zu-Region-Zuordnung eines Sharding-Typs. |
 | `management.auth-protect-health` | `false` | Die `auth`-Middleware zusätzlich über `/health` und `/ready` legen, nicht nur über `/cluster/*`. |
 | `management.liveness-path` | `"health"` | Einzelnes Pfadsegment, unter dem die Liveness-Probe antwortet. |
 | `management.readiness-path` | `"ready"` | Einzelnes Pfadsegment, unter dem die Readiness-Probe antwortet. |
@@ -2195,15 +2207,16 @@ zurückgegeben hat.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `metrics.max-series-per-family` | `10000` | Wie viele verschiedene Label-Tupel eine Metrik-Familie anlegen darf; jedes weitere Tupel wird in eine einzige `__overflow__`-Serie gefaltet ([die Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)).  Gilt für die In-Process-Registry und die prom-client-Bridge gleichermaßen.  `0` schaltet die Grenze ab. |
+| `metrics.max-families` | `1000` | Wie viele Metrik-Familien eine Registry halten darf.  Eine Factory, die danach nach einem weiteren Namen gefragt wird, gibt ein No-op-Instrument zurück, das nichts aufzeichnet, und die Registry warnt einmal; sie wirft nie, und eine vor der Grenze angelegte Familie zeichnet weiter auf ([die Familiengrenze](/de/observability/metrics/core-metrics/#die-familiengrenze)).  Gilt für die In-Process-Registry und die prom-client-Bridge gleichermaßen.  `0` schaltet die Grenze ab. |
 | `metrics.name-prefix` | `""` | Präfix, das die [prom-client-Bridge](/de/observability/metrics/prom-client-adapter/) jedem Metriknamen voranstellt, den sie registriert, z. B. `"actor_ts_"`.  Nur die Bridge. |
 
 Gelesen werden diese Keys, wenn `MetricsExtension` eine Registry baut, und zwar
 unter den Optionen des Aufrufs, der sie baut — die üblichen drei Ebenen: ein im
 Code gesetzter Wert gewinnt, eine Datei füllt, was der Code offen gelassen hat,
 und die eingebauten Defaults sind der Boden.  `enable(options)` nimmt die
-Grenze für die In-Process-Registry, `enablePromClient(options)` nimmt beide
-Leaves für die Bridge.  Das freie `promClientRegistry(options)` liest keinen
-von beiden: Es bekommt kein `ActorSystem`, die Bridge, die es zurückgibt,
+beiden Grenzen für die In-Process-Registry, `enablePromClient(options)` nimmt
+alle Leaves für die Bridge.  Das freie `promClientRegistry(options)` liest
+keinen davon: Es bekommt kein `ActorSystem`, die Bridge, die es zurückgibt,
 verhält sich mit `useRegistry` installiert also genau so, wie ihre Optionen
 sagen.
 

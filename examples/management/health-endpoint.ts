@@ -3,6 +3,10 @@
  * Kubernetes probes map directly onto the endpoints — point
  * livenessProbe.httpGet.path at /health and readinessProbe at /ready.
  *
+ * `/cluster/members` is off by default — it discloses every member's
+ * internal address — so it is switched on here explicitly, and behind an
+ * allowlist that admits loopback only.
+ *
  *   bun run examples/management/health-endpoint.ts
  *   curl http://127.0.0.1:8558/cluster/members
  *   curl http://127.0.0.1:8558/health
@@ -17,9 +21,11 @@ import {
   InMemoryTransport,
   NodeAddress,
 } from '../../src/cluster/index.js';
+import { IpAllowlist } from '../../src/http/index.js';
 import {
   healthChecksOf,
   managementRoutes,
+  ManagementRoutesOptions,
 } from '../../src/management/index.js';
 
 async function main(): Promise<void> {
@@ -30,7 +36,10 @@ async function main(): Promise<void> {
     .withTransport(new InMemoryTransport(new NodeAddress('mgmt-hello', 'local', 1)));
   const cluster = await Cluster.join(system, clusterOptions);
 
-  const routes = managementRoutes(system, cluster);
+  const managementOptions = ManagementRoutesOptions.create()
+    .withMembersEndpoint()
+    .withIpAllowlist(IpAllowlist({ allow: ['127.0.0.0/8', '::1/128'] }));
+  const routes = managementRoutes(system, cluster, managementOptions);
   // Register a trivial readiness check on the system-wide registry — the
   // same one `Cluster.join` put its own two checks in, and the same one a
   // gRPC health service would read.

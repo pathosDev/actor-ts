@@ -5,6 +5,7 @@ import { DeadLetter } from '../SystemMessages.js';
 import type { Acknowledgment, Delivery } from './Messages.js';
 import {
   ConsumerControllerOptionsValidator,
+  DEFAULT_MAX_INCARNATIONS_PER_PRODUCER,
   DEFAULT_MAX_OUT_OF_ORDER,
   DEFAULT_MAX_PRODUCERS,
   DEFAULT_PRODUCER_IDLE_TTL_MS,
@@ -34,7 +35,33 @@ type DeduplicationState = {
   /** Out-of-order seqs already delivered but above `contiguous`. */
   readonly above: Set<number>;
   /**
-   * When a delivery from this producer was last admitted, from `Date.now()`.
+   * When a delivery under this incarnation was last admitted, on
+   * `system.clock`.
+   *
+   * Read for one decision: whether this incarnation has gone quiet for
+   * `producerIdleTtlMs`.  For the live incarnation that is the evidence a
+   * newer one may be promoted over it (#1237); for a held one, that its slot
+   * may be released.
+   */
+  lastSeenAtMs: number;
+};
+
+/**
+ * Everything the consumer holds for one `producerId`: the live incarnation's
+ * window, and the windows of incarnations seen since that are not promoted yet.
+ */
+type ProducerDeduplication = {
+  /** The incarnation whose window is authoritative for this producer. */
+  current: DeduplicationState;
+  /**
+   * Incarnations seen while {@link current} was still talking, by incarnation,
+   * each deduplicated in its own window.  At most `maxIncarnationsPerProducer`
+   * minus one of them.
+   */
+  readonly held: Map<string, DeduplicationState>;
+  /**
+   * When a delivery under *any* of this producer's incarnations was last
+   * admitted, on `system.clock`.
    *
    * Read by the idle sweep, which is the only mechanism that releases an
    * entry while nothing is arriving — the LRU cap only reclaims when a *new*
@@ -42,6 +69,12 @@ type DeduplicationState = {
    * quiet would hold all of it forever (#728).
    */
   lastSeenAtMs: number;
+};
+
+/** The window a delivery is checked against, and the producer entry it belongs to. */
+type AdmittedWindow = {
+  readonly entry: ProducerDeduplication;
+  readonly state: DeduplicationState;
 };
 
 /**
@@ -63,11 +96,19 @@ type DeduplicationState = {
  * duplicates around an eviction, which the protocol already permits, and a
  * stalled producer at the out-of-order cap, which its own retransmit
  * recovers from.
+ *
+ * **What the window is bound to (#1237).**  The key is the `producerId`, and
+ * within it the `incarnation` — both written by whoever built the envelope,
+ * neither authenticated.  So an incarnation the consumer has not seen is
+ * never allowed to *replace* the live one's window: it is held beside it, in
+ * a window of its own, and promoted only once the live incarnation has gone
+ * quiet for `producerIdleTtlMs`.  At most `maxIncarnationsPerProducer` are
+ * held per producer; past that a delivery under another one is refused.
  */
 export class ConsumerController<T> extends Actor<Delivery<T>> {
   /**
-   * producerId → dedup state for its current incarnation, in
-   * least-recently-used order.
+   * producerId → dedup state for its incarnations, in least-recently-used
+   * order.
    *
    * The ordering is load-bearing, not incidental: a `Map` iterates in
    * insertion order and `set` on a key it already holds does not move it, so
@@ -76,15 +117,25 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * what lets {@link sweepIdleProducers} stop at the first entry it finds
    * still fresh instead of walking the whole map every tick.
    */
-  private readonly deduplication = new Map<string, DeduplicationState>();
+  private readonly deduplication = new Map<string, ProducerDeduplication>();
 
   private readonly maxProducers: number;
   private readonly producerIdleTtlMs: number;
   private readonly maxOutOfOrder: number;
+  private readonly maxIncarnationsPerProducer: number;
   private idleSweepTimer: Cancellable | null = null;
-  /** Evictions not yet named in a warning — see {@link reportEvictions}. */
+  /**
+   * Evictions not yet named in a warning — see {@link reportEvictions}.
+   *
+   * Every "last reported at" below starts at `-Infinity` for the reason
+   * {@link lastUnhandledReportAtMs} gives: they are read off `system.clock`,
+   * and a virtual clock starts at 0.
+   */
   private evictedSinceReport = 0;
-  private lastEvictionReportAtMs = 0;
+  private lastEvictionReportAtMs = Number.NEGATIVE_INFINITY;
+  /** Incarnation refusals not yet named in a warning — see {@link reportIncarnationRefusals}. */
+  private refusedIncarnationsSinceReport = 0;
+  private lastIncarnationRefusalReportAtMs = Number.NEGATIVE_INFINITY;
   /**
    * Out-of-order refusals not yet named in a warning — see
    * {@link reportOutOfOrderRefusals}.  Counted separately from the evictions
@@ -92,7 +143,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * suppress the first sighting of the other.
    */
   private refusedSinceReport = 0;
-  private lastRefusalReportAtMs = 0;
+  private lastRefusalReportAtMs = Number.NEGATIVE_INFINITY;
   /** Declines not yet named in a warning — see {@link reportUnhandled}. */
   private unhandledSinceReport = 0;
   /**
@@ -114,6 +165,8 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     this.maxProducers = resolvedOptions.maxProducers ?? DEFAULT_MAX_PRODUCERS;
     this.producerIdleTtlMs = resolvedOptions.producerIdleTtlMs ?? DEFAULT_PRODUCER_IDLE_TTL_MS;
     this.maxOutOfOrder = resolvedOptions.maxOutOfOrder ?? DEFAULT_MAX_OUT_OF_ORDER;
+    this.maxIncarnationsPerProducer = resolvedOptions.maxIncarnationsPerProducer
+      ?? DEFAULT_MAX_INCARNATIONS_PER_PRODUCER;
   }
 
   /**
@@ -141,7 +194,21 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * waits for a sequence that has not arrived.
    */
   outOfOrderFor(producerId: string): number {
-    return this.deduplication.get(producerId)?.above.size ?? 0;
+    return this.deduplication.get(producerId)?.current.above.size ?? 0;
+  }
+
+  /**
+   * Incarnations of `producerId` this consumer holds a window for, the live
+   * one included, or 0 when nothing is tracked for it.
+   *
+   * 1 is the steady state.  2 means a new incarnation is being held beside
+   * the live one — a producer restart waiting out the idle TTL, or a delivery
+   * that named this producer under an incarnation it is not running (#1237).
+   * Parked at `maxIncarnationsPerProducer`, a further incarnation is refused.
+   */
+  incarnationsHeldFor(producerId: string): number {
+    const entry = this.deduplication.get(producerId);
+    return entry === undefined ? 0 : 1 + entry.held.size;
   }
 
   /**
@@ -253,7 +320,12 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
       this.deadLetter(message);
       return;
     }
-    const state = this.deduplicationStateFor(message.producerId, message.incarnation);
+    const admitted = this.windowFor(message.producerId, message.incarnation);
+    if (admitted === null) {
+      this.refuseIncarnation(message);
+      return;
+    }
+    const { entry, state } = admitted;
     if (message.seq <= state.contiguous || state.above.has(message.seq)) {
       // Duplicate — re-ack so the producer can release its slot, but don't
       // re-run the user handler.  Ahead of the out-of-order cap below on
@@ -287,8 +359,10 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     // Re-inserting cannot breach `maxProducers`: deliveries are serialised, so
     // no new producer can be admitted while this one is awaited, and the sweep
     // only ever removes — the map can therefore only be smaller than it was
-    // when this entry was admitted.
-    this.touch(message.producerId, state);
+    // when this entry was admitted.  Nor can it promote or release one of this
+    // producer's incarnations: those happen only on admission, which is
+    // serialised behind this await too.
+    this.touch(message.producerId, entry, state);
     this.markDelivered(state, message.seq);
     this.sendAcknowledgment(message);
   }
@@ -340,47 +414,166 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   }
 
   /**
-   * Dedup state for a producer, replaced whenever the incarnation changes.
+   * The window a delivery under (`producerId`, `incarnation`) is checked
+   * against, or `null` when that incarnation is one too many to hold.
    *
-   * **Replaced, not accumulated.** A new incarnation could have been given its
-   * own map entry, but one entry per restart would spend the map's budget on
-   * producers that no longer exist; keying on `producerId` and swapping the
-   * value keeps it at one entry per producer.  The cost is that a delivery
-   * from the *previous* incarnation still in flight when the new one starts
-   * sending resets the window again, so a handful of already-handled seqs can
-   * be handled a second time.  That is a genuine at-least-once duplicate,
-   * which this protocol declares tolerable — and it is bounded by the
-   * changeover window, where absorbing the post-restart prefix was not
-   * bounded at all.
+   * **Held beside, then promoted — never replaced on sight (#1237).**  This
+   * used to swap the producer's window for a fresh one whenever the
+   * incarnation differed.  Neither field is authenticated, so one envelope
+   * naming a live producer under an invented incarnation emptied that
+   * producer's window, and its next retransmit of a sequence already handled
+   * ran the handler again — at a rate the sender chose, since one envelope per
+   * honest delivery kept the window empty for good.
    *
-   * Only a `producerId` the map has never held costs a slot, so that is the
-   * one path that evicts: swapping an incarnation leaves the size alone.
+   * So an unfamiliar incarnation is *held*: it gets a window of its own beside
+   * the live one, and the live window is untouched.  It is *promoted* — made
+   * the live window, the old one dropped — only on a delivery that arrives
+   * once the live incarnation has gone quiet for `producerIdleTtlMs`.  That
+   * is the evidence the idle sweep already takes as "this producer is gone",
+   * so a forger who names a new incarnation gets no further than one who
+   * waits for the sweep, and a real restart converges: the old incarnation
+   * stops sending, and the new one's next delivery after the TTL promotes it,
+   * carrying its own window across.
+   *
+   * **A held incarnation is deduplicated in its own window rather than held
+   * back.**  Withholding its deliveries — no handler, no acknowledgment —
+   * would also keep at-least-once, since its producer retransmits, but it
+   * would stall every restarted producer for a whole idle TTL, five minutes
+   * by default, on the chance that the restart is a forgery.  Its own window
+   * gives a real restart at-least-once *with* duplicate suppression from its
+   * first delivery, and costs the live producer nothing; a forger it serves
+   * gets its own messages handled once each, which is what any sender of a
+   * new `producerId` gets anyway.
+   *
+   * What the changeover still costs is the old case's: a delivery of the old
+   * incarnation still in flight after the promotion is an unfamiliar
+   * incarnation again, gets a fresh window, and may run the handler a second
+   * time — an at-least-once duplicate bounded by the changeover, now one idle
+   * TTL after the old incarnation's last word rather than at once.
+   *
+   * Only a `producerId` the map has never held costs a slot in it, so that is
+   * the one path that evicts.
    */
-  private deduplicationStateFor(producerId: string, incarnation: string): DeduplicationState {
-    const existing = this.deduplication.get(producerId);
-    if (existing !== undefined && existing.incarnation === incarnation) {
-      this.touch(producerId, existing);
-      return existing;
+  private windowFor(producerId: string, incarnation: string): AdmittedWindow | null {
+    const entry = this.deduplication.get(producerId);
+    if (entry === undefined) {
+      this.evictForNewProducer();
+      const created: ProducerDeduplication = {
+        current: this.freshWindow(incarnation),
+        held: new Map(),
+        lastSeenAtMs: 0,
+      };
+      return this.touch(producerId, created, created.current);
     }
-    if (existing === undefined) this.evictForNewProducer();
-    // The zero is a placeholder the entry never leaves with: `touch` stamps
-    // `lastSeenAtMs` on the next line, and it is the only writer of that field.
-    const fresh: DeduplicationState = { incarnation, contiguous: 0, above: new Set(), lastSeenAtMs: 0 };
-    this.touch(producerId, fresh);
-    return fresh;
+    if (entry.current.incarnation === incarnation) return this.touch(producerId, entry, entry.current);
+    const now = this.system.clock.now();
+    if (this.hasGoneQuiet(entry.current, now)) {
+      return this.touch(producerId, entry, this.promote(entry, incarnation, now));
+    }
+    const held = entry.held.get(incarnation);
+    if (held !== undefined) return this.touch(producerId, entry, held);
+    this.releaseQuietIncarnations(entry, now);
+    if (1 + entry.held.size >= this.maxIncarnationsPerProducer) return null;
+    const window = this.freshWindow(incarnation);
+    entry.held.set(incarnation, window);
+    return this.touch(producerId, entry, window);
   }
 
   /**
-   * Stamp an entry as just-used and move it to the most-recently-used end.
+   * Make `incarnation` the producer's live window, dropping the old one.
+   *
+   * A held window is carried across as it is — its producer's deliveries have
+   * been deduplicated in it all along — and only an incarnation never seen
+   * starts empty.  Held incarnations that have gone quiet themselves are
+   * released on the way: nothing will promote them now.
+   */
+  private promote(entry: ProducerDeduplication, incarnation: string, now: number): DeduplicationState {
+    const promoted = entry.held.get(incarnation) ?? this.freshWindow(incarnation);
+    entry.held.delete(incarnation);
+    entry.current = promoted;
+    this.releaseQuietIncarnations(entry, now);
+    return promoted;
+  }
+
+  /** Release every held incarnation that has gone quiet for the idle TTL, freeing its slot. */
+  private releaseQuietIncarnations(entry: ProducerDeduplication, now: number): void {
+    for (const [incarnation, window] of entry.held) {
+      if (this.hasGoneQuiet(window, now)) entry.held.delete(incarnation);
+    }
+  }
+
+  /**
+   * Whether an incarnation has sent nothing for `producerIdleTtlMs`.
+   *
+   * The same boundary the sweep draws, so "promotable" and "swept" never
+   * disagree about one instant.  An infinite TTL makes nothing quiet, which is
+   * what that setting already means for the sweep.
+   */
+  private hasGoneQuiet(window: DeduplicationState, now: number): boolean {
+    return now - window.lastSeenAtMs >= this.producerIdleTtlMs;
+  }
+
+  /**
+   * A window nothing has been delivered in yet.  The zero timestamp is a
+   * placeholder it never leaves with: every caller hands it to {@link touch},
+   * the only writer of `lastSeenAtMs`.
+   */
+  private freshWindow(incarnation: string): DeduplicationState {
+    return { incarnation, contiguous: 0, above: new Set(), lastSeenAtMs: 0 };
+  }
+
+  /**
+   * Stamp a window and its producer's entry as just-used, and move the entry
+   * to the most-recently-used end.
    *
    * The `delete` is what does the moving — `set` on a key the map already
    * holds updates the value and leaves the key where it was — and it is a
    * harmless no-op for a key that is genuinely new.
    */
-  private touch(producerId: string, state: DeduplicationState): void {
-    state.lastSeenAtMs = Date.now();
+  private touch(producerId: string, entry: ProducerDeduplication, state: DeduplicationState): AdmittedWindow {
+    const now = this.system.clock.now();
+    state.lastSeenAtMs = now;
+    entry.lastSeenAtMs = now;
     this.deduplication.delete(producerId);
-    this.deduplication.set(producerId, state);
+    this.deduplication.set(producerId, entry);
+    return { entry, state };
+  }
+
+  /**
+   * Refuse a delivery under one incarnation more than
+   * `maxIncarnationsPerProducer` allows: a dead letter, no handler call and no
+   * acknowledgment, so its producer keeps it and retransmits until a held
+   * incarnation goes quiet and frees a slot.  Refusing rather than evicting a
+   * held window is the trade `maxOutOfOrder` makes — an eviction would re-run
+   * the handler for messages already acknowledged, a refusal only delays them.
+   *
+   * Not through {@link deadLetter}: that warns once per envelope, and this is
+   * the path a sender minting incarnations drives at message rate.
+   */
+  private refuseIncarnation(message: Delivery<T>): void {
+    this.reportIncarnationRefusals();
+    this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
+  }
+
+  /**
+   * Name incarnation refusals at most once per
+   * {@link DEDUPLICATION_REPORT_INTERVAL_MS}, each line carrying how many it
+   * stands for.  The incarnation and the `producerId` are peer-supplied text
+   * and stay out of the line, as they do in {@link reportEvictions}.
+   */
+  private reportIncarnationRefusals(): void {
+    this.refusedIncarnationsSinceReport++;
+    const now = this.system.clock.now();
+    if (now - this.lastIncarnationRefusalReportAtMs < DEDUPLICATION_REPORT_INTERVAL_MS) return;
+    this.lastIncarnationRefusalReportAtMs = now;
+    const count = this.refusedIncarnationsSinceReport;
+    this.refusedIncarnationsSinceReport = 0;
+    this.log.warn(
+      `consumer refused ${count} deliver${count === 1 ? 'y' : 'ies'} under one producer incarnation too many `
+      + `(maxIncarnationsPerProducer=${this.maxIncarnationsPerProducer}); each is a dead letter, unhandled and `
+      + 'unacknowledged, and is admitted on retransmit once a held incarnation has gone quiet for '
+      + `producerIdleTtlMs=${this.producerIdleTtlMs}`,
+    );
   }
 
   /**
@@ -420,7 +613,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    */
   private reportEvictions(evicted: number): void {
     this.evictedSinceReport += evicted;
-    const now = Date.now();
+    const now = this.system.clock.now();
     if (now - this.lastEvictionReportAtMs < DEDUPLICATION_REPORT_INTERVAL_MS) return;
     this.lastEvictionReportAtMs = now;
     this.log.warn(
@@ -443,10 +636,10 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * timer for the life of the consumer.
    */
   private sweepIdleProducers(): void {
-    const cutoff = Date.now() - this.producerIdleTtlMs;
+    const cutoff = this.system.clock.now() - this.producerIdleTtlMs;
     let swept = 0;
-    for (const [producerId, state] of this.deduplication) {
-      if (state.lastSeenAtMs > cutoff) break;
+    for (const [producerId, entry] of this.deduplication) {
+      if (entry.lastSeenAtMs > cutoff) break;
       this.deduplication.delete(producerId);
       swept++;
     }
@@ -500,7 +693,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    */
   private reportOutOfOrderRefusals(state: DeduplicationState): void {
     this.refusedSinceReport++;
-    const now = Date.now();
+    const now = this.system.clock.now();
     if (now - this.lastRefusalReportAtMs < DEDUPLICATION_REPORT_INTERVAL_MS) return;
     this.lastRefusalReportAtMs = now;
     this.log.warn(

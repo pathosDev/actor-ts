@@ -335,6 +335,37 @@ export function assertListenerTlsIsCoherent(
 }
 
 /**
+ * Refuse half a client credential on a dial (#1085): `cert` without `key`, or
+ * `key` without `cert`.  Called by each adapter's `connect` before it dials.
+ *
+ * Every adapter dropped the half — Node and Bun handed the runtime an
+ * undefined `key`, Deno discards both unless both are set — so the dial spoke
+ * one-way TLS under a configuration that read as mTLS.  Against a listener
+ * without `ca` that connected, and the identity binding that rests on the
+ * client's certificate had nothing to bind; against an mTLS listener it failed
+ * with a TLS alert that named no field.  `ClusterClient` refuses the shape at
+ * construction; this is the net under every other dialer — the log sinks, the
+ * cluster transport — and under a caller that builds no options object.
+ *
+ * Not {@link assertListenerTlsIsCoherent}: `{ ca }` alone is the correct
+ * one-way configuration for a dialer.  Half a credential is the one shape that
+ * is valid nowhere.  Empty counts as absent, as on the listener.  The values
+ * stay out of the message: one of them is a private key.
+ */
+export function assertDialCredentialIsWhole(tls: TlsTransportOptionsType): void {
+  const presentsCertificate = carriesMaterial(tls.cert);
+  const presentsKey = carriesMaterial(tls.key);
+  if (presentsCertificate === presentsKey) return;
+  const present = presentsCertificate ? 'cert' : 'key';
+  const absent = presentsCertificate ? 'key' : 'cert';
+  throw new Error(
+    `TLS transport: \`${present}\` is set on this dial but \`${absent}\` is not — half a client credential `
+    + 'is no credential, and the dial would silently fall back to one-way TLS. Supply both, or neither '
+    + 'for one-way TLS (`ca` alone authenticates the server).',
+  );
+}
+
+/**
  * Whether the listener must bind TLS — and the single place that decision is
  * made, for all three runtimes.
  *

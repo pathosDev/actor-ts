@@ -1,5 +1,10 @@
 import { NodeTcpBackend } from './NodeTcpBackend.js';
-import { listenerTlsOptions, listenerUsesTls, toPeerCertificate } from './TcpBackend.js';
+import {
+  assertDialCredentialIsWhole,
+  listenerTlsOptions,
+  listenerUsesTls,
+  toPeerCertificate,
+} from './TcpBackend.js';
 import type {
   PeerCertificate,
   TcpBackend,
@@ -80,6 +85,9 @@ export class BunTcpBackend implements TcpBackend {
     handlers: TcpSocketHandlers;
     signal?: AbortSignal;
   }): Promise<TcpSocketLike> {
+    // Ahead of the delegation too: whatever the delegate is, this adapter
+    // must not be the one that dials half a credential (#1085).
+    if (options.tls !== undefined) assertDialCredentialIsWhole(options.tls);
     if (options.signal !== undefined) return this.cancellable.connect(options);
     const bun = (globalThis as { Bun?: BunGlobal }).Bun;
     if (!bun) throw new Error('BunTcpBackend: globalThis.Bun is not defined');

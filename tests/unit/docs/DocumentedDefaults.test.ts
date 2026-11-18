@@ -77,13 +77,14 @@ import {
 import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
 import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAULT_SERVICE_ACCOUNT_CA_PATH, DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH, DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH, DEFAULT_TOKEN_RELOAD_INTERVAL_MS } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import { DEFAULT_LEASE_BACKEND } from '../../../src/coordination/LeaseFromConfig.js';
-import { DEFAULT_AUTH_PROTECT_HEALTH, DEFAULT_ENABLE_DOWN_ENDPOINT, DEFAULT_ENABLE_LEAVE_ENDPOINT, DEFAULT_ENABLE_METRICS_ENDPOINT, DEFAULT_LIVENESS_PATH, DEFAULT_READINESS_PATH } from '../../../src/management/ManagementRoutesOptions.js';
+import { DEFAULT_AUTH_PROTECT_HEALTH, DEFAULT_ENABLE_DOWN_ENDPOINT, DEFAULT_ENABLE_LEADER_ENDPOINT, DEFAULT_ENABLE_LEAVE_ENDPOINT, DEFAULT_ENABLE_MEMBERS_ENDPOINT, DEFAULT_ENABLE_METRICS_ENDPOINT, DEFAULT_ENABLE_SHARDS_ENDPOINT, DEFAULT_LIVENESS_PATH, DEFAULT_READINESS_PATH } from '../../../src/management/ManagementRoutesOptions.js';
 import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../src/management/HealthCheckRegistryOptions.js';
-import { DEFAULT_MAX_SERIES_PER_FAMILY } from '../../../src/metrics/MetricsRegistryOptions.js';
+import { DEFAULT_MAX_FAMILIES, DEFAULT_MAX_SERIES_PER_FAMILY } from '../../../src/metrics/MetricsRegistryOptions.js';
 import { DEFAULT_PROM_CLIENT_NAME_PREFIX } from '../../../src/metrics/PromClientAdapterOptions.js';
 import { DEFAULT_OTEL_TRACER_NAME } from '../../../src/tracing/OtelAdapterOptions.js';
 import { DEFAULT_OTEL_LOGGER_NAME } from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import {
+  DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
@@ -100,9 +101,11 @@ import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
   DEFAULT_MAX_TOPICS,
+  DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER,
 } from '../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
+  DEFAULT_MAX_REGISTRATIONS_CLAIMED_PER_SENDER,
   DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
 } from '../../../src/discovery/ReceptionistOptions.js';
 import { DEFAULT_DISCOVERY_METHOD, DEFAULT_NEW_CLUSTER_ENABLED } from '../../../src/cluster/ClusterBootstrapOptions.js';
@@ -189,7 +192,7 @@ import {
   DEFAULT_DELIVERY_OVERFLOW,
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
 } from '../../../src/logging/DeliveryOptions.js';
-import { DEFAULT_MAX_OUT_OF_ORDER, DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
+import { DEFAULT_MAX_INCARNATIONS_PER_PRODUCER, DEFAULT_MAX_OUT_OF_ORDER, DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
 import { DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR, DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES, DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS, DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR, DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS } from '../../../src/pattern/CircuitBreakerOptions.js';
 import {
   DEFAULT_CONSOLE_SINK_FORMAT,
@@ -429,6 +432,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.unreachable-gossip-rounds', kind: 'int', constant: DEFAULT_UNREACHABLE_GOSSIP_ROUNDS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
+  { key: 'actor-ts.cluster.gossip-frames-per-second-per-sender', kind: 'int', constant: DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER },
   // In the table rather than in FEATURE_SWITCHES, though `1` is the "off"
   // value: the off state here is not a field being absent at the read site but
   // a real threshold that a real comparison evaluates, so there is a constant
@@ -573,8 +577,10 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },
   { key: 'actor-ts.cluster.pub-sub.max-topics', kind: 'int', constant: DEFAULT_MAX_TOPICS },
   { key: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic', kind: 'int', constant: DEFAULT_MAX_REMOTE_NODES_PER_TOPIC },
+  { key: 'actor-ts.cluster.pub-sub.max-topics-claimed-per-sender', kind: 'int', constant: DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER },
   { key: 'actor-ts.cluster.receptionist.max-subscribers-per-key', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_KEY },
   { key: 'actor-ts.cluster.receptionist.max-subscriptions-total', kind: 'int', constant: DEFAULT_MAX_SUBSCRIPTIONS_TOTAL },
+  { key: 'actor-ts.cluster.receptionist.max-registrations-claimed-per-sender', kind: 'int', constant: DEFAULT_MAX_REGISTRATIONS_CLAIMED_PER_SENDER },
 
   /* --- sharding --- */
   { key: 'actor-ts.sharding.number-of-shards', kind: 'int', constant: DEFAULT_NUM_SHARDS },
@@ -665,15 +671,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.debug.event-stream', kind: 'bool', constant: DEFAULT_DEBUG_EVENT_STREAM },
 
   /* --- reliable delivery --- */
-  // The three consumer bounds publish `0` as their opt-out while the fields
+  // The four consumer bounds publish `0` as their opt-out while the fields
   // document `Infinity`, so the reader translates — and the published literal
-  // is still the constant, which is what these three entries pin (#861,
-  // #1471).
+  // is still the constant, which is what these four entries pin (#861,
+  // #1471, #1237).
   { key: 'actor-ts.reliable-delivery.producer.resend-timeout', kind: 'duration', constant: DEFAULT_RESEND_TIMEOUT_MS },
   { key: 'actor-ts.reliable-delivery.producer.window-size', kind: 'int', constant: DEFAULT_WINDOW_SIZE },
   { key: 'actor-ts.reliable-delivery.consumer.max-producers', kind: 'int', constant: DEFAULT_MAX_PRODUCERS },
   { key: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live', kind: 'duration', constant: DEFAULT_PRODUCER_IDLE_TTL_MS },
   { key: 'actor-ts.reliable-delivery.consumer.max-out-of-order', kind: 'int', constant: DEFAULT_MAX_OUT_OF_ORDER },
+  { key: 'actor-ts.reliable-delivery.consumer.max-incarnations-per-producer', kind: 'int', constant: DEFAULT_MAX_INCARNATIONS_PER_PRODUCER },
 
   /* --- circuit breaker --- */
   // `call-timeout` is comment-only in reference.conf and so is not part of the
@@ -725,17 +732,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.backoff-supervisor.forward-during-grace', kind: 'bool', constant: DEFAULT_BACKOFF_FORWARD_DURING_GRACE },
 
   /* --- management --- */
-  // The four endpoint switches are in the table rather than in
+  // The seven endpoint switches are in the table rather than in
   // FEATURE_SWITCHES, and the difference is real: that group's stated reason
   // is that its members have *no* `DEFAULT_*` constant to disagree with,
   // because their off state is the field being absent at the read site.  These
-  // four are present at the read site — `defaultManagementRoutesOptions` is
+  // seven are present at the read site — `defaultManagementRoutesOptions` is
   // the floor `mergeOptions` starts from — so each does have a constant, and
   // `enable-metrics-endpoint` published as `false` while the code shipped
   // `true` is exactly the drift worth catching (#882).
   { key: 'actor-ts.management.enable-leave-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_LEAVE_ENDPOINT },
   { key: 'actor-ts.management.enable-down-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_DOWN_ENDPOINT },
   { key: 'actor-ts.management.enable-metrics-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_METRICS_ENDPOINT },
+  { key: 'actor-ts.management.enable-members-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_MEMBERS_ENDPOINT },
+  { key: 'actor-ts.management.enable-leader-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_LEADER_ENDPOINT },
+  { key: 'actor-ts.management.enable-shards-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_SHARDS_ENDPOINT },
   { key: 'actor-ts.management.auth-protect-health', kind: 'bool', constant: DEFAULT_AUTH_PROTECT_HEALTH },
   { key: 'actor-ts.management.liveness-path', kind: 'string', constant: DEFAULT_LIVENESS_PATH },
   { key: 'actor-ts.management.readiness-path', kind: 'string', constant: DEFAULT_READINESS_PATH },
@@ -746,6 +756,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // publishes `""`: an empty prefix is the default the bridge actually runs
   // with, and it has a constant to disagree with.
   { key: 'actor-ts.metrics.max-series-per-family', kind: 'int', constant: DEFAULT_MAX_SERIES_PER_FAMILY },
+  { key: 'actor-ts.metrics.max-families', kind: 'int', constant: DEFAULT_MAX_FAMILIES },
   { key: 'actor-ts.metrics.name-prefix', kind: 'string', constant: DEFAULT_PROM_CLIENT_NAME_PREFIX },
 
   /* --- tracing (#1466) --- */

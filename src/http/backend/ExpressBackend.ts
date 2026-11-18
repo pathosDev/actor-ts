@@ -9,6 +9,7 @@ import { detectRuntime } from '../../runtime/Detect.js';
 import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
 import { closeIdleConnectionsWhileDraining, nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
+import { requestIdHeadersOfError } from '../middleware/RequestId.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
@@ -19,6 +20,7 @@ import {
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   drainWindowOf,
+  NOT_FOUND_RESPONSE,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -406,18 +408,18 @@ export class ExpressBackend implements HttpServerBackend {
     if (this.wsRegistered.length > 0) await this.attachWebsocketRoutes(this.app);
     // Apply routes.  Express treats patterns like "/users/:id" natively.
     for (const route of this.registered) this.attachRoute(route);
-    // 404 + error middlewares MUST come last.
-    if (this.notFoundHandler) {
-      const handler = this.notFoundHandler;
-      const notFound: ExpressHandler = async (req, res, next) => {
-        try {
-          const adapted = this.adaptRequest(req);
-          const out = await handler(adapted);
-          await this.writeResponse(res, out, adapted);
-        } catch (err) { next(err); }
-      };
-      this.app.use(notFound);
-    }
+    // 404 + error middlewares MUST come last.  With no not-found hook set the
+    // framework's own 404 is written here too, rather than by Express's final
+    // handler, so it carries the default headers (#1059).
+    const handler = this.notFoundHandler ?? ((): HttpResponse => NOT_FOUND_RESPONSE);
+    const notFound: ExpressHandler = async (req, res, next) => {
+      try {
+        const adapted = this.adaptRequest(req);
+        const out = await handler(adapted);
+        await this.writeResponse(res, out, adapted);
+      } catch (err) { next(err); }
+    };
+    this.app.use(notFound);
     this.app.use(this.makeErrorMiddleware());
 
     // The server is built here rather than by `app.listen()`, which is
@@ -752,6 +754,7 @@ export class ExpressBackend implements HttpServerBackend {
         return;
       }
       res.status(500).setHeader('content-type', 'application/json; charset=utf-8');
+      for (const [k, v] of Object.entries(requestIdHeadersOfError(err))) res.setHeader(k, v);
       // No `message` field — see the note on FastifyBackend.writeError.
       res.end(JSON.stringify({ error: 'Internal Server Error' }));
     };

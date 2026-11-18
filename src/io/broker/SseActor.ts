@@ -5,7 +5,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { redactParsedUrlCredentials, redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { SseEventBuffer } from './SseEventBuffer.js';
-import { SseOptionsValidator } from './SseOptions.js';
+import { DEFAULT_SSE_MAX_BUFFER_CHARS, SseOptionsValidator } from './SseOptions.js';
 import type { SseOptions, SseOptionsType } from './SseOptions.js';
 
 /** Inbound SSE event delivered to subscribers. */
@@ -19,21 +19,6 @@ export type SseEvent = {
 };
 
 export type SseCommand = never;  // SSE is read-only
-
-/**
- * Safety cap on the pending event buffer (chars).  A well-behaved server ends
- * an event with a blank line frequently — in any of the three framings the
- * grammar allows, `\n\n`, `\r\n\r\n` or `\r\r`, all of which reach the
- * delimiter search as `\n\n` (#1510) — and this bounds the damage from one
- * that never does (security audit BRK-2).  1 MiB is far above any real single
- * SSE event.
- *
- * Measured against the characters as they *arrive*, while what the buffer
- * keeps is the normalised form, which is never longer.  So normalising cannot
- * loosen the cap: a CRLF-framed feed reaches it no later than the same bytes
- * framed with LF would.
- */
-const SSE_MAX_BUFFER_CHARS = 1_048_576;
 
 /**
  * Server-Sent Events client actor.  Pure built-ins — uses `fetch`
@@ -224,6 +209,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
     const reader = stream.getReader();
     const decoder = new TextDecoder('utf-8');
     const buffer = new SseEventBuffer();
+    const maxBufferChars = this.options.maxBufferChars ?? DEFAULT_SSE_MAX_BUFFER_CHARS;
     try {
       while (this.streamRunning) {
         const { done, value } = await reader.read();
@@ -239,11 +225,11 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
         // *would* make pending, before any of it is split off, so the bound is
         // the one the cap has always enforced.  What it does not bound is the
         // work spent reaching it — that is `SseEventBuffer`'s job (#749).
-        if (buffer.pendingLength() + text.length > SSE_MAX_BUFFER_CHARS) {
+        if (buffer.pendingLength() + text.length > maxBufferChars) {
           this.streamRunning = false;
           try { this.aborter?.abort(); } catch { /* ignore */ }
           this.handleConnectionLost(
-            new Error(`SSE event buffer exceeded ${SSE_MAX_BUFFER_CHARS} chars without a delimiter`),
+            new Error(`SSE event buffer exceeded ${maxBufferChars} chars without a delimiter`),
           );
           return;
         }
@@ -301,6 +287,9 @@ export function readSseOptionsFromConfig(
   }
   if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
   if (config.hasPath(keys.connectTimeout)) out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
+  // A count of code units, so `getInt`: a size such as `64K` is refused
+  // rather than read in bytes the cap does not measure (#371, #752).
+  if (config.hasPath(keys.maxBufferChars)) out.maxBufferChars = config.getInt(keys.maxBufferChars);
   return out;
 }
 

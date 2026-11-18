@@ -114,6 +114,24 @@ gar keins melden kann) verhalten sich exakt wie vorher. Die
 Prüfung stärkt mTLS-Deployments, statt einen Schalter
 hinzuzufügen, den man vergessen kann.
 
+Der Preis dieses Standards: Die Prüfung verstummt, sobald kein
+Zertifikat mehr ankommt — bei einem halb ausgerollten TLS-Bundle
+oder einem Backend, das keins mehr meldet. Ein Deployment, in dem
+jeder Peer seinen Namen beweisen soll, setzt `requirePeerIdentity`
+auf dem Transport; ein Peer ohne Zertifikat wird dann mit einer
+WARN abgewiesen (#1190):
+
+```ts
+const transportOptions = TcpTransportOptions.create()
+  .withTls(tls)
+  .withRequirePeerIdentity(true);
+const transport = new TcpTransport(self, log, transportOptions);
+```
+
+Abgewiesen wird die Option schon bei der Konstruktion, wo kein Peer
+je ein Zertifikat vorlegen könnte: ohne einen `ca`, der eins
+enthält, mit `requestClientCert: false` und auf Deno.
+
 <Aside type="caution" title="Einseitiges TLS authentifiziert niemanden">
   Der `hello`-Handshake trägt selbst keinerlei Credential, also
   *ist* auf einem TLS-Cluster das Peer-Zertifikat die
@@ -163,6 +181,14 @@ schwächeren Zustand zu starten, als sie sich lesen:
   Änderung nicht mehr**, statt fehlgesichert hochzukommen — so
   gewollt, aber vor einem Rolling Restart gut zu wissen.
 </Aside>
+
+Die Wählseite lehnt die eine der vier Formen ab, die auch dort
+falsch ist: **ein halbes Client-Credential**, `cert` ohne `key` oder
+umgekehrt, wobei leer als nicht gesetzt zählt.  Jede Runtime ließ
+die Hälfte bisher fallen und wählte einseitiges TLS unter einer
+Konfiguration, die sich wie mTLS las; jetzt schlägt das Wählen mit
+einem Fehler fehl, der das fehlende Feld nennt (#1085).  `{ ca }`
+allein bleibt das gewöhnliche einseitige Wählen.
 
 Einem mTLS-Cluster **beitreten** kann ein Deno-Knoten sehr wohl:
 er präsentiert beim Wählen sein eigenes `cert`/`key`, und der
@@ -631,10 +657,12 @@ den Gossip-Pfad genauso wie für lokale Aufrufe:
 | Lebende Cluster-Mitglieder | `cluster.max-members` | `1000` |
 | `removed`-Tombstones | `cluster.max-tombstones` | `10000` |
 | PubSub-Subscriber pro Topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
-| PubSub-Topics | `cluster.pub-sub.max-topics` | `10000` |
+| PubSub-Topics, lokaler und Peer-Pool getrennt | `cluster.pub-sub.max-topics` | `10000` |
 | PubSub-Remote-Ansprüche pro Topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| PubSub-Topics, die ein Peer beanspruchen darf | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` |
 | Receptionist-Subscriber pro Key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
 | Receptionist-Subscriptions insgesamt | `cluster.receptionist.max-subscriptions-total` | `10000` |
+| Receptionist-Registrierungen, die ein Peer beanspruchen darf | `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` |
 
 Ein Anspruch über einer Grenze wird verworfen und geloggt, statt
 auf der Wire abgewiesen zu werden — der Frame ist wohlgeformt,
@@ -649,6 +677,22 @@ zurückgewonnen statt begrenzt wird.
 Senke die Defaults für ein Deployment, dessen legitime Zahlen
 weit darunter liegen: eine Obergrenze begrenzt nur den Schaden,
 und eine weit über der echten Nutzung begrenzt sehr wenig.
+
+Die Grenzen beschränken, was bleibt, nicht die Arbeit: Jeder Record
+eines Gossip-Frames wird dekodiert und geprüft, auch wenn jeder
+einzelne abgewiesen wird. Diese Arbeit begrenzt pro Absender
+`cluster.gossip-frames-per-second-per-sender` (#1105) — ein Frame
+über dem Budget wird ganz verworfen, bevor ein Record gelesen wird,
+die Verbindung bleibt, und die Abweisungen zählt
+`cluster_gossip_records_refused_total{reason="rate-limit"}`.
+Standardmäßig ist es an, mit 50 Frames pro Sekunde — weit über dem
+einen Frame pro Sekunde, den ein Absender beim ausgelieferten
+Intervall von 1 s schickt. Die legitime Rate eines Absenders folgt
+seinem eigenen Gossip-Intervall, das der Empfänger nicht kennt; das
+Budget muss also darüber bleiben: etwa `1000 / gossip-interval-ms`,
+mal einem Sicherheitsfaktor von mindestens 2 für Join- und
+Beförderungs-Frames. Erhöhe es für einen Cluster, der schneller als
+alle 40 ms gossipt; `0` schaltet es ab.
 
 ### Warum die Mitgliedschaft zwei Grenzen braucht
 
@@ -778,11 +822,10 @@ Regeln:
   ist, und sie anzunehmen ist harmlos, denn ein joinender
   Knoten will ohnehin `up` werden. Begrenzt wird sie dadurch,
   wie wenig sie transportiert: den Status und eine Version, die
-  nur die Obergrenze `maxVersionSkewMs` beschränkt (standardmäßig
-  5 Minuten, siehe *Eine Version kann keine Adresse im Voraus
-  beanspruchen* unten) — ein Fremder kann den Record dieses
-  Knotens also bis zu so weit in die Zukunft datieren; die
-  Version zu klemmen verfolgt #1797. Mehr kommt nicht
+  höchstens einen Schritt über dem Record liegt, den dieser
+  Knoten hält — den Schritt, den eine echte Beförderung durch
+  den Leader macht —, ein Fremder kann den Record dieses Knotens
+  also nicht in die Zukunft datieren (#1797). Mehr kommt nicht
   herüber. Die Beförderung fragt nichts über ihren Absender,
   deshalb muss dieser Knoten seine eigenen Rollen, Inkarnation,
   Storage-Identitäten, Konfigurationsfakten und App-Version

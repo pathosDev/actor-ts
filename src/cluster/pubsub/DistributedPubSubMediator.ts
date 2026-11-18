@@ -5,11 +5,13 @@ import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
 import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
+import { SenderClaimQuota } from '../../util/SenderClaimQuota.js';
 import { SystemActorNames, SystemGroups, systemActorPath } from '../../internal/SystemPaths.js';
 import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
   DEFAULT_MAX_TOPICS,
+  DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER,
   DistributedPubSubOptionsValidator,
 } from './DistributedPubSubOptions.js';
 import type { DistributedPubSubOptions, DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
@@ -198,6 +200,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   private readonly maxSubscribersPerTopic: number;
   private readonly maxTopics: number;
   private readonly maxRemoteNodesPerTopic: number;
+  private readonly maxTopicsClaimedPerSender: number;
   private readonly sendToDeadLettersWhenNoSubscribers: boolean;
 
   constructor(options: DistributedPubSubOptions) {
@@ -207,6 +210,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     this.maxSubscribersPerTopic = this.options.maxSubscribersPerTopic ?? DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC;
     this.maxTopics = this.options.maxTopics ?? DEFAULT_MAX_TOPICS;
     this.maxRemoteNodesPerTopic = this.options.maxRemoteNodesPerTopic ?? DEFAULT_MAX_REMOTE_NODES_PER_TOPIC;
+    this.maxTopicsClaimedPerSender = this.options.maxTopicsClaimedPerSender ?? DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER;
     this.sendToDeadLettersWhenNoSubscribers = this.options.sendToDeadLettersWhenNoSubscribers ?? true;
   }
 
@@ -625,6 +629,15 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * over a cap is dropped and logged rather than refused on the wire — the
    * frame is otherwise well-formed, and dropping the connection over it
    * would let one noisy peer cost a healthy link.
+   *
+   * Two bounds apply, and neither touches local subscribes (#1074).  A claim
+   * that would open a topic this mediator does not track yet is held to
+   * {@link maxTopics} counted over the topics only peers claim — a pool of
+   * its own, which used to be the same budget a local `Subscribe` spends, so
+   * a peer naming `maxTopics` topics denied every local subscription to a new
+   * one.  And each sender holds at most {@link maxTopicsClaimedPerSender}
+   * claims ({@link SenderClaimQuota}), so the first peer to fill that pool
+   * cannot deny it to the others.
    */
   private handleGossip(message: PubSubGossipMessage, from: NodeAddress): void {
     const senderAddr = from.toString();
@@ -634,17 +647,23 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       state.remoteNodes.delete(senderAddr);
       this.maybeDropTopic(topic);
     }
-    let refused = 0;
+    const quota = new SenderClaimQuota(this.maxTopicsClaimedPerSender);
+    let refusedByCaps = 0;
     for (const topic of message.entries) {
       const existing = this.topics.get(topic);
-      if (!existing && this.topics.size >= this.maxTopics) { refused++; continue; }
-      if (existing && existing.remoteNodes.size >= this.maxRemoteNodesPerTopic) { refused++; continue; }
+      // A name repeated in one frame is one claim, already held.
+      if (existing?.remoteNodes.has(senderAddr) === true) continue;
+      if (!existing && this.peerOnlyTopicCount() >= this.maxTopics) { refusedByCaps++; continue; }
+      if (existing && existing.remoteNodes.size >= this.maxRemoteNodesPerTopic) { refusedByCaps++; continue; }
+      if (!quota.take()) continue;
       this.getOrCreateTopicState(topic).remoteNodes.add(senderAddr);
     }
-    if (refused > 0) {
+    if (refusedByCaps > 0 || quota.refused > 0) {
       this.log.warn(
-        `[pubsub] dropped ${refused} topic claim(s) gossiped by ${senderAddr} — `
-        + `maxTopics (${this.maxTopics}) / maxRemoteNodesPerTopic (${this.maxRemoteNodesPerTopic}) is full`,
+        `[pubsub] dropped ${refusedByCaps + quota.refused} topic claim(s) gossiped by ${senderAddr}, `
+        + `which now holds ${quota.claimed} — ${quota.refused} past maxTopicsClaimedPerSender `
+        + `(${this.maxTopicsClaimedPerSender}), ${refusedByCaps} because maxTopics (${this.maxTopics}, `
+        + `topics only peers claim) / maxRemoteNodesPerTopic (${this.maxRemoteNodesPerTopic}) is full`,
       );
     }
     // Answer the first frame each peer sends.  Both sides push their state
@@ -752,23 +771,35 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   }
 
   /**
+   * How many tracked topics have no local subscriber — the pool a peer's
+   * claims are held to by {@link maxTopics} (#1074).  Every topic with a local
+   * subscriber has an entry in {@link topics}, so the difference is exact.
+   */
+  private peerOnlyTopicCount(): number {
+    return this.topics.size - this.subscriptions.leftSize;
+  }
+
+  /**
    * The cap a fresh local subscription to `topic` would breach, or `null` when
-   * there is room.  A topic with no entry yet does not exist, and there the
-   * topic cap is the one at stake rather than the per-topic subscriber cap.
+   * there is room.  A topic with no local subscriber yet is a new entry in the
+   * local pool, and there the topic cap is the one at stake rather than the
+   * per-topic subscriber cap.
    *
-   * `maxTopics` counts `topics`, not `subscriptions.leftSize`, and the two are
-   * genuinely different: a topic held only by a remote claim has an entry here
-   * and no local subscriber, so it is absent from the relation's left side while
-   * still occupying a slot — see {@link maybeDropTopic}, which is what makes
-   * that state reachable.  Swapping in the participant count would stop bounding
-   * exactly the topics nothing local subscribes to.
+   * `maxTopics` counts `subscriptions.leftSize` here — the topics with a local
+   * subscriber — and not `topics`, which also holds topics only peers claim
+   * (#1074).  Counting those let a peer's gossip spend the budget a local
+   * `Subscribe` needs.  The peer-only topics are bounded on the gossip side
+   * instead ({@link peerOnlyTopicCount}), so dropping them from this count
+   * leaves no pool unbounded.  A topic a peer claims is not thereby free to
+   * subscribe to locally: its first local subscriber spends a local slot like
+   * any other.
    */
   private capRefusal(topic: string): CapRefusal | null {
-    const existing = this.topics.get(topic);
-    if (!existing && this.topics.size >= this.maxTopics) {
+    const locallyHeld = this.subscriptions.hasLeft(topic);
+    if (!locallyHeld && this.subscriptions.leftSize >= this.maxTopics) {
       return { reason: 'maxTopics', limit: this.maxTopics };
     }
-    if (existing && this.subscriptions.get(topic).size >= this.maxSubscribersPerTopic) {
+    if (locallyHeld && this.subscriptions.get(topic).size >= this.maxSubscribersPerTopic) {
       return { reason: 'maxSubscribersPerTopic', limit: this.maxSubscribersPerTopic };
     }
     return null;

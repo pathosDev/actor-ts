@@ -23,6 +23,7 @@ import * as BrokerOptionsModule from '../../../../src/io/broker/BrokerOptions.js
 import { EmailBridgeActor, readEmailBridgeOptionsFromConfig } from '../../../../src/io/broker/EmailBridgeActor.js';
 import { GrpcClientActor, readGrpcClientOptionsFromConfig } from '../../../../src/io/broker/GrpcClientActor.js';
 import { GrpcServerActor, readGrpcServerOptionsFromConfig } from '../../../../src/io/broker/GrpcServerActor.js';
+import { DEFAULT_MAX_PENDING_REQUEST_MESSAGES } from '../../../../src/io/broker/GrpcServerOptions.js';
 import { JetStreamActor, readJetStreamOptionsFromConfig } from '../../../../src/io/broker/JetStreamActor.js';
 import {
   JetStreamKeyValueActor,
@@ -1368,6 +1369,7 @@ describe('readGrpcClientOptionsFromConfig', () => {
       service-name = "Orders"
       endpoint     = "orders.local:50051"
       deadline     = 2s
+      stream-idle-timeout = 5m
     }`);
     expectExactOptions(readGrpcClientOptionsFromConfig(config), {
       protoPath: ['./a.proto', './b.proto'],
@@ -1375,7 +1377,13 @@ describe('readGrpcClientOptionsFromConfig', () => {
       serviceName: 'Orders',
       endpoint: 'orders.local:50051',
       deadlineMs: 2_000,
+      streamIdleTimeoutMs: 300_000,
     });
+  });
+
+  test('stream-idle-timeout = 0 reads as 0, which turns the timeout off (#1222)', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.grpc.client.root}.stream-idle-timeout = 0`);
+    expectExactOptions(readGrpcClientOptionsFromConfig(config), { streamIdleTimeoutMs: 0 });
   });
 
   test.each([
@@ -1484,13 +1492,28 @@ describe('the gRPC server block', () => {
       package-name = "orders.v1"
       service-name = "Orders"
       bind         = "0.0.0.0:50051"
+      max-pending-request-messages = 64
     }`);
     expectExactOptions(readGrpcServerOptionsFromConfig(config), {
       protoPath: ['./a.proto', './b.proto'],
       packageName: 'orders.v1',
       serviceName: 'Orders',
       bind: '0.0.0.0:50051',
+      maxPendingRequestMessages: 64,
     });
+  });
+
+  test('max-pending-request-messages reaches the started server, and a non-positive one fails preStart (#1039)', async () => {
+    const started = await startGrpcServer(`${root} {\n${GRPC_SERVER_REQUIRED}\nmax-pending-request-messages = 16\n}`);
+    expect(started.failure).toBeNull();
+    expect(started.options?.['maxPendingRequestMessages']).toBe(16);
+
+    const unset = await startGrpcServer(`${root} {\n${GRPC_SERVER_REQUIRED}\n}`);
+    expect(unset.options?.['maxPendingRequestMessages']).toBe(DEFAULT_MAX_PENDING_REQUEST_MESSAGES);
+
+    const refused = await startGrpcServer(`${root} {\n${GRPC_SERVER_REQUIRED}\nmax-pending-request-messages = 0\n}`);
+    expect(refused.failure).toBeInstanceOf(OptionsError);
+    expect((refused.failure as OptionsError).message).toContain('maxPendingRequestMessages');
   });
 
   test('proto-path takes a single path, the way the docs write it', () => {
@@ -1901,13 +1924,22 @@ describe('readSseOptionsFromConfig', () => {
       headers { authorization = "Bearer x", x-trace = "on" }
       idle-timeout    = 90s
       connect-timeout = 5s
+      max-buffer-chars = 2048
     }`);
     expectExactOptions(readSseOptionsFromConfig(config), {
       url: 'https://events.local/stream',
       headers: { authorization: 'Bearer x', 'x-trace': 'on' },
       idleTimeoutMs: 90_000,
       connectTimeoutMs: 5_000,
+      maxBufferChars: 2_048,
     });
+  });
+
+  // #371: a count of UTF-16 code units, not bytes, so a size such as `2K`
+  // is refused rather than read as 2 048 of a unit the cap does not measure.
+  test('max-buffer-chars is a whole count, not a size', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.sse.root}.max-buffer-chars = 2K`);
+    expect(() => readSseOptionsFromConfig(config)).toThrow();
   });
 });
 

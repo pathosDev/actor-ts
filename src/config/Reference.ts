@@ -524,6 +524,18 @@ actor-ts {
     max-members = 1000
     max-tombstones = 10000
 
+    # Gossip frames one sender may hand this node per second (#1105).  The
+    # caps above bound what sticks, not the work: every record in a frame is
+    # decoded and checked even when all of them are refused.  A frame over
+    # the budget is discarded whole and counted under
+    # cluster_gossip_records_refused_total{reason="rate-limit"}; the
+    # connection stays.  The budget refills continuously and holds at most
+    # one second's worth.  It must stay above a sender's real rate: about
+    # 1000 / gossip-interval-ms, times a safety factor of at least 2 for join
+    # and promotion frames.  50 covers intervals down to about 40ms; raise it
+    # for a cluster that gossips faster.  0 disables it.
+    gossip-frames-per-second-per-sender = 50
+
     # Members that must be present before ANYTHING moves to "up" -- the
     # leader's promotions and a founder's own self-election alike.  1 is what
     # every release before this key did: the first node forms a cluster of one
@@ -1034,12 +1046,16 @@ actor-ts {
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
     # one mediator can be made to hold -- by local subscribers and by a peer's
     # gossiped topic claims alike.  A Subscribe over a cap is answered with
-    # SubscribeRejected, never silently dropped.
+    # SubscribeRejected, never silently dropped.  max-topics bounds two pools
+    # separately -- topics with a local subscriber, and topics only peers
+    # claim -- so a peer's claims never deny a local Subscribe; one sender
+    # may claim at most max-topics-claimed-per-sender of them.
     pub-sub {
       gossip-interval = 1s
       max-subscribers-per-topic = 10000
       max-topics = 10000
       max-remote-nodes-per-topic = 1000
+      max-topics-claimed-per-sender = 1024
       # A publish that reached no subscriber goes to system.deadLetters, so a
       # mistyped topic is observable instead of silent.  off = discard it.
       send-to-dead-letters-when-no-subscribers = on
@@ -1048,11 +1064,15 @@ actor-ts {
     # Cluster-wide service registry (Receptionist).  Subscribers are watched,
     # so a stopped one is dropped; the caps bound the ones that are still alive.
     # The total counts key/subscriber pairs, not distinct subscribers — one
-    # subscriber on three keys spends three of it.
+    # subscriber on three keys spends three of it.  What a peer's gossip may
+    # make this node hold is bounded per sender: at most
+    # max-registrations-claimed-per-sender actor paths, a key naming none
+    # counted as one.
     receptionist {
       gossip-interval = 1s
       max-subscribers-per-key = 1000
       max-subscriptions-total = 10000
+      max-registrations-claimed-per-sender = 10000
     }
   }
 
@@ -1458,7 +1478,7 @@ actor-ts {
   }
 
   # Reliable delivery -- the push+ack protocol behind ReliableDelivery.producer
-  # and ReliableDelivery.consumer.  These five layer UNDER whatever those two
+  # and ReliableDelivery.consumer.  These six layer UNDER whatever those two
   # statics were passed, so an explicit withWindowSize(...) still wins.  They
   # are read THERE and nowhere else: neither controller can read config from
   # its constructor, so one constructed directly and handed to system.spawn
@@ -1509,6 +1529,21 @@ actor-ts {
       # producer's set for as long as it keeps sending, the growth #728
       # bounded.
       max-out-of-order = 1024
+
+      # Most incarnations of ONE producerId held at once, the live one
+      # included.  A delivery under an incarnation the consumer has not seen
+      # does not replace the live window: anybody who can reach the consumer
+      # can name a live producerId, so a replacement would let one envelope
+      # empty that producer's duplicate suppression (#1237).  The new
+      # incarnation is held beside the old one, deduplicated in its own
+      # window, and promoted -- the old window dropped -- once the old one has
+      # gone quiet for producer-idle-time-to-live.  Past the cap a delivery
+      # under yet another incarnation is refused as a dead letter, with no
+      # handler call and no acknowledgment, so its producer retransmits it
+      # until a held incarnation goes quiet.  4 covers a producer that
+      # restarts three times inside one idle TTL; 0 -- unbounded -- lets a
+      # sender mint windows for one producerId without limit.
+      max-incarnations-per-producer = 4
     }
   }
 
@@ -2016,6 +2051,11 @@ actor-ts {
     enable-leave-endpoint   = false
     enable-down-endpoint    = false
     enable-metrics-endpoint = false
+    # So do the three that disclose the cluster's topology -- every member's
+    # internal host:port and roles, the leader, a type's shard-to-region map.
+    enable-members-endpoint = false
+    enable-leader-endpoint  = false
+    enable-shards-endpoint  = false
     # Extend the auth middleware over /health and /ready too.  Off, because a Kubernetes
     # probe cannot present a credential and would restart the pod on the 401.
     auth-protect-health     = false
@@ -2036,8 +2076,8 @@ actor-ts {
   }
 
   # The registry MetricsExtension installs, read when it builds one: enable()
-  # takes the cap for the in-process registry, enablePromClient(...) takes both
-  # leaves for the prom-client bridge, and options passed to either call win
+  # takes the two caps for the in-process registry, enablePromClient(...) takes
+  # every leaf for the prom-client bridge, and options passed to either call win
   # per field.  A mesh worker's registry is enabled with no options, so it runs
   # with the cap from the main thread's effective config.  The scrape endpoint
   # and the mesh relay stay where they are served:
@@ -2048,6 +2088,11 @@ actor-ts {
     # and the prom-client bridge alike.  0 disables the cap -- only safe when
     # every label value comes from a bounded set.
     max-series-per-family = 10000
+    # Metric families one registry may hold; a factory asked for a further name
+    # past it returns a no-op instrument and warns once, never throws.  Covers
+    # the in-process registry and the prom-client bridge alike.  0 disables
+    # the cap.
+    max-families = 1000
     # Prepended to every metric name the prom-client bridge registers, e.g.
     # "actor_ts_".  The bridge only: the in-process registry, and the
     # GET /metrics route that renders it, keep the bare names.

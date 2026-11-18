@@ -239,12 +239,12 @@ describe('SseActor — what a delimiter-free stream costs (#749)', () => {
 });
 
 /**
- * The actor's own bound on `SseEventBuffer`, mirrored.
+ * The actor's default bound on `SseEventBuffer`, mirrored.
  *
- * Kept as a literal rather than exported from `SseActor.ts`: the assertions
- * below match the refusal message *including this number*, so a change to the
- * constant fails these tests naming the value it moved to, which is what keeps
- * the mirror honest without widening the module's surface for a test.
+ * Kept as a literal rather than imported as `DEFAULT_SSE_MAX_BUFFER_CHARS`:
+ * the assertions below match the refusal message *including this number*, so
+ * a change to the default fails these tests naming the value it moved to,
+ * which is what keeps the mirror honest.
  */
 const SSE_MAX_BUFFER_CHARS = 1_048_576;
 
@@ -293,6 +293,44 @@ describe('SseActor — the pending-buffer cap (BRK-2)', () => {
     // What matters is that the breach was reported on the chunk that caused
     // it, rather than after it had been added to the buffer.
     expect(body.pulled()).toBeLessThanOrEqual(2);
+  });
+
+  // #371: the cap is an option now, so a feed with legitimately large events
+  // can raise it and a constrained deployment can lower it.
+  test('a configured maxBufferChars is the cap the feed is cut off at', async () => {
+    const received: SseEvent[] = [];
+    const actor = new ProbeSseActor({ target: collectingTarget(received), maxBufferChars: 4_096 });
+    const body = pullStreamOf(encode('x'.repeat(1_024)), 64);
+
+    await actor.consumeStream(body.stream);
+
+    expect(actor.lost).toEqual(['SSE event buffer exceeded 4096 chars without a delimiter']);
+    expect(body.pulled()).toBeLessThanOrEqual(4 + 2);
+    expect(received).toEqual([]);
+  });
+
+  test('an event exactly at a configured cap is still delivered', async () => {
+    const received: SseEvent[] = [];
+    // `data: ` plus 4 088 chars plus the blank line is 4 096 chars on the wire.
+    const event = `data: ${'y'.repeat(4_096 - 8)}\n\n`;
+    expect(event.length).toBe(4_096);
+    const actor = new ProbeSseActor({ target: collectingTarget(received), maxBufferChars: 4_096 });
+
+    await actor.consumeStream(pullStreamOf(encode(event), 1).stream);
+
+    // The body ends after the one event, which is the only loss reported.
+    expect(actor.lost).toEqual(['SSE stream ended']);
+    expect(received.map((e) => e.data.length)).toEqual([4_096 - 8]);
+  });
+
+  test('a cap raised above the default admits a single event larger than it', async () => {
+    const received: SseEvent[] = [];
+    const actor = new ProbeSseActor({ target: collectingTarget(received), maxBufferChars: 2 * SSE_MAX_BUFFER_CHARS });
+
+    await actor.consumeStream(pullStreamOf(encode(`data: ${'z'.repeat(SSE_MAX_BUFFER_CHARS)}\n\n`), 1).stream);
+
+    expect(actor.lost).toEqual(['SSE stream ended']);
+    expect(received).toHaveLength(1);
   });
 });
 

@@ -153,7 +153,7 @@ A short tour of what's in the box:
   time and replayable by id — with a replay cap so a poison message cannot
   be retried into an ever-growing queue.
 - **Observability** — Prometheus exporter, OTel tracing, management
-  HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
+  HTTP endpoints (`/health`, `/ready`, plus opt-in `/cluster/members`, `/cluster/shards`),
   out-of-the-box stock metrics.
 - **Multi-sink logging** — one record to several destinations at once, each
   with its own minimum level, with bounded queues, batched delivery and a
@@ -507,6 +507,23 @@ or a real network.
 spread behind every figure, the pinned version of every arm, and what is
 deliberately not measured yet.  Reproduce with
 `bun run bench:compare -- --rounds=100`.
+
+---
+## Known security caveats
+
+**Deferred work inherits the log context (MDC) of the turn that started
+it.** `AsyncLocalStorage` binds a promise to the context current when it
+was created, so a background drain, a batch flush or a raw `setTimeout`
+started inside one message's turn stamps *that* turn's fields — tenant,
+user, correlation id — onto every log line and every `tell` it makes
+later. When the deferred work serves another principal, that is a
+cross-tenant data leak, not just a confusing log line. The framework
+cannot see such a promise, so closing it is the caller's job:
+`LogContext.runFresh(callback)` for work that belongs to nobody (it starts
+from an empty context), and `LogContext.runEach(entries, callback)` for a
+batch whose items each carry the context captured when they were
+enqueued. See
+[What is still yours to close](https://actor-ts.dev/fundamentals/logging/#what-is-still-yours-to-close).
 
 ---
 ## Roadmap & status

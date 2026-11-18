@@ -39,6 +39,8 @@ import {
   MongoDurableStateStoreOptions,
 } from '../../../../src/persistence/durable-state-stores/MongoDurableStateStoreOptions.js';
 import { MongoQuery } from '../../../../src/persistence/query/MongoQuery.js';
+import { DEFAULT_DURABLE_STATE_TABLE, DEFAULT_SNAPSHOTS_TABLE } from '../../../../src/persistence/Constants.js';
+import { DEFAULT_MONGO_DATABASE } from '../../../../src/persistence/journals/MongoClient.js';
 import { encodePayload } from '../../../../src/persistence/storage/PayloadCodec.js';
 import { assertCompletesWithin } from '../../../util/AsyncAssertions.js';
 import { FakeMongoClient } from './FakeMongoClient.js';
@@ -388,27 +390,33 @@ describe('the guard checks the type and nothing else', () => {
     await journal.close();
   });
 
-  test('the sibling stores stay open to a legacy id on every door, including their writes', async () => {
-    // Same contract, and for these two it reaches further than it does for the
-    // journal: neither store runs the full validator at all — the write rules
-    // live one layer up, in `PersistentActor` and the durable-state options
-    // validator — so promoting the type check must not quietly become the
-    // store's first id validation.  `save` and `upsert` are guarded here
-    // because their filters carry the id, not because writes were tightened.
+  test('the sibling stores stay open to a legacy id on every read and delete door, and refuse it on write', async () => {
+    // Same contract as the journal's.  The type check is the only read-side
+    // guard, so a record stored under an id today's rules refuse stays
+    // readable and removable.  The writes are the other half: since #1632
+    // `save` and `upsert` run the full validator, as every journal's `append`
+    // does, so the legacy record is planted on the collection directly.
     const client = new FakeMongoClient();
     const snapshots = new MongoSnapshotStore(MongoSnapshotStoreOptions.create().withClient(client));
     const states = new MongoDurableStateStore(MongoDurableStateStoreOptions.create().withClient(client));
     const legacyId = 'legacy/stream';   // a path separator — refused on append since #133
 
-    await snapshots.save(legacyId, 1, { balance: 7 });
+    await expect(snapshots.save(legacyId, 1, { balance: 7 })).rejects.toThrow(/path separator/);
+    await expect(states.upsert(legacyId, 0, { items: 3 })).rejects.toThrow(/path separator/);
+    const database = client.db(DEFAULT_MONGO_DATABASE);
+    await database.collection(DEFAULT_SNAPSHOTS_TABLE).insertOne({
+      persistenceId: legacyId, sequenceNr: 1, payload: encodePayload({ balance: 7 }), timestamp: 1,
+    });
+    await database.collection(DEFAULT_DURABLE_STATE_TABLE).insertOne({
+      _id: legacyId, revision: 1, payload: encodePayload({ items: 3 }), timestamp: 1,
+    });
+
     expect((await snapshots.loadLatest<{ balance: number }>(legacyId)).toArray()).toHaveLength(1);
     expect((await snapshots.loadBefore<{ balance: number }>(legacyId, 2)).toArray()).toHaveLength(1);
     await snapshots.delete(legacyId, 1);
     expect((await snapshots.loadLatest<{ balance: number }>(legacyId)).toArray()).toEqual([]);
 
-    await states.upsert(legacyId, 0, { items: 3 });
-    expect((await states.load<{ items: number }>(legacyId)).toArray()).toHaveLength(1);
-    await states.upsert(legacyId, 1, { items: 4 });
+    expect((await states.load<{ items: number }>(legacyId)).toNullable()?.state).toEqual({ items: 3 });
     await states.delete(legacyId);
     expect((await states.load<{ items: number }>(legacyId)).toArray()).toEqual([]);
 

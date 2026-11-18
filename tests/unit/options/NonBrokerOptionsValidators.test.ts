@@ -53,6 +53,7 @@ import {
 } from '../../../src/delivery/ProducerControllerOptions.js';
 import {
   ConsumerControllerOptionsValidator,
+  DEFAULT_MAX_INCARNATIONS_PER_PRODUCER,
   DEFAULT_MAX_OUT_OF_ORDER,
   DEFAULT_MAX_PRODUCERS,
   DEFAULT_PRODUCER_IDLE_TTL_MS,
@@ -1206,6 +1207,19 @@ describe('ConsumerControllerOptionsValidator', () => {
     expect(() => check({ maxOutOfOrder: Number.NaN })).toThrow(/maxOutOfOrder/);
   });
 
+  test('rejects a maxIncarnationsPerProducer that is not a positive integer, and accepts Infinity', () => {
+    // 1 is legal — it holds no incarnation beside the live one, so a restart
+    // is refused until the old incarnation goes quiet — and 0 is not: it
+    // would refuse every producer's first delivery.
+    expect(() => check({ maxIncarnationsPerProducer: 0 })).toThrow(OptionsError);
+    expect(() => check({ maxIncarnationsPerProducer: -1 })).toThrow(/maxIncarnationsPerProducer/);
+    expect(() => check({ maxIncarnationsPerProducer: 2.5 })).toThrow(/maxIncarnationsPerProducer/);
+    expect(() => check({ maxIncarnationsPerProducer: Number.NaN })).toThrow(/maxIncarnationsPerProducer/);
+    expect(() => check({ maxIncarnationsPerProducer: 1 })).not.toThrow();
+    expect(() => check({ maxIncarnationsPerProducer: Infinity })).not.toThrow();
+    expect(() => check({ maxIncarnationsPerProducer: DEFAULT_MAX_INCARNATIONS_PER_PRODUCER })).not.toThrow();
+  });
+
   test('accepts Infinity on all three bounds — it is the documented opt-out', () => {
     // `Infinity` is the value that says "no cap" / "no sweep" / "retain every
     // out-of-order sequence", so the generic positiveInt / positiveNumber
@@ -1373,10 +1387,14 @@ describe('gossip-interval validators', () => {
     expect(() => check({ maxSubscribersPerTopic: 0 })).toThrow(/maxSubscribersPerTopic/);
     expect(() => check({ maxTopics: 0 })).toThrow(/maxTopics/);
     expect(() => check({ maxRemoteNodesPerTopic: 2.5 })).toThrow(/maxRemoteNodesPerTopic/);
+    // #1074: a quota of 0 would drop every peer's claims — a mediator nothing
+    // remote can publish to.
+    expect(() => check({ maxTopicsClaimedPerSender: 0 })).toThrow(/maxTopicsClaimedPerSender/);
     expect(() => check({
       maxSubscribersPerTopic: 10_000,
       maxTopics: 10_000,
       maxRemoteNodesPerTopic: 1_000,
+      maxTopicsClaimedPerSender: 1_024,
       sendToDeadLettersWhenNoSubscribers: false,
     })).not.toThrow();
   });

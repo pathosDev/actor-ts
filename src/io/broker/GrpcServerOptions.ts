@@ -13,9 +13,23 @@
  * so they went when the breaker became an id (#1478).
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { HealthCheckRegistry } from '../../management/HealthCheck.js';
 import type { GrpcChannelOptions } from './GrpcClientOptions.js';
 import type { GrpcHandler } from './GrpcServerActor.js';
+
+/**
+ * Built-in default of {@link GrpcServerOptionsType.maxPendingRequestMessages}.
+ *
+ * The hold it bounds spans one gap: between grpc-js handing the call over and
+ * the handler actor's first turn, where it calls `onData`.  A handler that
+ * subscribes promptly holds a handful of frames there at most, so 1024 leaves
+ * three orders of magnitude for a busy mailbox while still refusing a client
+ * that streams into a handler that never subscribes.  Frames, not bytes: a
+ * chunk reaches this point already decoded, and the size of each one is
+ * bounded separately, by `grpc.max_receive_message_length`.
+ */
+export const DEFAULT_MAX_PENDING_REQUEST_MESSAGES = 1024;
 
 export type GrpcServerOptionsType = {
   readonly protoPath?: string | ReadonlyArray<string>;
@@ -71,6 +85,19 @@ export type GrpcServerOptionsType = {
    * a connection outlives every RPC on it.
    */
   readonly channelOptions?: GrpcChannelOptions;
+  /**
+   * Request-stream frames held for a client-stream or bidi call whose handler
+   * has not called `onData` yet.  Default
+   * {@link DEFAULT_MAX_PENDING_REQUEST_MESSAGES}; HOCON
+   * `max-pending-request-messages`.
+   *
+   * The hold exists because the handler subscribes a turn after the call
+   * arrives, but the peer decides how long the call stays open and how fast
+   * it streams.  One frame past the cap ends the call with
+   * `RESOURCE_EXHAUSTED` (8) and drops what was held (#1039).  It bounds the
+   * hold only: once a handler subscribes, frames go straight to it.
+   */
+  readonly maxPendingRequestMessages?: number;
 };
 
 export class GrpcServerOptionsBuilder extends OptionsBuilder<GrpcServerOptionsType> {
@@ -122,6 +149,24 @@ export class GrpcServerOptionsBuilder extends OptionsBuilder<GrpcServerOptionsTy
   /** grpc-js channel options for the bound server — see {@link GrpcChannelOptions}. */
   withChannelOptions(channelOptions: GrpcChannelOptions): this {
     return this.set('channelOptions', channelOptions);
+  }
+
+  /**
+   * Request-stream frames held before a handler subscribes — see
+   * {@link GrpcServerOptionsType.maxPendingRequestMessages}.
+   */
+  withMaxPendingRequestMessages(maxPendingRequestMessages: number): this {
+    return this.set('maxPendingRequestMessages', maxPendingRequestMessages);
+  }
+}
+
+/** Validates resolved {@link GrpcServerOptionsType} settings. */
+export class GrpcServerOptionsValidator extends OptionsValidator<GrpcServerOptionsType> {
+  constructor() {
+    super('GrpcServerOptions');
+  }
+  protected rules(_s: Partial<GrpcServerOptionsType>): void {
+    this.positiveInt('maxPendingRequestMessages');
   }
 }
 

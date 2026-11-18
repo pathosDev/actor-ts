@@ -171,6 +171,7 @@ soon as the `Terminated` lands. You do not have to unsubscribe in
 | --- | --- | --- |
 | `maxSubscribersPerKey` | `cluster.receptionist.max-subscribers-per-key` | `1000` |
 | `maxSubscriptionsTotal` | `cluster.receptionist.max-subscriptions-total` | `10000` |
+| `maxRegistrationsClaimedPerSender` | `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` |
 
 ```ts
 const receptionistOptions = ReceptionistOptions.create()
@@ -184,6 +185,16 @@ counts subscribers on one key. `maxSubscriptionsTotal` counts
 **key/subscriber pairs** across every key, so one subscriber watching three
 keys spends three of it — pairs are what bounds the memory, because nothing
 limits how many keys a single subscriber may hold.
+
+`maxRegistrationsClaimedPerSender` bounds the other side: what a
+peer's gossip may make this node hold (#1073).  Each peer may claim
+at most that many registrations — the actor paths it names, a key
+naming none counted as one — and a claim past it is dropped whole
+and logged with the peer named; the connection stays.  It is a quota
+per peer rather than a cap on keys, so the first peer to reach it
+denies nothing to the others.  Raise it if one node of yours
+registers more actors than this: the registrations past it are not
+discovered on the other nodes.
 
 A `Subscribe` over either cap is **refused, not dropped**: the
 `replyTo` receives a `ReceptionistSubscribeRejected` instead of the

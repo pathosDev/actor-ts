@@ -275,11 +275,22 @@ describe('ReliableDelivery — the handler is serialised (#643)', () => {
     // the cell `undefined`, so the mailbox keeps draining at wire speed into
     // an unbounded internal queue.  The cell doing the serialising is what
     // makes the mailbox the back-pressure point, and this is what asserts it.
-    const controller = new ConsumerController<string>({
-      // Suspends, so the returned promise is genuinely pending rather than an
-      // already-settled one a synchronous implementation could also produce.
-      handler: async () => { await sleep(5); },
-    });
+    //
+    // Spawned, though nothing is sent to it through the mailbox: the
+    // controller reads `system.clock` for its deduplication timestamps, and
+    // only a started actor has a system to read it from.
+    const kit = quietKit('rd-on-receive-returns-promise');
+    let spawned: ConsumerController<string> | null = null;
+    kit.system.spawn<Delivery<string>>(() => {
+      spawned = new ConsumerController<string>({
+        // Suspends, so the returned promise is genuinely pending rather than an
+        // already-settled one a synchronous implementation could also produce.
+        handler: async () => { await sleep(5); },
+      });
+      return spawned;
+    }, 'on-receive-returns-promise');
+    await awaitCondition(() => spawned !== null, { timeoutMs: 4_000, label: 'the consumer was constructed' });
+    const controller = spawned! as ConsumerController<string>;
     const returned = controller.onReceive({
       kind: 'reliable-delivery.delivery',
       producerId: 'orders',
@@ -293,6 +304,7 @@ describe('ReliableDelivery — the handler is serialised (#643)', () => {
 
     expect(returned).toBeInstanceOf(Promise);
     await returned;
+    await kit.system.terminate();
   });
 
   test('a sleeping handler is never entered while an earlier invocation is still running', async () => {

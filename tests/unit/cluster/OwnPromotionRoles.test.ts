@@ -32,10 +32,8 @@
  * a node that knows none of the last two carries none rather than the
  * stranger's.
  *
- * Not pinned here, and not closed: the record's **version** is still taken as
- * sent, bounded only by the #114 skew cap (`maxVersionSkewMs`), so a stranger
- * can push this node's version up to that bound.  Clamping it is tracked in
- * #1797.
+ * Not pinned here: the record's **version**, which a promotion moves at most
+ * one step past this node's own — `OwnPromotionVersion.test.ts` (#1797).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';

@@ -28,6 +28,23 @@ export const DEFAULT_ENABLE_DOWN_ENDPOINT = false;
 export const DEFAULT_ENABLE_METRICS_ENDPOINT = false;
 
 /**
+ * `GET /cluster/members` is off until an operator asks for it (#971).
+ *
+ * It answers every member's internal `host:port`, status and roles — a map
+ * of the cluster's address space, served to whoever reaches the port.  The
+ * mutating endpoints were already opt-in; the ones that disclose the
+ * topology are now too, so a bare `managementRoutes(system, cluster)` serves
+ * the probes and nothing an unauthenticated caller can map the cluster with.
+ */
+export const DEFAULT_ENABLE_MEMBERS_ENDPOINT = false;
+
+/** `GET /cluster/leader` is off until an operator asks for it.  See {@link DEFAULT_ENABLE_MEMBERS_ENDPOINT}. */
+export const DEFAULT_ENABLE_LEADER_ENDPOINT = false;
+
+/** `GET /cluster/shards` is off until an operator asks for it.  See {@link DEFAULT_ENABLE_MEMBERS_ENDPOINT}. */
+export const DEFAULT_ENABLE_SHARDS_ENDPOINT = false;
+
+/**
  * `/health` and `/ready` stay anonymous even when `auth` guards the rest.
  *
  * Off because a Kubernetes probe cannot attach credentials: an on-by-default
@@ -43,6 +60,12 @@ export type ManagementRoutesOptionsType = {
   readonly enableDownEndpoint?: boolean;
   /** Expose `GET /metrics` in Prometheus text format.  Off by default. */
   readonly enableMetricsEndpoint?: boolean;
+  /** Expose `GET /cluster/members` — every member's address, status and roles.  Off by default. */
+  readonly enableMembersEndpoint?: boolean;
+  /** Expose `GET /cluster/leader`.  Off by default. */
+  readonly enableLeaderEndpoint?: boolean;
+  /** Expose `GET /cluster/shards?type=…` — one type's shard-to-region map.  Off by default. */
+  readonly enableShardsEndpoint?: boolean;
   /** Auth middleware for the privileged subset of management routes. */
   readonly auth?: Middleware;
   /** IP-allowlist middleware applied to every management endpoint (incl. health). */
@@ -75,6 +98,21 @@ export class ManagementRoutesOptionsBuilder extends OptionsBuilder<ManagementRou
   /** Expose `GET /metrics` in Prometheus text format. */
   withMetricsEndpoint(enable = true): this {
     return this.set('enableMetricsEndpoint', enable);
+  }
+
+  /** Expose `GET /cluster/members`. */
+  withMembersEndpoint(enable = true): this {
+    return this.set('enableMembersEndpoint', enable);
+  }
+
+  /** Expose `GET /cluster/leader`. */
+  withLeaderEndpoint(enable = true): this {
+    return this.set('enableLeaderEndpoint', enable);
+  }
+
+  /** Expose `GET /cluster/shards?type=…`. */
+  withShardsEndpoint(enable = true): this {
+    return this.set('enableShardsEndpoint', enable);
   }
 
   /** Auth middleware for the privileged routes. */
@@ -137,6 +175,9 @@ export const defaultManagementRoutesOptions: ResolvedManagementRoutesOptions = {
   enableLeaveEndpoint: DEFAULT_ENABLE_LEAVE_ENDPOINT,
   enableDownEndpoint: DEFAULT_ENABLE_DOWN_ENDPOINT,
   enableMetricsEndpoint: DEFAULT_ENABLE_METRICS_ENDPOINT,
+  enableMembersEndpoint: DEFAULT_ENABLE_MEMBERS_ENDPOINT,
+  enableLeaderEndpoint: DEFAULT_ENABLE_LEADER_ENDPOINT,
+  enableShardsEndpoint: DEFAULT_ENABLE_SHARDS_ENDPOINT,
   authProtectHealth: DEFAULT_AUTH_PROTECT_HEALTH,
   livenessPath: DEFAULT_LIVENESS_PATH,
   readinessPath: DEFAULT_READINESS_PATH,
@@ -205,6 +246,15 @@ export function readManagementRoutesOptionsFromConfig(
   }
   if (config.hasPath(keys.enableMetricsEndpoint)) {
     out.enableMetricsEndpoint = config.getBoolean(keys.enableMetricsEndpoint);
+  }
+  if (config.hasPath(keys.enableMembersEndpoint)) {
+    out.enableMembersEndpoint = config.getBoolean(keys.enableMembersEndpoint);
+  }
+  if (config.hasPath(keys.enableLeaderEndpoint)) {
+    out.enableLeaderEndpoint = config.getBoolean(keys.enableLeaderEndpoint);
+  }
+  if (config.hasPath(keys.enableShardsEndpoint)) {
+    out.enableShardsEndpoint = config.getBoolean(keys.enableShardsEndpoint);
   }
   if (config.hasPath(keys.authProtectHealth)) {
     out.authProtectHealth = config.getBoolean(keys.authProtectHealth);

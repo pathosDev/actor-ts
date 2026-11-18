@@ -107,7 +107,7 @@ async function startNode(
     : cluster.sharding.start<Command>(shardingOptions);
   const binding = await system.extension(HttpExtensionId)
     .newServerAt('127.0.0.1', 0)
-    .bind(managementRoutes(system, cluster));
+    .bind(managementRoutes(system, cluster, { enableShardsEndpoint: true }));
   return { system, cluster, region, binding };
 }
 

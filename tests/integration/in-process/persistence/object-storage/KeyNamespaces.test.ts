@@ -315,14 +315,19 @@ describe('#716 — only this store\'s own keys are read, deleted or pruned', () 
   });
 
   test('a nested persistenceId is invisible to the entity it nests under', async () => {
-    // The reported headline exploit.  An id containing `/` cannot reach a
-    // store through an actor any more (#133 refuses it at `preStart`), but a
-    // migration script or a custom wrapper still calls `save` directly —
-    // store-level id validation is #1070 — and the read-across is what this
-    // filter closes regardless of how the key got there.
+    // The reported headline exploit.  An id containing `/` can no longer be
+    // written through an actor (#133) nor through `save` itself (#1070), but a
+    // co-tenant, an insider or a pre-#133 version can still have put the key
+    // in the bucket — the read-across is what this filter closes regardless
+    // of how the key got there, so the body is planted straight on the backend.
     const store = snapshotStore();
     await store.save('user1', 7, { owner: 'victim' });
-    await store.save('user1/zzz', 1, { owner: 'ATTACKER' });
+    await putSnapshotBody(
+      `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}user1/zzz/00000000000000000001.json`,
+      'user1/zzz',
+      1,
+      { owner: 'ATTACKER' },
+    );
 
     const latest = await store.loadLatest<{ owner: string }>('user1');
     expect(latest.toNullable()?.state).toEqual({ owner: 'victim' });

@@ -24,9 +24,13 @@ erzeugt.
 
 Ein **Short-Circuit, der wirft**, wird ebenfalls geechot: Die 401 oder 403,
 die eine Auth- oder CSRF-Schicht darunter wirft, kommt mit der ID zurück —
-und genau zu dieser Response sucht später jemand die Log-Zeile. Die Ausnahme
-ist ein unbehandelter Wurf: Er wird auf die generische 500 gemappt, die
-bewusst nichts aus dem geworfenen Wert übernimmt, und kommt daher ohne ID an.
+und genau zu dieser Response sucht später jemand die Log-Zeile. Ein
+unbehandelter Wurf wird unverändert weitergeworfen, damit ein Error-Handler
+weiter außen weiterhin genau den Wert bekommt, den der Handler geworfen hat.
+Die ID wird stattdessen zu diesem Wert vermerkt: Die generische 500 trägt sie
+im selben Header, und die Fehler-Logzeile nennt sie. Ein `withErrorHandler`,
+der seine eigene 500 baut, liest sie mit `requestIdOfError(err)` zurück; die
+Funktion liefert `{ headerName, id }` oder `undefined`.
 
 ## Die ID wieder auslesen
 

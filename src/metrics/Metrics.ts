@@ -64,6 +64,7 @@ import {
   THREAD_LABEL,
 } from './Constants.js';
 import {
+  DEFAULT_MAX_FAMILIES,
   DEFAULT_MAX_SERIES_PER_FAMILY,
   MetricsRegistryOptionsValidator,
   type MetricsRegistryOptions,
@@ -225,18 +226,30 @@ class HistogramImplementation implements Histogram {
  * reusable — the next tuple mints a real series again — but the overflow
  * child stays, because it is the standing record that tuples were
  * discarded and its counter still holds how many.
+ *
+ * `labelNames` is the label-name set of the first *labelled* tuple the
+ * family minted, recorded once and never changed.  The overflow tuple is
+ * built from it rather than from the tuple the cap rejected (#1067): an
+ * unlabeled rejected tuple would otherwise give an empty overflow tuple,
+ * which is the key of the family's regular unlabeled series — the folded
+ * counts landed there and no series carried the marker — and a rejected
+ * tuple naming a subset of the labels gave an overflow series shaped
+ * unlike its siblings.  The prom-client bridge fixes its names the same
+ * way, because prom-client declares them when the family is constructed.
  */
 type CounterFamily = {
   readonly kind: 'counter';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: CounterImplementation }>;
   overflowKey?: string;
+  labelNames?: ReadonlyArray<string>;
 };
 type GaugeFamily = {
   readonly kind: 'gauge';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: GaugeImplementation }>;
   overflowKey?: string;
+  labelNames?: ReadonlyArray<string>;
 };
 type HistogramFamily = {
   readonly kind: 'histogram';
@@ -244,6 +257,7 @@ type HistogramFamily = {
   readonly buckets: ReadonlyArray<number>;
   readonly children: Map<string, { labels: Labels; metric: HistogramImplementation }>;
   overflowKey?: string;
+  labelNames?: ReadonlyArray<string>;
 };
 
 type Family = CounterFamily | GaugeFamily | HistogramFamily;
@@ -346,6 +360,10 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   private readonly families = new Map<string, Family>();
   /** Distinct label tuples one family may mint; `0` disables the cap. */
   private readonly maxSeriesPerFamily: number;
+  /** Families the registry may hold; `0` disables the cap (#1068). */
+  private readonly maxFamilies: number;
+  /** One-shot flag for the family-cap warning; re-armed by {@link clear}. */
+  private familyCapReported = false;
 
   constructor(options: MetricsRegistryOptions = {}) {
     // Destructuring default rather than a spread: `undefined` on the way
@@ -353,23 +371,28 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
     // shadow it.
     const {
       maxSeriesPerFamily = DEFAULT_MAX_SERIES_PER_FAMILY,
+      maxFamilies = DEFAULT_MAX_FAMILIES,
     } = options as MetricsRegistryOptionsType;
-    new MetricsRegistryOptionsValidator().validate({ maxSeriesPerFamily });
+    new MetricsRegistryOptionsValidator().validate({ maxSeriesPerFamily, maxFamilies });
     this.maxSeriesPerFamily = maxSeriesPerFamily;
+    this.maxFamilies = maxFamilies;
   }
 
   counter(name: string, labels: Labels = {}, options: CounterOptions = {}): Counter {
     const family = this.familyOf(name, 'counter', options.help);
+    if (family === null) return NOOP_COUNTER;
     return this.childOf<CounterImplementation>(name, family, labels, () => new CounterImplementation());
   }
 
   gauge(name: string, labels: Labels = {}, options: GaugeOptions = {}): Gauge {
     const family = this.familyOf(name, 'gauge', options.help);
+    if (family === null) return NOOP_GAUGE;
     return this.childOf<GaugeImplementation>(name, family, labels, () => new GaugeImplementation());
   }
 
   histogram(name: string, labels: Labels = {}, options: HistogramOptions = {}): Histogram {
     const family = this.familyOf(name, 'histogram', options.help, options.buckets);
+    if (family === null) return NOOP_HISTOGRAM;
     return this.childOf<HistogramImplementation>(name, family, labels,
       () => new HistogramImplementation((family as HistogramFamily).buckets));
   }
@@ -426,14 +449,21 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
 
   clear(): void {
     this.families.clear();
+    this.familyCapReported = false;
   }
 
   /* ----------------------------- internals ---------------------------- */
 
+  /**
+   * The family `name` writes to, or `null` when it would be a new family and
+   * the registry is at its family cap (#1068) — the caller then hands back a
+   * no-op instrument.  A family has no overflow equivalent: the name is its
+   * identity, so there is nothing to fold a refused one into.
+   */
   private familyOf(
     name: string, kind: Family['kind'], help: string | undefined,
     buckets?: ReadonlyArray<number>,
-  ): Family {
+  ): Family | null {
     const existing = this.families.get(name);
     if (existing) {
       if (existing.kind !== kind) {
@@ -449,6 +479,16 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
     // question whose answer cannot change — a name already in the map was
     // validated on the way in.
     assertValidMetricName(name);
+    // After the name check, so a malformed name is refused wherever the
+    // registry stands, and the warning below only ever interpolates a name
+    // that has passed it.
+    if (this.maxFamilies > 0 && this.families.size >= this.maxFamilies) {
+      if (!this.familyCapReported) {
+        this.familyCapReported = true;
+        warnFamilyCapReached(this.maxFamilies, name);
+      }
+      return null;
+    }
     let family: Family;
     if (kind === 'counter') {
       family = { kind: 'counter', help: help ?? '', children: new Map() };
@@ -481,6 +521,10 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
     if (this.maxSeriesPerFamily > 0 && family.children.size >= this.maxSeriesPerFamily) {
       return this.overflowChildOf<M>(name, family, labels, factory);
     }
+    if (family.labelNames === undefined) {
+      const labelNames = Object.keys(labels);
+      if (labelNames.length > 0) family.labelNames = labelNames;
+    }
     const metric = factory();
     // Stored normalised, not as passed.  The child is the series, and what the
     // series *is* has to be the tuple every exporter will carry: `collect()`
@@ -495,8 +539,9 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
    * The family is at its cap: hand back its single overflow child,
    * creating it (and warning once) on the first tuple that overflows.
    *
-   * The overflow tuple reuses the *label names* of that first rejected
-   * tuple with every value replaced by {@link METRICS_OVERFLOW_LABEL_VALUE},
+   * The overflow tuple reuses the family's *label names* (see
+   * `labelNames` on the family types) with every value replaced by
+   * {@link METRICS_OVERFLOW_LABEL_VALUE},
    * so the series stays shaped like its siblings and a dashboard grouping
    * on those labels still sees it.  A synthetic label *name* would not
    * work: Prometheus reserves `__`-prefixed names and strips them at
@@ -507,7 +552,10 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
     name: string, family: Family, labels: Labels, factory: () => M,
   ): M {
     if (family.overflowKey === undefined) {
-      const overflowLabels = overflowLabelsOf(Object.keys(labels));
+      // No names recorded means every series the family holds is the
+      // unlabeled one, so the rejected tuple cannot be `{}` (that would have
+      // been the memo hit) and its own names are the only ones there are.
+      const overflowLabels = overflowLabelsOf(family.labelNames ?? Object.keys(labels));
       const key = seriesKey(overflowLabels);
       family.overflowKey = key;
       if (!family.children.has(key)) {
@@ -823,6 +871,22 @@ export function warnCardinalityOverflow(
 }
 
 /**
+ * One-shot warning when a registry reaches its family cap (#1068).  A bare
+ * `console.warn` for the same reason as {@link warnCardinalityOverflow};
+ * callers guarantee the once-per-registry part.  The name goes through
+ * `JSON.stringify` because the prom-client bridge checks names only when it
+ * constructs a family, which is exactly what it does not do here.
+ */
+export function warnFamilyCapReached(maxFamilies: number, refusedName: string): void {
+  console.warn(
+    `metrics: registry reached maxFamilies=${maxFamilies}; further metric names get a no-op ` +
+    `instrument and record nothing. A metric name built from request data is the usual cause — ` +
+    `move the varying part into a bounded label or raise the cap. First refused name: ` +
+    `${JSON.stringify(refusedName)}`,
+  );
+}
+
+/**
  * Map a possibly-unbounded value onto a bounded label domain: `value` if
  * it is one of `allowed`, `'other'` otherwise.
  *
@@ -843,9 +907,13 @@ export function bucketize<T extends string>(
 
 /* ------------------------------ Noop ------------------------------- */
 
-const NOOP_COUNTER: Counter = { inc: () => {}, get value() { return 0; } };
-const NOOP_GAUGE: Gauge = { set: () => {}, inc: () => {}, dec: () => {}, get value() { return 0; } };
-const NOOP_HIST: Histogram = {
+/*
+ * The no-op instruments, shared by {@link NoopMetricsRegistry} and by both
+ * registries past their family cap (#1068).
+ */
+export const NOOP_COUNTER: Counter = { inc: () => {}, get value() { return 0; } };
+export const NOOP_GAUGE: Gauge = { set: () => {}, inc: () => {}, dec: () => {}, get value() { return 0; } };
+export const NOOP_HISTOGRAM: Histogram = {
   observe: () => {},
   buckets: [],
   counts: [],
@@ -870,7 +938,7 @@ const NOOP_HIST: Histogram = {
 export class NoopMetricsRegistry implements MetricsRegistry {
   counter(_name: string, _labels?: Labels, _options?: CounterOptions): Counter { return NOOP_COUNTER; }
   gauge(_name: string, _labels?: Labels, _options?: GaugeOptions): Gauge { return NOOP_GAUGE; }
-  histogram(_name: string, _labels?: Labels, _options?: HistogramOptions): Histogram { return NOOP_HIST; }
+  histogram(_name: string, _labels?: Labels, _options?: HistogramOptions): Histogram { return NOOP_HISTOGRAM; }
   collect(): ReadonlyArray<MetricSample> { return []; }
   /** Always `false` — nothing was minted here, so nothing can be removed. */
   remove(_name: string, _labels?: Labels): boolean { return false; }

@@ -137,6 +137,20 @@ export const PAYLOAD_TOO_LARGE_RESPONSE: HttpResponse = Object.freeze({
 });
 
 /**
+ * The answer to a path no route matches when the tree has no `fallback()`
+ * (#1059).  The bind installs it through each backend's not-found hook, so
+ * it passes through `writeResponse` and carries the server-wide default
+ * headers — left to the backend, that 404 carried none.  The body is fixed
+ * and the same `{ error }` shape the default error mapping writes; it never
+ * names the requested path, which Fastify's own 404 echoed back.
+ */
+export const NOT_FOUND_RESPONSE: HttpResponse = Object.freeze({
+  status: 404,
+  body: Object.freeze({ error: 'Not Found' }),
+  contentType: 'application/json; charset=utf-8',
+});
+
+/**
  * What {@link enforceHeaderTimeout} writes to a socket that never finished its
  * header block, before hanging up.
  *

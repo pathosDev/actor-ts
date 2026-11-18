@@ -2,8 +2,9 @@
  * The half of `smallest-mailbox` cluster routing that runs on a routee node.
  *
  * It answers exactly one question — "how deep is the mailbox of the actor at
- * this path?" — and holds nothing: no timer, no history, no connection.  One
- * entry in the cluster's envelope-handler map, and a path walk per query.
+ * this path?" — for the routee paths it was asked to serve, and holds nothing
+ * else: no timer, no history, no connection.  One entry in the cluster's
+ * envelope-handler map, and a path walk per query.
  */
 import { LocalActorRef } from '../../internal/LocalActorRef.js';
 import { parsePathSegments } from '../../ActorPath.js';
@@ -38,26 +39,44 @@ const agentsByCluster = new WeakMap<Cluster, ServedAgent>();
 
 export class ClusterMailboxDepthAgent {
   private release: (() => void) | null = null;
+  /**
+   * The routee paths this node answers for, in full wire form, each counted
+   * by the holders that registered it (#1042).  A query for any other path is
+   * met with silence, so the lane cannot be used to read the queue depth of
+   * an actor no router names.
+   */
+  private readonly servedPaths = new Map<string, number>();
 
   private constructor(private readonly cluster: Cluster) {}
 
   /**
-   * Serve mailbox depths on `cluster` until the returned release is called.
+   * Serve the mailbox depth of the routee at `routeePath` on `cluster` until
+   * the returned release is called.
    *
-   * A `smallest-mailbox` `ClusterRouter` calls this on its own node, which
-   * covers the two common shapes for free — a single node, and the homogeneous
-   * deployment where every node runs both the router and the routees.  Call it
-   * yourself on nodes that host routees but no router:
+   * A `smallest-mailbox` `ClusterRouter` calls this on its own node for its
+   * own routee path, which covers the two common shapes for free — a single
+   * node, and the homogeneous deployment where every node runs both the
+   * router and the routees.  Call it yourself on nodes that host routees but
+   * no router, naming the path the router routes to:
    *
    * ```ts
-   * const stopServing = ClusterMailboxDepthAgent.serve(cluster);
+   * const stopServing = ClusterMailboxDepthAgent.serve(cluster, '/user/worker');
    * ```
    *
-   * A node that does not serve simply never reports a depth, and the routers
-   * asking it fall back to round-robin order for it — degraded, never broken.
-   * Releases are idempotent; releasing twice does not decrement twice.
+   * Only the paths served this way are answered (#1042): a query naming any
+   * other actor gets no reply, exactly like one naming an actor that does not
+   * exist here.  A node that does not serve a path simply never reports a
+   * depth for it, and the routers asking fall back to round-robin order for
+   * it — degraded, never broken.  Releases are idempotent; releasing twice
+   * does not decrement twice.
    */
-  static serve(cluster: Cluster): () => void {
+  static serve(cluster: Cluster, routeePath: string): () => void {
+    if (typeof routeePath !== 'string' || routeePath.length === 0) {
+      throw new TypeError(
+        'ClusterMailboxDepthAgent.serve(cluster, routeePath): routeePath must name the routee path to serve, '
+          + "e.g. '/user/worker' — the agent answers only for paths it was given (#1042)",
+      );
+    }
     let entry = agentsByCluster.get(cluster);
     if (entry === undefined) {
       entry = { agent: new ClusterMailboxDepthAgent(cluster), holders: 0 };
@@ -65,11 +84,13 @@ export class ClusterMailboxDepthAgent {
       agentsByCluster.set(cluster, entry);
     }
     entry.holders++;
+    entry.agent.addServedPath(routeePath);
     const held = entry;
     let released = false;
     return () => {
       if (released) return;
       released = true;
+      held.agent.removeServedPath(routeePath);
       held.holders--;
       if (held.holders > 0) return;
       held.agent.stop();
@@ -95,11 +116,34 @@ export class ClusterMailboxDepthAgent {
     this.release = null;
   }
 
+  /**
+   * Compared in full wire form, so `/user/worker` and `user/worker` — which
+   * `routeeFullPath` resolves to the same actor — are one served path.
+   */
+  private servedKeyOf(routeePath: string): string {
+    return routeeFullPath(this.cluster.selfAddress.systemName, routeePath);
+  }
+
+  private addServedPath(routeePath: string): void {
+    const key = this.servedKeyOf(routeePath);
+    this.servedPaths.set(key, (this.servedPaths.get(key) ?? 0) + 1);
+  }
+
+  private removeServedPath(routeePath: string): void {
+    const key = this.servedKeyOf(routeePath);
+    const holders = (this.servedPaths.get(key) ?? 0) - 1;
+    if (holders > 0) this.servedPaths.set(key, holders);
+    else this.servedPaths.delete(key);
+  }
+
   private onEnvelope(body: unknown, from: NodeAddress): void {
     // The body arrives off the network.  Anything that is not a well-formed
     // query is dropped rather than answered — guessing at malformed input is
     // how a diagnostic lane turns into a reflector.
     if (!isMailboxDepthQuery(body)) return;
+    // A path nobody asked this node to serve is answered with the same silence
+    // as a path with nothing behind it (#1042).
+    if (!this.servedPaths.has(this.servedKeyOf(body.routeePath))) return;
     const depth = this.depthAt(body.routeePath);
     // No routee at that path here: stay silent rather than report a zero.  A
     // zero reads as "idle, send me everything", which would pull the whole

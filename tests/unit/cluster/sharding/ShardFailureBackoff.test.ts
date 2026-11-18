@@ -78,6 +78,7 @@ import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { RecordingLogger } from '../../../util/RecordingLogger.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { nextShardToken } from '../../../util/ShardTokens.js';
 
 class NoopEntity extends Actor<unknown> {
   override onReceive(): void { /* never told anything */ }
@@ -456,19 +457,20 @@ async function startRegion(systemName: string, port: number, settings: RegionSet
     (region as ActorRef<unknown>).tell(new AuthenticatedShardingMessage(cluster.selfAddress, message));
   };
   const place = (shardId: number): void => {
-    directive({ kind: 'sharding.ShardHome', shardId, region: region.path.toString(), node: cluster.selfAddress.toJSON() });
+    directive({ kind: 'sharding.ShardHome', token: nextShardToken(), shardId, region: region.path.toString(), node: cluster.selfAddress.toJSON() });
   };
   // A path no actor answers on: what is relayed there is lost, which keeps a
   // case about what stays *here* from depending on where the traffic went.
   const placeElsewhere = (shardId: number): void => {
     directive({
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId,
       region: `actor-ts://${systemName}/user/another-region`,
       node: cluster.selfAddress.toJSON(),
     });
   };
-  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId }); };
+  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId, token: nextShardToken() }); };
   const evict = (): void => {
     directive({ kind: 'sharding.RegionEvicted', coordinator: coordinatorLocation, silentForMs: 30_000 });
   };

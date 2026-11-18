@@ -6,6 +6,7 @@ import {
   DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
   DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
+  DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
@@ -411,6 +412,7 @@ describe('readClusterOptionsFromConfig', () => {
       shutdownAfterUnsuccessfulJoinMs: 0,
       maxMembers: DEFAULT_MAX_MEMBERS,
       maxTombstones: DEFAULT_MAX_TOMBSTONES,
+      gossipFramesPerSecondPerSender: DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER,
       // The Up threshold ships a leaf, so it always lands; the per-role
       // siblings ship comment-only and so must NOT appear next to it — which
       // is what the exact-object shape of this assertion checks (#837).
@@ -608,6 +610,7 @@ describe('readClusterOptionsFromConfig', () => {
         weakly-up-after = 4s
         max-members     = 12
         max-tombstones  = 34
+        gossip-frames-per-second-per-sender = 56
         tombstone {
           time-to-live   = 90m
           prune-interval = 30s
@@ -620,6 +623,7 @@ describe('readClusterOptionsFromConfig', () => {
       weaklyUpAfterMs: 4_000,
       maxMembers: 12,
       maxTombstones: 34,
+      gossipFramesPerSecondPerSender: 56,
       tombstoneTtlMs: 90 * 60 * 1_000,
       tombstonePruneIntervalMs: 30_000,
       tombstoneMinRetentionMs: 2_000,

@@ -77,6 +77,7 @@ import { ShardCoordinator } from './ShardCoordinator.js';
 import {
   AuthenticatedShardingMessage,
   isShardingMessage,
+  isShardToken,
   type RegisterRegion,
   type RegisterRefused,
   type RegistrationRequest,
@@ -473,6 +474,17 @@ export class ShardRegion<TMessage = unknown>
   private readonly shards = new Map<number, ActorRef<ShardInbox>>();
   /** Shards stopped on purpose for a handoff — tells an expected stop from a crash. */
   private readonly handingOff = new Set<number>();
+  /**
+   * The newest freshness token seen per shard, on a `HandOff` or a `ShardHome`
+   * (#1214) — what a `HandOff` has to be newer than.
+   *
+   * Bounded by `numShards`: only an id that passed the range check is ever a
+   * key, and a shard has one entry however often it moves.  Never cleared,
+   * because a token only grows; forgetting one is what would let a frame the
+   * region already outdated through.  Reported in every `Register`, so a
+   * coordinator that has just taken over issues above it.
+   */
+  private readonly shardTokens = new Map<number, number>();
   /** Shards stopped on purpose because they stood empty — likewise an expected stop. */
   private readonly passivatingShards = new Set<number>();
   /**
@@ -1453,6 +1465,7 @@ export class ShardRegion<TMessage = unknown>
       proxy: this.config.proxy,
       hostedShards: Array.from(this.localShards),
       numShards: this.config.numShards,
+      shardTokens: Array.from(this.shardTokens.entries()),
     };
     this.tellCoordinator(message);
     // Re-ask for every buffered shard's home.  The queries waiting on the
@@ -1992,6 +2005,58 @@ export class ShardRegion<TMessage = unknown>
   }
 
   /**
+   * Whether a coordinator directive carries a freshness token at all (#1214).
+   *
+   * A frame without one comes from a coordinator of an earlier build, or is not
+   * a coordinator's at all, and nothing about it can be ordered against what
+   * this region has seen.  Refusing it is the BREAKING half of the change: a
+   * cluster mixing builds across it has its hand-offs refused, and the
+   * coordinator's `handOffTimeoutMs` force-reallocates them.
+   */
+  private carriesShardToken(message: HandOff | ShardHome): boolean {
+    if (isShardToken(message.token)) return true;
+    this.log.warn(
+      `[sharding] refusing '${message.kind}' for shard ${sanitizeWireTextForLog(message.shardId)} of `
+      + `'${this.config.typeName}' — it carries no freshness token, so it cannot be told from a late one`,
+    );
+    return false;
+  }
+
+  /**
+   * Whether a `HandOff` is newer than every token this region has seen for its
+   * shard, recording it if so (#1214).
+   *
+   * The ownership precondition below makes a duplicate harmless, but not a
+   * late frame: a shard that moved away and came back is owned again, and the
+   * hand-off its previous stay was sent would take it down.  The placement that
+   * brought it back carried a newer token, so that frame is now older than what
+   * the region has seen.  Equal is not newer — a frame seen twice is the same
+   * directive twice.
+   *
+   * Recorded before the ownership check rather than after it: a frame the
+   * region does not act on was still issued, and nothing older than it can be
+   * current either.
+   */
+  private isFreshHandOff(message: HandOff): boolean {
+    const last = this.shardTokens.get(message.shardId);
+    if (last !== undefined && message.token <= last) {
+      this.log.warn(
+        `[sharding] refusing a late hand-off of shard ${message.shardId} of '${this.config.typeName}' — `
+        + `its token ${message.token} is not newer than ${last}, the last one seen for the shard`,
+      );
+      return false;
+    }
+    this.shardTokens.set(message.shardId, message.token);
+    return true;
+  }
+
+  /** Raise the shard's recorded token to `token`, never lower it (#1214). */
+  private recordShardToken(shardId: number, token: number): void {
+    const last = this.shardTokens.get(shardId);
+    if (last === undefined || token > last) this.shardTokens.set(shardId, token);
+  }
+
+  /**
    * Whether a `HandOff` for `shardId` has anything to hand off (#584).
    *
    * The origin gate answers *who* may order a handoff; this answers *what* one
@@ -2046,6 +2111,11 @@ export class ShardRegion<TMessage = unknown>
     // leader change clears the refusal.
     if (this.registerRefused) return;
     if (!this.isKnownShardId(message.shardId)) return;
+    if (!this.carriesShardToken(message)) return;
+    // Recorded, never compared: a placement is not refused for its token's age
+    // (a lookup's answer repeats the current one), but every `HandOff` issued
+    // before it is now older than what this region has seen (#1214).
+    this.recordShardToken(message.shardId, message.token);
     const node = NodeAddress.fromJSON(message.node);
     // A home on a node that is no longer a member would route every message
     // for the shard there for good: nothing drops a cached home but the
@@ -2431,6 +2501,9 @@ export class ShardRegion<TMessage = unknown>
    */
   private onHandOff(message: HandOff, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
+    // A frame of an earlier build carries no token and cannot be ordered, so it
+    // is refused everywhere — the refused region's answer included (#1214).
+    if (!this.carriesShardToken(message)) return;
     // Ahead of the range check: a refused region's shard ids are the
     // coordinator's, hashed under a count this region does not share.
     if (this.registerRefused) {
@@ -2441,6 +2514,7 @@ export class ShardRegion<TMessage = unknown>
     // never got it, so an out-of-range id still walked into `completeHandOff`
     // and deleted cache entries under a shard that cannot exist.
     if (!this.isKnownShardId(message.shardId)) return;
+    if (!this.isFreshHandOff(message)) return;
     if (!this.ownsShardToHandOff(message.shardId)) return;
     const shardId = message.shardId;
     const entityIds = Array.from(this.shardEntities.get(shardId) ?? []);

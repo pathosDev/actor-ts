@@ -14,6 +14,7 @@ import {
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 type SnapshotRow = {
   persistence_id: string;
@@ -102,6 +103,7 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
+    assertValidPersistenceId(persistenceId, 'RelationalSnapshotStore.save');
     const pool = await this.ensureOpen();
     const now = Date.now();
     let payload: string;

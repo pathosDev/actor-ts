@@ -17,7 +17,9 @@
  *
  * The rule is deliberately **listener-only**.  `{ ca }` with no client
  * certificate is the ordinary one-way-TLS dial and `ClusterClient` depends on
- * it, so the dial path is asserted here to be untouched.
+ * it.  What the dial path does refuse, since #1085, is the one shape that is
+ * valid nowhere: half a client credential.  Every adapter used to drop the
+ * half and dial one-way TLS under a configuration that read as mTLS.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
@@ -186,34 +188,113 @@ describe('the adapters refuse to bind rather than downgrading', () => {
   });
 });
 
-describe('the dial path is deliberately untouched', () => {
+describe('the dial path: one-way TLS untouched, half a client credential refused (#1085)', () => {
   const realDeno = (globalThis as { Deno?: unknown }).Deno;
   afterEach(() => {
     Object.defineProperty(globalThis, 'Deno', { value: realDeno, configurable: true, writable: true });
   });
 
-  test('a certificate without a key is not a listener-style error when dialling', async () => {
-    // One-way TLS: authenticate the server, present nothing.  `ClusterClient`
-    // never listens, so `{ ca }` alone is its normal configuration and the
-    // listener rule must not reach it.  The adapter simply omits the
-    // half-credential instead of refusing the dial.
-    let seen: Record<string, unknown> = {};
+  /** A stand-in `Deno` that records what each dial asked for and dials nothing. */
+  function recordingDeno(): Array<Record<string, unknown>> {
+    const dials: Array<Record<string, unknown>> = [];
     Object.defineProperty(globalThis, 'Deno', {
       value: {
         connectTls: (options: Record<string, unknown>) => {
-          seen = options;
+          dials.push(options);
           throw new Error('stop here — the options are what this test is about');
         },
       },
       configurable: true,
       writable: true,
     });
-    await new DenoTcpBackend().connect({
-      host: '10.0.0.1', port: 2552, tls: { cert: CERT, ca: CA }, handlers: noopHandlers,
-    }).catch((err: Error) => {
-      expect(err.message).not.toMatch(/this listener/);
+    return dials;
+  }
+
+  /** `node:tls` and `node:net` stand-ins: a dial is recorded, never made. */
+  function recordingNodeBackend(): { backend: NodeTcpBackend; dials: unknown[] } {
+    const dials: unknown[] = [];
+    const refuse = (options: unknown): never => {
+      dials.push(options);
+      throw new Error('stop here — the options are what this test is about');
+    };
+    const modules = {
+      net: () => Promise.resolve({ connect: refuse, createServer: refuse, isIP: () => 4 } as never),
+      tls: () => Promise.resolve({ connect: refuse, createServer: refuse } as never),
+    };
+    return { backend: new NodeTcpBackend(modules), dials };
+  }
+
+  async function dialError(dial: () => Promise<unknown>): Promise<Error | undefined> {
+    try {
+      await dial();
+      return undefined;
+    } catch (error) {
+      return error as Error;
+    }
+  }
+
+  test('`{ ca }` alone is still the ordinary one-way dial', async () => {
+    // One-way TLS: authenticate the server, present nothing.  `ClusterClient`
+    // never listens, so `{ ca }` alone is its normal configuration and the
+    // listener rule must not reach it.
+    const dials = recordingDeno();
+    const error = await dialError(() => new DenoTcpBackend().connect({
+      host: '10.0.0.1', port: 2552, tls: { ca: CA }, handlers: noopHandlers,
+    }));
+    expect(error?.message).toMatch(/stop here/);
+    expect(dials).toHaveLength(1);
+    expect(dials[0]!['caCerts']).toEqual([CA]);
+  });
+
+  const halves: ReadonlyArray<[string, TlsTransportOptionsType, string]> = [
+    ['a certificate without its key', { cert: CERT, ca: CA }, 'cert'],
+    ['a key without its certificate', { key: KEY, ca: CA }, 'key'],
+    ['a certificate with an empty key', { cert: CERT, key: '', ca: CA }, 'cert'],
+  ];
+
+  for (const [label, tls, present] of halves) {
+    test(`DenoTcpBackend refuses ${label}, dialling nothing`, async () => {
+      const dials = recordingDeno();
+      const error = await dialError(() => new DenoTcpBackend().connect({
+        host: '10.0.0.1', port: 2552, tls, handlers: noopHandlers,
+      }));
+      expect(error?.message).toContain(`\`${present}\``);
+      expect(error?.message).toMatch(/half a client credential/);
+      expect(dials).toHaveLength(0);
     });
-    expect(seen['caCerts']).toEqual([CA]);
-    expect(seen['cert']).toBeUndefined();
+
+    test(`NodeTcpBackend refuses ${label}, dialling nothing`, async () => {
+      const { backend, dials } = recordingNodeBackend();
+      const error = await dialError(() => backend.connect({
+        host: '10.0.0.1', port: 2552, tls, handlers: noopHandlers,
+      }));
+      expect(error?.message).toMatch(/half a client credential/);
+      expect(dials).toHaveLength(0);
+    });
+
+    test(`BunTcpBackend refuses ${label}, dialling nothing`, async () => {
+      // With a signal, the Bun adapter hands the dial to its cancellable
+      // delegate — a recording one here, so a missed check shows as a dial.
+      const dials: unknown[] = [];
+      const delegate = {
+        connect: (options: unknown): Promise<never> => {
+          dials.push(options);
+          return Promise.reject(new Error('stop here — the options are what this test is about'));
+        },
+      };
+      const error = await dialError(() => new BunTcpBackend(delegate as never).connect({
+        host: '10.0.0.1', port: 2552, tls, handlers: noopHandlers, signal: new AbortController().signal,
+      }));
+      expect(error?.message).toMatch(/half a client credential/);
+      expect(dials).toHaveLength(0);
+    });
+  }
+
+  test('the refusal names neither value — one of them is a private key', async () => {
+    recordingDeno();
+    const error = await dialError(() => new DenoTcpBackend().connect({
+      host: '10.0.0.1', port: 2552, tls: { key: KEY, ca: CA }, handlers: noopHandlers,
+    }));
+    expect(error?.message).not.toContain('not-a-real-key');
   });
 });

@@ -87,9 +87,12 @@ export function managementRoutes(
     optionsInput as Partial<ResolvedManagementRoutesOptions>,
   );
   new ManagementRoutesOptionsValidator().validate(options);
+  warnOnUnguardedClusterEndpoints(system, cluster, options);
   const health = healthChecksOf(system);
 
-  const clusterMembers = get(async () => {
+  const clusterMembers: Route = !options.enableMembersEndpoint
+    ? get(async () => complete(Status.NotFound, 'members endpoint disabled'))
+    : get(async () => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
     return completeJson(Status.OK, {
       members: cluster.getMembers().map((m) => ({
@@ -106,7 +109,9 @@ export function managementRoutes(
     });
   });
 
-  const clusterLeader = get(async () => {
+  const clusterLeader: Route = !options.enableLeaderEndpoint
+    ? get(async () => complete(Status.NotFound, 'leader endpoint disabled'))
+    : get(async () => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
     const leader = cluster.leader();
     return completeJson(Status.OK, {
@@ -184,7 +189,9 @@ export function managementRoutes(
    * `shardHome` is the normal answer for a type nobody has addressed yet:
    * `regions` fills on registration, `shardHome` only once a shard is placed.
    */
-  const clusterShards = get(async (request) => {
+  const clusterShards: Route = !options.enableShardsEndpoint
+    ? get(async () => complete(Status.NotFound, 'shards endpoint disabled'))
+    : get(async (request) => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
     const typeRaw = request.query['type'];
     const typeName = Array.isArray(typeRaw) ? typeRaw[0] : typeRaw;
@@ -327,4 +334,39 @@ export function managementRoutes(
   }
 
   return all;
+}
+
+/**
+ * Warn once per route tree when it serves cluster endpoints to anyone who
+ * reaches the port (#971).  The docs say to bind management on its own port
+ * and firewall it, but nothing in the framework can see whether that was
+ * done, so a misconfigured deployment looked exactly like a correct one.
+ * This is the feedback channel: one line naming each exposed endpoint.
+ *
+ * Silent when there is no cluster (every cluster endpoint answers 503 and
+ * discloses nothing), when nothing is enabled, and when either `auth` or
+ * `ipAllowlist` stands in front.  `/health`, `/ready` and `/metrics` are not
+ * named: the probes must stay anonymous, and `/metrics` is outside the
+ * cluster subtree this warning is about.
+ */
+function warnOnUnguardedClusterEndpoints(
+  system: ActorSystem,
+  cluster: Cluster | null,
+  options: ResolvedManagementRoutesOptions,
+): void {
+  if (cluster === null || options.auth || options.ipAllowlist) return;
+  const exposed = [
+    options.enableMembersEndpoint ? 'GET /cluster/members' : null,
+    options.enableLeaderEndpoint ? 'GET /cluster/leader' : null,
+    options.enableShardsEndpoint ? 'GET /cluster/shards' : null,
+    options.enableLeaveEndpoint ? 'POST /cluster/leave' : null,
+    options.enableDownEndpoint ? 'POST /cluster/down' : null,
+  ].filter((endpoint): endpoint is string => endpoint !== null);
+  if (exposed.length === 0) return;
+  system.log.warn(
+    `managementRoutes: ${exposed.join(', ')} ${exposed.length === 1 ? 'is' : 'are'} served with neither `
+    + '`auth` nor `ipAllowlist` — anyone who reaches this port can use '
+    + `${exposed.length === 1 ? 'it' : 'them'}.  Set one, or keep the management port firewalled `
+    + '(see the management HTTP endpoints page).',
+  );
 }

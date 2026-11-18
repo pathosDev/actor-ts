@@ -404,6 +404,7 @@ export const ConfigKeys = {
           serviceName: 'actor-ts.io.broker.grpc.client.service-name',
           endpoint: 'actor-ts.io.broker.grpc.client.endpoint',
           deadline: 'actor-ts.io.broker.grpc.client.deadline',
+          streamIdleTimeout: 'actor-ts.io.broker.grpc.client.stream-idle-timeout',
         },
         /**
          * `GrpcServerActor` — a plain actor, not a `BrokerActor`, so it shares
@@ -416,6 +417,7 @@ export const ConfigKeys = {
           packageName: 'actor-ts.io.broker.grpc.server.package-name',
           serviceName: 'actor-ts.io.broker.grpc.server.service-name',
           bind: 'actor-ts.io.broker.grpc.server.bind',
+          maxPendingRequestMessages: 'actor-ts.io.broker.grpc.server.max-pending-request-messages',
         },
       },
       /**
@@ -593,6 +595,8 @@ export const ConfigKeys = {
         headers: 'actor-ts.io.broker.sse.headers',
         idleTimeout: 'actor-ts.io.broker.sse.idle-timeout',
         connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
+        /** A count of UTF-16 code units, not a size — hence the unit stays in the name (#371). */
+        maxBufferChars: 'actor-ts.io.broker.sse.max-buffer-chars',
       },
       /**
        * `TcpSocketActor`.  `framing` is the block both TCP actors carry, so its
@@ -1453,6 +1457,9 @@ export const ConfigKeys = {
     enableLeaveEndpoint: 'actor-ts.management.enable-leave-endpoint',
     enableDownEndpoint: 'actor-ts.management.enable-down-endpoint',
     enableMetricsEndpoint: 'actor-ts.management.enable-metrics-endpoint',
+    enableMembersEndpoint: 'actor-ts.management.enable-members-endpoint',
+    enableLeaderEndpoint: 'actor-ts.management.enable-leader-endpoint',
+    enableShardsEndpoint: 'actor-ts.management.enable-shards-endpoint',
     authProtectHealth: 'actor-ts.management.auth-protect-health',
     livenessPath: 'actor-ts.management.liveness-path',
     readinessPath: 'actor-ts.management.readiness-path',
@@ -1481,6 +1488,7 @@ export const ConfigKeys = {
    */
   metrics: {
     maxSeriesPerFamily: 'actor-ts.metrics.max-series-per-family',
+    maxFamilies: 'actor-ts.metrics.max-families',
     namePrefix: 'actor-ts.metrics.name-prefix',
   },
 
@@ -1664,6 +1672,13 @@ export const ConfigKeys = {
      */
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
+    /**
+     * Gossip frames one sender may hand this node per second (#1105) — the
+     * work bound beside the two memory caps above.  `0` disables it.  Read by
+     * `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.gossipFramesPerSecondPerSender`.
+     */
+    gossipFramesPerSecondPerSender: 'actor-ts.cluster.gossip-frames-per-second-per-sender',
     /**
      * Members that must be present before anything is promoted to `up` (#837)
      * — the leader's promotions and a founder's own self-election alike.
@@ -2044,6 +2059,7 @@ export const ConfigKeys = {
       maxSubscribersPerTopic: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic',
       maxTopics: 'actor-ts.cluster.pub-sub.max-topics',
       maxRemoteNodesPerTopic: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic',
+      maxTopicsClaimedPerSender: 'actor-ts.cluster.pub-sub.max-topics-claimed-per-sender',
       sendToDeadLettersWhenNoSubscribers:
         'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
     },
@@ -2057,6 +2073,7 @@ export const ConfigKeys = {
       gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
       maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
       maxSubscriptionsTotal: 'actor-ts.cluster.receptionist.max-subscriptions-total',
+      maxRegistrationsClaimedPerSender: 'actor-ts.cluster.receptionist.max-registrations-claimed-per-sender',
     },
   },
 
@@ -2211,6 +2228,7 @@ export const ConfigKeys = {
       maxProducers: 'actor-ts.reliable-delivery.consumer.max-producers',
       producerIdleTimeToLive: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live',
       maxOutOfOrder: 'actor-ts.reliable-delivery.consumer.max-out-of-order',
+      maxIncarnationsPerProducer: 'actor-ts.reliable-delivery.consumer.max-incarnations-per-producer',
     },
   },
 

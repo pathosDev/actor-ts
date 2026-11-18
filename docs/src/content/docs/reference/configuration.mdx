@@ -54,6 +54,7 @@ actor-ts {
     weakly-up-after     = 0s      # 0 = opt-in only
     max-members         = 1000
     max-tombstones      = 10000
+    gossip-frames-per-second-per-sender = 50 # 0 = off
     tombstone {
       time-to-live   = 24h
       prune-interval = 5m
@@ -84,12 +85,14 @@ actor-ts {
       max-subscribers-per-topic  = 10000
       max-topics                 = 10000
       max-remote-nodes-per-topic = 1000
+      max-topics-claimed-per-sender = 1024
       send-to-dead-letters-when-no-subscribers = on
     }
     receptionist {
       gossip-interval         = 1s
       max-subscribers-per-key = 1000
       max-subscriptions-total   = 10000
+      max-registrations-claimed-per-sender = 10000
     }
   }
 
@@ -412,6 +415,7 @@ replay from it.
 | `cluster.shutdown-after-unsuccessful-join` | `0s` | How long a node may stay `joining` or `weakly-up` before it gives up the join.  At the deadline, if nothing can promote it any more, it logs a warning, leaves and runs the coordinated-shutdown pipeline with `ClusterJoinUnsuccessfulReason`; otherwise it asks again every `seed-retry-interval`.  `0` sets no deadline — see [Joining and seeds](/cluster/joining-and-seeds/). |
 | `cluster.max-members` | `1000` | Cap on live member entries gossip may introduce.  `0` disables the cap. |
 | `cluster.max-tombstones` | `10000` | Cap on `removed` tombstones gossip may introduce.  `0` disables the cap. |
+| `cluster.gossip-frames-per-second-per-sender` | `50` | Gossip frames one sender may hand this node per second; a frame over the budget is discarded whole and counted under `cluster_gossip_records_refused_total{reason="rate-limit"}`.  It must stay above a sender's real rate: `1000 / gossip-interval-ms` times a safety factor of at least 2.  The default covers intervals down to about 40 ms.  `0` disables the budget. |
 | `cluster.minimum-members-before-up` | `1` | Members that must be present before **anything** is promoted to `up`.  `1` is the historical behaviour — see below. |
 | `cluster.role.<role>.minimum-members-before-up` | *(unset)* | Per-role threshold, composed with the one above as an AND.  Comment-only in `reference.conf`, since role names are per-deployment. |
 | `cluster.run-coordinated-shutdown-when-down` | `on` | What a node does once its **own** downing decision removes it.  `on` leaves, then runs the coordinated-shutdown pipeline with `ClusterDowningReason`, which ends the actor system; `off` leaves the membership and keeps its actors running.  See below. |
@@ -844,8 +848,9 @@ constant.
 | --- | --- | --- |
 | `cluster.pub-sub.gossip-interval` | `1s` | How often a mediator pushes its topic set to a random peer. |
 | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Cap on local subscribers for one topic.  A `Subscribe` past it is answered with `SubscribeRejected`. |
-| `cluster.pub-sub.max-topics` | `10000` | Cap on distinct topics one mediator tracks — enforced against gossiped topic claims as well as local subscribes. |
+| `cluster.pub-sub.max-topics` | `10000` | Cap on distinct topics one mediator tracks, in two pools held apart: topics with a local subscriber (a local `Subscribe` past it is rejected) and topics only peers claim (a gossiped claim past it is dropped).  A peer's claims never spend the local pool. |
 | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Cap on peers that may claim subscribers for one topic. |
+| `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` | Cap on topics one gossip sender may claim; claims past it are dropped and logged with the sender named.  Raise it if one node subscribes to more topics than this. |
 | `cluster.pub-sub.send-to-dead-letters-when-no-subscribers` | `on` | Route a publish that reached nobody to `system.deadLetters` instead of discarding it. |
 
 The three caps bound what one mediator can be made to hold, and publish
@@ -862,6 +867,7 @@ name on every receiver, with no local `Subscribe` involved.  See
 | `cluster.receptionist.gossip-interval` | `1s` | How often the receptionist gossips its local registrations. |
 | `cluster.receptionist.max-subscribers-per-key` | `1000` | Cap on subscribers for one service key.  A `Subscribe` past it is answered with `ReceptionistSubscribeRejected`. |
 | `cluster.receptionist.max-subscriptions-total` | `10000` | Cap on key/subscriber pairs across every key on this node — one subscriber on three keys counts as three. |
+| `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` | Cap on the registrations one gossip sender may claim — the actor paths it names, a key naming none counted as one.  A claim past it is dropped and logged with the sender named. |
 
 Both blocks layer under whatever the extension's `start(...)` was passed,
 so an explicit `withMaxTopics(…)` still wins.  Stopped subscribers are
@@ -1916,6 +1922,7 @@ server with a WebSocket route — not when the `HttpExtension` is first fetched.
 | `reliable-delivery.consumer.max-producers` | `1024` | Most producers the consumer keeps deduplication state for at once.  At the cap the least-recently-used entry is evicted.  `0` = unbounded. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | How long a producer's deduplication entry survives with no delivery from it; the sweep runs on this same interval.  `0` turns the sweep off. |
 | `reliable-delivery.consumer.max-out-of-order` | `1024` | Most sequences the consumer retains for one producer above an open gap.  At the cap a delivery is refused — no handler call, no acknowledgment — and that producer stalls until the gap closes.  Keep it above every producer's `window-size`.  `0` = unbounded. |
+| `reliable-delivery.consumer.max-incarnations-per-producer` | `4` | Most incarnations of one `producerId` the consumer holds a deduplication window for, the live one included.  A new incarnation is held beside the live one and promoted only once the live one has been quiet for `producer-idle-time-to-live`; past the cap a delivery under yet another incarnation is refused — a dead letter, no handler call, no acknowledgment.  `0` = unbounded. |
 
 Both blocks layer under whatever `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` was passed, so an explicit `withWindowSize(…)`
@@ -1925,7 +1932,7 @@ context the cell injects afterwards — so a controller you construct yourself
 and hand to `system.spawn` keeps its built-in defaults and never sees this
 block.
 
-`0` is how all three consumer bounds spell the `Infinity` their option fields
+`0` is how all four consumer bounds spell the `Infinity` their option fields
 document, because `Infinity` cannot be written in HOCON at all: the number
 reader takes a numeric literal and the duration parser refuses a non-finite
 value.  It is the same spelling `cluster.max-members` and
@@ -1935,7 +1942,8 @@ on `max-producers` hands a peer the decision about how much this consumer
 retains — one entry per distinct id, never released.  `0` on
 `max-out-of-order` does the same inside one entry: a sender that withholds one
 sequence and keeps sending the ones after it grows that producer's set for as
-long as it keeps going.
+long as it keeps going.  `0` on `max-incarnations-per-producer` lets a sender
+mint a deduplication window per invented incarnation of one producer.
 
 `max-out-of-order` is a floor as well as a bound.  A producer has
 `window-size` sends in flight when a gap opens, so a cap below the largest
@@ -2009,6 +2017,9 @@ that seam is issue #967.
 | `management.enable-leave-endpoint` | `false` | Serve `POST /cluster/leave` ([HTTP endpoints](/observability/management/http-endpoints/)). |
 | `management.enable-down-endpoint` | `false` | Serve `POST /cluster/down` — operator-initiated force-down of a peer. |
 | `management.enable-metrics-endpoint` | `false` | Serve `GET /metrics` in Prometheus text format. |
+| `management.enable-members-endpoint` | `false` | Serve `GET /cluster/members` — every member's internal address, status and roles. |
+| `management.enable-leader-endpoint` | `false` | Serve `GET /cluster/leader`. |
+| `management.enable-shards-endpoint` | `false` | Serve `GET /cluster/shards?type=…` — one sharded type's shard-to-region map. |
 | `management.auth-protect-health` | `false` | Extend the `auth` middleware over `/health` and `/ready` as well as `/cluster/*`. |
 | `management.liveness-path` | `"health"` | Single path segment the liveness probe answers on. |
 | `management.readiness-path` | `"ready"` | Single path segment the readiness probe answers on. |
@@ -2047,14 +2058,15 @@ because the name lives inside the result the check never returned.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `metrics.max-series-per-family` | `10000` | Distinct label tuples one metric family may mint; every tuple past it is folded into a single `__overflow__` series ([the cardinality cap](/observability/metrics/core-metrics/#the-cardinality-cap)).  Covers the in-process registry and the prom-client bridge alike.  `0` disables the cap. |
+| `metrics.max-families` | `1000` | Metric families one registry may hold.  A factory asked for a further name past it returns a no-op instrument that records nothing, and the registry warns once; it never throws, and a family minted before the cap keeps recording ([the family cap](/observability/metrics/core-metrics/#the-family-cap)).  Covers the in-process registry and the prom-client bridge alike.  `0` disables the cap. |
 | `metrics.name-prefix` | `""` | Prefix the [prom-client bridge](/observability/metrics/prom-client-adapter/) puts in front of every metric name it registers, e.g. `"actor_ts_"`.  The bridge only. |
 
 These are read when `MetricsExtension` builds a registry, under the options of
 the call that builds it — the usual three layers, so a value set in code wins,
 a file fills what the code left unset, and the built-in defaults are the
-floor.  `enable(options)` takes the cap for the in-process registry;
-`enablePromClient(options)` takes both leaves for the bridge.  The free
-`promClientRegistry(options)` reads neither: it takes no `ActorSystem`, so the
+floor.  `enable(options)` takes the two caps for the in-process registry;
+`enablePromClient(options)` takes every leaf for the bridge.  The free
+`promClientRegistry(options)` reads none of them: it takes no `ActorSystem`, so the
 bridge it returns, installed with `useRegistry`, behaves exactly as its options
 say.
 

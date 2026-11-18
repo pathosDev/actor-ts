@@ -77,6 +77,7 @@
       "tests/unit/cluster/GossipMergeCapBypasses.test.ts",
       "tests/unit/cluster/GossipReplayGuard.test.ts",
       "tests/unit/cluster/GossipSenderField.test.ts",
+      "tests/unit/cluster/GossipSenderThrottle.test.ts",
       "tests/unit/cluster/GossipSequencePinning.test.ts",
       "tests/unit/cluster/JoinGiveUpWithoutSeeds.test.ts",
       "tests/unit/cluster/MemberAppVersion.test.ts",
@@ -88,6 +89,7 @@
       "tests/unit/cluster/MembershipTransitionLogs.test.ts",
       "tests/unit/cluster/NodeIncarnation.test.ts",
       "tests/unit/cluster/OwnPromotionRoles.test.ts",
+      "tests/unit/cluster/OwnPromotionVersion.test.ts",
       "tests/unit/cluster/PeerWordUnreachableWindow.test.ts",
       "tests/unit/cluster/RestartedIncarnation.test.ts",
       "tests/unit/cluster/SelfClaimRefusalNoise.test.ts",
@@ -138,12 +140,37 @@
       "tests/integration/in-process/cluster/sharding/ClusterSharding.test.ts",
       "tests/integration/in-process/cluster/sharding/CoordinatorRestart.test.ts",
       "tests/integration/in-process/cluster/sharding/CoordinatorState.test.ts",
+      "tests/unit/cluster/GossipSenderThrottle.test.ts",
       "tests/unit/cluster/UnreachablePeerContact.test.ts"
+    ],
+    "src/cluster/pubsub/DistributedPubSubMediator.ts": [
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSub.test.ts",
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSubCaps.test.ts",
+      "tests/unit/cluster/DistributedPubSubMembershipGossip.test.ts"
+    ],
+    "src/cluster/pubsub/DistributedPubSubOptions.ts": [
+      "tests/unit/config/PubSubAndReceptionistConfigDefaults.test.ts",
+      "tests/unit/options/NonBrokerOptionsValidators.test.ts"
     ],
     "src/cluster/router/ClusterRouter.ts": [
       "tests/integration/in-process/cluster/router/ClusterRouter.test.ts",
       "tests/unit/cluster/ClusterRouterReachability.test.ts",
       "tests/unit/parallelism/ClusterRouterOverMesh.test.ts"
+    ],
+    "src/cluster/router/MailboxDepthAgent.ts": [
+      "tests/integration/in-process/cluster/router/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/MailboxDepthReportGuard.test.ts"
+    ],
+    "src/cluster/router/MailboxDepthProbe.ts": [
+      "tests/integration/in-process/cluster/router/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/MailboxDepthReportGuard.test.ts"
+    ],
+    "src/cluster/router/MailboxDepthProtocol.ts": [
+      "tests/integration/in-process/cluster/router/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/MailboxDepthReportGuard.test.ts"
     ],
     "src/cluster/sharding/ShardCoordinator.ts": [
       "tests/integration/in-process/cluster/sharding/ClusterSharding.test.ts",
@@ -155,6 +182,7 @@
       "tests/unit/cluster/sharding/CoordinatorRegistrationBarrier.test.ts",
       "tests/unit/cluster/sharding/CoordinatorStateLoad.test.ts",
       "tests/unit/cluster/sharding/EntityLifecycleReportAuthority.test.ts",
+      "tests/unit/cluster/sharding/HandOffFreshness.test.ts",
       "tests/unit/cluster/sharding/HandOffTimeout.test.ts",
       "tests/unit/cluster/sharding/LeastShardNonCandidateShards.test.ts",
       "tests/unit/cluster/sharding/RebalanceCeiling.test.ts",
@@ -183,6 +211,7 @@
       "tests/unit/cluster/DeadProtocolSurface.test.ts",
       "tests/unit/cluster/sharding/EntityLifecycleReportAuthority.test.ts",
       "tests/unit/cluster/sharding/EntityRecoveryPacing.test.ts",
+      "tests/unit/cluster/sharding/HandOffFreshness.test.ts",
       "tests/unit/cluster/sharding/PassivationSweepOnRegionTurn.test.ts",
       "tests/unit/cluster/sharding/RememberedEntitiesChunking.test.ts",
       "tests/unit/cluster/sharding/RememberedRegistryDuringShardStop.test.ts",
@@ -210,12 +239,17 @@
       "tests/unit/cluster/singleton/SingletonManagerTimers.test.ts",
       "tests/unit/coordination/SingletonLeasePrecedence.test.ts"
     ],
+    "src/cluster/TcpTransportOptions.ts": [
+      "tests/unit/cluster/RequirePeerIdentity.test.ts",
+      "tests/unit/cluster/TcpTransportOptions.test.ts"
+    ],
     "src/cluster/Transport.ts": [
       "tests/integration/in-process/cluster/RefCodec.test.ts",
       "tests/integration/in-process/cluster/RemoteDeathWatch.test.ts",
       "tests/unit/InMemoryTransport.test.ts",
       "tests/unit/cluster/HelloNamingTheReceivingNode.test.ts",
       "tests/unit/cluster/PeerIdentity.test.ts",
+      "tests/unit/cluster/RequirePeerIdentity.test.ts",
       "tests/unit/cluster/TcpTransportBackpressure.test.ts",
       "tests/unit/cluster/TcpTransportBackpressureSockets.test.ts",
       "tests/unit/cluster/TcpTransportInboundCapRefusal.test.ts",
@@ -255,12 +289,85 @@
       "tests/unit/config/ResolveLayer.test.ts",
       "tests/unit/config/SubstitutionChainLength.test.ts"
     ],
+    "src/crdt/DistributedData.ts": [
+      "tests/unit/crdt/DistributedDataActorRefSubscribers.test.ts",
+      "tests/unit/crdt/DistributedDataAuthority.test.ts",
+      "tests/unit/crdt/DistributedDataDecodeIdentity.test.ts",
+      "tests/unit/crdt/DistributedDataDecodeIsolation.test.ts",
+      "tests/unit/crdt/DistributedDataGossipFrameCap.test.ts",
+      "tests/unit/crdt/DistributedDataIdentityRegistry.test.ts",
+      "tests/unit/crdt/DistributedDataMergeTypeMismatch.test.ts",
+      "tests/unit/crdt/DistributedDataModifierFailure.test.ts",
+      "tests/unit/crdt/DistributedDataProtoKey.test.ts",
+      "tests/unit/crdt/DistributedDataQuorumCaps.test.ts",
+      "tests/unit/crdt/DistributedDataReplicatorUnbounded.test.ts",
+      "tests/unit/crdt/DistributedDataRestartReload.test.ts",
+      "tests/unit/crdt/DistributedDataSubscriberCost.test.ts",
+      "tests/unit/crdt/DistributedDataSubscribers.test.ts",
+      "tests/unit/crdt/DistributedDataSubscriptionIdentity.test.ts",
+      "tests/unit/crdt/DurableDistributedData.test.ts"
+    ],
     "src/crdt/LWWRegister.ts": [
       "tests/unit/cluster/sharding/DistributedDataCoordinatorStateStore.test.ts",
       "tests/unit/crdt/CrdtWireValidation.test.ts",
       "tests/unit/crdt/LWWRegisterEquals.test.ts",
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/delivery/ConsumerController.ts": [
+      "tests/unit/delivery/ConsumerControllerUnhandled.test.ts",
+      "tests/unit/delivery/ConsumerIncarnationChangeover.test.ts",
+      "tests/unit/delivery/ConsumerReplyToAcrossNodes.test.ts",
+      "tests/unit/delivery/DeliveryOrderingProperties.test.ts",
+      "tests/unit/delivery/MultipleConsumers.test.ts",
+      "tests/unit/delivery/ReliableDelivery.test.ts"
+    ],
+    "src/delivery/ConsumerControllerOptions.ts": [
+      "tests/unit/config/ReliableDeliveryConfigDefaults.test.ts",
+      "tests/unit/delivery/ConsumerIncarnationChangeover.test.ts",
+      "tests/unit/options/NonBrokerOptionsValidators.test.ts"
+    ],
+    "src/devtools/DevToolsExtension.ts": [
+      "tests/unit/devtools/DevTools.test.ts",
+      "tests/unit/devtools/DevToolsCapturePayloadsSwitch.test.ts",
+      "tests/unit/devtools/DevToolsOptions.test.ts",
+      "tests/unit/devtools/DevToolsTeardownRobustness.test.ts",
+      "tests/unit/devtools/SpanTapPayloadWithholding.test.ts"
+    ],
+    "src/devtools/DevToolsServer.ts": [
+      "tests/unit/devtools/ConfigMethods.test.ts",
+      "tests/unit/devtools/DeadLetterMethods.test.ts",
+      "tests/unit/devtools/DevTools.test.ts",
+      "tests/unit/devtools/DevToolsServerVersion.test.ts",
+      "tests/unit/devtools/DevToolsTeardownRobustness.test.ts",
+      "tests/unit/devtools/EventStreamTap.test.ts",
+      "tests/unit/devtools/ExplainMethods.test.ts",
+      "tests/unit/devtools/HubInFlightCap.test.ts",
+      "tests/unit/devtools/OriginGuard.test.ts",
+      "tests/unit/devtools/Profiler.test.ts",
+      "tests/unit/devtools/ProfilerSessionBounds.test.ts",
+      "tests/unit/devtools/SendMethods.test.ts",
+      "tests/unit/devtools/SpanTap.test.ts",
+      "tests/unit/devtools/TimeTravel.test.ts"
+    ],
+    "src/devtools/internal/DevToolsHubActor.ts": [
+      "tests/unit/devtools/HubInFlightCap.test.ts",
+      "tests/unit/devtools/ProfilerSessionBounds.test.ts"
+    ],
+    "src/devtools/taps/ProfilerTap.ts": [
+      "tests/unit/devtools/Profiler.test.ts",
+      "tests/unit/devtools/ProfilerSessionBounds.test.ts"
+    ],
+    "src/devtools/taps/SpanTap.ts": [
+      "tests/unit/devtools/DevToolsCapturePayloadsSwitch.test.ts",
+      "tests/unit/devtools/DevToolsTeardownRobustness.test.ts",
+      "tests/unit/devtools/SpanTap.test.ts",
+      "tests/unit/devtools/SpanTapPayloadWithholding.test.ts"
+    ],
+    "src/discovery/Receptionist.ts": [
+      "tests/unit/discovery/Receptionist.test.ts",
+      "tests/unit/discovery/ReceptionistGossipClaims.test.ts",
+      "tests/unit/discovery/ReceptionistSubscriberCaps.test.ts"
     ],
     "src/http/backend/ExpressBackend.ts": [
       "tests/integration/in-process/http/ExpressHttp.test.ts",
@@ -385,11 +492,23 @@
       "tests/unit/http/HttpExtension.test.ts",
       "tests/unit/http/HttpServerClientCertificates.test.ts",
       "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/http/OffOriginRedirectGuard.test.ts",
       "tests/unit/http/ShutdownDrainTask.test.ts"
+    ],
+    "src/http/middleware/BasicAuth.ts": [
+      "tests/unit/http/middleware/BasicAuth.test.ts"
     ],
     "src/http/middleware/ClientIp.ts": [
       "tests/unit/http/middleware/ClientIp.test.ts",
       "tests/unit/http/middleware/IpAllowlist.test.ts"
+    ],
+    "src/http/middleware/RequestId.ts": [
+      "tests/unit/http/ErrorLogging.test.ts",
+      "tests/unit/http/middleware/RequestId.test.ts"
+    ],
+    "src/http/Route.ts": [
+      "tests/unit/http/OffOriginRedirectGuard.test.ts",
+      "tests/unit/http/Route.test.ts"
     ],
     "src/http/websocket/SocketAdapter.ts": [
       "tests/integration/in-process/http/websocket/FastifyWebsocket.test.ts",
@@ -467,6 +586,28 @@
       "tests/unit/io/broker/BrokerShutdownPhase.test.ts",
       "tests/unit/io/broker/GrpcServerOptionsSurface.test.ts"
     ],
+    "src/io/broker/GrpcClientActor.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/GrpcClientActor.test.ts",
+      "tests/unit/io/broker/GrpcMethodImplementation.test.ts"
+    ],
+    "src/io/broker/GrpcClientOptions.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerOptionsValidators.test.ts",
+      "tests/unit/io/broker/GrpcClientActor.test.ts"
+    ],
+    "src/io/broker/GrpcServerActor.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/GrpcHealthService.test.ts",
+      "tests/unit/io/broker/GrpcMethodImplementation.test.ts",
+      "tests/unit/io/broker/GrpcServerActor.test.ts"
+    ],
+    "src/io/broker/GrpcServerOptions.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerOptionsValidators.test.ts",
+      "tests/unit/io/broker/GrpcMethodImplementation.test.ts",
+      "tests/unit/io/broker/GrpcServerOptionsSurface.test.ts"
+    ],
     "src/io/broker/KafkaActor.ts": [
       "tests/integration/in-process/io/broker/KafkaActor.test.ts",
       "tests/integration/in-process/io/broker/Phase2.smoke.test.ts",
@@ -482,6 +623,15 @@
       "tests/unit/io/broker/BrokerConfigReaders.test.ts",
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
       "tests/unit/io/broker/ForgedMqttSignals.test.ts"
+    ],
+    "src/io/broker/SseActor.ts": [
+      "tests/integration/in-process/io/broker/SseActor.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/SseInboundBuffering.test.ts"
+    ],
+    "src/io/broker/SseOptions.ts": [
+      "tests/unit/io/broker/BrokerOptionsValidators.test.ts",
+      "tests/unit/io/broker/SseInboundBuffering.test.ts"
     ],
     "src/io/broker/TcpServerActor.ts": [
       "tests/unit/io/broker/BrokerConfigReaders.test.ts",
@@ -530,6 +680,9 @@
       "tests/unit/logging/SyslogSink.test.ts",
       "tests/unit/logging/TcpLogSinkDial.test.ts"
     ],
+    "src/logging/ParseableSinkOptions.ts": [
+      "tests/unit/logging/ParseableSink.test.ts"
+    ],
     "src/logging/StreamDrain.ts": [
       "tests/unit/logging/TcpLogSinkBackpressure.test.ts"
     ],
@@ -542,6 +695,40 @@
       "tests/unit/cluster/ParkedPeerReadiness.test.ts",
       "tests/unit/http/ShutdownDrain.test.ts",
       "tests/unit/management/BuiltInHealthChecks.test.ts"
+    ],
+    "src/management/HttpManagement.ts": [
+      "tests/integration/in-process/cluster/sharding/ShardMapEndpoint.test.ts",
+      "tests/unit/management/Management.test.ts",
+      "tests/unit/management/ProbePaths.test.ts"
+    ],
+    "src/management/ManagementRoutesOptions.ts": [
+      "tests/unit/config/ManagementConfigDefaults.test.ts",
+      "tests/unit/management/Management.test.ts"
+    ],
+    "src/metrics/Metrics.ts": [
+      "tests/unit/metrics/Metrics.test.ts",
+      "tests/unit/metrics/MetricsCardinality.test.ts",
+      "tests/unit/metrics/MetricsFamilyCap.test.ts",
+      "tests/unit/metrics/MetricsLabelValueNormalisation.test.ts",
+      "tests/unit/metrics/MetricsNameValidation.test.ts",
+      "tests/unit/metrics/MetricsSeriesKey.test.ts",
+      "tests/unit/metrics/PrometheusC0SeriesIdentityClaims.test.ts",
+      "tests/unit/metrics/PrometheusExporter.test.ts"
+    ],
+    "src/metrics/MetricsRegistryOptions.ts": [
+      "tests/unit/config/MetricsConfigDefaults.test.ts",
+      "tests/unit/metrics/MetricsCardinality.test.ts",
+      "tests/unit/metrics/MetricsConfigRefusal.test.ts",
+      "tests/unit/metrics/MetricsFamilyCap.test.ts"
+    ],
+    "src/metrics/PromClientAdapter.ts": [
+      "tests/unit/metrics/MetricsFamilyCap.test.ts",
+      "tests/unit/metrics/PromClientAdapter.test.ts"
+    ],
+    "src/metrics/PromClientAdapterOptions.ts": [
+      "tests/unit/config/MetricsConfigDefaults.test.ts",
+      "tests/unit/metrics/MetricsFamilyCap.test.ts",
+      "tests/unit/metrics/PromClientAdapter.test.ts"
     ],
     "src/parallelism/ParallelismExtension.ts": [
       "tests/unit/parallelism/ClusterRouterOverMesh.test.ts",
@@ -635,8 +822,17 @@
       "tests/unit/persistence/ProjectionRequiredOptions.test.ts",
       "tests/unit/persistence/TagLookbackWindow.test.ts"
     ],
+    "src/persistence/relational/RelationalDurableStateStore.ts": [
+      "tests/integration/in-process/persistence/PersistenceIdEnforcement.test.ts",
+      "tests/unit/persistence/CollationAdvisory.test.ts",
+      "tests/unit/persistence/StorageIdentity.test.ts"
+    ],
     "src/persistence/relational/RelationalJournal.ts": [
       "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
+      "tests/unit/persistence/CollationAdvisory.test.ts"
+    ],
+    "src/persistence/relational/RelationalSnapshotStore.ts": [
+      "tests/integration/in-process/persistence/PersistenceIdEnforcement.test.ts",
       "tests/unit/persistence/CollationAdvisory.test.ts"
     ],
     "src/persistence/replicated/ConflictResolver.ts": [
@@ -645,6 +841,7 @@
       "tests/unit/util/CanonicalOrderKey.test.ts"
     ],
     "src/persistence/ReplicatedEventSourcedActor.ts": [
+      "tests/integration/in-process/persistence/PersistenceIdEnforcement.test.ts",
       "tests/integration/in-process/persistence/replicated/EnvelopeAuthorship.test.ts",
       "tests/integration/in-process/persistence/replicated/EnvelopeTrust.test.ts",
       "tests/integration/in-process/persistence/replicated/JournalBreaker.test.ts",
@@ -739,6 +936,10 @@
       "tests/unit/UtilExports.test.ts",
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/util/SenderClaimQuota.ts": [
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSubCaps.test.ts",
+      "tests/unit/discovery/ReceptionistGossipClaims.test.ts"
     ],
     "src/worker/WorkerMesh.ts": [
       "tests/integration/in-process/cluster/WorkerMesh.test.ts",

@@ -107,6 +107,24 @@ plain TCP, one-way TLS, and a Deno listener (which cannot report
 one at all) behave exactly as before. The check strengthens mTLS
 deployments rather than adding a switch that can be left off.
 
+The price of that default is that the check goes quiet when a
+certificate stops arriving — a half-applied TLS bundle, or a
+backend that no longer reports one. A deployment that wants every
+peer to prove its name sets `requirePeerIdentity` on the
+transport, and a peer that presents no certificate is then refused
+with a WARN (#1190):
+
+```ts
+const transportOptions = TcpTransportOptions.create()
+  .withTls(tls)
+  .withRequirePeerIdentity(true);
+const transport = new TcpTransport(self, log, transportOptions);
+```
+
+It is refused at construction where no peer could ever present a
+certificate: without a `ca` holding one, with
+`requestClientCert: false`, and on Deno.
+
 <Aside type="caution" title="One-way TLS authenticates nobody">
   The `hello` handshake carries no credential of its own, so on a
   TLS cluster the peer certificate *is* the admission control.  A
@@ -152,6 +170,13 @@ in a weaker state than they read as:
   rather than come up mis-secured — deliberately, but worth
   knowing before a rolling restart.
 </Aside>
+
+The dial side refuses the one shape of the four that is wrong
+there too: **half a client credential**, `cert` without `key` or
+the reverse, empty counting as absent.  Every runtime used to drop
+the half and dial one-way TLS under a configuration that read as
+mTLS; the dial now fails with an error naming the missing field
+(#1085).  `{ ca }` alone stays the ordinary one-way dial.
 
 A Deno node can still **join** an mTLS cluster: it presents its
 own `cert` / `key` when dialling, so the listener (on Node.js or
@@ -588,10 +613,12 @@ path as much as to local calls:
 | Live cluster members | `cluster.max-members` | `1000` |
 | `removed` tombstones | `cluster.max-tombstones` | `10000` |
 | Pub-sub subscribers per topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
-| Pub-sub topics | `cluster.pub-sub.max-topics` | `10000` |
+| Pub-sub topics, local and peer-only pools apart | `cluster.pub-sub.max-topics` | `10000` |
 | Pub-sub remote claimants per topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| Pub-sub topics one peer may claim | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` |
 | Receptionist subscribers per key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
 | Receptionist subscriptions total | `cluster.receptionist.max-subscriptions-total` | `10000` |
+| Receptionist registrations one peer may claim | `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` |
 
 A claim over a cap is dropped and logged rather than refused on
 the wire — the frame is well-formed, and dropping the connection
@@ -605,6 +632,21 @@ ever unsubscribing — is reclaimed rather than capped.
 Lower the defaults for a deployment where the legitimate numbers
 are far below them: a cap is only a bound on the damage, and one
 set far above real usage bounds very little.
+
+The caps bound what sticks, not the work: every record in a gossip
+frame is decoded and checked even when each one is refused. That
+work is bounded per sender by
+`cluster.gossip-frames-per-second-per-sender` (#1105) — a frame
+over the budget is discarded whole before any record is read, the
+connection stays, and the refusals are counted under
+`cluster_gossip_records_refused_total{reason="rate-limit"}`. It is
+on by default at 50 frames a second, far above the one frame a
+second a sender at the shipped 1 s interval sends. A sender's
+legitimate rate follows its own gossip interval, which the receiver
+does not know, so the budget must stay above it: about
+`1000 / gossip-interval-ms`, times a safety factor of at least 2
+for join and promotion frames. Raise it for a cluster that gossips
+faster than every 40 ms; `0` turns it off.
 
 ### Why membership needs two caps
 
@@ -717,11 +759,10 @@ sit in front of the merge:
   outside because it is the leader's decision — and which is
   harmless to accept, since a joining node is already trying
   to become `up`. What bounds it is how little it carries: the
-  status, and a version limited only by the `maxVersionSkewMs`
-  cap (5 minutes by default, see *A version cannot claim an
-  address in advance* below), so a stranger can date this node's
-  record up to that far ahead — clamping the version is
-  tracked in #1797. Nothing else crosses over. The promotion asks
+  status, and a version at most one step past the record this
+  node holds — the step a genuine leader promotion takes — so a
+  stranger cannot date this node's record ahead (#1797). Nothing
+  else crosses over. The promotion asks
   nothing of its sender, which is why this node has to keep its
   own roles, incarnation, storage identities, configuration facts
   and app version over whatever the record says. Before #1104 the

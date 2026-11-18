@@ -12,6 +12,7 @@ import { SseOptionsValidator, type SseOptionsType } from '../../../../src/io/bro
 import { TcpSocketOptionsValidator, type TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
 import { UdpSocketOptionsValidator, type UdpSocketOptionsType } from '../../../../src/io/broker/UdpSocketOptions.js';
 import { GrpcClientOptionsValidator, type GrpcClientOptionsType } from '../../../../src/io/broker/GrpcClientOptions.js';
+import { GrpcServerOptionsValidator, type GrpcServerOptionsType } from '../../../../src/io/broker/GrpcServerOptions.js';
 import { EmailBridgeOptionsValidator, type EmailBridgeOptionsType } from '../../../../src/io/broker/EmailBridgeOptions.js';
 import type { EmailMessage } from '../../../../src/io/broker/EmailBridgeActor.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
@@ -467,6 +468,14 @@ describe('SseOptionsValidator', () => {
     expect(() => check({ url: 'http://host/events', idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
     expect(() => check({ url: 'http://host/events', connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
   });
+
+  // #371 — a cap of 0 would refuse the first byte, so the cap is positive.
+  test('maxBufferChars must be a positive whole number', () => {
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 1 })).not.toThrow();
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 0 })).toThrow(/maxBufferChars/);
+    expect(() => check({ url: 'http://host/events', maxBufferChars: -5 })).toThrow(/maxBufferChars/);
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 1.5 })).toThrow(/maxBufferChars/);
+  });
 });
 
 describe('TcpSocketOptionsValidator', () => {
@@ -554,6 +563,27 @@ describe('GrpcClientOptionsValidator', () => {
 
   test('accepts a positive deadlineMs', () => {
     expect(() => check({ deadlineMs: 30_000 })).not.toThrow();
+  });
+
+  test('rejects a negative streamIdleTimeoutMs, and accepts 0 as "off" (#1222)', () => {
+    expect(() => check({ streamIdleTimeoutMs: -1 })).toThrow(/streamIdleTimeoutMs/);
+    expect(() => check({ streamIdleTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ streamIdleTimeoutMs: 300_000 })).not.toThrow();
+  });
+});
+
+describe('GrpcServerOptionsValidator (#1039)', () => {
+  const check = (s: Partial<GrpcServerOptionsType>): void => new GrpcServerOptionsValidator().validate(s);
+
+  test('rejects a pre-subscribe cap that is zero, negative or fractional', () => {
+    expect(() => check({ maxPendingRequestMessages: 0 })).toThrow(/maxPendingRequestMessages/);
+    expect(() => check({ maxPendingRequestMessages: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxPendingRequestMessages: 1.5 })).toThrow(OptionsError);
+  });
+
+  test('accepts a positive integer cap, and an unset one', () => {
+    expect(() => check({ maxPendingRequestMessages: 1 })).not.toThrow();
+    expect(() => check({})).not.toThrow();
   });
 });
 

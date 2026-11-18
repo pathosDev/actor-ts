@@ -230,6 +230,9 @@ async function main(): Promise<void> {
   // ::ffff: prefixes from dual-stack listeners are handled by
   // IpAllowlist's IPv4-mapped IPv6 normalisation.
   const mgmtRoutes = managementRoutes(system, cluster, {
+    enableMembersEndpoint: true,
+    enableLeaderEndpoint: true,
+    enableShardsEndpoint: true,
     enableLeaveEndpoint: true,
     enableDownEndpoint: true,
     enableMetricsEndpoint: true,

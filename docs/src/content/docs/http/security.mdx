@@ -47,7 +47,7 @@ const routes =
 
 `X-Content-Type-Options: nosniff` needs no setup. The **backend** writes it,
 not a middleware, so it also reaches the responses no middleware sees: the
-backend's own error mapping, the `fallback` 404 and the body-too-large 413.
+backend's own error mapping, the 404 for a path no route matches and the body-too-large 413.
 A handler's own header still wins.
 
 It is the only one on by default, deliberately — it is the only header of
@@ -209,6 +209,18 @@ the same helper without the origin rule, and being a separate name makes
 every deliberate off-origin hop greppable in one command. Hand it a
 constant or a target you allowlisted — never a raw request parameter. See
 the [Route DSL](/http/route-dsl/).
+
+**The server checks every redirect it sends, not only the ones `redirect`
+builds** (#1056).  A `301`/`302`/`303`/`307`/`308` whose `location`
+resolves to another host than the request's is refused with the generic
+`500` — whether a handler wrote the header itself
+(`complete(Status.Found, null, { location })`), a thrown `HttpError`
+carries it, or a `fallback()` route answered with it.  The refusal is
+logged at `error` without the target.  Two opt-ins let a redirect leave:
+`redirectExternal(...)` per route, and server-wide
+`withAllowedRedirectOrigins([...])` on `newServerAt(...)`, which takes exact
+origins (`https://payments.example`, no path) or `['*']` to switch the check
+off.  An empty target is refused by `redirect('')` with a `400`.
 
 ## Capping untrusted input
 
@@ -474,7 +486,7 @@ writes the 101 itself. See [WebSocket](/http/websocket/).
 | CSRF (browser forms) | `csrfProtection(...)` |
 | API authentication | `JwtAuth(...)` — signature, `exp`, `iss` and `aud` checked against your issuer's keys; `BearerTokenAuth(...)` for a pre-shared operator token |
 | No internal error leaks | `withErrorHandler` + generic bodies |
-| No open redirects | `redirect(...)` — same-origin by default |
+| No open redirects | every 3xx the server sends stays on the request's origin unless `redirectExternal(...)` or `withAllowedRedirectOrigins(...)` allows it |
 | Request correlation | `requestId()` |
 | Bounded latency | `requestTimeout(...)` — its deadline also from `actor-ts.http.request-timeout` |
 | Safe file serving | `getFromDirectory` defaults (dotfiles deny, symlink confinement) |

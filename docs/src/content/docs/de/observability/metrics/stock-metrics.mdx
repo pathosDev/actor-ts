@@ -356,9 +356,13 @@ Zum Monitoring der Cluster-Gesundheit:
   Sekunden über der Uhr liegt, die dieser Peer gezeigt hat — ein Duplikat,
   jemand sendet einen vom Draht mitgeschnittenen Frame erneut, oder
   jemand sendet einen erneut, dessen `sequence` umgeschrieben wurde, um
-  die Marke zu überspringen. Der Zähler wird einmal pro Frame um dessen
-  Anzahl erhöht, und die Label-Menge ist auf diese vier Werte
-  geschlossen.
+  die Marke zu überspringen. `reason="rate-limit"` sind die Records
+  ganzer Frames, die ein Absender über
+  `gossip-frames-per-second-per-sender` hinaus geschickt hat (#1105) —
+  ein Peer, der lauter ist als sein Gossip-Intervall erklärt, oder ein
+  Budget, das unter dem Intervall des Clusters liegt. Der Zähler wird
+  einmal pro Frame um dessen Anzahl erhöht, und die Label-Menge ist im
+  Code geschlossen.
 - `cluster_envelope_from_mismatch_total` sollte ebenfalls bei null
   liegen. Er bewegt sich, wenn die Payload eines Envelopes einen
   anderen Absender nennt als die Verbindung, auf der es ankam — ein

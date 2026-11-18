@@ -69,13 +69,21 @@ export interface DevToolsHubContext {
   snapshot(stream: DevToolsStreamId): ReadonlyArray<DevToolsStreamPayload>;
   /** True when a handler is registered for `method`. */
   isMethodAvailable(method: DevToolsRequestMethod): boolean;
-  /** Run a pull operation.  Rejects with a plain `Error` on bad input. */
-  invoke(method: DevToolsRequestMethod, parameters: unknown): Promise<unknown>;
+  /**
+   * Run a pull operation.  Rejects with a plain `Error` on bad input.
+   * `connectionId` is the connection the request arrived on (#973).
+   */
+  invoke(method: DevToolsRequestMethod, parameters: unknown, connectionId: string): Promise<unknown>;
   /**
    * Subscriber count for `stream` changed — lets a tap idle while no
    * panel is looking at it.
    */
   streamSubscribersChanged(stream: DevToolsStreamId, count: number): void;
+  /**
+   * A connection closed — lets work a request on it started end with it
+   * rather than outlive the tab that asked for it (#973).
+   */
+  connectionClosed?(connectionId: string): void;
 }
 
 /** Per-connection state. */
@@ -124,6 +132,7 @@ export class DevToolsHubActor
     // Report the drop AFTER removing the session so the recomputed
     // counts do not include the connection that just went away.
     if (session) for (const stream of session.streams) this.reportSubscribers(stream);
+    this.hub.connectionClosed?.(client.id);
   }
 
   /* ----------------------------- inbound ----------------------------- */
@@ -233,7 +242,7 @@ export class DevToolsHubActor
     this.inFlightRequests++;
     // Deliberately NOT awaited: a slow journal read would otherwise
     // block this hub's mailbox and stall every other connected tab.
-    void this.hub.invoke(frame.method, frame.parameters)
+    void this.hub.invoke(frame.method, frame.parameters, client.id)
       .then((result) => {
         if (client.isOpen) client.tell(responseFrame(frame.requestId, result));
       })

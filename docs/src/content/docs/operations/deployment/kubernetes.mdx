@@ -390,8 +390,11 @@ Four pieces in order:
    an empty list and founds the cluster itself; the StatefulSet's
    default `OrderedReady` policy starts the next pod only after that,
    and it finds the first one.
-2. **Management endpoints** — `/health` + `/ready` for K8s probes,
-   `/cluster/members` for debugging.  Bound to `0.0.0.0` on purpose:
+2. **Management endpoints** — `/health` + `/ready` for K8s probes.
+   The topology endpoints (`/cluster/members` and its siblings) are
+   off by default; switch them on with `enableMembersEndpoint` behind
+   an `ipAllowlist` or `auth` when you want them for debugging.
+   Bound to `0.0.0.0` on purpose:
    `system.http(port)` without a host binds loopback, and the kubelet
    probes the pod IP.
 3. **App HTTP** — your routes, separate port from management.

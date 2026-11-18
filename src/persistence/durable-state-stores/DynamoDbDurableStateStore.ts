@@ -26,6 +26,7 @@ import {
   type DynamoDbDurableStateStoreOptions,
   type DynamoDbDurableStateStoreOptionsType,
 } from './DynamoDbDurableStateStoreOptions.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 /**
  * DurableStateStore backed by Amazon DynamoDB — the "event-free" cousin of event
@@ -95,6 +96,7 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
     state: S,
     _options?: PersistenceOptions,
   ): Promise<DurableStateRecord<S>> {
+    assertValidPersistenceId(persistenceId, 'DynamoDbDurableStateStore.upsert');
     // A bogus revision is a caller bug, not a lost race — reporting it as a
     // concurrency conflict would invite an endless retry loop.
     if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {

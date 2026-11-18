@@ -9,12 +9,13 @@ import { expectExactOptions } from '../../util/ExactOptions.js';
  * #861 — before this, `src/delivery/` read no configuration at all: there was
  * no `actor-ts.reliable-delivery` block, no delivery group in `ConfigKeys`,
  * and the four tunables were settable only in code; #1471 added the fifth,
- * `consumer.max-out-of-order`.  What the readers must get right is the mapping
+ * `consumer.max-out-of-order`, and #1237 the sixth,
+ * `consumer.max-incarnations-per-producer`.  What the readers must get right is the mapping
  * (kebab HOCON leaf → camelCase option field), the "absent means absent" rule
  * — a key nobody set has to stay out of the returned object entirely, or it
  * lands as an explicit `undefined` and shadows the built-in default underneath
  * it — and the `0` → `Infinity` translation, which exists because the opt-out
- * all three consumer bounds document cannot be written in HOCON at all.
+ * all four consumer bounds document cannot be written in HOCON at all.
  *
  * Every fixture goes through `Config.parseString`, never
  * `Config.fromObject({'actor-ts.x.y': …})`: the latter keeps the dotted string
@@ -79,6 +80,7 @@ describe('readConsumerControllerOptionsFromConfig', () => {
         max-producers              = 32
         producer-idle-time-to-live = 90s
         max-out-of-order           = 48
+        max-incarnations-per-producer = 3
       }
     `);
 
@@ -86,6 +88,7 @@ describe('readConsumerControllerOptionsFromConfig', () => {
       maxProducers: 32,
       producerIdleTtlMs: 90_000,
       maxOutOfOrder: 48,
+      maxIncarnationsPerProducer: 3,
     });
   });
 
@@ -100,7 +103,7 @@ describe('readConsumerControllerOptionsFromConfig', () => {
     expect(readConsumerControllerOptionsFromConfig(config)).toStrictEqual({ maxProducers: 8 });
   });
 
-  test('0 is the HOCON spelling of the Infinity all three bounds document', () => {
+  test('0 is the HOCON spelling of the Infinity all four bounds document', () => {
     // `Infinity` is not writable in this config language — `getInt` takes a
     // number or a `/^-?\d+(\.\d+)?$/` string, and `parseDuration` throws on a
     // non-finite one — so the opt-out has to arrive as `0` and be translated.
@@ -112,6 +115,7 @@ describe('readConsumerControllerOptionsFromConfig', () => {
         max-producers              = 0
         producer-idle-time-to-live = 0
         max-out-of-order           = 0
+        max-incarnations-per-producer = 0
       }
     `);
 
@@ -119,6 +123,7 @@ describe('readConsumerControllerOptionsFromConfig', () => {
       maxProducers: Infinity,
       producerIdleTtlMs: Infinity,
       maxOutOfOrder: Infinity,
+      maxIncarnationsPerProducer: Infinity,
     });
   });
 
@@ -127,6 +132,7 @@ describe('readConsumerControllerOptionsFromConfig', () => {
       maxProducers: 1_024,
       producerIdleTtlMs: 300_000,
       maxOutOfOrder: 1_024,
+      maxIncarnationsPerProducer: 4,
     });
   });
 

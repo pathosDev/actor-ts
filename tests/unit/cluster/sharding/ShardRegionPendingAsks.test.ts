@@ -62,6 +62,7 @@ import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { RecordingLogger } from '../../../util/RecordingLogger.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { none } from '../../../../src/util/Option.js';
+import { nextShardToken } from '../../../util/ShardTokens.js';
 
 const TYPE_NAME = 'pending';
 const NUM_SHARDS = 8;
@@ -364,6 +365,7 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
   const place = (shardId: number): void => {
     const home: ShardHome = {
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId,
       region: region.path.toString(),
       node: cluster.selfAddress.toJSON(),
@@ -386,6 +388,7 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
   const placeRemotely = (shardId: number): void => {
     const home: ShardHome = {
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId,
       region: region.path.toString(),
       node: remoteNode.toJSON(),
