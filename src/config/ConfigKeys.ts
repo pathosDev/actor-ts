@@ -2329,7 +2329,7 @@ export const ConfigKeys = {
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides
    * nothing except whether the node warns about that at startup (#591).
-   * Encrypting the wire is its own issue (#941); until it lands, a key that
+   * Encrypting the wire is its own issue (#1854); until it lands, a key that
    * says `true` and a socket that is not encrypted is exactly the gap the
    * warning exists to close.
    *

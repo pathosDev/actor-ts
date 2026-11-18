@@ -1919,7 +1919,7 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
  *
  * Deliberately **not** part of {@link ClusterConfigDefaults}: there is no
  * `ClusterOptionsType` field to merge it into, because nothing honours it yet
- * (#941).  It exists so `Cluster` can say out loud that the flag is set and
+ * (#1854).  It exists so `Cluster` can say out loud that the flag is set and
  * the socket is still plaintext — an operator who configures encryption and
  * gets neither encryption nor a word about it is the whole defect (#591).
  *

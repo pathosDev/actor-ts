@@ -694,7 +694,7 @@ export class Cluster {
     // minted, and cluster wire v2 requires it on every handshake (#823).
     this.transport.adoptIdentity?.(this.selfAddress);
     // That `tls: null` is written out rather than omitted, and it is hard-coded: the
-    // transport this constructor builds is always plaintext until #941 wires
+    // transport this constructor builds is always plaintext until #1854 wires
     // the option up.  An operator who set the HOCON flag asked for the
     // opposite and would otherwise get plaintext with no error, no log line
     // and no way to tell (#591) — so say it, once, at startup.  Only when we
@@ -713,7 +713,7 @@ export class Cluster {
     if (options.transport == null && isRemoteTlsRequested(system.config)) {
       this.log.warn(
         `${ConfigKeys.remote.tls.enabled} asks for TLS, but the cluster transport this node `
-        + 'built is plaintext — TLS for it is not implemented yet (#941). The wire is '
+        + 'built is plaintext — TLS for it is not implemented yet (#1854). The wire is '
         + 'unencrypted; keep the cluster on a trusted network until it lands.',
       );
     }

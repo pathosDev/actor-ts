@@ -1158,7 +1158,7 @@ actor-ts {
     tls {
       # Read but NOT honoured: the transport the cluster builds for itself is
       # always plaintext.  Setting this to true only buys a startup WARN that
-      # says so — encrypting the wire is issue #941.
+      # says so — encrypting the wire is issue #1854.
       enabled = false
     }
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks

@@ -5,7 +5,7 @@
  * a plaintext cluster wire with no error, no log line and no way to tell from
  * the running node that the setting had been ignored.
  *
- * Implementing TLS is #941.  What is pinned here is the smaller promise this
+ * Implementing TLS is #1854.  What is pinned here is the smaller promise this
  * issue makes: the node **says** the flag is not honoured, exactly once, at
  * startup, stays quiet in every case where saying it would be wrong, and
  * refuses to start on a value it cannot read as a boolean rather than picking
@@ -111,10 +111,10 @@ describe('a node whose config asks for TLS says the wire is still plaintext', ()
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.level).toBe('warn');
     // The operator has to be able to act on this: which key, and what the node
-    // is actually doing instead.  #941 is where the fix lands.
+    // is actually doing instead.  #1854 is where the fix lands.
     expect(warnings[0]!.message).toContain('actor-ts.remote.tls.enabled');
     expect(warnings[0]!.message).toContain('plaintext');
-    expect(warnings[0]!.message).toContain('#941');
+    expect(warnings[0]!.message).toContain('#1854');
   });
 
   test('a config that spells the shipped default out stays silent', () => {
