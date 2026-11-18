@@ -401,8 +401,11 @@ Vier Schritte in der Reihenfolge:
    Liste und gründet den Cluster selbst. Die Default-Policy
    `OrderedReady` des StatefulSets startet den nächsten Pod erst
    danach, und der findet den ersten.
-2. **Management-Endpunkte** — `/health` + `/ready` für die K8s-Probes,
-   `/cluster/members` zum Debuggen. Bewusst an `0.0.0.0` gebunden:
+2. **Management-Endpunkte** — `/health` + `/ready` für die K8s-Probes.
+   Die Topologie-Endpunkte (`/cluster/members` und seine Geschwister)
+   sind standardmäßig aus; schalte sie mit `enableMembersEndpoint`
+   hinter einer `ipAllowlist` oder `auth` ein, wenn du sie zum Debuggen
+   brauchst. Bewusst an `0.0.0.0` gebunden:
    `system.http(port)` ohne Host bindet Loopback, und das Kubelet probt
    die Pod-IP.
 3. **App-HTTP** — deine Routes, getrennter Port vom Management.

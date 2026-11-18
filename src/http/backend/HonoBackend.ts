@@ -10,6 +10,7 @@ import {
   type WSEventsLike,
 } from '../../runtime/http/index.js';
 import { OptionsError } from '../../util/OptionsValidator.js';
+import { requestIdHeadersOfError } from '../middleware/RequestId.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
@@ -18,6 +19,7 @@ import {
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   drainWindowOf,
+  NOT_FOUND_RESPONSE,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -412,17 +414,18 @@ export class HonoBackend implements HttpServerBackend {
       this.attachRoute(r, r.method === 'GET' && !explicitHead.has(r.pattern));
     }
 
-    if (this.notFoundHandler) {
-      const handler = this.notFoundHandler;
-      app.notFound(async (context) => {
-        if (contentLengthExceeds(contentLengthHeader(context), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
-        const read = await this.readBodyWithinCap(context);
-        if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
-        const request = this.buildRequest(context, read.body);
-        const response = await handler(request);
-        return this.writeResponse(response, { request, context });
-      });
-    }
+    // With no not-found hook set the framework's own 404 is written here too,
+    // rather than by Hono's plain-text default, so it carries the default
+    // headers (#1059).
+    const notFoundHandler = this.notFoundHandler ?? ((): HttpResponse => NOT_FOUND_RESPONSE);
+    app.notFound(async (context) => {
+      if (contentLengthExceeds(contentLengthHeader(context), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      const read = await this.readBodyWithinCap(context);
+      if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      const request = this.buildRequest(context, read.body);
+      const response = await notFoundHandler(request);
+      return this.writeResponse(response, { request, context });
+    });
 
     app.onError(async (err, context) => {
       const request = await this.adaptRequest(context);
@@ -438,13 +441,13 @@ export class HonoBackend implements HttpServerBackend {
       if (err instanceof HttpError) {
         return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
           status: responseStatusOrServerError(err.status),
-          headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
+          headers: this.errorHeaders(err.headers),
         });
       }
       // No `message` field — see the note on FastifyBackend.writeError.
       return new Response(
         JSON.stringify({ error: 'Internal Server Error' }),
-        { status: 500, headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8' } },
+        { status: 500, headers: this.errorHeaders(requestIdHeadersOfError(err)) },
       );
     });
 
@@ -786,6 +789,22 @@ export class HonoBackend implements HttpServerBackend {
       body,
       ...(remoteAddress ? { remoteAddress } : {}),
     };
+  }
+
+  /**
+   * The headers of a response the error mapping builds itself.  Written with
+   * `Headers.set`, like {@link writeResponse}, and never by object spread: a
+   * plain object can hold `x-frame-options` and `X-Frame-Options` side by
+   * side, and the `Headers` constructor appends the second to the first, so
+   * an error's own header would join the server-wide default instead of
+   * replacing it (#1058).
+   */
+  private errorHeaders(own?: Readonly<Record<string, string>>): Headers {
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(this.defaultResponseHeaders)) headers.set(key, value);
+    headers.set('content-type', 'application/json; charset=utf-8');
+    if (own) for (const [key, value] of Object.entries(own)) headers.set(key, value);
+    return headers;
   }
 
   /**

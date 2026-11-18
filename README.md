@@ -153,7 +153,7 @@ A short tour of what's in the box:
   time and replayable by id — with a replay cap so a poison message cannot
   be retried into an ever-growing queue.
 - **Observability** — Prometheus exporter, OTel tracing, management
-  HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
+  HTTP endpoints (`/health`, `/ready`, plus opt-in `/cluster/members`, `/cluster/shards`),
   out-of-the-box stock metrics.
 - **Multi-sink logging** — one record to several destinations at once, each
   with its own minimum level, with bounded queues, batched delivery and a

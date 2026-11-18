@@ -158,7 +158,8 @@ Ursachen:
 
 Diagnostik — keine Metrik zählt die Shards, die ein Node hostet; die
 Shard-Map tut es, über den
-[Management-Endpunkt](/de/observability/management/http-endpoints/#get-clustershardstypetypename):
+[Management-Endpunkt](/de/observability/management/http-endpoints/#get-clustershardstypetypename)
+(Opt-in: `enableShardsEndpoint`):
 
 ```bash
 curl -s http://pod-1:8558/cluster/shards?type=entity-type

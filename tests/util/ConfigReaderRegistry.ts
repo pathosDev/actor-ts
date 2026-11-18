@@ -1373,6 +1373,7 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.sse.headers, { authorization: 'Bearer t0k3n' }],
     [ConfigKeys.io.broker.sse.idleTimeout, '90s'],
     [ConfigKeys.io.broker.sse.connectTimeout, '5s'],
+    [ConfigKeys.io.broker.sse.maxBufferChars, 2048],
   ),
   // A framing block's delimiter and caps are observed under the framing
   // contexts of their reader; set alone, without a `kind`, the block cannot be

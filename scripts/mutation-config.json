@@ -385,11 +385,23 @@
       "tests/unit/http/HttpExtension.test.ts",
       "tests/unit/http/HttpServerClientCertificates.test.ts",
       "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/http/OffOriginRedirectGuard.test.ts",
       "tests/unit/http/ShutdownDrainTask.test.ts"
+    ],
+    "src/http/middleware/BasicAuth.ts": [
+      "tests/unit/http/middleware/BasicAuth.test.ts"
     ],
     "src/http/middleware/ClientIp.ts": [
       "tests/unit/http/middleware/ClientIp.test.ts",
       "tests/unit/http/middleware/IpAllowlist.test.ts"
+    ],
+    "src/http/middleware/RequestId.ts": [
+      "tests/unit/http/ErrorLogging.test.ts",
+      "tests/unit/http/middleware/RequestId.test.ts"
+    ],
+    "src/http/Route.ts": [
+      "tests/unit/http/OffOriginRedirectGuard.test.ts",
+      "tests/unit/http/Route.test.ts"
     ],
     "src/http/websocket/SocketAdapter.ts": [
       "tests/integration/in-process/http/websocket/FastifyWebsocket.test.ts",
@@ -483,6 +495,15 @@
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
       "tests/unit/io/broker/ForgedMqttSignals.test.ts"
     ],
+    "src/io/broker/SseActor.ts": [
+      "tests/integration/in-process/io/broker/SseActor.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/SseInboundBuffering.test.ts"
+    ],
+    "src/io/broker/SseOptions.ts": [
+      "tests/unit/io/broker/BrokerOptionsValidators.test.ts",
+      "tests/unit/io/broker/SseInboundBuffering.test.ts"
+    ],
     "src/io/broker/TcpServerActor.ts": [
       "tests/unit/io/broker/BrokerConfigReaders.test.ts",
       "tests/unit/io/broker/TcpServerActor.test.ts",
@@ -542,6 +563,15 @@
       "tests/unit/cluster/ParkedPeerReadiness.test.ts",
       "tests/unit/http/ShutdownDrain.test.ts",
       "tests/unit/management/BuiltInHealthChecks.test.ts"
+    ],
+    "src/management/HttpManagement.ts": [
+      "tests/integration/in-process/cluster/sharding/ShardMapEndpoint.test.ts",
+      "tests/unit/management/Management.test.ts",
+      "tests/unit/management/ProbePaths.test.ts"
+    ],
+    "src/management/ManagementRoutesOptions.ts": [
+      "tests/unit/config/ManagementConfigDefaults.test.ts",
+      "tests/unit/management/Management.test.ts"
     ],
     "src/parallelism/ParallelismExtension.ts": [
       "tests/unit/parallelism/ClusterRouterOverMesh.test.ts",

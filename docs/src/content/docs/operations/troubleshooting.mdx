@@ -150,7 +150,8 @@ Causes:
    has nothing to hash.
 
 Diagnostics — no metric counts the shards a node hosts; the shard map
-does, from the [management endpoint](/observability/management/http-endpoints/#get-clustershardstypetypename):
+does, from the [management endpoint](/observability/management/http-endpoints/#get-clustershardstypetypename)
+(opt-in: `enableShardsEndpoint`):
 
 ```bash
 curl -s http://pod-1:8558/cluster/shards?type=entity-type

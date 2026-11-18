@@ -2009,6 +2009,9 @@ that seam is issue #967.
 | `management.enable-leave-endpoint` | `false` | Serve `POST /cluster/leave` ([HTTP endpoints](/observability/management/http-endpoints/)). |
 | `management.enable-down-endpoint` | `false` | Serve `POST /cluster/down` — operator-initiated force-down of a peer. |
 | `management.enable-metrics-endpoint` | `false` | Serve `GET /metrics` in Prometheus text format. |
+| `management.enable-members-endpoint` | `false` | Serve `GET /cluster/members` — every member's internal address, status and roles. |
+| `management.enable-leader-endpoint` | `false` | Serve `GET /cluster/leader`. |
+| `management.enable-shards-endpoint` | `false` | Serve `GET /cluster/shards?type=…` — one sharded type's shard-to-region map. |
 | `management.auth-protect-health` | `false` | Extend the `auth` middleware over `/health` and `/ready` as well as `/cluster/*`. |
 | `management.liveness-path` | `"health"` | Single path segment the liveness probe answers on. |
 | `management.readiness-path` | `"ready"` | Single path segment the readiness probe answers on. |

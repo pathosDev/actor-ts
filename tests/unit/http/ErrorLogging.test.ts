@@ -12,8 +12,9 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
-import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
-import { concat, fallback, get, path, type Route } from '../../../src/http/Route.js';
+import { HttpExtensionId, type ServerBuilder } from '../../../src/http/HttpExtension.js';
+import { requestId, requestIdOfError } from '../../../src/http/middleware/RequestId.js';
+import { concat, fallback, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
 import { HttpError, Status } from '../../../src/http/Types.js';
 import type { LogContextData } from '../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../src/Logger.js';
@@ -53,16 +54,20 @@ type Fixture = {
   readonly log: RecordingLogger;
 };
 
-async function bind(name: string, routes: Route): Promise<Fixture> {
+async function bind(
+  name: string,
+  routes: Route,
+  configure: (builder: ServerBuilder) => ServerBuilder = (builder) => builder,
+): Promise<Fixture> {
   const log = new RecordingLogger();
   const systemOptions = ActorSystemOptions.create()
     .withLogger(log)
     .withLogLevel(LogLevel.Debug);
   const system = ActorSystem.create(name, systemOptions);
-  const binding = await system.extension(HttpExtensionId)
+  const builder = system.extension(HttpExtensionId)
     .newServerAt('127.0.0.1', 0)
-    .useBackend(new FastifyBackend({ logger: false }))
-    .bind(routes);
+    .useBackend(new FastifyBackend({ logger: false }));
+  const binding = await configure(builder).bind(routes);
   return { system, binding, log };
 }
 
@@ -142,10 +147,117 @@ describe('HttpExtension — correlating the error line with the caller', () => {
 
     // Spaces and colons are outside the accepted id shape — the guard exists
     // because a raw client string on a log line can forge whole records.
-    await fetch(url(fixture, '/boom'), { headers: { 'x-request-id': 'evil INFO: user promoted' } });
+    const response = await fetch(url(fixture, '/boom'), { headers: { 'x-request-id': 'evil INFO: user promoted' } });
     const message = errorRecords(fixture)[0]!.message;
-    expect(message).not.toContain('x-request-id');
     expect(message).not.toContain('user promoted');
+    // A generated id stands in for it, on the line and on the 500 alike (#1064).
+    const generated = response.headers.get('x-request-id');
+    expect(generated).toMatch(WELL_FORMED_ID);
+    expect(message).toContain(`[x-request-id=${generated}]`);
+    await close(fixture);
+  });
+});
+
+const WELL_FORMED_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** The `[header=id]` a line names, or null. */
+const correlationOnLine = (message: string): { readonly headerName: string; readonly id: string } | null => {
+  const found = /\[([a-z-]+)=([A-Za-z0-9._-]+)\]/.exec(message);
+  return found ? { headerName: found[1]!, id: found[2]! } : null;
+};
+
+describe('HttpExtension — a 500 always carries the id its log line names (#1064)', () => {
+  test('requestId() with no incoming id: the generated id is on the 500 and on the line', async () => {
+    const fixture = await bind(
+      'http-500-correlation-generated',
+      withMiddleware(requestId(), path('boom', get(() => { throw new Error(LEAK); }))),
+    );
+    const response = await fetch(url(fixture, '/boom'));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'Internal Server Error' });
+    const id = response.headers.get('x-request-id');
+    expect(id).toMatch(WELL_FORMED_ID);
+    expect(correlationOnLine(errorRecords(fixture)[0]!.message)).toEqual({ headerName: 'x-request-id', id: id! });
+    await close(fixture);
+  });
+
+  test('the id requestId() replaced an incoming one with is the one reported', async () => {
+    const options = { trustIncoming: false, generate: () => 'server-made-1' };
+    const fixture = await bind(
+      'http-500-correlation-untrusted',
+      withMiddleware(requestId(options), path('boom', get(() => { throw new Error(LEAK); }))),
+    );
+    const response = await fetch(url(fixture, '/boom'), { headers: { 'x-request-id': 'client-said-2' } });
+    expect(response.headers.get('x-request-id')).toBe('server-made-1');
+    expect(errorRecords(fixture)[0]!.message).toContain('[x-request-id=server-made-1]');
+    await close(fixture);
+  });
+
+  test('a renamed header is the one written and named', async () => {
+    const fixture = await bind(
+      'http-500-correlation-renamed',
+      withMiddleware(requestId({ headerName: 'x-correlation-id' }), path('boom', get(() => { throw new Error(LEAK); }))),
+    );
+    const response = await fetch(url(fixture, '/boom'));
+    const id = response.headers.get('x-correlation-id');
+    expect(id).toMatch(WELL_FORMED_ID);
+    expect(response.headers.get('x-request-id')).toBeNull();
+    expect(errorRecords(fixture)[0]!.message).toContain(`[x-correlation-id=${id}]`);
+    await close(fixture);
+  });
+
+  test('without requestId() at all, the 500 still gets a generated id', async () => {
+    const fixture = await bind('http-500-correlation-bare', path('boom', get(() => { throw new Error(LEAK); })));
+    const response = await fetch(url(fixture, '/boom'));
+    expect(response.status).toBe(500);
+    const id = response.headers.get('x-request-id');
+    expect(id).toMatch(WELL_FORMED_ID);
+    expect(errorRecords(fixture)[0]!.message).toContain(`[x-request-id=${id}]`);
+    await close(fixture);
+  });
+
+  test('a throw inside fallback() gets one too', async () => {
+    const fixture = await bind('http-500-correlation-fallback', fallback(() => { throw new Error(LEAK); }));
+    const response = await fetch(url(fixture, '/nowhere'));
+    expect(response.status).toBe(500);
+    const id = response.headers.get('x-request-id');
+    expect(id).toMatch(WELL_FORMED_ID);
+    expect(errorRecords(fixture)[0]!.message).toContain(`[x-request-id=${id}]`);
+    await close(fixture);
+  });
+
+  test('withErrorHandler still receives the thrown value itself, and can read the id off it', async () => {
+    const boom = new Error(LEAK);
+    let received: unknown;
+    const fixture = await bind(
+      'http-500-correlation-handler',
+      withMiddleware(requestId(), path('boom', get(() => { throw boom; }))),
+      (builder) => builder.withErrorHandler((err) => {
+        received = err;
+        const correlation = requestIdOfError(err);
+        return { status: 503, headers: correlation ? { [correlation.headerName]: correlation.id } : {}, body: 'down' };
+      }),
+    );
+    const response = await fetch(url(fixture, '/boom'));
+    expect(response.status).toBe(503);
+    expect(received).toBe(boom);
+    const id = response.headers.get('x-request-id');
+    expect(id).toMatch(WELL_FORMED_ID);
+    expect(errorRecords(fixture)[0]!.message).toContain(`[x-request-id=${id}]`);
+    await close(fixture);
+  });
+
+  test('without requestId(), withErrorHandler reads the id the server generated', async () => {
+    const fixture = await bind(
+      'http-500-correlation-handler-bare',
+      path('boom', get(() => { throw new Error(LEAK); })),
+      (builder) => builder.withErrorHandler((err) => ({ status: 503, body: requestIdOfError(err)?.id ?? 'none' })),
+    );
+    const response = await fetch(url(fixture, '/boom'));
+    expect(response.status).toBe(503);
+    const id = await response.text();
+    expect(id).toMatch(WELL_FORMED_ID);
+    expect(errorRecords(fixture)[0]!.message).toContain(`[x-request-id=${id}]`);
     await close(fixture);
   });
 });

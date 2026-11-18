@@ -195,7 +195,8 @@ For testing memory-bounded scenarios, set explicit limits.
 ## Observing
 
 ```bash
-# Check cluster membership from any node's management port:
+# Check cluster membership from any node's management port
+# (served once the routes enable it: enableMembersEndpoint):
 curl http://localhost:8551/cluster/members
 
 # Tail logs:

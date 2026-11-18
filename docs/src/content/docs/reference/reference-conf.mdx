@@ -2035,6 +2035,11 @@ actor-ts {
     enable-leave-endpoint   = false
     enable-down-endpoint    = false
     enable-metrics-endpoint = false
+    # So do the three that disclose the cluster's topology -- every member's
+    # internal host:port and roles, the leader, a type's shard-to-region map.
+    enable-members-endpoint = false
+    enable-leader-endpoint  = false
+    enable-shards-endpoint  = false
     # Extend the auth middleware over /health and /ready too.  Off, because a Kubernetes
     # probe cannot present a credential and would restart the pod on the 401.
     auth-protect-health     = false

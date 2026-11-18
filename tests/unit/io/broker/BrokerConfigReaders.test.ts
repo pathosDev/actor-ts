@@ -1901,13 +1901,22 @@ describe('readSseOptionsFromConfig', () => {
       headers { authorization = "Bearer x", x-trace = "on" }
       idle-timeout    = 90s
       connect-timeout = 5s
+      max-buffer-chars = 2048
     }`);
     expectExactOptions(readSseOptionsFromConfig(config), {
       url: 'https://events.local/stream',
       headers: { authorization: 'Bearer x', 'x-trace': 'on' },
       idleTimeoutMs: 90_000,
       connectTimeoutMs: 5_000,
+      maxBufferChars: 2_048,
     });
+  });
+
+  // #371: a count of UTF-16 code units, not bytes, so a size such as `2K`
+  // is refused rather than read as 2 048 of a unit the cap does not measure.
+  test('max-buffer-chars is a whole count, not a size', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.sse.root}.max-buffer-chars = 2K`);
+    expect(() => readSseOptionsFromConfig(config)).toThrow();
   });
 });
 

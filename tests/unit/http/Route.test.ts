@@ -484,7 +484,6 @@ describe('redirect — target validation (#125)', () => {
     ['dot-relative path', './sibling'],
     ['colon after a slash is not a scheme', '/notes/10:30'],
     ['single leading backslash reads as a path', `${BACKSLASH}dashboard`],
-    ['empty target means "this URL"', ''],
   ])('accepts a same-origin target — %s', (_label, target) => {
     const response = redirect(target);
     expect(response.status).toBe(Status.Found);
@@ -528,10 +527,33 @@ describe('redirect — target validation (#125)', () => {
     ['bare line feed', `/foo${LINE_FEED}X-Evil: 1`],
     ['NUL', `/foo${String.fromCharCode(0)}`],
     ['DELETE', `/foo${DELETE_CHARACTER}`],
+    // #1057: C1 is neither in C0 nor in what `trimStart()` strips, so a NEL
+    // prefix used to slip a protocol-relative target past both checks.
+    ['NEL before a protocol-relative target', `${String.fromCharCode(0x85)}//evil.example`],
+    ['first C1 code point', `/foo${String.fromCharCode(0x80)}`],
+    ['last C1 code point', `/foo${String.fromCharCode(0x9f)}`],
   ])('rejects a control character in the target — %s', (_label, target) => {
     const err = thrownError(() => redirect(target));
     expect(err.status).toBe(Status.BadRequest);
     expect(err.message).toContain('control characters');
+  });
+
+  test.each([
+    ['NO-BREAK SPACE inside the path', `/a${String.fromCharCode(0xa0)}b`],
+    ['a Latin-1 letter', `/caf${String.fromCharCode(0xe9)}`],
+  ])('accepts a character just above C1 — %s', (_label, target) => {
+    expect(redirect(target).headers?.location).toBe(target);
+  });
+
+  // #1056: an empty `location` sends the browser back to the URL it asked
+  // for, which is a loop rather than a redirect, so it is refused too.
+  test.each([
+    ['empty', ''],
+    ['whitespace only', '   '],
+  ])('rejects an empty target — %s', (_label, target) => {
+    const err = thrownError(() => redirect(target));
+    expect(err.status).toBe(Status.BadRequest);
+    expect(err.message).toContain('empty');
   });
 
   test('rejects a scheme that hides a TAB — the case the runtimes let through', () => {

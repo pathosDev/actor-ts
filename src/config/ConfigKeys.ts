@@ -593,6 +593,8 @@ export const ConfigKeys = {
         headers: 'actor-ts.io.broker.sse.headers',
         idleTimeout: 'actor-ts.io.broker.sse.idle-timeout',
         connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
+        /** A count of UTF-16 code units, not a size — hence the unit stays in the name (#371). */
+        maxBufferChars: 'actor-ts.io.broker.sse.max-buffer-chars',
       },
       /**
        * `TcpSocketActor`.  `framing` is the block both TCP actors carry, so its
@@ -1453,6 +1455,9 @@ export const ConfigKeys = {
     enableLeaveEndpoint: 'actor-ts.management.enable-leave-endpoint',
     enableDownEndpoint: 'actor-ts.management.enable-down-endpoint',
     enableMetricsEndpoint: 'actor-ts.management.enable-metrics-endpoint',
+    enableMembersEndpoint: 'actor-ts.management.enable-members-endpoint',
+    enableLeaderEndpoint: 'actor-ts.management.enable-leader-endpoint',
+    enableShardsEndpoint: 'actor-ts.management.enable-shards-endpoint',
     authProtectHealth: 'actor-ts.management.auth-protect-health',
     livenessPath: 'actor-ts.management.liveness-path',
     readinessPath: 'actor-ts.management.readiness-path',

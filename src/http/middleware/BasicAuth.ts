@@ -4,16 +4,21 @@
  * a 401 advertises a real `WWW-Authenticate: Basic realm="…"` header (via
  * HttpError.headers).
  */
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Middleware } from '../Route.js';
 import { HttpError, Status } from '../Types.js';
 import type { BasicAuthOptions, BasicAuthOptionsType } from './BasicAuthOptions.js';
 
-/** Constant-time compare (equal length only — the length pre-check is the one known leak). */
+/**
+ * Constant-time compare.  Both sides are reduced to SHA-256 digests first, so
+ * `timingSafeEqual` always runs over two 32-byte buffers: a length pre-check
+ * on the raw strings would return early whenever the lengths differ, and how
+ * often it does says something about the stored secret's length.
+ */
 function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return ab.length === bb.length && timingSafeEqual(ab, bb);
+  const ab = createHash('sha256').update(Buffer.from(a)).digest();
+  const bb = createHash('sha256').update(Buffer.from(b)).digest();
+  return timingSafeEqual(ab, bb);
 }
 
 /** Build a Basic-auth middleware.  Requires `users` or `validate`. */
@@ -45,10 +50,16 @@ export function BasicAuth(options: BasicAuthOptions): Middleware {
     if (validate) {
       ok = (await validate(user, pass)) === true;
     } else if (users) {
-      // Iterate every entry (no early exit) so timing doesn't reveal which
-      // usernames exist; a miss still burns the same comparisons.
+      // Every entry is visited (no early exit) and both halves of each entry
+      // are compared before their results are combined, so an unknown user,
+      // a known user with a wrong password and a valid login all run the same
+      // number of comparisons.  A `safeEqual(user, u) && safeEqual(pass, p)`
+      // would skip the password compare for an unknown name, and the count of
+      // comparisons would say which usernames exist (#968).
       for (const [u, p] of Object.entries(users)) {
-        if (safeEqual(user, u) && safeEqual(pass, p)) ok = true;
+        const userMatches = safeEqual(user, u);
+        const passwordMatches = safeEqual(pass, p);
+        if (userMatches && passwordMatches) ok = true;
       }
     }
     if (!ok) unauthorized('invalid credentials');
