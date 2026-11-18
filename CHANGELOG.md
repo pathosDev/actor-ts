@@ -634,10 +634,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   No wire change. What remains is written in the replay section of the
   cluster-security page, which now carries the caveat #112 left.
-- **`TcpTransport` no longer writes peer-supplied text raw into its log
-  lines** (#1629). A plaintext peer could put a line break in its `hello` and
-  forge whole log records. Addresses, refusal reasons and certificate names
-  are escaped.
+- **`TcpTransport` escapes peer-supplied text in its log lines** (#1629):
+  addresses, refusal reasons and certificate names. Before, a peer could
+  forge log records.
 - **Sharding refusal log lines escape peer-supplied text** (#1220): frame
   kind, region path, shard count, shard id and entity id.
 - **The shard coordinator bounds the `GetShardHome` requests waiting on a
@@ -651,16 +650,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`sharding.EntityStarted` / `EntityStopped` are accepted only from their
   source** (#1267). A region takes them only from its own shards, and the
   coordinator only from the node hosting the shard. Remembered entity ids are
-  capped at 1 024 characters and each shard at 100 000 remembered entities.
-  The internal commands of the shard coordinator and the singleton manager are
-  now private classes matched by `instanceof`. A plain look-alike object that
-  reaches either mailbox is refused instead of obeyed; before, one could stop
-  a singleton whose lease was still held.
+  capped at 1 024 characters and each shard at 100 000 remembered entities;
+  past the cap a new entity is not remembered, with one warning per shard. The
+  internal commands of the shard coordinator and the singleton manager are now
+  private classes matched by `instanceof`, so a plain object that reaches
+  either mailbox is refused instead of obeyed.
 - **A same-node actor-ref marker in a message body goes through the same
-  `EnvelopeTrust` check as an envelope's target** (#1572). A marker naming a
-  `/system` actor, a `/user` actor off the `untrusted-mode` allow-list, or an
-  empty path decodes to `Nobody`. So does the bare `/user` guardian, which is
-  also refused as an envelope or watch target. Each refusal is counted on
+  `EnvelopeTrust` check as an envelope's target** (#1572). A marker the check
+  refuses decodes to `Nobody`, and the bare `/user` guardian is refused as an
+  envelope or watch target as well. Each refusal is counted on
   `cluster_envelope_refusals_total`.
 - **A `ClusterClient` given only half of a TLS client credential is refused
   at construction** (#1085). Before, the half was dropped on the dial and the
@@ -668,9 +666,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   *Migration:* supply both halves, or `ca` alone for one-way TLS.
 - **BREAKING — `entity()` decodes request bodies as plain data** (#967).
   A client no longer chooses a value's runtime class (RegExp, bigint,
-  undefined, Map, Date, …). A JSON body is plain JSON, so
-  `{"__regexp__":…}` stays an object. A CBOR body accepts only the JSON data
-  model, and any richer type is a 400 that names it. *Migration:* a route
+  undefined, Map, Date, …). A JSON body is plain JSON, and a CBOR body
+  accepts only the JSON data model; any richer CBOR type is a 400 that names
+  it. *Migration:* a route
   that relies on rebuilt types opts in per tag with
   `entity(request, EntityOptions.create().withTags([...]))`. The same names
   apply to JSON and CBOR.
