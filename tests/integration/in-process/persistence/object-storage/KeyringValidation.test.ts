@@ -38,6 +38,7 @@ import { registerObjectStoragePlugins } from '../../../../../src/persistence/obj
 import { ObjectStoragePluginOptions } from '../../../../../src/persistence/object-storage/ObjectStoragePluginOptions.js';
 import { encryptionByPrefix } from '../../../../../src/persistence/object-storage/PluginConfig.js';
 import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
+import { decodeBody, encodeBody } from '../../../../../src/persistence/object-storage/BodyCodec.js';
 import {
   KEY_VERSION_EXHAUSTION_THRESHOLD,
   MAX_KEY_VERSION,
@@ -285,5 +286,60 @@ describe('key-version exhaustion warning (#111)', () => {
       console.warn = originalWarn;
     }
     expect(warnings).toEqual([]);
+  });
+});
+
+/* ===== #1050 — a reused version once the retired entry has been deleted ===== */
+
+/**
+ * The duplicate check above catches a reused version only while both entries
+ * are in the ring.  Its message used to end "Give every entry in the ring its
+ * own version", which deleting the retired entry also satisfies — and that
+ * ring passes every check while every body written under the old key stops
+ * authenticating.  Nothing can detect the reuse once the old key is gone, so
+ * the two things left are the message that sends the operator down the right
+ * path, and a read failure that names the likely cause instead of a bare
+ * `OperationError`.
+ */
+describe('a reused key version after the retired entry is gone (#1050)', () => {
+  test('the duplicate-version message rules out deleting the retired entry', () => {
+    let caught: unknown = null;
+    try { validateMasterKeyRing(duplicateRing); } catch (error) { caught = error; }
+    expect((caught as Error).message).toMatch(/give the promoted key the next free version number/i);
+    expect((caught as Error).message).toMatch(/do not remove the retired entry/i);
+  });
+
+  test('a body that fails to authenticate names its key version and the probable cause', async () => {
+    const backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
+    const writerOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption({ mode: 'client-aes256-gcm', masterKeys: { active: { version: 1, key: v1 } }, info });
+    await new ObjectStorageSnapshotStore(writerOptions).save('user-1', 1, { balance: 100 });
+
+    // The issue's reproduction: version 1 now maps to another key, and the
+    // ring that says so is valid — there is no duplicate left to refuse.
+    const reused: MasterKeyRing = { active: { version: 1, key: v2 } };
+    expect(() => validateMasterKeyRing(reused)).not.toThrow();
+    const readerOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption({ mode: 'client-aes256-gcm', masterKeys: reused, info });
+    const reader = new ObjectStorageSnapshotStore(readerOptions);
+    await expect(reader.loadLatest('user-1'))
+      .rejects.toThrow(/key version 1 failed to authenticate.*probably not the key it was written with/s);
+  });
+
+  test('a failure that is not an authentication failure keeps its own message', async () => {
+    // A wrong-length subkey fails before WebCrypto runs, so it is not an
+    // `OperationError` — relabelling it "probably a reused version" would
+    // send the operator after the wrong cause.
+    const body = await encodeBody(new TextEncoder().encode('{}'), {
+      compression: 'none',
+      encryption: { subKey: new Uint8Array(32).fill(0x11) },
+    });
+    let caught: unknown = null;
+    try {
+      await decodeBody(body, { encryption: { subKey: new Uint8Array(16) } });
+    } catch (error) { caught = error; }
+    expect((caught as Error).message).toBe('subkey must be 32 bytes');
   });
 });

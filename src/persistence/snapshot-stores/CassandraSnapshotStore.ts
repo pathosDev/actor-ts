@@ -19,6 +19,7 @@ import {
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 type SnapshotRow = {
   persistence_id: string;
@@ -170,6 +171,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+    assertValidPersistenceId(persistenceId, 'CassandraSnapshotStore.save');
     // Cassandra store has no compression / encryption — options ignored.
     await this.ensureStarted();
     const now = Date.now();

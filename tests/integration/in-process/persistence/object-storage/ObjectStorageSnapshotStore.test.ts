@@ -127,14 +127,14 @@ describe('ObjectStorageSnapshotStore — compression resolver', () => {
     };
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(wrapping)
-      .withCompression(compressionByPrefix({default: { algorithm: 'gzip' },'large/': { algorithm: 'zstd' },'small/': { algorithm: 'none' },}));
+      .withCompression(compressionByPrefix({default: { algorithm: 'gzip' },'large-': { algorithm: 'zstd' },'small-': { algorithm: 'none' },}));
     const store = new ObjectStorageSnapshotStore(storeOptions);
-    await store.save('large/x', 1, { data: 'x'.repeat(200) });
-    await store.save('small/y', 1, { data: 'y' });
-    await store.save('other/z', 1, { data: 'z' });
-    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}large/x/00000000000000000001.json`)).toBe('zstd');
-    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}small/y/00000000000000000001.json`)).toBeUndefined();
-    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}other/z/00000000000000000001.json`)).toBe('gzip');
+    await store.save('large-x', 1, { data: 'x'.repeat(200) });
+    await store.save('small-y', 1, { data: 'y' });
+    await store.save('other-z', 1, { data: 'z' });
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}large-x/00000000000000000001.json`)).toBe('zstd');
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}small-y/00000000000000000001.json`)).toBeUndefined();
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}other-z/00000000000000000001.json`)).toBe('gzip');
   });
 
   test('round-trip survives gzip and zstd', async () => {
@@ -190,20 +190,20 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
         ? { mode: 'client-aes256-gcm', masterKey, info }
         : { mode: 'none' });
     const store = new ObjectStorageSnapshotStore(storeOptions);
-    await store.save('tenant-acme/x', 1, { who: 'acme' });
-    await store.save('tenant-bigcorp/x', 1, { who: 'bigcorp' });
+    await store.save('tenant-acme-x', 1, { who: 'acme' });
+    await store.save('tenant-bigcorp-x', 1, { who: 'bigcorp' });
 
     // The store derives a subkey per-pid from the master, so even with the
     // SAME master key the two snapshots use different subkeys.  We prove
     // that by sniffing the bytes — the bigcorp snapshot must not decrypt
     // as if it were acme's.
-    const acme = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}tenant-acme/x/00000000000000000001.json`);
-    const big = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}tenant-bigcorp/x/00000000000000000001.json`);
+    const acme = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}tenant-acme-x/00000000000000000001.json`);
+    const big = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}tenant-bigcorp-x/00000000000000000001.json`);
     expect(acme.isSome() && big.isSome()).toBe(true);
 
     // Each pid loads correctly through the store.
-    expect((await store.loadLatest('tenant-acme/x')).toNullable()?.state).toEqual({ who: 'acme' });
-    expect((await store.loadLatest('tenant-bigcorp/x')).toNullable()?.state).toEqual({ who: 'bigcorp' });
+    expect((await store.loadLatest('tenant-acme-x')).toNullable()?.state).toEqual({ who: 'acme' });
+    expect((await store.loadLatest('tenant-bigcorp-x')).toNullable()?.state).toEqual({ who: 'bigcorp' });
   });
 });
 

@@ -335,7 +335,9 @@ export function validateMasterKeyRing(ring: MasterKeyRing, errorPrefix = 'Master
         `${errorPrefix}: keyring version ${version} appears twice (${firstLabel} and ${label}).  `
         + 'A body manifest records only the version, so decryption would silently pick one of '
         + 'the two keys and bodies written under the other would fail to authenticate.  '
-        + 'Give every entry in the ring its own version.',
+        + 'Give the promoted key the next free version number.  Do not remove the retired entry '
+        + 'instead: the ring would then pass this check, and every body written under the old key '
+        + 'would become unreadable.',
       );
     }
     seenAt.set(version, label);

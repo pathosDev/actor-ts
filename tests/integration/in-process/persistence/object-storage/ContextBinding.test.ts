@@ -149,7 +149,9 @@ describe('#612 — cross-persistenceId replay under unencrypted + HMAC', () => {
     // something else in the frame: the identical payload, signed with
     // the identical key but WITHOUT a context, still verifies at a
     // foreign key.  This is precisely the pre-#612 body, and it is the
-    // reason `requireContextBinding` has to exist.
+    // reason `requireContextBinding` has to exist.  The body names `bob`:
+    // since #1417 one naming `alice` is refused by the body-carried id before
+    // the binding is ever asked, which would make this pass for that reason.
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' })
@@ -158,7 +160,7 @@ describe('#612 — cross-persistenceId replay under unencrypted + HMAC', () => {
     await store.upsert('bob', 0, { balance: 1 });
 
     const legacyAliceBody = await encodeBody(
-      utf8(JSON.stringify({ revision: 1, state: { balance: 1_000_000 }, timestamp: Date.now() })),
+      utf8(JSON.stringify({ persistenceId: 'bob', revision: 1, state: { balance: 1_000_000 }, timestamp: Date.now() })),
       { compression: 'none', integrity: { integrityKey: INTEGRITY_KEY } },
     );
     expect(legacyAliceBody[4]! & FLAG_CONTEXT_BOUND).toBe(0);

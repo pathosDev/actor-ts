@@ -8,7 +8,7 @@ import { ObjectStorageDurableStateStore } from '../../../../src/persistence/dura
 import { ObjectStorageDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
-import { decodeBody } from '../../../../src/persistence/object-storage/BodyCodec.js';
+import { decodeBody, encodeBody } from '../../../../src/persistence/object-storage/BodyCodec.js';
 import {
   OBJECT_STORAGE_DURABLE_STATE_LEAF,
   OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
@@ -31,18 +31,21 @@ import { JournalError } from '../../../../src/persistence/JournalTypes.js';
  *     *unset*.  The knob is a separate control that refuses bodies carrying no
  *     binding at all, i.e. the pre-#612 corpus.
  *   - With neither authenticator — the default, and the only shape a config
- *     file can express, because both need a 32-byte key — nothing at this
- *     layer notices.  The durable-state body is `{ revision, state, timestamp }`
- *     and names no entity, `load` returns the *requested* `persistenceId` with
- *     the *body's* state, and `requireContextBinding` is deliberately ignored
+ *     file can express, because both need a 32-byte key — the body-carried id
+ *     is the check.  Until #1417 the durable-state body was
+ *     `{ revision, state, timestamp }` and named no entity, so a copied record
+ *     loaded as the entity whose key it sat at; since #1417 it carries its
+ *     `persistenceId` and `load` refuses one naming another entity, as
+ *     `ObjectStorageSnapshotStore` has since #716.  That catches the accident
+ *     — a bucket copy, a restore — and not a deliberate writer, who can put any
+ *     id into a plaintext body; `requireContextBinding` stays a no-op there
  *     (demanding a binding where nothing produces one would reject the store's
- *     own writes).  `ObjectStorageSnapshotStore` is not in that position: a
- *     snapshot body names its entity and the store disbelieves one that names
- *     another (#716).
+ *     own writes).
  *
  * So the pages are asserted against the mechanism rather than against
- * themselves.  The tree half fails if the asymmetry ever closes — which is
- * exactly when the prose becomes wrong.
+ * themselves.  The tree half fails if the mechanism moves — which is exactly
+ * when the prose becomes wrong.  It moved once already: #1417 closed the
+ * asymmetry the pages used to describe, and this file turned red with it.
  *
  * The prose half comes in **two layers, and conflating them is what went wrong
  * the first time**:
@@ -131,9 +134,9 @@ async function caught(run: () => Promise<unknown>): Promise<Error | null> {
 }
 
 describe('durable-state move detection — the mechanism the pages describe (#1417)', () => {
-  test('with no authenticator a moved record is adopted, and the body names no entity', async () => {
-    // The default configuration: no encryption, no integrity.  Nothing
-    // authenticates the body, so nothing binds it to the key it sits at.
+  test('with no authenticator a copied record is refused, because the body names its entity', async () => {
+    // The default configuration: no encryption, no integrity.  Nothing binds
+    // the body to the key it sits at, so the body-carried id is the check.
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' });
@@ -142,57 +145,77 @@ describe('durable-state move detection — the mechanism the pages describe (#14
     await store.upsert('alice', 0, { balance: 1_000_000 });
     await store.upsert('bob', 0, { balance: 1 });
 
+    // Read off the wire rather than inferred: the body names the entity it
+    // was written for, which is what a comparison is made against.
+    const decoded = await decodeBody(new Uint8Array(readFileSync(durableStateFileFor('alice'))));
+    const payload = JSON.parse(new TextDecoder().decode(decoded.payload)) as Record<string, unknown>;
+    expect(
+      payload.persistenceId,
+      'the durable-state body stopped naming its entity, so the pages saying both stores compare '
+      + 'a body-carried id are stale',
+    ).toBe('alice');
+
     // Both are at revision 1, so the in-process rollback floor has nothing to
-    // say about this move — it is purely a question of key-to-body binding.
+    // say about this move — it is purely a question of which entity the body names.
     writeFileSync(durableStateFileFor('bob'), readFileSync(durableStateFileFor('alice')));
+    store.forgetEtagForTest('bob');
+
+    const error = await caught(() => store.load('bob'));
+    expect(
+      error,
+      'a copied plaintext record loaded as the entity whose key it sat at, so the pages saying the '
+      + 'body-carried id catches a copy with neither authenticator configured are stale',
+    ).toBeInstanceOf(JournalError);
+  });
+
+  test('with no authenticator a writer who rewrites the id is not caught', async () => {
+    // The other half of the claim: the id is a field, not a signature.  A
+    // writer with bucket access puts down a plaintext body naming the target,
+    // and nothing at this layer can tell it from the store's own write.  This
+    // is why the pages still name an authenticator as the control.
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' });
+    const store = new ObjectStorageDurableStateStore(storeOptions);
+    await store.upsert('bob', 0, { balance: 1 });
+
+    const forged = await encodeBody(
+      new TextEncoder().encode(JSON.stringify({
+        persistenceId: 'bob', revision: 1, state: { balance: 1_000_000 }, timestamp: 1,
+      })),
+      { compression: 'none' },
+    );
+    writeFileSync(durableStateFileFor('bob'), forged);
     store.forgetEtagForTest('bob');
 
     const loaded = (await store.load<{ balance: number }>('bob')).toNullable();
     expect(
-      loaded,
-      'a moved plaintext record stopped loading, so something now detects the move and the pages '
-      + 'saying a store with neither authenticator has no move detection are stale',
-    ).not.toBeNull();
-    expect(loaded!.state.balance).toBe(1_000_000);
-    expect(
-      loaded!.persistenceId,
-      'load stopped answering with the REQUESTED persistenceId, which is the half of the '
-      + 'mechanism that turns a moved body into another entity\'s state',
-    ).toBe('bob');
-
-    // The other half, read off the wire rather than inferred: there is no
-    // entity name in the body for a comparison to be made against.
-    const decoded = await decodeBody(new Uint8Array(readFileSync(durableStateFileFor('bob'))));
-    const payload = JSON.parse(new TextDecoder().decode(decoded.payload)) as Record<string, unknown>;
-    expect(
-      Object.keys(payload).sort(),
-      'the durable-state body shape moved; if it now carries a persistenceId, the pages claiming '
-      + 'the durable-state store has no body-carried id to compare must change in the same commit',
-    ).toEqual(['revision', 'state', 'timestamp']);
+      loaded?.state.balance,
+      'a plaintext body naming its key\'s entity was refused, so something beyond the id check now '
+      + 'authenticates a store with neither authenticator and the pages understate it',
+    ).toBe(1_000_000);
   });
 
   test('requireContextBinding changes nothing on a store with no authenticator', async () => {
-    // The knob the issue named as the control.  Where the gap actually is, it
-    // is a no-op by construction: the demand is only passed to the codec when
-    // something authenticates, because otherwise it would reject the store's
-    // own writes.
+    // The knob the issue named as the control.  Where nothing authenticates,
+    // it is a no-op by construction: the demand is only passed to the codec
+    // when something does, because otherwise it would reject the store's own
+    // writes.  So the store reads what it wrote, knob or no knob.
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' })
       .withRequireContextBinding();
     const store = new ObjectStorageDurableStateStore(storeOptions);
 
-    await store.upsert('alice', 0, { balance: 1_000_000 });
     await store.upsert('bob', 0, { balance: 1 });
-    writeFileSync(durableStateFileFor('bob'), readFileSync(durableStateFileFor('alice')));
     store.forgetEtagForTest('bob');
 
     const loaded = (await store.load<{ balance: number }>('bob')).toNullable();
     expect(
       loaded?.state.balance,
-      '`requireContextBinding` started catching a move on a store with no authenticator, so the '
-      + 'pages calling it a no-op there are stale',
-    ).toBe(1_000_000);
+      '`requireContextBinding` started refusing a store\'s own writes when nothing authenticates, '
+      + 'so the pages calling it a no-op there are stale',
+    ).toBe(1);
   });
 
   test('an authenticator catches the move with requireContextBinding unset', async () => {
@@ -259,9 +282,10 @@ describe('durable-state move detection — the mechanism the pages describe (#14
   });
 
   test('the snapshot store compares the entity its body names, with nothing configured', async () => {
-    // The asymmetry the pages now state: same backend, same absence of an
-    // authenticator, a body that DOES name its entity — and a store that
-    // disbelieves one naming another (#716).
+    // The symmetry the pages now state: same backend, same absence of an
+    // authenticator, a snapshot body names its entity too — and the store
+    // disbelieves one naming another (#716), answering `none` where the
+    // durable-state store throws.
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' });
@@ -275,8 +299,8 @@ describe('durable-state move detection — the mechanism the pages describe (#14
     const loaded = (await reader.loadLatest<{ balance: number }>('bob')).toNullable();
     expect(
       loaded,
-      'the snapshot store returned a body naming another entity, so the asymmetry the pages '
-      + 'describe is gone and they say the snapshot half has a check it no longer has',
+      'the snapshot store returned a body naming another entity, so the pages say the snapshot '
+      + 'half has a check it no longer has',
     ).toBeNull();
   });
 });
@@ -319,7 +343,7 @@ describe('durable-state move detection — the mechanism the pages describe (#14
  * assumed: an HTML comment is not one, because MDX refuses to compile it.
  *
  * Inline code spans are deliberately kept: `ObjectStorageSnapshotStore` and
- * `{ revision, state, timestamp }` are asserted on, and they are prose.
+ * `ObjectStorageDurableStateStore` are asserted on, and they are prose.
  */
 function renderedProse(section: string): string {
   return section
@@ -469,24 +493,23 @@ describe('durable-state move detection — both languages name the control (#141
     expect(
       sectionUnder(path, read(path), heading),
       `${language} (${path}): the section stopped naming the store with NEITHER authenticator — `
-      + 'the default, and the one configuration where nothing at this layer detects a move.',
+      + 'the default, and the one configuration where only the body-carried id detects a move.',
     ).toMatch(marker);
   });
 
-  test.each(CLAIM_SECTIONS)('%s %s: the section states the asymmetry with the snapshot store', (
+  test.each(CLAIM_SECTIONS)('%s %s: the section names both stores', (
     language,
     path,
     heading,
   ) => {
-    // Both stores sit on one backend under one prefix, and only one of them
-    // compares a body-carried id.  Naming the other store is what makes the
-    // claim a comparison rather than a bare limitation.
+    // Both stores sit on one backend under one prefix, and both compare a
+    // body-carried id since #1417 — one answering `none`, one refusing.
+    // Naming both is what tells a reader the check holds on either side.
     const section = sectionUnder(path, read(path), heading);
     expect(
       section,
-      `${language} (${path}): the section no longer names both stores, so the asymmetry — the `
-      + 'snapshot half compares the entity its body names, the durable-state half has no id to '
-      + 'compare — is not stated anywhere on the page.',
+      `${language} (${path}): the section no longer names both stores, so that each one compares `
+      + 'the entity its body names is not stated anywhere on the page.',
     ).toContain('ObjectStorageSnapshotStore');
     expect(section).toContain('ObjectStorageDurableStateStore');
   });
@@ -564,6 +587,9 @@ const REFUTED_PREMISE = {
     /only with (opt-in )?context binding/i,
     /has move detection at all times/i,
     /move detection only with/i,
+    // What these pages said before #1417 put the id into the durable-state body.
+    /names no entity/i,
+    /neither authenticator has (no move detection|none)/i,
   ],
   German: [
     /Schalter-?frei/i,
@@ -572,6 +598,8 @@ const REFUTED_PREMISE = {
     /Verschiebungserkennung zu jeder Zeit/i,
     /jederzeit eine Verschiebungserkennung/i,
     /Verschiebungserkennung nur mit/i,
+    /nennt keine Entity/i,
+    /Authentifikatoren hat (überhaupt )?keine/i,
   ],
 } as const;
 
@@ -632,29 +660,42 @@ const MIRRORED_CLAIMS: readonly MirroredClaim[] = [
     },
   },
   {
-    proposition: 'a store with neither authenticator has no move detection',
+    proposition: 'with neither authenticator the body-carried id catches a copy, not a deliberate writer',
     english: {
       path: ENGLISH_ENCRYPTION_PAGE,
       heading: '### What encryption does not cover',
-      mustSay: [/neither authenticator has no move detection/i],
+      mustSay: [/names the entity it was written for/i, /not a deliberate writer/i],
     },
     german: {
       path: GERMAN_ENCRYPTION_PAGE,
       heading: '### Was Verschlüsselung nicht abdeckt',
-      mustSay: [/ohne einen der beiden Authentifikatoren hat überhaupt keine Verschiebungserkennung/i],
+      mustSay: [/nennt die Entity, für die er geschrieben wurde/i, /nicht einen absichtlichen Schreiber/i],
     },
   },
   {
-    proposition: 'the snapshot half compares a body-carried id, the durable-state half has none',
+    proposition: 'the durable-state page says the body names its entity and a copy is refused',
+    english: {
+      path: ENGLISH_DURABLE_STATE_PAGE,
+      heading: '## Encryption + compression + integrity',
+      mustSay: [/names the entity it was written for/i, /not a deliberate writer/i],
+    },
+    german: {
+      path: GERMAN_DURABLE_STATE_PAGE,
+      heading: '## Verschlüsselung + Kompression + Integrität',
+      mustSay: [/nennt die Entity, für die er geschrieben wurde/i, /nicht einen absichtlichen Schreiber/i],
+    },
+  },
+  {
+    proposition: 'both stores compare a body-carried id, with or without an authenticator',
     english: {
       path: ENGLISH_SNAPSHOT_PAGE,
       heading: '### Two stores, one prefix',
-      mustSay: [/neither authenticator has none/i],
+      mustSay: [/both stores compare/i, /not a deliberate writer/i],
     },
     german: {
       path: GERMAN_SNAPSHOT_PAGE,
       heading: '### Zwei Stores, ein Prefix',
-      mustSay: [/ohne einen der beiden Authentifikatoren hat keine/i],
+      mustSay: [/vergleichen beide Stores/i, /nicht einen absichtlichen Schreiber/i],
     },
   },
 ];

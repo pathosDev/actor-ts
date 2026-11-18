@@ -19,6 +19,7 @@ import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
 import type { SqlExecutor } from './SqlPool.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 type StateRow = {
   revision: string | number | bigint;
@@ -118,6 +119,7 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
     state: S,
     options?: PersistenceOptions,
   ): Promise<DurableStateRecord<S>> {
+    assertValidPersistenceId(persistenceId, 'RelationalDurableStateStore.upsert');
     // A bogus revision is a caller bug, not a lost race — reporting it as a
     // concurrency conflict would invite an endless retry loop.
     if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {

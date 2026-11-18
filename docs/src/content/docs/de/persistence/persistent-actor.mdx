@@ -542,8 +542,13 @@ Keys als `<projection>|seq|<persistenceId>` zusammen — mit der ID
 **am Ende**.  Ein `|` darin kann also kein zusätzliches Feld
 abspalten, und nirgends wird eine ID wieder zerlegt.
 
-Dieselben Regeln laufen noch einmal in `journal.append()` —
-Defence-in-Depth für ein Journal, das ohne Actor erreicht wird —
+Dieselben Regeln laufen noch einmal in `journal.append()`,
+`snapshotStore.save()` und `durableStateStore.upsert()` —
+Defence-in-Depth für einen Store, der ohne Actor erreicht wird, etwa
+aus einem Migrationsskript oder einem Store-Wrapper. Geprüft werden
+nur die Schreibpfade: `read`, `load` und `delete` antworten weiter für
+eine ID, die diese Regeln zurückweisen, damit ein vorher geschriebener
+Stream lesbar und löschbar bleibt —
 und bei [`DurableStateActor`](/de/persistence/durable-state/) im
 Options-Validator, wo ein Verstoß ein `OptionsError` auf dem Feld
 `persistenceId` ist.

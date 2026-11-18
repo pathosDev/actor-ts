@@ -17,7 +17,7 @@ import { DEFAULT_DURABLE_STATE_TABLE } from '../Constants.js';
 import { MongoStore } from '../journals/MongoStore.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
-import { assertStringPersistenceId } from '../storage/PersistenceIdValidator.js';
+import { assertStringPersistenceId, assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import {
   MongoDurableStateStoreOptionsValidator,
   type MongoDurableStateStoreOptions,
@@ -90,6 +90,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
     // once, and a non-string id reported as a revision problem sends the
     // caller hunting a concurrency bug that is not there.
     assertStringPersistenceId(persistenceId, 'MongoDurableStateStore.upsert');
+    assertValidPersistenceId(persistenceId, 'MongoDurableStateStore.upsert');
     // A bogus revision is a caller bug, not a lost race — reporting it as a
     // concurrency conflict would invite an endless retry loop.
     if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {

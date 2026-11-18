@@ -7,6 +7,7 @@ import type { StorageLocality } from '../StorageLocality.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { CachedSnapshotStoreOptionsValidator, DEFAULT_SNAPSHOT_CACHE_TTL_MS } from './CachedSnapshotStoreOptions.js';
 import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from './CachedSnapshotStoreOptions.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 /**
  * Read-through cache decorator for any `SnapshotStore`.  Targets the hot
@@ -198,6 +199,7 @@ export class CachedSnapshotStore implements SnapshotStore {
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
+    assertValidPersistenceId(persistenceId, 'CachedSnapshotStore.save');
     const written = await this.underlying.save<S>(persistenceId, seq, state, options);
     // Invalidate, do NOT write — see class doc for the cluster-race rationale.
     await this.cache.delete(this.keyFor(persistenceId));
