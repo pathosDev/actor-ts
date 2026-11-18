@@ -162,7 +162,7 @@ stateDiagram-v2
   up --> leaving: cluster.leave()
   leaving --> removed
   down --> removed
-  removed --> [*]: tombstone TTL, at once under auto-down
+  removed --> [*]: tombstone TTL
   classDef happy   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn    fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef gone    fill:#1e293b,stroke:#475569,color:#94a3b8;
@@ -196,11 +196,9 @@ stateDiagram-v2
   configured, under the default `failure-detector.auto-down = on` —
   the failure detector's own.  Passes straight on to `removed`.
 - **`removed`** — out of the cluster.  A leave, a strategy's
-  decision and an operator's down keep it as a tombstone for a TTL
-  (default 24 h), so stale gossip from a slow peer can't
-  accidentally resurrect it.  The `auto-down` route deletes the
-  entry instead, which is why a peer that still lists the member can
-  bring it back — see
+  decision, an operator's down and the failure detector's `auto-down`
+  all keep it as a tombstone for a TTL (default 24 h), so stale
+  gossip from a slow peer can't accidentally resurrect it — see
   [the failure detector](/cluster/failure-detector/#what-the-detector-decides--and-doesnt).
 
 The cluster's events stream surfaces every transition — subscribe
@@ -418,9 +416,8 @@ others at the same moment and both halves run on as two clusters
 that do not merge again when the network heals
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 So for production, configure `lease-majority` or another strategy.
-With two or more survivors, one survivor's gossip can bring a member
-the other has just removed back as `unreachable` until it is removed
-again — see
+The removal leaves a tombstone, so with two or more survivors a
+crashed member is removed once — see
 [the failure detector](/cluster/failure-detector/#what-the-detector-decides--and-doesnt).
 `auto-down = off` is the opt-out: the detector parks the member at
 `unreachable`, its shards stay homed on it and its remote watchers

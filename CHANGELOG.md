@@ -156,6 +156,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the certificate-identity check. The `testMap` in
   `scripts/mutation-config.json` maps every new test to its source file.
 
+- **`actor-ts.cluster.client.outbound-queue-size`** (default `1000`) and
+  **`actor-ts.io.broker.tcp-server.max-buffered-bytes`** (default `4MiB`), the
+  bounds on what `ClusterClient` and `TcpServerActor` hold for a peer that
+  has stopped reading (#1827).
+- **A scheduled-ordering property for the sharding coordinator handshake**,
+  with every frame between the nodes ordered by fast-check's scheduler. All
+  nightly jobs now feed the flake report, including `time-factor`,
+  `scheduled-orderings` and `decoder-inputs` (#1823).
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -401,6 +410,59 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   This only affected a runner or backend called directly:
   `HttpExtension.bind` always passes a positive deadline.
 
+- **Under asymmetric reachability a member no longer flaps between `up` and
+  `unreachable` at heartbeat cadence** (#1828). A node clears an
+  `unreachable` mark that another node made only after it has stood for
+  `split-brain-resolver.stable-after`. The node that made the mark still clears
+  it on the first heartbeat. Under a lasting one-way partition the status now
+  changes at most once per `stable-after`.
+- **A shard's remembered-entity registry is shipped in chunks well below
+  `max-frame-bytes`** (#1825): at most 256 KiB of ids, or a quarter of the
+  frame cap if that is smaller. The whole registry used to go into one frame,
+  which at the #1267 caps could reach about 100 MB. The receiving transport
+  refused it, and the remembered entities never started. The message itself is
+  unchanged.
+- **`ClusterClient`, `TcpServerActor` and the GELF and syslog TCP sinks honour
+  socket back-pressure** (#1827). Each of them used to keep writing into a
+  socket that had answered `false`, so it buffered without bound.
+  - `ClusterClient` refuses `send` and `ask` once its outbox is full.
+  - `TcpServerActor` aborts the one connection whose client stopped reading
+    and reports `connectionClosed`.
+  - The log sinks wait for the drain, so records queue in the bounded
+    `delivery` queue instead. A connection that takes nothing for 10 s fails
+    the batch retryably.
+- **The Fastify and Hono backends report a `ReadableStream` body that fails
+  after the response was committed**, as Express already did (#1829). **On
+  Hono, a stream that fails before its first byte reaches
+  `withErrorHandler`** (#1830). Under Bun it used to reset the connection with
+  no status line.
+- **A parent that was stopped and spawned again no longer gives its new
+  children the `path#uid` its previous children had** (#1833). Uids now come
+  from one counter per actor system, so a `watch` on the new incarnation is
+  kept even while the old incarnation's `Terminated` is still queued. Uids
+  never leave the process, so nothing changes on the wire.
+- **`worker-mesh-terminate` waits for the parallelism extension's orderly
+  shutdown before it stops the worker threads**, up to its own phase budget
+  (#1826). A shortened `before-cluster-shutdown` budget no longer costs
+  offloaded actors their `postStop`.
+- **`JsonLogger` replaces only the argument it cannot serialise** with
+  `[unrenderable value]` (#1832). That covers an argument whose getter or
+  `toJSON` throws. It used to drop the whole `args` array. A sink whose
+  `write` throws no longer makes the log call throw.
+- **`AmqpActor` no longer nacks outstanding `on-reply` deliveries on the
+  channel it is closing**, on a connection loss or a stop (#1846). The nack
+  produced a spurious `BrokerAcknowledgmentFailed` and a requeue warning per
+  in-flight delivery. RabbitMQ requeues those deliveries itself.
+- **HOCON substitution chains resolve iteratively and in linear time**
+  (#1836). A chain of 20 000 links used to overflow the stack, and the cycle
+  check was quadratic.
+- **`MultiNodeSpec.advance` and `advanceUntil` settle `/system` on every
+  node** until all nodes are quiet together (#1835). Virtual time no longer
+  runs past queued sharding or singleton work.
+- **`scripts/check-doc-samples.mjs` refuses an `--out` outside the
+  repository**, or the repository root itself, with exit code 2 (#1831). Such a
+  run used to report `OK` without having checked any sample.
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
@@ -529,6 +591,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **The cluster wire's frame decoder refuses input with its own
   `FrameDecodeError`** instead of a bare `Error` (#1369). A refusal can now
   be told apart from a defect inside the decoder by its type.
+
+- **BREAKING: an auto-down removal now leaves a tombstone, as every other
+  removal does** (#1834). With the shipped `auto-down = on` and no strategy, a
+  crashed node is removed once and for good. Before, with two or more
+  survivors, one survivor's gossip brought it back as `unreachable`, and it
+  was removed again every `down-after`, each time with a `MemberRemoved`.
+  The same run of a removed member is now refused until its tombstone is
+  pruned, which is 24 h at the defaults; it used to be readmitted on its next
+  frame. **Migration:** a node that auto-down removed rejoins by restarting. A
+  new incarnation is readmitted at once.
+- **A snapshot that `snapshotPolicy` triggers and that fails to save no longer
+  fails the command whose events were already appended** (#1822). The failure
+  is logged at `warn` and counted in
+  `persistence_snapshot_failures_total{operation="save"}`. The `persist`
+  callback runs, the actor is not restarted, and the policy's next snapshot
+  retries. An explicit `saveSnapshot()` still throws.
 
 ### Security
 

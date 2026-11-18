@@ -44,7 +44,27 @@ export interface TcpServerOptionsType extends BrokerCommonOptionsType {
    * Default: `Infinity` (unlimited).
    */
   readonly maxConnections?: number;
+  /**
+   * Bytes held for one accepted connection whose socket has pushed back —
+   * answered `false` to a write and not yet drained — before that connection
+   * is failed: aborted, and announced to the `target` as `connectionClosed`
+   * (#1827).  Default: {@link DEFAULT_TCP_SERVER_MAX_BUFFERED_BYTES}.
+   *
+   * Per connection, so one client that stops reading costs the listener at
+   * most this much and holds nothing up for the others.  Failed rather than
+   * trimmed: a byte stream with a payload missing from its middle is no
+   * protocol at all, and the `target` learns of the close the same way it
+   * learns of a breached frame cap.
+   */
+  readonly maxBufferedBytes?: number;
 }
+
+/**
+ * Built-in default for {@link TcpServerOptionsType.maxBufferedBytes}: 4 MiB,
+ * the same outbound cap `http.websocket.max-buffered-bytes` gives one
+ * WebSocket connection.
+ */
+export const DEFAULT_TCP_SERVER_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
 export class TcpServerOptionsBuilder extends BrokerOptionsBuilder<TcpServerOptionsType> {
   /** Start a fresh builder.  Equivalent to `new TcpServerOptionsBuilder()`. */
@@ -81,6 +101,11 @@ export class TcpServerOptionsBuilder extends BrokerOptionsBuilder<TcpServerOptio
   withMaxConnections(max: number): this {
     return this.set('maxConnections', max);
   }
+
+  /** Bytes held for one connection that pushes back before it is failed.  Default 4 MiB. */
+  withMaxBufferedBytes(bytes: number): this {
+    return this.set('maxBufferedBytes', bytes);
+  }
 }
 
 /** Validates resolved {@link TcpServerOptionsType} settings. */
@@ -106,6 +131,7 @@ export class TcpServerOptionsValidator extends BrokerOptionsValidator<TcpServerO
     ) {
       this.fail('maxConnections', 'must be a positive integer or Infinity', s.maxConnections);
     }
+    this.positiveInt('maxBufferedBytes');
     const violation = findFramingViolation(s.framing);
     if (violation) this.fail(violation.field, violation.reason, violation.value);
     if (s.tls !== undefined) this.tlsRules(s.tls);

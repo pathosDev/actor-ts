@@ -206,7 +206,6 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _pendingRecreate: RecreateCommand | null = null;
   private _anonChildCounter = 0;
-  private _childUidCounter = 0;
 
   private state: CellState = 'creating';
   private processing = false;
@@ -441,7 +440,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         || parent?._userGuardian === true);
     this._entity = blueprint.entity ?? null;
     this._displayNameOverride = blueprint.displayName ?? null;
-    const uid = parent ? parent._nextChildUid() : 0;
+    const uid = parent ? system._nextActorUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
@@ -1131,7 +1130,6 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * one — anything routing or balancing on liveness wants this.
    */
   isStopping(): boolean { return this.state === 'terminated' || this.state === 'terminating'; }
-  /** @internal */ _nextChildUid(): number { return ++this._childUidCounter; }
 
   /**
    * @internal — test-only seam exposing the underlying mailbox so

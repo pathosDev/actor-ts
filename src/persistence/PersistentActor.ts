@@ -741,7 +741,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
         this._seq = pe.sequenceNr;
         if (policy(pe.sequenceNr, this._state, domainEvent)) shouldSnapshot = true;
       }
-      if (shouldSnapshot) await this.saveSnapshotNow();
+      if (shouldSnapshot) await this.saveSnapshotAfterAppend();
       await afterPersist?.(this._state);
       // Drain any callbacks queued while we were busy (nested persists).
       while (this._pendingCallbacks.length > 0) {
@@ -787,6 +787,33 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       error,
     );
     this.context.stopSelf();
+  }
+
+  /**
+   * The snapshot a {@link snapshotPolicy} asked for once an append landed.
+   *
+   * A failure here is logged and swallowed rather than thrown (#1822).  By
+   * the time the save runs the events are durable and `_state` / `_seq` have
+   * moved on, so throwing failed — and restarted — the actor over a command
+   * whose write had succeeded, and skipped that command's `persist` callback.
+   * A snapshot is an optimisation: recovery replays the journal past the
+   * last good one, and the policy's next "yes" retries the save.  The
+   * failure is still counted, by the snapshot breaker's seam
+   * (`persistence_snapshot_failures_total{operation="save"}`), which every
+   * save passes through.  An explicit {@link saveSnapshot} keeps throwing:
+   * there the caller asked for the snapshot and can decide what a failure
+   * means.
+   */
+  private async saveSnapshotAfterAppend(): Promise<void> {
+    try {
+      await this.saveSnapshotNow();
+    } catch (e) {
+      this.log.warn(
+        `[persistence] '${this.persistenceId}': snapshot save at seq=${this._seq} failed after the `
+        + `append succeeded; the events are durable, the command completes, and a later snapshot retries.`,
+        e,
+      );
+    }
   }
 
   /** Force a snapshot of the current state. */

@@ -793,10 +793,10 @@ import { Aside } from '@astrojs/starlight/components';
 Eine eigene Quarantäne gibt es nicht. Was ein entferntes Mitglied
 draußen hält, ist sein Tombstone: der `removed`-Eintrag, den der
 Cluster für die Adresse behält und der jeden Eintrag für sie mit
-gleicher oder älterer Version abweist. Ob eine Entfernung einen
-hinterlässt — und ob der entfernte Prozess also weiterreden und wieder
-hereingelassen werden kann —, hängt vom Weg ab, auf dem er entfernt
-wurde. *Derselbe Lauf* heißt unten dieser Prozess: dieselbe
+gleicher oder älterer Version abweist. Jede Entfernung
+hinterlässt einen, der entfernte Prozess kann also nicht weiterreden
+und wieder hereingelassen werden; von der Konfiguration hängt ab, ob
+ihn überhaupt etwas entfernt. *Derselbe Lauf* heißt unten dieser Prozess: dieselbe
 Inkarnation, die weiterhin die Version ankündigt, die sie bei ihrer
 Entfernung hatte.
 
@@ -805,7 +805,7 @@ Entfernung hatte.
 | `Cluster.down()` oder `POST /cluster/down` | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
 | Die Entscheidung einer Strategie oder `down-all-when-unstable` | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
 | Das eigene `leave` des Peers | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
-| Den Failure Detector ohne Strategie — `failure-detector.auto-down = on`, der Default | Nichts — der Eintrag wird gelöscht. | Mit seinem nächsten Gossip-Frame wieder aufgenommen; ein Heartbeat allein findet keinen Eintrag, den er zurückholen könnte. |
+| Den Failure Detector ohne Strategie — `failure-detector.auto-down = on`, der Default | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
 | Niemanden: keine Strategie und `auto-down = off`, das Opt-out | Entfernt wird nichts — der Peer wird auf `unreachable` geparkt. | Mit seinem nächsten Heartbeat an diesen Node wieder `up`. |
 
 Der Rückweg der letzten Zeile braucht einen Heartbeat des Peers an

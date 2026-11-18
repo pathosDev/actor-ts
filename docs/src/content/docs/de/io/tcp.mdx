@@ -257,6 +257,7 @@ interface TcpServerOptionsType extends BrokerCommonOptionsType {
   target?:         ActorRef<TcpServerMessage>; // erforderlich
   tls?:            TlsTransportOptionsType;    // TLS statt Klartext ausliefern
   maxConnections?: number;                     // Aufnahme-Limit; Default Infinity
+  maxBufferedBytes?: number;                   // gehalten je zurückdrückender Verbindung; Default 4 MiB
 }
 ```
 
@@ -272,6 +273,7 @@ actor-ts.io.broker.tcp-server {
   bind-host       = "0.0.0.0"  # the default
   bind-port       = 9000       # required; 0 lets the OS pick
   max-connections = 1024       # admission cap; unset = unlimited
+  max-buffered-bytes = 4M      # held per connection that pushes back; the default
   framing {
     kind           = "lines"
     delimiter      = ${?ACTOR_TS_TCP_SERVER_DELIMITER}            # lines only; unset = "\n"
@@ -331,8 +333,9 @@ class EchoHandler extends Actor<TcpServerMessage> {
 
 `connectionClosed` kommt bei jedem Ende: der Peer hat aufgelegt, die
 Verbindung ist gescheitert, du hast `close` geschickt, ein Frame hat
-sein Größenlimit gerissen, oder der Actor wurde gestoppt und hat den
-Port freigegeben.  Ein Signal, ein Codepfad.
+sein Größenlimit gerissen, der Peer hat über `maxBufferedBytes` hinaus
+nicht gelesen, oder der Actor wurde gestoppt und hat den Port
+freigegeben.  Ein Signal, ein Codepfad.
 
 ### TLS ausliefern
 
@@ -385,6 +388,17 @@ Config-Datei ist der falsche Ort für einen privaten Schlüssel.
   gehen die noch gepufferten Bytes mit dem Socket: Sinn eines Limits
   ist nicht, den Verstoß zu protokollieren, sondern aufzuhören, das
   festzuhalten, was ihn ausgelöst hat.
+- **Ein Client, der nicht mehr liest, kostet höchstens
+  `maxBufferedBytes`.**  Sobald sein Socket zurückdrückt, schreibt der
+  Listener nichts mehr auf diese Verbindung, bis der Socket wieder
+  aufnimmt, und hält die inzwischen gesendeten Payloads ganz und der
+  Reihe nach — bis zu `maxBufferedBytes` (Default 4 MiB,
+  `max-buffered-bytes`).  Darüber hinaus wird die Verbindung
+  abgebrochen und das `target` bekommt `connectionClosed`, wie bei
+  einem gerissenen Frame-Limit: Ein Stream, dem mittendrin ein Payload
+  fehlt, wäre schlimmer als gar kein Stream.  Die anderen Verbindungen
+  werden nicht aufgehalten.  Ein `close` schreibt das Gehaltene vor
+  seinem FIN.
 - **`outboundBuffer` ist hier `0`** — anders als bei jedem anderen
   Broker-Actor.  Puffern im getrennten Zustand existiert, damit eine
   Nachricht einen Reconnect überlebt — aber "getrennt" heißt beim

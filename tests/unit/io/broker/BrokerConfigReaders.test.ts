@@ -1948,12 +1948,14 @@ describe('readTcpServerOptionsFromConfig', () => {
       bind-host       = "127.0.0.1"
       bind-port       = 7001
       max-connections = 64
+      max-buffered-bytes = 2M
       framing { kind = "length-prefixed", max-frame-bytes = 16M }
     }`);
     expectExactOptions(readTcpServerOptionsFromConfig(config), {
       bindHost: '127.0.0.1',
       bindPort: 7001,
       maxConnections: 64,
+      maxBufferedBytes: 2_097_152,
       framing: { kind: 'length-prefixed', maxFrameBytes: 16_777_216 },
     });
   });

@@ -318,12 +318,9 @@ sicher, dass es weg ist, bevor du es downst.
 
 **Das ist der Weg aus dem Opt-out.** Unter dem Default — keine
 Downing-Strategie, `actor-ts.cluster.failure-detector.auto-down = on`
-— löscht der Failure Detector ein stilles Mitglied selbst, sobald er
-es für `down` erklärt, und der Endpunkt antwortet danach meist mit
-`404` dafür. Mit zwei oder mehr Überlebenden kann der Gossip eines
-anderen Überlebenden das gelöschte Mitglied allerdings als
-`unreachable` zurückbringen, bis der Detector es erneut entfernt,
-und ein Aufruf in diesem Fenster findet es und antwortet mit `202`.
+— entfernt der Failure Detector ein stilles Mitglied selbst, sobald
+er es für `down` erklärt, und der Endpunkt antwortet danach mit `404`
+dafür: Das Mitglied ist bereits terminal.
 Unter `auto-down = off` parkt der Failure Detector ein stilles
 Mitglied auf `unreachable`, und der Node loggt eine Warnung, die das
 Mitglied und diesen Endpunkt nennt; nur ein Operator, eine Strategie

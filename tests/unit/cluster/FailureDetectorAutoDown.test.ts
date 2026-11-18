@@ -3,8 +3,8 @@
  * detector may remove an unreachable peer on its own word when no downing
  * provider is configured.  On by default.
  *
- * On, a peer the detector declares `down` is deleted and announced `MemberDown`
- * then `MemberRemoved`, logged at info, so a cluster keeps running down to its
+ * On, a peer the detector declares `down` is tombstoned (#1834) and announced
+ * `MemberDown` then `MemberRemoved`, logged at info, so a cluster keeps running down to its
  * last available node.  Off is the opt-out: the peer is parked at
  * `unreachable` — the hold a configured provider has had since #929 — and the
  * node says so once, at warn, naming the two keys and the ways out.  Both
@@ -239,7 +239,7 @@ describe('nothing configured — the shipped default removes the peer (#1426)', 
   // n-node cluster has to keep running with one node left, so the survivor
   // removes the crashed peer and takes over what it hosted.
   IMPLEMENTATIONS.forEach((implementation, index) => {
-    test(`${implementation}, configured in code: past down-after the peer is announced down, deleted, and logged at info`, async () => {
+    test(`${implementation}, configured in code: past down-after the peer is announced down, tombstoned, and logged at info`, async () => {
       const node = await startNode(`default-${implementation}`, 9_431 + index, { implementation });
       const peer = peerAddress(`default-${implementation}`, 9_531 + index);
       gossipSelfRecord(node.cluster, peer, 'up');
@@ -249,7 +249,7 @@ describe('nothing configured — the shipped default removes the peer (#1426)', 
       tick(node.cluster);
 
       expect(node.cluster.getMembers().some((member) => member.address.equals(peer))).toBe(false);
-      expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
+      expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
       expect(announced.down).toEqual([peer.toString()]);
       expect(announced.removed).toEqual([peer.toString()]);
       // A membership change nobody ordered, so it is the line an operator
@@ -277,7 +277,7 @@ describe('nothing configured — the shipped default removes the peer (#1426)', 
     expect(internals(node.cluster).failureDetector.decide(peer)).toBe('down');
     tick(node.cluster);
 
-    expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
+    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
     expect(announced.down).toEqual([peer.toString()]);
     expect(announced.removed).toEqual([peer.toString()]);
     expect(parkingWarnings(node.log)).toEqual([]);
@@ -340,7 +340,7 @@ describe('auto-down = off — the opt-out parks the peer (#1426)', () => {
     lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
     tick(node.cluster);
 
-    expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
+    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
     expect(announced.removed).toEqual([peer.toString()]);
   });
 
@@ -451,7 +451,7 @@ describe('a downing provider decides, whatever auto-down says (#1426)', () => {
     expect(parkingWarnings(node.log)).toEqual([]);
   });
 
-  test('under the shipped default a provider in code decides, and the removal is its tombstone, not the detector\'s delete', async () => {
+  test('under the shipped default a provider in code decides, and the removal is its own, not the detector\'s', async () => {
     const node = await startNode('provider-default', 9_452, {
       downing: DOWNS_THE_UNREACHABLE, quickResolver: true,
     });
@@ -462,9 +462,9 @@ describe('a downing provider decides, whatever auto-down says (#1426)', () => {
     lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
     await tickUntil(node.cluster, () => statusOf(node.cluster, peer) === 'removed', 'the provider downed the silent peer');
 
-    // A provider's decision tombstones; the detector's own route deletes the
-    // entry outright.  A present `removed` record is therefore the provider's
-    // removal, and an absent one would have been auto-down acting beside it.
+    // Both routes tombstone since #1834, so the record alone does not say who
+    // removed the peer: the absent auto-down line below is what shows the
+    // detector did not act beside the provider.
     expect(statusOf(node.cluster, peer)).toBe('removed');
     expect(announced.down).toEqual([peer.toString()]);
     expect(announced.removed).toEqual([peer.toString()]);

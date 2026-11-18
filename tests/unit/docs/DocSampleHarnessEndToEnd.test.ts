@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 
 /**
@@ -467,5 +468,35 @@ describe('a compiler that did not run to completion fails the harness', () => {
     expect(result.stdout).toContain('compiled             0');
     expect(result.stdout).toContain('OK — 0 self-contained doc samples compile');
     expect(result.status).toBe(0);
+  }, ONE_RUN_TEST_BUDGET_MS);
+});
+
+/**
+ * An output directory outside the repository (#1831).  The generated tsconfig
+ * reaches into the repository for everything it resolves — `actor-ts…`
+ * through `paths`, `@types/node` through the `node_modules` above it — and
+ * its `rootDir` is the repository, so from `os.tmpdir()` TypeScript answers
+ * with location-less errors (`TS6059`, `TS2688`) that name no fence.  The run
+ * dropped those and printed `OK` over this fixture, wrong-argument fence and
+ * all.  It now refuses the directory before it compiles anything.
+ */
+describe('an output directory outside the repository is refused', () => {
+  let outside = '';
+
+  afterAll(() => {
+    if (outside !== '') rmSync(outside, { recursive: true, force: true });
+  });
+
+  test('the run exits 2 without a verdict, rather than reporting a pass it did not check', () => {
+    outside = mkdtempSync(join(tmpdir(), 'doc-samples-outside-'));
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, `--docs=${relative(ROOT, fixture).split('\\').join('/')}`, `--out=${join(outside, 'out')}`],
+      { cwd: ROOT, encoding: 'utf8', timeout: RUN_BUDGET_MS },
+    );
+    expect(result.stdout).not.toContain('OK —');
+    expect(result.stderr).toContain('--out');
+    expect(result.stderr).toContain('outside the repository');
+    expect(result.status).toBe(2);
   }, ONE_RUN_TEST_BUDGET_MS);
 });

@@ -722,8 +722,8 @@ export type ClusterOptionsType = {
    * node has never seen and get an entry allocated for each, with no join
    * involved (#138).  Such a phantom is never heard from, so the failure
    * detector declares it `down`.  Under the default `failureDetectorAutoDown`
-   * the detector then deletes it at `downAfterMs` — without a tombstone, so a
-   * node that still carries the phantom gossips it straight back — and with
+   * the detector then tombstones it at `downAfterMs`, which frees its live
+   * slot (#1834) — and with
    * a strategy configured, or the switch off, it parks it at `unreachable`,
    * where it holds its slot until a strategy or an operator removes it
    * (#1426).  This cap is therefore the whole bound on the live residue, not
@@ -744,8 +744,8 @@ export type ClusterOptionsType = {
    * `removed` records for addresses this node has never seen therefore parks
    * entries here for 24 h.  That is one of the two variants of #138 that
    * accumulate; the other is a live phantom — parked at `unreachable` when a
-   * strategy is configured or auto-down is off, deleted and gossiped straight
-   * back under the default — which {@link maxMembers} bounds (#1426).
+   * strategy is configured or auto-down is off, tombstoned at `downAfterMs`
+   * under the default (#1834) — which {@link maxMembers} bounds (#1426).
    *
    * Refusing one costs nothing: a tombstone for an address with no local
    * record suppresses nothing that exists.  Locally-minted tombstones

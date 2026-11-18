@@ -32,6 +32,15 @@ export const DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME = 'cluster-client';
  */
 export const DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS = 5_000;
 
+/**
+ * How many frames a `ClusterClient` holds for a contact point that has pushed
+ * back, before it refuses the next `send` or `ask` (#1827).  The same 1000 as
+ * the transport's `outbound-queue-size` (`MAX_PENDING_FRAMES`), which bounds
+ * the same quantity on a node's own connections; written out rather than
+ * imported, because an options file imports no functional module's constants.
+ */
+export const DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE = 1_000;
+
 /** Plain options-object shape accepted by a {@link ClusterClient}. */
 export type ClusterClientOptionsType = {
   /**
@@ -65,6 +74,18 @@ export type ClusterClientOptionsType = {
    * the acceptor's deadline.
    */
   readonly connectTimeoutMs?: number;
+  /**
+   * How many frames are held for a contact point whose socket has pushed back
+   * — answered `false` to a write and not yet drained — before the next `send`
+   * or `ask` is refused with an error (#1827).  Default:
+   * {@link DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE}.
+   *
+   * Refused rather than dropped: the transport drops the oldest frame because
+   * the newest gossip supersedes it, but a client's envelope is a command its
+   * caller is waiting on, and only the caller can decide what losing it means.
+   * Frames are held whole and written in order once the socket drains.
+   */
+  readonly outboundQueueSize?: number;
   /** Optional TLS config — must match the cluster's. */
   readonly tls?: TlsTransportOptionsType;
   /** Custom logger; default: ConsoleLogger at WARN. */
@@ -119,6 +140,11 @@ export class ClusterClientOptionsBuilder extends OptionsBuilder<ClusterClientOpt
     return this.set('connectTimeoutMs', ms);
   }
 
+  /** Frames held for a contact point that pushes back before a send is refused.  Default 1000. */
+  withOutboundQueueSize(size: number): this {
+    return this.set('outboundQueueSize', size);
+  }
+
   /** TLS config — must match the cluster's. */
   withTls(tls: TlsTransportOptionsType): this {
     return this.set('tls', tls);
@@ -151,6 +177,7 @@ export class ClusterClientOptionsValidator extends OptionsValidator<ClusterClien
     }
     this.positiveNumber('askTimeoutMs');
     this.positiveNumber('connectTimeoutMs');
+    this.positiveInt('outboundQueueSize');
     if (s.tls !== undefined) this.clientCredentialIsWhole(s.tls);
   }
 
@@ -201,7 +228,7 @@ export class ClusterClientOptionsValidator extends OptionsValidator<ClusterClien
  */
 export type ClusterClientConfigDefaults = Partial<Pick<
   ClusterClientOptionsType,
-  'contactPoints' | 'systemName' | 'askTimeoutMs' | 'connectTimeoutMs'
+  'contactPoints' | 'systemName' | 'askTimeoutMs' | 'connectTimeoutMs' | 'outboundQueueSize'
 >>;
 
 /**
@@ -241,6 +268,9 @@ export function readClusterClientOptionsFromConfig(
   }
   if (config.hasPath(keys.connectTimeout)) {
     out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
+  }
+  if (config.hasPath(keys.outboundQueueSize)) {
+    out.outboundQueueSize = config.getInt(keys.outboundQueueSize);
   }
   return out;
 }

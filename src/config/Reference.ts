@@ -723,10 +723,15 @@ actor-ts {
       #
       # No upper bound against failure-detector.down-after: with a strategy
       # configured the detector parks an unreachable peer and evicts nothing,
-      # so the window has no deadline to out-run.  Ignored entirely when
-      # active-strategy = off -- there is no decision to delay then: the
-      # detector removes the peer at down-after (failure-detector.auto-down =
-      # on, the default), or parks it when auto-down = off.
+      # so the window has no deadline to out-run.  With active-strategy = off
+      # there is no decision to delay: the detector removes the peer at
+      # down-after (failure-detector.auto-down = on, the default), or parks it
+      # when auto-down = off.
+      #
+      # Also, with or without a strategy, how long an unreachable mark this
+      # node holds on another node's word must stand, while the member keeps
+      # talking to this node, before a heartbeat may clear it here.  The node
+      # whose detector made the mark clears it on the first heartbeat.
       stable-after = 20s
 
       # Down EVERY member, self included, when the view never once holds still
@@ -1005,6 +1010,14 @@ actor-ts {
       # shares its 5s for the reason stated there -- the dialling side's clock
       # starts first, so it is always the one that gives up first.
       connect-timeout = 5s
+
+      # How many frames are held for a contact point that has stopped taking
+      # them -- its socket pushed back and has not drained -- before the next
+      # send or ask is refused with an error.  Refused rather than dropped: an
+      # envelope is a command its caller is waiting on.  The same 1000 as
+      # remote.outbound-queue-size, which bounds the same quantity on a node's
+      # own connections.
+      outbound-queue-size = 1000
 
       # Cluster-side endpoint, started per node with
       # system.extension(ClusterClientReceptionistId).start(cluster).

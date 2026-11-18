@@ -303,12 +303,9 @@ sure it is gone, before you down it.
 
 **This is the way out of the opt-out.**  Under the default — no
 downing strategy, `actor-ts.cluster.failure-detector.auto-down = on`
-— the failure detector deletes a silent member itself once it
-declares it `down`, and the endpoint usually answers `404` for it
-afterwards.  With two or more survivors, though, another survivor's
-gossip can bring the deleted member back as `unreachable` until the
-detector removes it again, and a call in that window finds it and
-answers `202`.  Under `auto-down = off` the failure detector parks a
+— the failure detector removes a silent member itself once it
+declares it `down`, and the endpoint answers `404` for it afterwards:
+the member is already terminal.  Under `auto-down = off` the failure detector parks a
 silent member at `unreachable`, and the node logs one warning that
 names the member and this endpoint; only an operator, a strategy or
 the node's own restart on the same address removes it.

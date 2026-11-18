@@ -411,6 +411,16 @@ export class ParallelismExtension implements Extension {
     const mesh = this.mesh;
     if (mesh === null) return;
     this.mesh = null;
+    // Handed to the mesh before anything is awaited, so its own pipeline task
+    // in `cluster-leave` waits for this rather than stopping the threads
+    // under it when a budget abandons the task that started it (#1826).
+    const handOff = this.terminateWorkersInOrder(mesh);
+    mesh._awaitOrderlyShutdown(handOff);
+    await handOff;
+  }
+
+  /** Every worker system's own `terminate()`, bounded, then the threads — see {@link shutdown}. */
+  private async terminateWorkersInOrder(mesh: WorkerMesh): Promise<void> {
     const acks = mesh.addresses.map((worker) => new Promise<void>((resolve) => {
       this.terminatedAcks.set(worker.toString(), resolve);
       const frame: ParallelismTerminateMessage = { kind: 'parallelism-terminate' };

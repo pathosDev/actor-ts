@@ -431,7 +431,7 @@ replay from it.
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `3s` | Grace added to the last heartbeat before φ starts rising — a pure offset, so a stall up to ~3.5 s past the expected beat passes at the default cadence.  Chosen by measurement; see [the φ-accrual detector](/cluster/failure-detector/#what-the-shipped-settings-tolerate). |
 | `cluster.failure-detector.phi.expected-response-after` | `"auto"` | The inter-arrival time φ assumes until a peer's first heartbeat interval is measured, with a deviation of a quarter of it.  `"auto"` is `heartbeat-interval`; a duration decouples the two. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee`, `static-quorum` or `lease-majority`. |
-| `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  See below. |
+| `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  Also, with or without a strategy, how long an `unreachable` mark held on another node's word must stand before a heartbeat clears it on this node ([#1828](https://github.com/pathosDev/actor-ts/issues/1828)).  See below. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Only members with this role are eligible "oldest".  `""` considers every member. |
@@ -740,6 +740,7 @@ hands out a per-node value.
 | `cluster.client.system-name` | `"cluster-client"` | Synthetic system name the client puts in its `hello`.  It names the client's side of the handshake and is not an identity. |
 | `cluster.client.ask-timeout` | `5s` | Deadline for `ask(path, message)` when the call itself names none.  A per-call `timeoutMs` still wins. |
 | `cluster.client.connect-timeout` | `5s` | How long **one** contact point gets to answer the `hello` handshake before the client gives up on it and dials the next. |
+| `cluster.client.outbound-queue-size` | `1000` | Frames held for a contact point whose socket has pushed back and not yet drained; past it the next `send` or `ask` is refused with an error rather than buffered without bound.  Held frames go in order once the socket drains. |
 | `cluster.client.receptionist.ask-timeout` | `5s` | Deadline for the ask a cluster node makes on a client's behalf when an arriving envelope carries an `askId`. |
 
 This block is read differently from every other one on this page, and

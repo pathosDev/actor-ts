@@ -325,32 +325,37 @@ describe('a sequence no clock could have produced is refused, not merged', () =>
 });
 
 describe('a mark does not outlive its member', () => {
-  test('the failure detector deleting a peer clears its mark', async () => {
+  test('the failure detector removing a peer keeps its mark with the tombstone, and a restart on a lower number is still admitted', async () => {
     // The address's next incarnation seeds its counter from its own clock, not
-    // from where the previous one left off — a mark left behind would refuse
-    // its first frames.  The FD-down path is the one that *deletes* rather than
-    // tombstoning, so it is the one that has to clean up — and since #1426 it
-    // is reached only under auto-down; the default parks the peer instead.
+    // from where the previous one left off — so a mark left behind must not
+    // refuse its first frames.  The FD-down path deleted the entry, mark and
+    // all, until #1834; it now tombstones like every other removal, so the
+    // mark stays with the entry until the prune, and what admits the restart
+    // is the sender clock being kept per incarnation.  Reached only under
+    // auto-down since #1426; the opt-out parks the peer instead.
     const node = await startNode('replay-eviction', 9_406, {
       heartbeatIntervalMs: 40, unreachableAfterMs: 120, downAfterMs: 240,
     }, true);
     nodes.push(node);
-    const peer = new NodeAddress('replay-eviction', '10.0.112.2', 9_490);
+    const peer = new NodeAddress('replay-eviction', '10.0.112.2', 9_490, 'run-1');
 
     const sequence = Date.now();
     gossipFrom(node.cluster, peer, sequence, [selfRecord(peer)]);
     expect(markFor(node.cluster, peer)).toBe(sequence);
 
     await waitFor(
-      () => !internals(node.cluster).members.has(peer.toString()),
-      'the failure detector deleted the peer',
+      () => internals(node.cluster).members.get(peer.toString())?.status === 'removed',
+      'the failure detector removed the peer',
     );
-    expect(markFor(node.cluster, peer)).toBeUndefined();
+    expect(markFor(node.cluster, peer)).toBe(sequence);
 
     // And the peer comes back on a *lower* number, exactly as a restarted
     // process on a rewound clock would.
-    gossipFrom(node.cluster, peer, sequence - 5_000, [selfRecord(peer)]);
-    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('up');
+    const restarted = new NodeAddress('replay-eviction', '10.0.112.2', 9_490, 'run-2');
+    gossipFrom(node.cluster, restarted, sequence - 5_000, [selfRecord(restarted)]);
+    const entry = internals(node.cluster).members.get(peer.toString());
+    expect(entry?.status).toBe('up');
+    expect(entry?.address.incarnation).toBe('run-2');
   }, 15_000);
 
   test('this node seeds its own counter above its previous incarnation', async () => {

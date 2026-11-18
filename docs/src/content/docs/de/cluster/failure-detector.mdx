@@ -189,17 +189,20 @@ stattdessen, und ein abgestürzter Node bleibt Mitglied, bis ein
 Operator oder eine Strategie ihn entfernt oder er auf derselben
 Adresse neu startet.
 
-`auto-down` löscht das Mitglied, statt einen Tombstone anzulegen,
-also bleibt danach nichts, das die Adresse abweisen würde: Ein Peer,
-dessen Sicht das Mitglied noch führt, führt es mit seinem nächsten
-Gossip wieder ein, als `unreachable`, und der Detector entfernt es
-bei `down-after` erneut. Mit zwei oder mehr Überlebenden, die nicht
-im selben Augenblick löschen, kommt ein abgestürztes Mitglied immer
-wieder — gemessen an drei In-Process-Nodes verkündete jeder
-Überlebende 50-mal in 20 Sekunden `MemberRemoved` für den toten.
-Die erste Meldung ist die, die Shards bewegt und Death Watch auslöst;
-Code, der Entfernungen zählt oder loggt, sieht alle. Das Entfernen
-durch eine Strategie legt einen Tombstone an und tut das nicht.
+`auto-down` legt für das Mitglied einen Tombstone an, wie das
+Entfernen durch eine Strategie, also kann ein Peer, dessen Sicht es
+noch führt, es nicht wieder einführen: Sein Eintrag ist derselbe Lauf
+in einer niedrigeren Version, und der Tombstone weist ihn ab, bis er
+aufgeräumt ist
+([was eine gedownte Adresse danach darf](/de/cluster/downing-strategies/#was-eine-gedownte-adresse-danach-darf)).
+Mit zwei oder mehr Überlebenden entfernt jeder das abgestürzte
+Mitglied einmal und verkündet `MemberRemoved` einmal. Bis v0.19.0
+löschte dieser Weg den Eintrag stattdessen, und ein Überlebender, der
+ihn noch nicht entfernt hatte, brachte ihn per Gossip als
+`unreachable` zurück, um bei jedem `down-after` erneut entfernt zu
+werden ([Issue #1834](https://github.com/pathosDev/actor-ts/issues/1834)).
+Ein Neustart auf derselben Adresse ist ein neuer Lauf und wird sofort
+wieder aufgenommen.
 
 ### Ein geparktes Mitglied bleibt geparkt
 
@@ -334,6 +337,23 @@ Der Cluster-Gossip propagiert diese pro-Node-Beobachtungen. Ein
 Mitglied gilt global als unreachable, wenn *genug* Peers es so
 melden — der Schwellwert ist in manchen Downing-Strategien
 konfigurierbar (siehe KeepMajority, KeepReferee).
+
+Ein Heartbeat hebt eine `unreachable`-Markierung nur auf dem Node
+sofort auf, dessen eigener Detector sie gesetzt hat. Im Bild oben
+erfährt n2 die Markierung von n1 auf n3 per Gossip, und n3s
+Heartbeats, die n2 erreichen, sagen nichts über die Verbindung, die
+n1 verloren hat — also behält n2 die Markierung: n1 hebt sie auf,
+sobald es n3 wieder hört. Eine Markierung, die n2 nur auf das Wort
+eines anderen Nodes hin hält, hebt es erst auf, wenn sie
+`split-brain-resolver.stable-after` lang bestanden hat, während n3
+weiter mit ihm sprach — der Ausweg, wenn n1 mit stehender Markierung
+abgestürzt ist oder entfernt wurde. Vor v0.19.0 hob n2 sie beim
+ersten Heartbeat auf, n1 markierte n3 beim nächsten Detection-Tick
+erneut, und unter einer Einweg-Partition pendelte das Mitglied im
+Heartbeat-Takt zwischen `up` und `unreachable`
+([Issue #1828](https://github.com/pathosDev/actor-ts/issues/1828)).
+Eine anhaltende Einweg-Partition kippt das Mitglied weiterhin einmal
+pro `stable-after` zurück.
 
 ## Den φ-Accrual-Detector wählen
 

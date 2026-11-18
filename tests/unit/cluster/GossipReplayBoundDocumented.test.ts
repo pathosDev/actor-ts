@@ -200,22 +200,22 @@ function sentencesOf(text: string): string[] {
 /**
  * What the sentences about the deleting removal are keyed on, per language.
  *
- * **The route claim is bound to the sentence that makes it.**  A sentence that
- * names the detector and says it deletes (`deletes`, deliberately narrow) has
- * to name `auto-down` as the condition — not deny the tie (`regardless`:
- * "whatever `auto-down` is set to"), and not name the opt-out — and #930 has
- * to follow within two sentences of the first such claim, where the heal is
- * denied.  The first version of this check looked for `auto-down` and `#930`
- * anywhere in the section, so each passage was protected only by the other's
- * wording: stripping the route qualifier from the deleting sentence alone,
- * restoring the pre-#1477 mark passage, or naming `auto-down` only to deny the
- * tie all stayed green (#1477).
+ * **The route claim is bound to the sentence that makes it.**  Since #1834 no
+ * removal deletes a live entry: the failure detector's own route under
+ * `auto-down` tombstones like the others, and the one delete left is the
+ * prune.  So a sentence that names the detector and says it deletes
+ * (`deletes`, deliberately narrow) may only be the history, and has to cite
+ * #1834; and the section has to name the prune as the deleting path.  Before
+ * #1834 this held the opposite — the deleting sentence had to name
+ * `auto-down` and #930 had to follow it — and the same sentence-level binding
+ * is what keeps the old claim from coming back in one passage while another
+ * states the new one (#1477).
  *
  * **The mark passage** — the sentence saying when an evicted member's mark
- * goes, found by all of `markSentence` at once — has to tell the routes apart
- * (`markRoutes`): at once on the deleting `auto-down` route, only at the prune
- * behind a tombstone on every other.  "An evicted member's mark is dropped
- * with it", the wording before #1477, says neither.
+ * goes, found by all of `markSentence` at once — has to name the route that
+ * used to differ (`markRoutes`): only at the prune behind a tombstone, the
+ * `auto-down` route included.  "An evicted member's mark is dropped with it",
+ * the wording before #1477, says neither.
  *
  * **The heal check** runs over the whole page with comments stripped, so the
  * old justification cannot come back in another section or behind a marker
@@ -240,7 +240,7 @@ type DeletionText = {
   readonly deletesBroadly: RegExp;
   readonly detector: RegExp;
   readonly regardless: RegExp;
-  readonly optOut: RegExp;
+  readonly prunes: RegExp;
   readonly heals: RegExp;
   readonly deniesBenefit: RegExp;
   readonly markSentence: readonly RegExp[];
@@ -257,7 +257,7 @@ const DELETION_TEXTS: readonly DeletionText[] = [
     deletesBroadly: /\bdelet|\bdrop(?:s|ped|ping)?\b|\berase|\bpurge|\bwipe/i,
     detector: /\bdetector\b/i,
     regardless: /\b(?:whatever|regardless|irrespective|no matter)\b/i,
-    optOut: /auto-down`?\s*=\s*`?off\b/,
+    prunes: /\bprun/i,
     heals: /\bheal(?:ed|s|ing)?\b|\bre-?discover/i,
     deniesBenefit:
       /\b(?:buys?|bought|gives?|brings?|helps?|does|did)\s*\**\s*(?:no|not|nothing|never)\b|\bcannot\b|\bno such thing\b|\b(?:no|not|never|nothing)\s*\**\s*(?:buy|help|recover|re-?discover|heal|bring)/i,
@@ -273,7 +273,7 @@ const DELETION_TEXTS: readonly DeletionText[] = [
     deletesBroadly: /lösch|entfern|verwirf|verworfen|tilg/i,
     detector: /Detector/i,
     regardless: /\b(?:egal|unabhängig|gleichgültig|was immer|wie auch immer)\b/i,
-    optOut: /auto-down`?\s*=\s*`?off\b/,
+    prunes: /aufgeräumt|aufräum|\bprun|abgelaufen/i,
     heals: /heil|wiederfind/i,
     deniesBenefit:
       /\b(?:bringt|bringen|brachte|kauft|kaufen|hilft|helfen|leistet)\b[^.:;]{0,30}?\b(?:nicht|nichts|kein\w*)\b|\bnichts dergleichen\b|\b(?:nicht|nie|kein\w*)\b\s+(?:wiederfind|heil|hilft|bringt)/i,
@@ -366,51 +366,42 @@ describe('#112 — the replay bound is stated the way the tests measure it', () 
     ).toEqual([]);
   });
 
-  test('both pages tie the deleting removal to auto-down in the sentence that makes the claim', () => {
+  test('both pages name the prune as the one deleting path, and the detector\'s delete only as history', () => {
     // A deleted entry is where a recording lands, and an evicted sender's mark
     // goes with its entry — so which removal deletes is part of the bound.
-    // Since #1426 that is the failure detector's own route with no strategy
-    // configured, under `failure-detector.auto-down = on`, the default; the
-    // others tombstone.  A section that leaves the route unqualified describes
-    // every cluster by the one route that deletes, and one that names
-    // `auto-down` somewhere else in the section says nothing about the
-    // sentence that deletes (#1477).
-    const unqualified: string[] = [];
+    // Until #1834 that was the failure detector's own route under
+    // `failure-detector.auto-down = on`; it now tombstones like every other
+    // removal, and only the prune of an expired tombstone deletes.  A sentence
+    // saying the detector deletes is therefore stale unless it is the history,
+    // citing the issue that ended it.
+    const stale: string[] = [];
     for (const deletion of DELETION_TEXTS) {
       const sentences = sentencesOf(deletion.section);
-      const claims = sentences
-        .map((sentence, index) => ({ sentence, index }))
-        .filter(({ sentence }) => deletion.deletes.test(sentence) && deletion.detector.test(sentence));
-      if (claims.length === 0) {
-        unqualified.push(`  ${deletion.what}:\n      no sentence says the detector's own removal deletes`);
-        continue;
-      }
-      for (const { sentence } of claims) {
-        if (!/auto-down/.test(sentence) || deletion.regardless.test(sentence) || deletion.optOut.test(sentence)) {
-          unqualified.push(`  ${deletion.what}:\n      ${sentence}`);
+      for (const sentence of sentences) {
+        if (deletion.deletes.test(sentence) && deletion.detector.test(sentence) && !/#1834/.test(sentence)) {
+          stale.push(`  ${deletion.what}:\n      ${sentence}`);
         }
       }
-      const first = claims[0]!.index;
-      if (!sentences.slice(first, first + 3).some((sentence) => /#930/.test(sentence))) {
-        unqualified.push(`  ${deletion.what}:\n      #930 is not cited within two sentences of "${sentences[first]}"`);
+      if (!sentences.some((sentence) => deletion.deletes.test(sentence) && deletion.prunes.test(sentence))) {
+        stale.push(`  ${deletion.what}:\n      no sentence names the prune of an expired tombstone as what deletes`);
       }
     }
     expect(
-      unqualified,
-      `${unqualified.length} replay-section claim(s) about the deleting removal are not tied to it:\n`
-      + `${unqualified.join('\n')}\n`
-      + 'Only the failure detector\'s own route deletes an entry — no strategy configured, '
-      + '`failure-detector.auto-down = on` — so every sentence saying the detector deletes has to '
-      + 'name that condition, and #930 has to follow the first one: deleting buys no heal. The other '
-      + 'removals tombstone and keep the mark until the prune (DowningRouteRefusal.test.ts).',
+      stale,
+      `${stale.length} replay-section claim(s) about the deleting removal are stale:\n`
+      + `${stale.join('\n')}\n`
+      + 'Since #1834 every removal tombstones, the failure detector\'s own `auto-down` route included, '
+      + 'and keeps the mark until the prune (DowningRouteRefusal.test.ts); the prune is the one path '
+      + 'that deletes. A sentence saying the detector deletes may only be the history, citing #1834.',
     ).toEqual([]);
   });
 
   test('both pages say per route when an evicted member\'s mark goes', () => {
-    // At once on the deleting route, only at the prune behind a tombstone on
-    // every other.  The wording before #1477 — the mark "is dropped with it" —
-    // stated neither, and the section-wide marker check this file had then
-    // stayed green with it restored verbatim.
+    // Only at the prune behind a tombstone, the `auto-down` route included
+    // since #1834 (it deleted, mark and all, at once before).  The wording
+    // before #1477 — the mark "is dropped with it" — stated neither, and the
+    // section-wide marker check this file had then stayed green with it
+    // restored verbatim.
     const silent: string[] = [];
     for (const deletion of DELETION_TEXTS) {
       const markSentences = sentencesOf(deletion.section)
@@ -427,10 +418,10 @@ describe('#112 — the replay bound is stated the way the tests measure it', () 
     }
     expect(
       silent,
-      `${silent.length} mark passage(s) do not tell the deleting route from the tombstoning ones:\n`
+      `${silent.length} mark passage(s) do not say the mark lasts until the prune on every route:\n`
       + `${silent.join('\n')}\n`
-      + 'A tombstone keeps the mark along with the entry until the prune; only the auto-down route '
-      + 'deletes both at once.',
+      + 'A tombstone keeps the mark along with the entry until the prune, on every removal — the '
+      + 'auto-down route included since #1834.',
     ).toEqual([]);
   });
 

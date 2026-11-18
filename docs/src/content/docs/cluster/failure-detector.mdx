@@ -175,17 +175,17 @@ for production, configure `lease-majority` or another
 instead, and a crashed node stays a member until an operator or a
 strategy removes it, or it restarts on the same address.
 
-`auto-down` deletes the member rather than tombstoning it, so
-nothing is left to refuse the address afterwards: a peer whose view
-still carries the member re-introduces it on its next gossip, as
-`unreachable`, and the detector removes it again at `down-after`.
-With two or more survivors that do not delete at the same instant, a
-crashed member keeps coming back — measured on three in-process
-nodes, each survivor announced `MemberRemoved` for the dead one 50
-times in 20 seconds.  The first announcement is the one that moves
-shards and fires death watch; code that counts or logs removals sees
-all of them.  A strategy's removal tombstones the member and does
-not do this.
+`auto-down` tombstones the member, as a strategy's removal does, so
+a peer whose view still carries it cannot re-introduce it: its
+record is the same run at a lower version, and the tombstone
+refuses it until it is pruned
+([what a downed address may do next](/cluster/downing-strategies/#what-a-downed-address-may-do-next)).
+With two or more survivors each removes the crashed member once and
+announces `MemberRemoved` once.  Until v0.19.0 the route deleted the
+entry instead, and a survivor that had not removed it yet gossiped it
+back as `unreachable`, to be removed again at every `down-after`
+([issue #1834](https://github.com/pathosDev/actor-ts/issues/1834)).
+A restart on the same address is a new run and is readmitted at once.
 
 ### A parked member stays parked
 
@@ -308,6 +308,21 @@ The cluster gossip propagates these per-node observations.  A
 member is considered globally unreachable when *enough* peers
 report it that way — the threshold is configurable in some
 downing strategies (see KeepMajority, KeepReferee).
+
+A heartbeat clears an `unreachable` mark at once only on the node
+whose own detector made it.  In the picture above n2 learns n1's mark
+on n3 through gossip, and n3's heartbeats reaching n2 say nothing
+about the link n1 lost, so n2 keeps the mark: n1 clears it when it
+hears n3 again.  n2 clears a mark it holds on another node's word
+only once it has stood for `split-brain-resolver.stable-after` while
+n3 kept talking to it, which is the way out when n1 crashed or was
+removed with its mark standing.  Before v0.19.0 n2 cleared it on the
+first heartbeat, n1 marked n3 again on its next detection tick, and
+under a one-way partition the member flapped between `up` and
+`unreachable` at heartbeat cadence
+([issue #1828](https://github.com/pathosDev/actor-ts/issues/1828)).
+A lasting one-way partition still flips the member back once per
+`stable-after`.
 
 ## Choosing the φ-accrual detector
 

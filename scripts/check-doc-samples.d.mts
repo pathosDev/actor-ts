@@ -148,6 +148,8 @@ export function classifyDiagnostics(
   vocabulary: ReadonlySet<string>,
 ): DiagnosticReport;
 export function parseArguments(argv: readonly string[]): HarnessOptions;
+/** Why `out` cannot hold the generated tree — outside the repository, or its root — or `null` when it can. */
+export function outDirectoryRefusal(out: string, root?: string): string | null;
 export function exportsPaths(
   manifest: { exports: Record<string, unknown> },
   toRoot?: string,

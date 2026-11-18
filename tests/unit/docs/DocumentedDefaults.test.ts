@@ -28,7 +28,11 @@ import { DEFAULT_DOWN_SMALLER_ISLAND, DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, DEFAULT_SINGLETON_RESTART_ON_TERMINATION } from '../../../src/cluster/Constants.js';
 import { DEFAULT_BUFFER_SIZE as DEFAULT_SINGLETON_BUFFER_SIZE } from '../../../src/cluster/singleton/StartSingletonOptions.js';
-import { DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS, DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME } from '../../../src/cluster/ClusterClientOptions.js';
+import {
+  DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
+  DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE,
+  DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
+} from '../../../src/cluster/ClusterClientOptions.js';
 import { DEFAULT_ASK_TIMEOUT_MS as DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
 import {
   DEFAULT_DEAD_LETTER_MAX_ENTRIES,
@@ -466,6 +470,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.client.system-name', kind: 'string', constant: DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME },
   { key: 'actor-ts.cluster.client.ask-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS },
   { key: 'actor-ts.cluster.client.connect-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS },
+  { key: 'actor-ts.cluster.client.outbound-queue-size', kind: 'int', constant: DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE },
   { key: 'actor-ts.cluster.client.receptionist.ask-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS },
 
   /* --- singleton --- */

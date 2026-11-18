@@ -1,3 +1,4 @@
+import { join, resolve } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import {
   actorTsVocabulary,
@@ -16,6 +17,7 @@ import {
   namesFromImportClause,
   namesFromPattern,
   pageLineOf,
+  outDirectoryRefusal,
   parseArguments,
   parseDiagnostics,
   unresolvedNameOf,
@@ -527,6 +529,31 @@ describe('argument parsing', () => {
     expect(options.out).toBe('.doc-samples-fixture');
     expect(options.reportOnly).toBe(true);
     expect(options.measureOnly).toBe(false);
+  });
+
+  test('an output directory below the repository root is accepted (#1831)', () => {
+    const root = resolve('/repository');
+    expect(outDirectoryRefusal('.doc-samples', root)).toBeNull();
+    expect(outDirectoryRefusal('tmp/doc-samples-out', root)).toBeNull();
+    expect(outDirectoryRefusal(join(root, 'tmp', 'x'), root)).toBeNull();
+    // A sibling whose name merely starts with two dots is still inside.
+    expect(outDirectoryRefusal('..doc-samples', root)).toBeNull();
+  });
+
+  test('an output directory outside the repository, or the root itself, is refused (#1831)', () => {
+    const root = resolve('/repository');
+    expect(outDirectoryRefusal('../elsewhere', root)).toContain('outside the repository');
+    expect(outDirectoryRefusal('..', root)).toContain('outside the repository');
+    expect(outDirectoryRefusal(resolve('/tmp/x'), root)).toContain('outside the repository');
+    // On Windows a directory on another drive has no relative path at all:
+    // `relative` hands back the absolute one.  POSIX has no such case.
+    if (process.platform === 'win32') {
+      const otherDrive = root.toUpperCase().startsWith('Z:') ? 'Y:\\elsewhere' : 'Z:\\elsewhere';
+      expect(outDirectoryRefusal(otherDrive, root)).toContain('outside the repository');
+    }
+    // The run empties its output directory before it writes into it.
+    expect(outDirectoryRefusal('.', root)).toContain('repository root');
+    expect(outDirectoryRefusal(root, root)).toContain('repository root');
   });
 
   test('the defaults are the real documentation tree', () => {
