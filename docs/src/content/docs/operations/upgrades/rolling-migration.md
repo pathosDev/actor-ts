@@ -9,6 +9,17 @@ downtime** and **without coordinated stops**.  Every node continues
 serving traffic while the new version rolls out instance-by-
 instance.
 
+> **Within a release line only.**  A rolling deploy assumes old and
+> new nodes can talk to each other for a few minutes.  A release
+> that changes the cluster wire version — every release from v0.16.0
+> through v0.19.0 did — breaks that assumption: upgrade the cluster
+> in one step instead (stop every node, then start every node on the
+> new version), together with any application that connects through
+> `ClusterClient`.  The pattern below applies to the schema and key
+> changes you ship between such releases.  See
+> [Upgrade strategies](/operations/upgrades/upgrade-strategies/#cluster-wire-compatibility-per-release)
+> for the per-release table.
+
 The framework's rolling-deploy story is built on four shipped
 features:
 
