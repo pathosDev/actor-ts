@@ -85,6 +85,7 @@ actor-ts {
       max-subscribers-per-topic  = 10000
       max-topics                 = 10000
       max-remote-nodes-per-topic = 1000
+      max-topics-claimed-per-sender = 1024
       send-to-dead-letters-when-no-subscribers = on
     }
     receptionist {
@@ -846,8 +847,9 @@ constant.
 | --- | --- | --- |
 | `cluster.pub-sub.gossip-interval` | `1s` | How often a mediator pushes its topic set to a random peer. |
 | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Cap on local subscribers for one topic.  A `Subscribe` past it is answered with `SubscribeRejected`. |
-| `cluster.pub-sub.max-topics` | `10000` | Cap on distinct topics one mediator tracks — enforced against gossiped topic claims as well as local subscribes. |
+| `cluster.pub-sub.max-topics` | `10000` | Cap on distinct topics one mediator tracks, in two pools held apart: topics with a local subscriber (a local `Subscribe` past it is rejected) and topics only peers claim (a gossiped claim past it is dropped).  A peer's claims never spend the local pool. |
 | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Cap on peers that may claim subscribers for one topic. |
+| `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` | Cap on topics one gossip sender may claim; claims past it are dropped and logged with the sender named.  Raise it if one node subscribes to more topics than this. |
 | `cluster.pub-sub.send-to-dead-letters-when-no-subscribers` | `on` | Route a publish that reached nobody to `system.deadLetters` instead of discarding it. |
 
 The three caps bound what one mediator can be made to hold, and publish

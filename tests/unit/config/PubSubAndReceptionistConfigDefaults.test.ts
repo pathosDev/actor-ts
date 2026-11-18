@@ -24,6 +24,7 @@ describe('readDistributedPubSubOptionsFromConfig', () => {
         max-subscribers-per-topic  = 32
         max-topics                 = 8
         max-remote-nodes-per-topic = 4
+        max-topics-claimed-per-sender = 2
         send-to-dead-letters-when-no-subscribers = off
       }
     `);
@@ -33,6 +34,7 @@ describe('readDistributedPubSubOptionsFromConfig', () => {
       maxSubscribersPerTopic: 32,
       maxTopics: 8,
       maxRemoteNodesPerTopic: 4,
+      maxTopicsClaimedPerSender: 2,
       sendToDeadLettersWhenNoSubscribers: false,
     });
   });
@@ -51,6 +53,7 @@ describe('readDistributedPubSubOptionsFromConfig', () => {
       maxSubscribersPerTopic: 10_000,
       maxTopics: 10_000,
       maxRemoteNodesPerTopic: 1_000,
+      maxTopicsClaimedPerSender: 1_024,
       sendToDeadLettersWhenNoSubscribers: true,
     });
   });

@@ -101,6 +101,7 @@ import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
   DEFAULT_MAX_TOPICS,
+  DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER,
 } from '../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
@@ -575,6 +576,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },
   { key: 'actor-ts.cluster.pub-sub.max-topics', kind: 'int', constant: DEFAULT_MAX_TOPICS },
   { key: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic', kind: 'int', constant: DEFAULT_MAX_REMOTE_NODES_PER_TOPIC },
+  { key: 'actor-ts.cluster.pub-sub.max-topics-claimed-per-sender', kind: 'int', constant: DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER },
   { key: 'actor-ts.cluster.receptionist.max-subscribers-per-key', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_KEY },
   { key: 'actor-ts.cluster.receptionist.max-subscriptions-total', kind: 'int', constant: DEFAULT_MAX_SUBSCRIPTIONS_TOTAL },
 

@@ -1063,12 +1063,16 @@ actor-ts {
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
     # one mediator can be made to hold -- by local subscribers and by a peer's
     # gossiped topic claims alike.  A Subscribe over a cap is answered with
-    # SubscribeRejected, never silently dropped.
+    # SubscribeRejected, never silently dropped.  max-topics bounds two pools
+    # separately -- topics with a local subscriber, and topics only peers
+    # claim -- so a peer's claims never deny a local Subscribe; one sender
+    # may claim at most max-topics-claimed-per-sender of them.
     pub-sub {
       gossip-interval = 1s
       max-subscribers-per-topic = 10000
       max-topics = 10000
       max-remote-nodes-per-topic = 1000
+      max-topics-claimed-per-sender = 1024
       # A publish that reached no subscriber goes to system.deadLetters, so a
       # mistyped topic is observable instead of silent.  off = discard it.
       send-to-dead-letters-when-no-subscribers = on

@@ -143,6 +143,15 @@
       "tests/unit/cluster/GossipSenderThrottle.test.ts",
       "tests/unit/cluster/UnreachablePeerContact.test.ts"
     ],
+    "src/cluster/pubsub/DistributedPubSubMediator.ts": [
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSub.test.ts",
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSubCaps.test.ts",
+      "tests/unit/cluster/DistributedPubSubMembershipGossip.test.ts"
+    ],
+    "src/cluster/pubsub/DistributedPubSubOptions.ts": [
+      "tests/unit/config/PubSubAndReceptionistConfigDefaults.test.ts",
+      "tests/unit/options/NonBrokerOptionsValidators.test.ts"
+    ],
     "src/cluster/router/ClusterRouter.ts": [
       "tests/integration/in-process/cluster/router/ClusterRouter.test.ts",
       "tests/unit/cluster/ClusterRouterReachability.test.ts",
@@ -747,6 +756,9 @@
       "tests/unit/UtilExports.test.ts",
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/util/SenderClaimQuota.ts": [
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSubCaps.test.ts"
     ],
     "src/worker/WorkerMesh.ts": [
       "tests/integration/in-process/cluster/WorkerMesh.test.ts",

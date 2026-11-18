@@ -89,6 +89,7 @@ actor-ts {
       max-subscribers-per-topic  = 10000
       max-topics                 = 10000
       max-remote-nodes-per-topic = 1000
+      max-topics-claimed-per-sender = 1024
       send-to-dead-letters-when-no-subscribers = on
     }
     receptionist {
@@ -898,8 +899,9 @@ eine Konstante.
 | --- | --- | --- |
 | `cluster.pub-sub.gossip-interval` | `1s` | Wie oft ein Mediator seine Topic-Menge an einen zufälligen Peer schickt. |
 | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Obergrenze für lokale Subscriber eines Topics.  Ein `Subscribe` darüber wird mit `SubscribeRejected` beantwortet. |
-| `cluster.pub-sub.max-topics` | `10000` | Obergrenze für verschiedene Topics eines Mediators — gilt für gegossipte Topic-Ansprüche genauso wie für lokale Subscribes. |
+| `cluster.pub-sub.max-topics` | `10000` | Obergrenze für verschiedene Topics eines Mediators, in zwei getrennten Pools: Topics mit lokalem Subscriber (ein lokales `Subscribe` darüber wird abgelehnt) und Topics, die nur Peers beanspruchen (ein gegossipter Anspruch darüber wird verworfen).  Die Ansprüche eines Peers verbrauchen nie den lokalen Pool. |
 | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Obergrenze für Peers, die Subscriber für ein Topic beanspruchen dürfen. |
+| `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` | Obergrenze für Topics, die ein Gossip-Absender beanspruchen darf; Ansprüche darüber werden verworfen und mit dem Absender protokolliert.  Erhöhen, wenn ein Node mehr Topics abonniert. |
 | `cluster.pub-sub.send-to-dead-letters-when-no-subscribers` | `on` | Ein Publish, das niemanden erreicht hat, geht an `system.deadLetters`, statt verworfen zu werden. |
 
 Die drei Obergrenzen begrenzen, was ein Mediator überhaupt halten kann,

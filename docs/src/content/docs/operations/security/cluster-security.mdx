@@ -606,8 +606,9 @@ path as much as to local calls:
 | Live cluster members | `cluster.max-members` | `1000` |
 | `removed` tombstones | `cluster.max-tombstones` | `10000` |
 | Pub-sub subscribers per topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
-| Pub-sub topics | `cluster.pub-sub.max-topics` | `10000` |
+| Pub-sub topics, local and peer-only pools apart | `cluster.pub-sub.max-topics` | `10000` |
 | Pub-sub remote claimants per topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| Pub-sub topics one peer may claim | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` |
 | Receptionist subscribers per key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
 | Receptionist subscriptions total | `cluster.receptionist.max-subscriptions-total` | `10000` |
 

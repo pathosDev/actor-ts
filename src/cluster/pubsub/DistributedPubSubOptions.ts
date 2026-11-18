@@ -10,6 +10,13 @@ export const DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC = 10_000;
 export const DEFAULT_MAX_TOPICS = 10_000;
 /** Built-in default for {@link DistributedPubSubOptionsType.maxRemoteNodesPerTopic}. */
 export const DEFAULT_MAX_REMOTE_NODES_PER_TOPIC = 1_000;
+/**
+ * Built-in default for {@link DistributedPubSubOptionsType.maxTopicsClaimedPerSender}
+ * — the figure #139 proposed: a tenth of {@link DEFAULT_MAX_TOPICS}, so no one
+ * peer can fill the topics only peers hold, and above what a node's topic set
+ * is in any deployment this was sized against.
+ */
+export const DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER = 1_024;
 
 /** Plain options-object shape consumed by a {@link DistributedPubSubMediator}. */
 export type DistributedPubSubOptionsType = {
@@ -21,12 +28,30 @@ export type DistributedPubSubOptionsType = {
    */
   readonly maxSubscribersPerTopic?: number;
   /**
-   * Most distinct topics this mediator may track.  Bounds both axes a peer
-   * can push on: local `Subscribe` messages and gossiped topic names.
+   * Most distinct topics this mediator may track **in each of two pools**:
+   * topics with a local subscriber, and topics only peers claim (#1074).
+   *
+   * A local `Subscribe` to a topic with no local subscriber yet is refused
+   * once the first pool is full, and a peer's claim to a topic this mediator
+   * does not track yet is dropped once the second is.  They used to be one
+   * budget, so a peer naming `maxTopics` topics denied every local
+   * `Subscribe` to a new one, renewed with each gossip round.  The mediator
+   * holds at most twice this many topics.
    */
   readonly maxTopics?: number;
   /** Most remote nodes that may claim subscribers for a single topic. */
   readonly maxRemoteNodesPerTopic?: number;
+  /**
+   * Most topics one gossip sender may claim (#1074).  Claims past it are
+   * dropped and logged, with the sender named, not refused on the wire.
+   *
+   * What keeps one peer from filling the pool of peer-only topics that
+   * {@link maxTopics} bounds: that pool is shared by every peer, and its
+   * first occupant would otherwise deny it to the rest.  Raise it on a
+   * deployment where one node subscribes to more topics than this, or the
+   * topics past it never reach that node from elsewhere.
+   */
+  readonly maxTopicsClaimedPerSender?: number;
   /**
    * Route a `Publish` that reached nobody to `system.deadLetters` instead of
    * discarding it.  On by default — an unrouted publish is a bug worth
@@ -76,6 +101,11 @@ export class DistributedPubSubOptionsBuilder extends OptionsBuilder<DistributedP
     return this.set('maxRemoteNodesPerTopic', maxRemoteNodesPerTopic);
   }
 
+  /** Cap on the topics one gossip sender may claim. */
+  withMaxTopicsClaimedPerSender(maxTopicsClaimedPerSender: number): this {
+    return this.set('maxTopicsClaimedPerSender', maxTopicsClaimedPerSender);
+  }
+
   /** Send a publish that reached no subscriber to `system.deadLetters`. */
   withSendToDeadLettersWhenNoSubscribers(sendToDeadLettersWhenNoSubscribers: boolean): this {
     return this.set('sendToDeadLettersWhenNoSubscribers', sendToDeadLettersWhenNoSubscribers);
@@ -92,6 +122,7 @@ export class DistributedPubSubOptionsValidator extends OptionsValidator<Distribu
     this.positiveInt('maxSubscribersPerTopic');
     this.positiveInt('maxTopics');
     this.positiveInt('maxRemoteNodesPerTopic');
+    this.positiveInt('maxTopicsClaimedPerSender');
   }
 }
 
@@ -118,6 +149,9 @@ export function readDistributedPubSubOptionsFromConfig(
   if (config.hasPath(keys.maxTopics)) out.maxTopics = config.getInt(keys.maxTopics);
   if (config.hasPath(keys.maxRemoteNodesPerTopic)) {
     out.maxRemoteNodesPerTopic = config.getInt(keys.maxRemoteNodesPerTopic);
+  }
+  if (config.hasPath(keys.maxTopicsClaimedPerSender)) {
+    out.maxTopicsClaimedPerSender = config.getInt(keys.maxTopicsClaimedPerSender);
   }
   if (config.hasPath(keys.sendToDeadLettersWhenNoSubscribers)) {
     out.sendToDeadLettersWhenNoSubscribers = config.getBoolean(keys.sendToDeadLettersWhenNoSubscribers);

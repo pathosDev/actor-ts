@@ -2051,6 +2051,7 @@ export const ConfigKeys = {
       maxSubscribersPerTopic: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic',
       maxTopics: 'actor-ts.cluster.pub-sub.max-topics',
       maxRemoteNodesPerTopic: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic',
+      maxTopicsClaimedPerSender: 'actor-ts.cluster.pub-sub.max-topics-claimed-per-sender',
       sendToDeadLettersWhenNoSubscribers:
         'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
     },

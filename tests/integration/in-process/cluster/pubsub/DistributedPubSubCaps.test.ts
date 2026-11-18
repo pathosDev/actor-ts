@@ -188,6 +188,93 @@ describe('DistributedPubSub — subscriber and topic caps (#139)', () => {
     await stopNode(node);
   });
 
+  test('#1074 — a local Subscribe after a gossip flood is still acknowledged', async () => {
+    // `maxTopics` used to be one budget shared by local subscribes and peer
+    // claims, so a peer naming `maxTopics` topics denied every local Subscribe
+    // to a new one — and kept doing so, since the claims are renewed each round.
+    const node = await startNode('ps-cap-shared-budget', 51421);
+    const mediatorOptions = DistributedPubSubOptions.create()
+      .withCluster(node.cluster)
+      .withGossipIntervalMs(60_000)
+      .withMaxTopics(10);
+    const mediator = await spawnMediator(node, 'shared-budget', mediatorOptions);
+
+    const peer = new NodeAddress('ps-cap-shared-budget', 'h', 51499);
+    const flood = Array.from({ length: 10 }, (_, i) => `peer-topic-${i}`);
+    mediator.internals.handleGossip(
+      { kind: 'pubsub-gossip', from: peer.toJSON(), entries: flood, version: 1 },
+      peer,
+    );
+    expect(mediator.internals.topics.size).toBe(10);
+
+    const probe = node.kit.createTestProbe();
+    mediator.ref.tell(new Subscribe('orders', probe, probe));
+    await probe.expectMessageType(SubscribeAcknowledgment, 500);
+
+    await stopNode(node);
+  });
+
+  test('#1074 — the local budget counts only topics with a local subscriber', async () => {
+    // The other side of the split: a topic a peer claims does not become free
+    // to subscribe to locally once the local budget is spent.
+    const node = await startNode('ps-cap-local-budget', 51422);
+    const mediatorOptions = DistributedPubSubOptions.create()
+      .withCluster(node.cluster)
+      .withGossipIntervalMs(60_000)
+      .withMaxTopics(1);
+    const mediator = await spawnMediator(node, 'local-budget', mediatorOptions);
+
+    const probe = node.kit.createTestProbe();
+    mediator.ref.tell(new Subscribe('mine', probe, probe));
+    await probe.expectMessageType(SubscribeAcknowledgment, 500);
+
+    const peer = new NodeAddress('ps-cap-local-budget', 'h', 51499);
+    mediator.internals.handleGossip(
+      { kind: 'pubsub-gossip', from: peer.toJSON(), entries: ['theirs'], version: 1 },
+      peer,
+    );
+    expect(mediator.internals.topics.has('theirs')).toBe(true);
+
+    mediator.ref.tell(new Subscribe('theirs', probe, probe));
+    const rejected = await probe.expectMessageType(SubscribeRejected, 500);
+    expect(rejected.reason).toBe('maxTopics');
+
+    await stopNode(node);
+  });
+
+  test('#1074 — one sender may claim at most maxTopicsClaimedPerSender topics; senders do not share it', async () => {
+    const node = await startNode('ps-cap-per-sender', 51423);
+    const mediatorOptions = DistributedPubSubOptions.create()
+      .withCluster(node.cluster)
+      .withGossipIntervalMs(60_000)
+      .withMaxTopics(1_000)
+      .withMaxTopicsClaimedPerSender(5);
+    const mediator = await spawnMediator(node, 'per-sender', mediatorOptions);
+
+    const loud = new NodeAddress('ps-cap-per-sender', 'h', 51498);
+    const quiet = new NodeAddress('ps-cap-per-sender', 'h', 51499);
+    const claimsOf = (sender: NodeAddress): number => Array.from(mediator.internals.topics.values())
+      .filter((state) => state.remoteNodes.has(sender.toString())).length;
+
+    // A repeated name is one claim, not two.
+    const loudEntries = ['repeat', 'repeat', ...Array.from({ length: 50 }, (_, i) => `loud-${i}`)];
+    mediator.internals.handleGossip(
+      { kind: 'pubsub-gossip', from: loud.toJSON(), entries: loudEntries, version: 1 },
+      loud,
+    );
+    mediator.internals.handleGossip(
+      { kind: 'pubsub-gossip', from: quiet.toJSON(), entries: ['quiet-0', 'quiet-1', 'loud-0'], version: 1 },
+      quiet,
+    );
+
+    expect(claimsOf(loud)).toBe(5);
+    expect(mediator.internals.topics.get('loud-3')?.remoteNodes.has(loud.toString())).toBe(true);
+    expect(mediator.internals.topics.has('loud-4')).toBe(false);
+    expect(claimsOf(quiet)).toBe(3);
+
+    await stopNode(node);
+  });
+
   test('a stopped subscriber is dropped by death watch, freeing its slot', async () => {
     const node = await startNode('ps-death-watch', 51404);
     const mediatorOptions = DistributedPubSubOptions.create()

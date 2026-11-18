@@ -649,8 +649,9 @@ den Gossip-Pfad genauso wie für lokale Aufrufe:
 | Lebende Cluster-Mitglieder | `cluster.max-members` | `1000` |
 | `removed`-Tombstones | `cluster.max-tombstones` | `10000` |
 | PubSub-Subscriber pro Topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
-| PubSub-Topics | `cluster.pub-sub.max-topics` | `10000` |
+| PubSub-Topics, lokaler und Peer-Pool getrennt | `cluster.pub-sub.max-topics` | `10000` |
 | PubSub-Remote-Ansprüche pro Topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| PubSub-Topics, die ein Peer beanspruchen darf | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` |
 | Receptionist-Subscriber pro Key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
 | Receptionist-Subscriptions insgesamt | `cluster.receptionist.max-subscriptions-total` | `10000` |
 
