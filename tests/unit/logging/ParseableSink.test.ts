@@ -189,6 +189,30 @@ describe('ParseableSinkOptions', () => {
       .toThrow(/must be set together/);
   });
 
+  // #1789: the rejected value of these two cross-field rules is a credential,
+  // and an OptionsError message ends up in startup logs and CI output.
+  it('never echoes the password or the API key into the error', () => {
+    const messageOf = (run: () => unknown): string => {
+      try {
+        run();
+      } catch (e) {
+        return (e as Error).message;
+      }
+      throw new Error('expected the options to be refused');
+    };
+
+    const halfPair = messageOf(() => new ParseableSink({ ...baseOptions, password: 'hunter2' }));
+    expect(halfPair).toMatch(/must be set together/);
+    expect(halfPair).not.toContain('hunter2');
+
+    const combined = messageOf(() => new ParseableSink({
+      ...baseOptions, username: 'admin', password: 'hunter2', apiKey: 'sk-live-1',
+    }));
+    expect(combined).toMatch(/cannot be combined with basic-auth/);
+    expect(combined).not.toContain('sk-live-1');
+    expect(combined).not.toContain('hunter2');
+  });
+
   it('rejects a non-HTTP URL', () => {
     expect(() => new ParseableSink({ url: 'ftp://parseable.internal' })).toThrow(OptionsError);
   });
