@@ -562,6 +562,15 @@
       "tests/unit/http/ShutdownDrain.test.ts",
       "tests/unit/management/BuiltInHealthChecks.test.ts"
     ],
+    "src/management/HttpManagement.ts": [
+      "tests/integration/in-process/cluster/sharding/ShardMapEndpoint.test.ts",
+      "tests/unit/management/Management.test.ts",
+      "tests/unit/management/ProbePaths.test.ts"
+    ],
+    "src/management/ManagementRoutesOptions.ts": [
+      "tests/unit/config/ManagementConfigDefaults.test.ts",
+      "tests/unit/management/Management.test.ts"
+    ],
     "src/parallelism/ParallelismExtension.ts": [
       "tests/unit/parallelism/ClusterRouterOverMesh.test.ts",
       "tests/unit/parallelism/DisabledByDefault.test.ts",

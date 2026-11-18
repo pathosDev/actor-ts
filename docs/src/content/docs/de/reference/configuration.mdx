@@ -2155,6 +2155,9 @@ die Konfiguration lesen ließe — diese Naht ist Issue #967.
 | `management.enable-leave-endpoint` | `false` | `POST /cluster/leave` ausliefern ([HTTP-Endpunkte](/de/observability/management/http-endpoints/)). |
 | `management.enable-down-endpoint` | `false` | `POST /cluster/down` ausliefern — operator-initiiertes Force-Down eines Peers. |
 | `management.enable-metrics-endpoint` | `false` | `GET /metrics` im Prometheus-Textformat ausliefern. |
+| `management.enable-members-endpoint` | `false` | `GET /cluster/members` ausliefern — interne Adresse, Status und Rollen jedes Members. |
+| `management.enable-leader-endpoint` | `false` | `GET /cluster/leader` ausliefern. |
+| `management.enable-shards-endpoint` | `false` | `GET /cluster/shards?type=…` ausliefern — die Shard-zu-Region-Zuordnung eines Sharding-Typs. |
 | `management.auth-protect-health` | `false` | Die `auth`-Middleware zusätzlich über `/health` und `/ready` legen, nicht nur über `/cluster/*`. |
 | `management.liveness-path` | `"health"` | Einzelnes Pfadsegment, unter dem die Liveness-Probe antwortet. |
 | `management.readiness-path` | `"ready"` | Einzelnes Pfadsegment, unter dem die Readiness-Probe antwortet. |

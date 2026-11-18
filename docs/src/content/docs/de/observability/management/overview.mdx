@@ -9,7 +9,9 @@ Konvention), getrennt vom Haupt-HTTP-Server deiner App, und
 exponierst:
 
 - **Health-Probes** — Liveness + Readiness für K8s.
-- **Cluster-Info** — Mitglieder, Leader, Sharding-Regionen.
+- **Cluster-Info** — Mitglieder, Leader, Sharding-Regionen (optional,
+  standardmäßig aus, weil sie die internen Adressen des Clusters
+  offenlegen).
 - **Metriken** — Prometheus-Exposition (optional).
 - **Admin-Endpunkte** — Leave / Down (optional, standardmäßig
   aus).
@@ -48,6 +50,9 @@ type ManagementRoutesOptionsType = {
   enableLeaveEndpoint?:   boolean;    // POST /cluster/leave (default false)
   enableDownEndpoint?:    boolean;    // POST /cluster/down  (default false)
   enableMetricsEndpoint?: boolean;    // GET  /metrics       (default false)
+  enableMembersEndpoint?: boolean;    // GET  /cluster/members (default false)
+  enableLeaderEndpoint?:  boolean;    // GET  /cluster/leader  (default false)
+  enableShardsEndpoint?:  boolean;    // GET  /cluster/shards  (default false)
   auth?:          Middleware;         // guards /cluster/* (+ /metrics)
   ipAllowlist?:   Middleware;         // guards EVERY endpoint, incl. /health + /ready
   authProtectHealth?: boolean;        // also require `auth` on /health + /ready (default false)
@@ -104,14 +109,19 @@ aufweichen.  Vollständige Key-Tabelle:
 | --- | --- | --- |
 | `GET /health` | ✓ | Liveness — 200 wenn jeder Liveness-Check besteht. |
 | `GET /ready` | ✓ | Readiness — 200 wenn jeder Readiness-Check besteht (Cluster-Mitgliedschaft + -Konnektivität registriert das Framework selbst). |
-| `GET /cluster/members` | Wenn `cluster` gesetzt | Membership-JSON. |
-| `GET /cluster/leader` | Wenn `cluster` gesetzt | Leader-Adresse. |
-| `GET /cluster/shards?type=<name>` | Wenn `cluster` gesetzt, für einen Typ, an dem dieser Node teilnimmt | Shard-Verteilung für einen sharded Typ. |
+| `GET /cluster/members` | Opt-in (`enableMembersEndpoint`), braucht `cluster` | Membership-JSON. |
+| `GET /cluster/leader` | Opt-in (`enableLeaderEndpoint`), braucht `cluster` | Leader-Adresse. |
+| `GET /cluster/shards?type=<name>` | Opt-in (`enableShardsEndpoint`), braucht `cluster` und einen Typ, an dem dieser Node teilnimmt | Shard-Verteilung für einen sharded Typ. |
 | `POST /cluster/leave` | Opt-in (`enableLeaveEndpoint`) | Graceful Cluster-Leave auslösen. |
 | `POST /cluster/down` | Opt-in (`enableDownEndpoint`) | Peer per Adresse force-downen. |
 | `GET /metrics` | Opt-in (`enableMetricsEndpoint`) | Prometheus-Textformat. |
 
-Siehe [HTTP-Endpunkte](/de/observability/management/http-endpoints/)
+Die drei Topologie-Endpunkte waren vor v0.19.0 standardmäßig an; sie
+legen die interne `host:port` und die Rollen jedes Members offen und sind
+deshalb jetzt Opt-in (#971).  Ein Routenbaum, der einen Cluster-Endpunkt
+ohne `auth` und ohne `ipAllowlist` ausliefert, loggt eine Warnung, die die
+offenen Endpunkte nennt.  Siehe
+[HTTP-Endpunkte](/de/observability/management/http-endpoints/)
 für die volle Oberfläche + Response-Shapes.
 
 ## Health Checks
