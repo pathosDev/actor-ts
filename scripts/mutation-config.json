@@ -145,6 +145,7 @@
       "tests/unit/cluster/sharding/ShardPlacementReachability.test.ts",
       "tests/unit/cluster/sharding/ShardRegisterConflict.test.ts",
       "tests/unit/cluster/sharding/ShardingAuthority.test.ts",
+      "tests/unit/cluster/sharding/ShardingHandshakeOrderingProperties.test.ts",
       "tests/unit/cluster/sharding/ShardingRefusalLogEscaping.test.ts",
       "tests/unit/cluster/sharding/ShardingRoleFromConfig.test.ts",
       "tests/unit/cluster/sharding/ShardingUnhandledDrops.test.ts",

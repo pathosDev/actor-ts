@@ -24,6 +24,18 @@
  * the consumer busy, which `_settle` — the step that lets an actor turn land
  * after each release — would read as an exchange that never ends.
  *
+ * **That is a limit of `_settle`, not of this harness** (#1823).  A cell is
+ * busy while its turn is in flight, and `ActorCell` keeps the turn in flight —
+ * `processing` stays set — for as long as a handler it awaits is suspended.
+ * Quiet is all `_settle` can observe, so it cannot tell a turn waiting on a
+ * promise the test's own scheduler holds from one that is still working: it
+ * spends its whole turn budget and returns `false`, once per release while the
+ * handler waits.  Nothing would hang, but every settle would turn into a fixed
+ * delay and stop meaning "the released hop has landed", which is the one
+ * thing the step is for.  Scheduling the handler would need a settle that
+ * treats a turn suspended on a scheduled promise as quiet — a property of the
+ * promise, which a cell never sees.
+ *
  * Lives under `tests/util/` so the per-commit property and the deeper nightly
  * run (`tests/nightly/`) drive one harness with different run counts.
  */

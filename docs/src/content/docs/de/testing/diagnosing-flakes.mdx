@@ -269,6 +269,25 @@ Buns 5-s-Limit.  Die tiefe Erkundung ist
 ihren Pfad startet.  Ihr Name hält `bun test` davon ab, sie einzusammeln —
 keine Umgebungsvariable, die `NoEnvironmentGatedSkips.test.ts` verbietet.
 
+Der Handshake des Sharding-Koordinators wird genauso behandelt (#1823).
+`tests/unit/cluster/sharding/ShardingHandshakeOrderingProperties.test.ts`
+betreibt einen echten Koordinator und zwei echte Regionen auf einem
+`MultiNodeSpec` mit zwei Knoten, und jeder Frame zwischen den Knoten —
+`GetShardHome`, `ShardHome`, `Register`, Gossip, eine Übergabe — wird vom
+Scheduler freigegeben.  Zwischen zwei geplanten Phasen kann der Leader neu
+starten; genau für dieses Fenster gibt es die Registrierungsbarriere (#1272).
+Das Modell prüft, dass jeder Shard zu jedem Zeitpunkt höchstens ein Zuhause
+hat, dass kein Shard platziert wird, bevor die Region, die ihn noch hält, ihn
+beansprucht hat, und dass kein Shard ohne Zuhause bleibt, sobald das Netz
+geleert ist.  Ohne die Barriere wird die Property rot, und der ausgegebene Pfad
+spielt den Fehler wieder ab.  Der tiefe Lauf ist
+`tests/nightly/ShardingHandshakeDeep.nightly.ts`.
+
+Jeder nächtliche Job — die geplanten Reihenfolgen, die tiefen Decoder-Eingaben
+und der Lauf mit erhöhtem Zeitfaktor eingeschlossen — läuft über das
+Stress-Harness und speist den Report-Job, sodass eine rote Nacht in jedem von
+ihnen das `nightly-flake`-Issue anlegt.
+
 ### Eingaben, die niemand gewählt hat
 
 Jeder Decoder, der Bytes von außen liest, bekommt auch Bytes, die kein Encoder
