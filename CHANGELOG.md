@@ -156,6 +156,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nightly jobs now feed the flake report, including `time-factor`,
   `scheduled-orderings` and `decoder-inputs` (#1823).
 
+- **`actor-ts.metrics.max-families`** (`maxFamilies`, default `1000`) caps how
+  many metric families the in-process registry and the prom-client bridge hold
+  (#1068). Past the cap a further name gets a no-op instrument and one warning;
+  it never throws.
+- **`actor-ts.io.broker.sse.max-buffer-chars`** (`SseOptions.maxBufferChars`,
+  default 1 048 576 UTF-16 code units), the inbound buffer cap of the SSE
+  client, as an option (#371).
+- **`actor-ts.reliable-delivery.consumer.max-incarnations-per-producer`**
+  (default `4`, the live incarnation included, `0` = unbounded) (#1237).
+- **`requirePeerIdentity` on `TcpTransport`** (#1190). A peer that presents
+  no TLS certificate is refused. The option is refused at construction without
+  a `ca`, with `requestClientCert: false`, and on Deno.
+- **`requestIdOfError(err)`** reads the request id a generic 500 carries
+  (#1064).
+- **A guard against wrappers of internal seams** (#1630), and a CI tolerance
+  between each example frontend's `package-lock.json` and `bun.lock` (#1402).
+  No package may sit on another major line, and no advisory may name only one
+  of the two.
+- **A README section "Known security caveats"** on deferred work inheriting the
+  log context (#1061).
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -442,6 +463,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   repository**, or the repository root itself, with exit code 2 (#1831). Such a
   run used to report `OK` without having checked any sample.
 
+- **Every generic 500 carries the request id its error log line names**, on
+  all three backends and through `fallback()` (#1064).
+- **The cardinality overflow series keeps its `__overflow__` marker** and the
+  family's full label set when the first overflowing tuple is unlabeled or a
+  subset (#1067).
+- **A failing DevTools tap teardown, a `mount()` that throws, or a
+  `SpanTap` install that throws no longer leaves the system unable to attach
+  DevTools again**; `SpanTap.uninstall()` resets its recording switches
+  (#714).
+- **`reEncryptObjectStorage` refuses a missing or empty `info` or
+  `newInfo` before touching the corpus**, instead of reporting a converged
+  corpus (#1048). A reused master-key version now fails with an error naming
+  the version and the likely cause (#1050).
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
@@ -621,6 +656,53 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   callback runs, the actor is not restarted, and the policy's next snapshot
   retries. An explicit `saveSnapshot()` still throws.
 
+- **BREAKING: `/cluster/members`, `/cluster/leader` and `/cluster/shards` are
+  off by default** (#971), and serving any cluster endpoint without `auth` or
+  `ipAllowlist` logs a warning. **Migration:** set `enableMembersEndpoint`,
+  `enableLeaderEndpoint` or `enableShardsEndpoint` (or
+  `actor-ts.management.enable-{members,leader,shards}-endpoint = true`).
+- **BREAKING: a redirect that leaves the request's origin is refused with a
+  500** on every backend, hand-built responses included (#1056). `redirect('')`
+  is a 400. **Migration:** use `redirectExternal(url)` for a deliberate
+  off-origin hop, or `newServerAt(...).withAllowedRedirectOrigins([...])`
+  (`['*']` turns the check off).
+- **The unrouted 404 body is `{"error":"Not Found"}` on every backend**
+  (#1059); each backend used to write its own.
+- **BREAKING: `GrpcClientActor` cancels a stream after five minutes with
+  nothing in either direction** (#1222): `stream-idle-timeout` /
+  `withStreamIdleTimeoutMs`, `0` = off. The target gets one `stream-error` or
+  `rpc-error` naming the timeout. `GrpcReadableCall`, `GrpcWritableCall` and
+  `GrpcDuplexCall` gain `cancel()`. **Migration:** a service that is silent
+  longer on purpose sends a heartbeat or raises the value; a hand-written fake
+  behind a `createServiceClient` override adds `cancel()`.
+- **BREAKING (mixed versions): `sharding.HandOff` and `sharding.ShardHome`
+  carry a per-shard freshness token** (#1214), and `sharding.Register` reports
+  the tokens a region has seen. This is a wire addition within version 3;
+  `CLUSTER_WIRE_VERSION` is unchanged. A `HandOff` or `ShardHome` without a
+  token is refused. **Migration:** do not mix builds from before and after this
+  change in one cluster; roll it out as a full restart.
+- **BREAKING: the object-storage durable-state body carries its
+  `persistenceId`**, and `load` refuses a body naming another entity or none
+  (#1417). `migrateObjectStorageDurableStateLayout` (#716) and its types are
+  removed. **Migration:** none; every durable-state record written by an
+  earlier version must be rewritten through this version's store.
+- **BREAKING: a snapshot or durable-state store called directly applies the
+  journals' persistence-id rules on `save` and `upsert`** (#1632, #1070): an
+  empty id, `.`/`..`, a `/` or `\`, a control character, or an id over
+  the length limit is refused. Reads and deletes stay open. **Migration:** copy
+  such records to a valid id.
+- **BREAKING: the `smallest-mailbox` depth lane refuses depths that are not
+  non-negative integers, and the agent answers only the routee paths it
+  serves** (#1042). **Migration:** `ClusterMailboxDepthAgent.serve(cluster)` →
+  `serve(cluster, '/user/worker')`, passing the path your routers route to.
+- **BREAKING: every TCP dial refuses half a client credential** (#1085), `cert`
+  without `key` or the reverse, instead of falling back to one-way TLS.
+  **Migration:** supply both halves, or only `ca` for one-way TLS.
+- **Pub-sub: `max-topics` bounds local and peer-only topics separately**, and
+  a new `max-topics-claimed-per-sender` (1024) limits each peer's claims
+  (#1074). A node whose peers announce more than 1024 topics each needs that
+  limit raised.
+
 ### Security
 
 - **A gossip frame restamped inside `maxVersionSkewMs` no longer pins the
@@ -709,6 +791,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `OffloadPool` says its budget is unlimited instead of logging `restart 0`.
 - **The CoordinatedShutdown `service-stop` task no longer leaves a live
   connection attached to a stopped broker actor** (#1223).
+
+- **BasicAuth runs the same comparisons for an unknown username as for a known
+  one** and compares fixed-length digests (#968).
+- **`redirect()` refuses C1 control characters** (U+0080–U+009F) in its target
+  (#1057).
+- **On Hono, an `HttpError`'s own header replaces the server-wide default**
+  instead of being appended to it (#1058).
+- **The 404 for an unrouted path carries the server-wide security headers** on
+  every backend, with a body that does not echo the path (#1059).
+- **The gRPC server caps the request-stream frames it holds before the handler
+  subscribes** (`max-pending-request-messages`, default 1024); past the cap the
+  call ends with RESOURCE_EXHAUSTED (#1039).
+- **A gossip promotion no longer moves a node's own record more than one
+  version past what the node holds** (#1797).
+- **A per-sender budget on gossip frames**, on by default at 50 frames/s per
+  sender (`cluster.gossip-frames-per-second-per-sender`, `0` = off), counted
+  under `reason="rate-limit"` (#1105). Size it above a sender's real rate,
+  about 1000 / gossip-interval-ms, with a safety factor of at least 2.
+- **Pub-sub: a peer's topic claims no longer spend the local `Subscribe`
+  budget** (#1074), and **receptionist gossip claims are limited per sender**
+  by `max-registrations-claimed-per-sender` (10000) (#1073).
+- **A late but authentic `sharding.HandOff` is no longer acted on** once the
+  shard has moved on (#1214).
+- **A `ConsumerController` no longer lets a delivery under an unrecognised
+  incarnation reset a live producer's deduplication window** (#1237). The new
+  incarnation is held beside the live one, deduplicated in its own window, and
+  promoted only once the live one has been quiet for `producerIdleTtlMs`.
+- **Snapshot and durable-state stores validate the persistence id on every
+  write** (#1632, #1070), and **nothing in `src/` outside `Encryption.ts`
+  may reference `aesGcmEncrypt` or `randomIv`** (#1049).
+- **The DevTools profiler always stops itself** (default and maximum ten
+  minutes), holds at most 10 000 actor/message pairs, and stops when the
+  connection that started it closes (#973).
+- **`ParseableSinkOptionsValidator` no longer echoes the password or API key
+  into an `OptionsError`** (#1789).
+- **The weekly knowledge-graph refresh runs graphify in a job without the push
+  credential**, from a hash-pinned, wheel-only Python closure (#1623).
 
 ## [0.18.0] — 2026-11-10
 
