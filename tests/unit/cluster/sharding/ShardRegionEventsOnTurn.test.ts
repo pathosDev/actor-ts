@@ -51,6 +51,7 @@ import {
 import { NoopLogger } from '../../../../src/Logger.js';
 import { CapturingScheduler } from '../../../util/CapturingScheduler.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { nextShardToken } from '../../../util/ShardTokens.js';
 
 const TYPE_NAME = 'on-turn';
 const NUM_SHARDS = 8;
@@ -194,6 +195,7 @@ async function startRegion(systemName: string, port: number): Promise<Harness> {
 
   const home: ShardHome = {
     kind: 'sharding.ShardHome',
+    token: nextShardToken(),
     shardId: FENCE_SHARD,
     region: region.path.toString(),
     node: cluster.selfAddress.toJSON(),
@@ -223,6 +225,7 @@ async function startRegion(systemName: string, port: number): Promise<Harness> {
 function placeOn(harness: Harness, node: NodeAddress): void {
   const home: ShardHome = {
     kind: 'sharding.ShardHome',
+    token: nextShardToken(),
     shardId: SHARD,
     region: harness.region.path.toString(),
     node: node.toJSON(),

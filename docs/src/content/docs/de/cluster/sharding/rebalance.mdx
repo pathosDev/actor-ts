@@ -408,6 +408,24 @@ richtet sich nach der Allokation, nicht danach, ob der Shard-Actor
 gerade läuft: Ein Shard, der wegen Untätigkeit passiviert wurde,
 gehört weiterhin dazu und wird weiterhin abgegeben.
 
+Besitz allein ordnet Frames nicht zeitlich, deshalb tut das eine
+vierte Bedingung: Jeder `HandOff` trägt ein **Frische-Token** pro
+Shard, und die Region verweigert einen, dessen Token nicht neuer ist
+als das letzte, das sie für diesen Shard gesehen hat. Ein Frame, der
+gepuffert wurde, während eine Verbindung noch aufgebaut wurde, geht
+hinaus, sobald sie steht — ein authentischer `HandOff` kann also
+ankommen, nachdem der Shard weg- und zurückgewandert ist: wieder im
+Besitz der Region und trotzdem von der Anweisung gestoppt, die seinem
+vorigen Aufenthalt galt. Jede Platzierung (`ShardHome`) trägt das
+Token des Shards ebenfalls, sodass der Rückweg diesen Frame
+überholt. Der Koordinator zieht Tokens nie unter seiner Wanduhr und
+über jedem Token, das die Regionen in ihrem `Register` melden — und
+das schicken sie bei jedem Leader-Wechsel —, sodass ein Koordinator,
+der gerade übernommen hat, über seinem Vorgänger ausgibt, ohne
+etwas zu persistieren. Ein `HandOff` oder `ShardHome` ohne Token wird
+verweigert: Ein Cluster muss auf beiden Seiten dieser Änderung
+denselben Build fahren — siehe CHANGELOG.
+
 Der Koordinator bleibt dabei nicht hängen. Er schickt `HandOff`
 ausschließlich an die Region, die seine eigene Allokationskarte
 nennt — eine Verweigerung heißt also, dass die beiden sich über den

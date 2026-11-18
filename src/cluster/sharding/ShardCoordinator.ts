@@ -10,6 +10,7 @@ import {
   MAX_PENDING_SHARD_HOME_REQUESTS,
   MAX_REMEMBERED_ENTITIES_PER_SHARD,
   MAX_REMEMBERED_ENTITY_ID_LENGTH,
+  MAX_WALL_CLOCK_SKEW_MS,
   REMEMBERED_ENTITIES_CHUNK_BYTES,
   SHARD_MAP_PUBLISH_DELAY_MS,
 } from '../Constants.js';
@@ -40,7 +41,7 @@ import type {
   CoordinatorStateData,
   RegionInfoData,
 } from './CoordinatorState.js';
-import { AuthenticatedShardingMessage, isShardingMessage } from './ShardingProtocol.js';
+import { AuthenticatedShardingMessage, isShardingMessage, isShardToken } from './ShardingProtocol.js';
 import type {
   BeginHandOffAcknowledgment,
   ClusterShardingStats,
@@ -496,6 +497,15 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   /** Shards whose remembered-entity cap has been warned about this episode (#1267). */
   private readonly rememberedCapWarned = new Set<number>();
   private readonly rebalanceInProgress = new Map<number, InFlightHandOff>();
+  /**
+   * The last freshness token issued or heard of per shard (#1214) — see
+   * {@link nextShardToken}.
+   *
+   * Kept across a lost leadership, deliberately: the tokens only grow, and a
+   * node that leads again later must not issue below what it issued before.
+   * Bounded by `numShards`, since only an id in range is ever a key.
+   */
+  private readonly shardTokens = new Map<number, number>();
   private readonly entitiesPerShard = new Map<number, Set<string>>();
   private readonly statsQueries = new Map<number, StatsQuery>();
   private nextStatsQuery = 0;
@@ -1415,6 +1425,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.noteRegistered(node);
       return;
     }
+    // Ahead of everything below that can send this region a directive — the
+    // conflict release at the end of this handler is one (#1214).
+    this.adoptReportedShardTokens(message);
     const hostedShards = this.acceptedHostedShards(message);
     const key = regionKey(node, message.region);
     this.releaseHomesOfPreviousRun(key, node, hostedShards);
@@ -1772,7 +1785,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       const owner = this.regions.get(this.shardHome.get(shardId) ?? '');
       if (owner) owners.add(owner.node.toString());
       if (this.rebalanceInProgress.has(shardId)) continue;
-      this.sendToRegion(key, { kind: 'sharding.HandOff', shardId });
+      this.sendToRegion(key, { kind: 'sharding.HandOff', shardId, token: this.nextShardToken(shardId) });
       this.trackConflictRelease(shardId, key);
       released += 1;
     }
@@ -1849,7 +1862,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // A rebalance of the shard is under way: its own hand-off is the one in
     // flight, so this one waits a round rather than crossing it.
     if (!this.rebalanceInProgress.has(event.shardId)) {
-      this.sendToRegion(release.claimant, { kind: 'sharding.HandOff', shardId: event.shardId });
+      this.sendToRegion(release.claimant, {
+        kind: 'sharding.HandOff',
+        shardId: event.shardId,
+        token: this.nextShardToken(event.shardId),
+      });
       release.attempts += 1;
     }
     release.timer = this.scheduleConflictReleaseRetry(event.shardId);
@@ -1919,6 +1936,90 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   /**
+   * The freshness token for the next directive about `shardId` (#1214): strictly
+   * above every token this coordinator issued or heard of for the shard, and no
+   * lower than its wall clock.
+   *
+   * **How the order survives a coordinator change, without persistence.**  The
+   * counter lives in memory, so a new coordinator — another node after a
+   * failover, or this one after a restart — starts without it.  Two things carry
+   * the order across anyway:
+   *
+   * - **What the regions have seen.**  A region refuses only a token not newer
+   *   than the last one *it* saw, and every region reports those in its
+   *   `Register` ({@link adoptReportedShardTokens}), which it sends on every
+   *   leader change and on a {@link RegistrationRequest}.  So no directive this
+   *   coordinator sends a registered region is refused for being old — the
+   *   order is monotonic for the regions, which are the only parties that
+   *   compare it, and that part needs no clock.
+   * - **The wall-clock floor.**  It is what outdates a frame the previous
+   *   coordinator sent and no region has seen yet — one still in a connection's
+   *   pending buffer, which is the frame this token exists for.  Such a frame
+   *   was drawn no higher than the previous coordinator's clock when it was sent
+   *   (plus one per directive issued for the shard within that millisecond), so
+   *   this coordinator's tokens outrank it once its clock is past that — which
+   *   holds unless the two clocks disagree by more than the failover took,
+   *   seconds at the least.  The same assumption #950 makes of
+   *   coordinator-state snapshots.
+   *
+   * Persisting the counter with the coordinator state would add nothing the two
+   * do not already give: the store is optional and off by default, and its save
+   * is coalesced and asynchronous, so the last token issued is exactly the one
+   * it may not hold.
+   */
+  private nextShardToken(shardId: number): number {
+    const token = Math.max((this.shardTokens.get(shardId) ?? 0) + 1, Date.now());
+    this.shardTokens.set(shardId, token);
+    return token;
+  }
+
+  /**
+   * The shard's token as it stands, for a `ShardHome` that repeats a placement
+   * rather than making one — a lookup's answer.  It need not be newer than what
+   * the region holds, since a region never refuses a `ShardHome` over its age;
+   * a shard with no token yet (adopted from a `Register` claim or a snapshot)
+   * draws its first one.
+   */
+  private currentShardToken(shardId: number): number {
+    return this.shardTokens.get(shardId) ?? this.nextShardToken(shardId);
+  }
+
+  /**
+   * Raise this coordinator's tokens to what a registering region has seen
+   * (#1214) — see {@link nextShardToken}.
+   *
+   * The report is caller-sized and caller-written, so it is read the way
+   * {@link acceptedHostedShards} reads a claim: at most `numShards` entries
+   * scanned, an id out of range or a token that is no positive safe integer
+   * skipped.  And a token further ahead of this node's clock than
+   * {@link MAX_WALL_CLOCK_SKEW_MS} is skipped too: no coordinator issued it, and
+   * adopted it would pin the shard's every later token near the top of the safe
+   * integers — one member's word turning every hand-off of the shard into a
+   * refusal.  One line per registration, never one per entry.
+   */
+  private adoptReportedShardTokens(message: RegisterRegion): void {
+    const reported: readonly unknown[] = Array.isArray(message.shardTokens) ? message.shardTokens : [];
+    const ceiling = Date.now() + MAX_WALL_CLOCK_SKEW_MS;
+    const scanned = reported.slice(0, this.options.numShards);
+    let skipped = reported.length - scanned.length;
+    for (const entry of scanned) {
+      const [shardId, token] = Array.isArray(entry) ? entry as unknown[] : [];
+      if (!this.isShardIdInRange(shardId) || !isShardToken(token) || token > ceiling) {
+        skipped += 1;
+        continue;
+      }
+      if (token > (this.shardTokens.get(shardId) ?? 0)) this.shardTokens.set(shardId, token);
+    }
+    if (skipped > 0) {
+      this.log.warn(
+        `[sharding] region ${sanitizeWireTextForLog(message.region)} reported ${reported.length} shard `
+        + `token(s) for type "${this.options.typeName}"; skipped ${skipped} — out of range, not a token, `
+        + `beyond the first ${this.options.numShards}, or more than ${MAX_WALL_CLOCK_SKEW_MS} ms ahead of this clock`,
+      );
+    }
+  }
+
+  /**
    * One meaningful change to `regions` / `shardHome`: persist the snapshot and
    * tell every region.  Both are coalesced, so calling this per mutation
    * during a rebalance burst is fine.
@@ -1974,6 +2075,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         shardId: message.shardId,
         region: info.path,
         node: info.node.toJSON(),
+        token: this.currentShardToken(message.shardId),
       });
       return;
     }
@@ -2093,6 +2195,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       shardId,
       region: info.path,
       node: info.node.toJSON(),
+      // A new token per placement: every hand-off issued before it is now older
+      // than what the new owner has seen (#1214).
+      token: this.nextShardToken(shardId),
     });
     this.flushPending(shardId);
     if (this.options.rememberEntities) this.shipRememberedEntities(shardId);
@@ -3119,7 +3224,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     });
     handOff = { from: ownerKey, timer };
     this.rebalanceInProgress.set(shardId, handOff);
-    this.sendToRegion(ownerKey, { kind: 'sharding.HandOff', shardId });
+    this.sendToRegion(ownerKey, { kind: 'sharding.HandOff', shardId, token: this.nextShardToken(shardId) });
   }
 
   /** The rebalance timer fired; tick now, behind whatever was queued first (#1750). */
@@ -3186,12 +3291,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!home) return;
     const info = this.regions.get(home);
     if (!info) return;
+    const token = this.currentShardToken(shardId);
     for (const pendingQuery of pending) {
       this.replyTo(pendingQuery.requester, pendingQuery.requesterNode, {
         kind: 'sharding.ShardHome',
         shardId,
         region: info.path,
         node: info.node.toJSON(),
+        token,
       });
     }
     this.pending.delete(shardId);

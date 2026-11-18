@@ -96,6 +96,7 @@ import {
   type ShardStats,
 } from '../../../../src/cluster/sharding/ShardingProtocol.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { nextShardToken } from '../../../util/ShardTokens.js';
 
 const TYPE_NAME = 'entity';
 const NUM_SHARDS = 8;
@@ -360,6 +361,7 @@ async function startRegion(systemName: string, port: number, settings: RegionSet
   const place = (shardId: number): void => {
     directive({
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId,
       region: region.path.toString(),
       node: cluster.selfAddress.toJSON(),
@@ -369,13 +371,14 @@ async function startRegion(systemName: string, port: number, settings: RegionSet
   const moveAway = (shardId: number): void => {
     directive({
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId,
       region: `/system/cluster-sharding/${TYPE_NAME}-region`,
       node: stageMember(cluster, new NodeAddress(`${systemName}-elsewhere`, 'h', port + 1)).toJSON(),
     });
   };
 
-  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId }); };
+  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId, token: nextShardToken() }); };
 
   const remember = (shardId: number, entityIds: string[]): void => {
     directive({ kind: 'sharding.RememberedEntities', shardId, entityIds });
@@ -412,7 +415,7 @@ async function startRegion(systemName: string, port: number, settings: RegionSet
     };
     return {
       place: (shardId) => {
-        tell({ kind: 'sharding.ShardHome', shardId, region: typeRegion.path.toString(), node: cluster.selfAddress.toJSON() });
+        tell({ kind: 'sharding.ShardHome', token: nextShardToken(), shardId, region: typeRegion.path.toString(), node: cluster.selfAddress.toJSON() });
       },
       remember: (shardId, entityIds) => { tell({ kind: 'sharding.RememberedEntities', shardId, entityIds }); },
       entitiesOn: async (shardId) => {

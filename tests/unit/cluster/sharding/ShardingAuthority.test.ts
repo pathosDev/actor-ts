@@ -47,6 +47,7 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { coordinatorSegments, regionSegments } from '../../../util/SystemPaths.js';
 import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
+import { nextShardToken } from '../../../util/ShardTokens.js';
 
 type WorkCommand = { id: string; kind: 'work' };
 
@@ -228,7 +229,7 @@ describe('ShardRegion coordinator authority (#584)', () => {
     expect(entityIsUp(victim)).toBe(true);
 
     const evil = await attacker('evil', 47_311);
-    forge(evil, victim, victim.regionPath, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    forge(evil, victim, victim.regionPath, { kind: 'sharding.HandOff', shardId: victim.shardId, token: nextShardToken() });
     // The assertion is an absence: give the region a turn to act on the forged
     // frame, then prove it did not.  A poll cannot express this — the condition
     // is already true at t=0 and must still hold later.
@@ -253,7 +254,7 @@ describe('ShardRegion coordinator authority (#584)', () => {
     const victim = await startVictim('authority-bypass', 47_320);
     const evil = await attacker('evil-bypass', 47_321);
 
-    forge(evil, victim, `${victim.regionPath}/`, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    forge(evil, victim, `${victim.regionPath}/`, { kind: 'sharding.HandOff', shardId: victim.shardId, token: nextShardToken() });
     // The assertion is an absence: give the region a turn to act on the forged
     // frame, then prove it did not.  A poll cannot express this — the condition
     // is already true at t=0 and must still hold later.
@@ -268,6 +269,7 @@ describe('ShardRegion coordinator authority (#584)', () => {
 
     forge(evil, victim, victim.regionPath, {
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId: victim.shardId,
       region: '/system/cluster/sharding/region-entity',
       node: new NodeAddress('evil-home', 'h', 47_331).toJSON(),
@@ -427,6 +429,7 @@ describe('ShardRegion handoff ownership (#584)', () => {
     // caches where to forward and does *not* add it to `localShards`.
     tellAsCoordinator(victim, {
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId: remoteShardId,
       region: elsewhereRegion,
       node: elsewhere.toJSON(),
@@ -438,7 +441,7 @@ describe('ShardRegion handoff ownership (#584)', () => {
     expect(regionState(victim).localShards.has(remoteShardId)).toBe(false);
     const heardBefore = coordinatorEntry(victim)?.lastSeenAtMs;
 
-    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: remoteShardId });
+    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: remoteShardId, token: nextShardToken() });
     // The assertion is an absence: give the region a turn to act on the
     // directive, then prove it did not. A poll cannot express this — the
     // condition is already true at t=0 and must still hold later.
@@ -474,7 +477,7 @@ describe('ShardRegion handoff ownership (#584)', () => {
       numShards: NUM_SHARDS * 2,
       regionNumShards: NUM_SHARDS,
     });
-    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: victim.shardId, token: nextShardToken() });
     await awaitCondition(() => coordinatorEntry(victim)?.lastSeenAtMs !== heardBefore, {
       timeoutMs: 300,
       intervalMs: 10,
@@ -501,7 +504,7 @@ describe('ShardRegion handoff ownership (#584)', () => {
     expect(regionState(victim).localShards.has(victim.shardId)).toBe(true);
     expect(entityIsUp(victim)).toBe(true);
 
-    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: victim.shardId, token: nextShardToken() });
     await awaitCondition(() => !entityIsUp(victim), {
       timeoutMs: 4_000,
       label: 'the owned shard handed off and took its entity down',
