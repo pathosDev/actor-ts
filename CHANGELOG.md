@@ -31,13 +31,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cases; `nightly-flakes.yml` runs a deeper 3 000-case exploration. "Ordering
   under test control" in the flake-diagnosis docs explains it (EN + DE).
 
-- **Every supervised failure is logged by the parent** (#916). The line gives
-  the actor path, the message type, the cause and the directive, with the
-  cause passed as an argument so its stack is rendered. It is at ERROR, or
-  WARN for `Resume`, at most once per actor per second, and the next line
-  counts what the throttle held back. A crash-looping actor used to be
-  restarted with no log output at any level. `actor_restarted_total` now
-  carries a `class` label.
 - **`Journal.atomicBatchAppend`**, a capability every in-tree journal now
   declares, and `NonAtomicBatchAppendError` (#959). A journal that declares
   nothing counts as unknown and is never refused.
@@ -46,17 +39,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **Broker acknowledgment settings and a failure event** (#975, #976, #977):
   HOCON `acknowledgment` and `acknowledgment-timeout` under the kafka, amqp
-  and mqtt blocks, `withAcknowledgment(…)` on their builders, the
+  and mqtt blocks, `withAcknowledgment(…)` and
+  `withAcknowledgmentTimeoutMs(…)` on their builders, the
   `acknowledgeDelivery` / `negativelyAcknowledgeDelivery` helpers, and a
   `BrokerAcknowledgmentFailed` event for an acknowledgment the broker
   refused. The Kafka consumer logs its commit mode at start.
 
-- **`actor-ts.coordinated-shutdown.overall-timeout`** (30 s; `0` turns it
-  off) bounds a whole shutdown run (#920). Once it passes, the run halts with
-  an ERROR naming the phase and the tasks still pending, and `exit-process`
-  exits 1. `actor-system-terminate` gets its own 10 s budget, never less than
-  `default-phase-timeout`. A task that times out is logged at ERROR and keeps
-  running, and an exit waits for it, up to the deadline.
 - **`actor-ts.cluster.unreachable-gossip-rounds`** /
   `withUnreachableGossipRounds` (default 3; `0` turns it off) (#930).
 
@@ -88,7 +76,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `JsonSerializer`, `CborSerializer` and `CborDecoder`. Also
   `EntityOptions.withTags`, `WireDecodeOptions`,
   `TcpTransportOptions.withWireDecode`, `ClusterClientOptions.withWireDecode`,
-  `FrameDecoder.refusedFrames` / `lastRefusals()`, and the key
+  and the key
   `actor-ts.serialization.wire.admitted-tags` (#967, #1303).
 - **`HttpServerBackend.setStreamFailureHandler`**: a hook that reports a
   streamed response which fails after its first chunk was sent (#979).
@@ -144,11 +132,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`canonicalOrderKey` in `actor-ts/util`** (#1841): the injective,
   deterministic total order behind the built-in last-writer-wins tie-breaks.
   Custom resolvers can use it to rank a full tie the same way.
-- **Every line v0.19.0 changed is now held by a test that fails when the line
-  is altered** (#1842–#1845). A mutation run over those lines
-  (`--since v0.18.0 --changed-lines`, 1 275 mutants) left 205 survivors that
-  no test in the repository detected. Each now has a test the runner has shown
-  to kill it, or a written proof that it is equivalent. Among the gaps: a lease
+- **The mutation gaps in v0.19.0's own changes are closed** (#1842–#1845). A
+  mutation run over every line v0.19.0 changed
+  (`--since v0.18.0 --changed-lines`, 1 275 mutants) left 368 survivors.
+  Triage found 205 of them to be real gaps that no test in the repository
+  detected. The rest were mapping artefacts, now fixed in
+  `scripts/mutation-config.json`, or equivalent mutants, recorded in the
+  triage. Each of the 205 now has a test the runner has shown to kill it, or a
+  written proof that it is equivalent. Among the gaps: a lease
   whose acquire rejects, the gossip clock reset (#1262), the HTTP/1.1 bounds on
   Bun's HTTP/2 listener (#1756), the replicated-ES drain on stop (#1732), the
   `eventsByTag` poll path every SQL and NoSQL backend takes (#957), and
@@ -180,16 +171,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   before this, the window never elapsed in virtual time. Production behaviour
   is unchanged.
 
-- **An actor whose constructor throws is stopped** (#914). Its watchers get
-  `Terminated`, it leaves its parent, and its queued messages go to dead
-  letters. Before, it was left suspended forever. The same holds when a
-  supervisor's `supervisorStrategy()` or decider itself throws: the throw
-  now escalates as a failure of the supervising actor and is logged at
-  ERROR, where it used to strand the failed child.
+- **An actor whose constructor throws is stopped, whatever its supervisor
+  decides** (#914, #1384). Its watchers get `Terminated`, it leaves its
+  parent, and its queued messages go to dead letters. Before, it was left
+  suspended forever: its messages were never processed and its watchers never
+  heard of it. The same holds when a supervisor's `supervisorStrategy()` or
+  decider itself throws: the throw now escalates as a failure of the
+  supervising actor and is logged at ERROR, where it used to strand the failed
+  child. The supervision stress test found the `Resume` case.
 - **A terminating actor with queued user messages no longer busy-spins its
   dispatcher** until its last child stops (#915). Measured over one
   teardown, the dispatcher went from about 101 900 executions to fewer than
   20.
+- **Every supervised failure is logged by the parent** (#916). The line gives
+  the actor path, the message type, the cause and the directive, with the
+  cause passed as an argument so its stack is rendered. It is at ERROR, or
+  WARN for `Resume`, at most once per actor per second, and the next line
+  counts what the throttle held back. A crash-looping actor used to be
+  restarted with no log output at any level. `actor_restarted_total` now
+  carries a `class` label.
 - **The stock loggers never throw on a value they cannot render** (#1749).
   Lifecycle and supervision steps act before they log, so a throwing logger
   can no longer skip a supervision step.
@@ -219,8 +219,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   backpressure episode can no longer wedge the outbound path. A failing
   AMQP ack is logged and published instead of being silently ignored
   (#976).
-- **The CoordinatedShutdown `service-stop` task no longer leaves a live
-  connection attached to a stopped broker actor** (#1223).
 
 - **A symmetric partition heals once the network does** (#930). Heartbeats
   now keep going to unreachable members, and gossip reaches one of them every
@@ -242,9 +240,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **A bare `terminate()` shuts the downing provider down** (#1753). It
   releases a won lease and lets the process exit, where the renewal kept both
   alive.
-- **`NodeAddress.parse` refuses a `scheme://` prefix and any text after the
-  port** (#941). Before, it read the prefix into the system name, which never
-  matched the node's own address, and read `…:2552/system/x` as port 2552.
 - **`lease-majority` keeps the lease holder's whole side on an even split**
   (#1824). Every node owned its own lease, so every node acquired for itself,
   at most one won, and the winner's side-mates downed their own side, the
@@ -252,6 +247,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (its lowest member when none is `up`) consults the lease, and the rest of
   the side follows its verdict through the membership. This covers leases
   built from configuration and leases passed in code alike.
+- **`KubernetesLease.release()` no longer deletes a Lease record this node
+  does not hold** (#1659). Past the TTL it sends nothing. Otherwise the
+  DELETE carries the `resourceVersion` this holder last wrote as a
+  precondition. A refused precondition (409/412) means "no longer ours" and
+  resolves cleanly. Before, a holder stepping down on a stale view could
+  delete its successor's record.
+- **A node that won a `lease-majority` arbitration stays tied to the lease
+  after the decision is applied** (#1660). If the lease is later reported
+  lost, the node downs itself instead of running beside the side that took
+  the lease.
 - **`TcpTransport` honours socket back-pressure** (#931):
   - A native Bun socket used to cut the frame stream mid-frame and drop the
     connection; Node and Deno buffered without bound.
@@ -287,13 +292,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **Under coordinated shutdown, offloaded actors get their `postStop`**
   (#1754): parallelism shuts the workers down in `before-cluster-shutdown`,
   before `worker-mesh-terminate` stops the threads.
-- **`maxRestarts: -1` keeps the worker respawn backoff growing** (#1255).
-  Before, every respawn waited only the minimum delay, a respawn storm.
-  `OffloadPool` says its budget is unlimited instead of logging `restart 0`.
 
-- **`LWWRegister.merge` is commutative when timestamp and replica id both
-  tie** (#950). The value now decides, so two writes from one replica within
-  one millisecond converge on every node. `LWWMap` inherits the fix. The
+- **Last-writer-wins converges on every node when two writes tie on both
+  timestamp and replica id** (#950, #1841). `LWWRegister.merge` and
+  `LastWriterWinsResolver.resolve` kept a different value depending on the
+  order of their arguments, so two writes from one replica within one
+  millisecond could leave replicas diverged. The value now breaks the tie,
+  ranked by `canonicalOrderKey`, an injective key that never throws. `LWWMap`
+  inherits the fix. `LWWRegister.equals` (and `LWWMap.equals` through it) no
+  longer throws on a `bigint` value and no longer calls `{ v: undefined }`
+  equal to `{}`. Objects that differ only in key order now compare equal. The
   DistributedData coordinator-state store stamps each snapshot above the one
   it replaces, so the later snapshot wins even after the clock steps
   backwards.
@@ -301,16 +309,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Before, 100 daemons landed on 58 shards and some always shared one. An id
   remembered from an earlier release that no longer names a daemon retires
   on start.
-
-- **Remember-entities no longer forgets an entity that stopped without being
-  passivated** (#954). An entity that exhausts its restart budget, fails under
-  `stoppingStrategy`, or calls `stopSelf` stays in the durable registry, and a
-  failover restores it. Its shard re-creates it once the restart backoff
-  ends, without waiting for a message. Only a passivation removes an entity
-  from the registry. `EntityStopped` carries a new optional `reason`
-  (`'passivated' | 'unrequested'`), and `ShardConfig` a new `rememberEntities`
-  field; a report without a reason, from an older region, counts as
-  `'passivated'`.
 
 - **By-tag consumers no longer drop an event whose write committed after
   they had passed its timestamp** (#957). Journals stamp an event before it
@@ -342,14 +340,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   - If it landed, the event is folded and broadcast.
   - A snapshot no longer counts an unfolded event as covered.
   - A restarted instance waits for its predecessor's in-flight appends, so
-    it never reuses a `seqAtReplica`.
+    it never reuses a `seqAtReplica`, even when its own start fails while it
+    waits (#1844).
   - Recovery re-publishes the replica's own events written after the
     snapshot.
 
   A rejected replicated `persist` now means "not confirmed": the event may
   still be folded and broadcast later.
-- **`LastWriterWinsResolver` is commutative when two events tie on both
-  timestamp and replica**: the payload breaks the tie.
 - **Express no longer crashes the process on Node or hangs the request on
   Bun when a `ReadableStream` body fails** (#979). A client that disconnects
   cancels the source.
@@ -359,6 +356,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (#984); the claim lapses after `lockTtlMs`. `cached()` no longer replays
   `x-ratelimit-*` headers, and the docs give `rateLimit(cached(h))` as the
   correct nesting (#983).
+- **`idempotent()` releases and overwrites its claim only while it holds its
+  own token** (#1082). A handler that overran its claim can no longer delete
+  a retry's claim and let a third request run beside it.
 
 - **A WebSocket hub's `onClientConnected` / `onClientDisconnected` signals
   can no longer be dropped by a bounded hub mailbox or a dropping throttle**
@@ -369,11 +369,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is logged. After a restart, a hub no longer runs `onClientDisconnected`
   for connections it never connected.
 
-- **An actor whose constructor throws is stopped when its supervisor answers
-  `Resume`** (#1384). Before, it stayed in `creating` for good: its messages
-  were never processed, its parent kept it, and its watchers never got
-  `Terminated`. `Restart` already stopped it (#914). The supervision stress
-  test found this.
 - **The HOCON parser refuses a document nested deeper than 256 levels**, with
   a parse error naming the line (#1369). Each key of a path expression, each
   object under a key and each list counts as a level. Before, deep nesting
@@ -387,22 +382,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **Property tests generate inputs up to the `maxLength` they state**
   (#1774). fast-check's default size had capped every length at ten.
 
-- **`LWWRegister.merge` and `LastWriterWinsResolver.resolve` converge on a
-  full `(timestamp, replica)` tie for every pair of values** (#1841). The
-  tie-break key was a JSON rendering, so several distinct values got the same
-  key: `1n` and `"1n"`, `undefined` and any function, `-0` and `0`, and a
-  field holding `undefined` and a missing field. The two argument orders then
-  kept different values, and replicas could diverge, which #950 had set out to
-  end. The key is now the injective, never-throwing `canonicalOrderKey`.
-  `LWWRegister.equals` (and `LWWMap.equals` through it) no longer throws on a
-  `bigint` value and no longer calls `{ v: undefined }` equal to `{}`. Objects
-  that differ only in key order now compare equal.
-- **A replicated event-sourced actor whose restart ran out of
-  `recovery-timeout` no longer lets the next instance recover early**
-  (#1732, #1844). The restart's start failed while it was still waiting for its
-  predecessor's in-flight journal append. Its `postStop` then handed over only
-  its own drain, so the next instance could recover without that event and
-  reuse its `seqAtReplica`.
 - **On Bun, the Hono backend treats a `requestDeadlineMs` of `0` as "no
   deadline"**, as `0` means everywhere else (#1843). An explicit
   `idleTimeoutMs` is no longer reported as cutting before a deadline that does
@@ -491,9 +470,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     `maxRetries` never applied. A strategy whose `maxRetries` or
     `withinTimeRangeMs` changes starts a new tally.
 
-  *Migration:* where siblings used to exhaust one shared budget, so that a
-  parent stopped its whole fan-out after `maxRetries + 1` unrelated
-  failures, each child now restarts up to `maxRetries` times. Use
+  *Migration:* where siblings used to exhaust one shared budget, so that
+  after `maxRetries` restarts among them every further failing child was
+  stopped, each child now restarts up to `maxRetries` times. Use
   `AllForOneStrategy` for children that are coupled. A parent whose
   per-call strategy never actually stopped a child now stops it after
   `maxRetries` restarts in the window, as documented.
@@ -513,6 +492,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   change, use an atomic journal, or set
   `actor-ts.persistence.allow-non-atomic-batch-append = on` to accept that a
   failure can commit a prefix.
+- **BREAKING — remember-entities no longer forgets an entity that stopped
+  without being passivated** (#954). An entity that exhausts its restart
+  budget, fails under `stoppingStrategy`, or calls `stopSelf` stays in the
+  durable registry, and a failover restores it. Its shard re-creates it once
+  the restart backoff ends, without waiting for a message. Only a passivation
+  removes an entity from the registry. `EntityStopped` carries a new optional
+  `reason` (`'passivated' | 'unrequested'`), and `ShardConfig` a new
+  `rememberEntities` field; a report without a reason, from an older region,
+  counts as `'passivated'`. *Migration:* under remember-entities, an entity
+  that should end for good sends `Passivate` to its parent
+  (`new Passivate(stopMessage, this.self)`) instead of calling `stopSelf`,
+  which now counts as a stop nobody asked for.
 
 - **BREAKING — `KafkaActor`, `AmqpActor` and `MqttActor` acknowledge a
   delivery only after the target replies, which makes them at-least-once**
@@ -566,6 +557,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a positive finite number** (#1763), with an `OptionsError` before anything
   is sent. *Migration:* pass a finite deadline, or omit it to use
   `ask-timeout`.
+- **BREAKING — `NodeAddress.parse` refuses a `scheme://` prefix and any text
+  after the port** (#941). Before, it read the prefix into the system name,
+  which never matched the node's own address, and read `…:2552/system/x` as
+  port 2552. *Migration:* pass addresses as `system@host:port`, with no
+  scheme and no path.
 
 - **BREAKING — `actor-ts.http.shutdown-grace-period` defaults to `4s`**
   (#997). It used to be `0ms`, so a rolling deploy cut off requests still in
@@ -576,6 +572,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   shutdown is already running. *Migration:* set `0ms` to keep the old
   behaviour. A window of 5 s or more also needs a higher
   `service-requests-done` timeout.
+- **BREAKING — a coordinated-shutdown run is bounded by
+  `actor-ts.coordinated-shutdown.overall-timeout`, 30 s by default** (#920).
+  Once it passes, the run halts with an ERROR naming the phase and the tasks
+  still pending, and `exit-process` exits 1. Before, a run had no overall
+  deadline. `actor-system-terminate` gets its own 10 s budget, never less than
+  `default-phase-timeout`, where it used to get the 5 s default. A task that
+  times out is logged at ERROR and keeps running, and an exit waits for it, up
+  to the deadline. *Migration:* a deployment whose phase budgets add up to
+  more than 30 s raises `overall-timeout` to fit, and its Kubernetes grace
+  period with it, or sets it to `0` to keep an unbounded run.
+- **BREAKING — `idle-timeout = 0` is refused on the Hono backend under Bun**
+  (#1767). There it removed the only bound on a stalled request.
+  *Migration:* set a positive value, or leave the key unset.
+- **BREAKING — an idle HTTP/2 session is closed after 72 s when
+  `actor-ts.http.server.idle-timeout` is unset**, on every HTTP/2 listener a
+  `node:http2` server backs, whether or not the client sends PINGs (#1757).
+  Fastify under Node already behaved so. Fastify under Bun let every PING
+  reset its timer, and Hono under Node had no bound at all. *Migration:* set
+  `idle-timeout` to a longer duration, or to `0` where the backend allows it,
+  to keep idle sessions open longer.
 - **BREAKING — `idempotent()` records a thrown handler's failure under the
   key instead of freeing it, and no longer records 5xx/408/429 responses**
   (#984). A retry gets 500 and must use a new key, so a partly applied
@@ -583,14 +599,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   for an atomic handler that should be retried after a throw, and
   `cacheStatuses` to record a status the new default skips.
 
-- **WebSocket routes ping their peers every 30 s by default** (#651). A peer
+- **BREAKING — WebSocket routes ping their peers every 30 s by default**
+  (#651). A peer
   that answers nothing within one interval is dropped. *Migration:* clients
   that follow the WebSocket spec answer pings on their own. Set
   `heartbeat-interval = 0` to keep the old behaviour.
-
-- **The cluster wire's frame decoder refuses input with its own
-  `FrameDecodeError`** instead of a bare `Error` (#1369). A refusal can now
-  be told apart from a defect inside the decoder by its type.
 
 - **BREAKING: an auto-down removal now leaves a tombstone, as every other
   removal does** (#1834). With the shipped `auto-down = on` and no strategy, a
@@ -610,16 +623,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
-- **`KubernetesLease.release()` no longer deletes a Lease record this node
-  does not hold** (#1659). Past the TTL it sends nothing. Otherwise the
-  DELETE carries the `resourceVersion` this holder last wrote as a
-  precondition. A refused precondition (409/412) means "no longer ours" and
-  resolves cleanly. Before, a holder stepping down on a stale view could
-  delete its successor's record.
-- **A node that won a `lease-majority` arbitration stays tied to the lease
-  after the decision is applied** (#1660). If the lease is later reported
-  lost, the node downs itself instead of running beside the side that took
-  the lease.
 - **A gossip frame restamped inside `maxVersionSkewMs` no longer pins the
   receiver's replay mark against the real sender** (#1262).
   - Nodes stamp gossip sequences from their wall clock.
@@ -627,14 +630,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     shown plus a 10 s lead, held per (member, incarnation).
   - That learned offset rises at most 1 ms/s and by no more than one lead in
     total, so a long-silent sender banks no extra allowance.
+  - A sender whose clock steps forward by more than the lead has its gossip
+    refused until a minute of such refusals has passed with nothing from it
+    accepted. Its next frame is then judged like a first frame.
   - A first frame still meets only the skew budget.
 
   No wire change. What remains is written in the replay section of the
   cluster-security page, which now carries the caveat #112 left.
-- **`TcpTransport` no longer writes peer-supplied text raw into its log
-  lines** (#1629). A plaintext peer could put a line break in its `hello` and
-  forge whole log records. Addresses, refusal reasons and certificate names
-  are escaped.
+- **`TcpTransport` escapes peer-supplied text in its log lines** (#1629):
+  addresses, refusal reasons and certificate names. Before, a peer could
+  forge log records.
 - **Sharding refusal log lines escape peer-supplied text** (#1220): frame
   kind, region path, shard count, shard id and entity id.
 - **The shard coordinator bounds the `GetShardHome` requests waiting on a
@@ -648,26 +653,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`sharding.EntityStarted` / `EntityStopped` are accepted only from their
   source** (#1267). A region takes them only from its own shards, and the
   coordinator only from the node hosting the shard. Remembered entity ids are
-  capped at 1 024 characters and each shard at 100 000 remembered entities.
-  The internal commands of the shard coordinator and the singleton manager are
-  now private classes matched by `instanceof`. A plain look-alike object that
-  reaches either mailbox is refused instead of obeyed; before, one could stop
-  a singleton whose lease was still held.
+  capped at 1 024 characters and each shard at 100 000 remembered entities;
+  past the cap a new entity is not remembered, with one warning per shard. The
+  internal commands of the shard coordinator and the singleton manager are now
+  private classes matched by `instanceof`, so a plain object that reaches
+  either mailbox is refused instead of obeyed.
 - **A same-node actor-ref marker in a message body goes through the same
-  `EnvelopeTrust` check as an envelope's target** (#1572). A marker naming a
-  `/system` actor, a `/user` actor off the `untrusted-mode` allow-list, or an
-  empty path decodes to `Nobody`. So does the bare `/user` guardian, which is
-  also refused as an envelope or watch target. Each refusal is counted on
+  `EnvelopeTrust` check as an envelope's target** (#1572). A marker the check
+  refuses decodes to `Nobody`, and the bare `/user` guardian is refused as an
+  envelope or watch target as well. Each refusal is counted on
   `cluster_envelope_refusals_total`.
-- **A `ClusterClient` given only half of a TLS client credential is refused
-  at construction** (#1085). Before, the half was dropped on the dial and the
+- **BREAKING — a `ClusterClient` given only half of a TLS client credential
+  is refused at construction** (#1085). Before, the half was dropped on the dial and the
   client fell back to one-way TLS while its configuration read as mutual TLS.
   *Migration:* supply both halves, or `ca` alone for one-way TLS.
 - **BREAKING — `entity()` decodes request bodies as plain data** (#967).
   A client no longer chooses a value's runtime class (RegExp, bigint,
-  undefined, Map, Date, …). A JSON body is plain JSON, so
-  `{"__regexp__":…}` stays an object. A CBOR body accepts only the JSON data
-  model, and any richer type is a 400 that names it. *Migration:* a route
+  undefined, Map, Date, …). A JSON body is plain JSON, and a CBOR body
+  accepts only the JSON data model; any richer CBOR type is a 400 that names
+  it. `pickRequestSerializer` returns a plain-data serializer by default too.
+  *Migration:* a route
   that relies on rebuilt types opts in per tag with
   `entity(request, EntityOptions.create().withTags([...]))`. The same names
   apply to JSON and CBOR.
@@ -680,32 +685,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     and logged, and the connection stays up.
   - A v0.18 node is refused at the handshake with a `hello-refused` that
     names both versions. **v0.18 and v0.19 nodes cannot form one cluster.**
-    This is the fourth consecutive release that breaks rolling upgrade, and
-    the first one the handshake refuses by name instead of leaving it to be
-    discovered.
+    This is the fourth consecutive release that breaks rolling upgrade; as in
+    v0.18.0, the handshake refuses the mismatch by name.
   - `ClusterClient` reads the same key and now honours
     `actor-ts.serialization.read-constraints`.
 
-  *Migration:* upgrade every node in one window. To keep sending the refused
-  types, list them in `admitted-tags` on every receiving node.
+  *Migration:* upgrade every node in one window. A separately deployed
+  `ClusterClient` app announces the wire version in its own `hello` and is
+  refused just like a node, so upgrade it in the same window. To keep sending
+  the refused types, list them in `admitted-tags` on every receiving node.
 - **HTTP/1.1 connections on Fastify's HTTP/2 listener under Bun are held to
-  `idle-timeout` and `request-timeout`** (#1756). When `idle-timeout` is
-  unset, an idle HTTP/2 session is closed at 72 s whether or not it sends
-  PINGs (#1757).
-- **BREAKING — `idle-timeout = 0` is refused on the Hono backend under Bun**
-  (#1767). There it removed the only bound on a stalled request.
-  *Migration:* set a positive value, or leave the key unset.
+  `idle-timeout` and `request-timeout`** (#1756).
 - **`rateLimit` no longer fails open silently** (#983). A cache outage or a
   missing `ioredis` is logged and counted, and the limiter can be set to
   fail closed.
-- **`idempotent()` releases and overwrites its claim only while it holds its
-  own token** (#1082). A handler that overran its claim can no longer delete
-  a retry's claim and let a third request run beside it.
 - **Samples no longer key a rate limiter, an idempotency scope or a cache on
   a header the client can set** (#1248). This covers `x-forwarded-for` in
   the shipped REST example, and `x-user-id`, `x-account` and `x-tenant-id`
   in the docs. The samples use `clientIpResolver` or a verified claim
   instead.
+- **`maxRestarts: -1` keeps the worker respawn backoff growing** (#1255).
+  Before, every respawn waited only the minimum delay, a respawn storm.
+  `OffloadPool` says its budget is unlimited instead of logging `restart 0`.
+- **The CoordinatedShutdown `service-stop` task no longer leaves a live
+  connection attached to a stopped broker actor** (#1223).
 
 ## [0.18.0] — 2026-11-10
 
