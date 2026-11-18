@@ -585,6 +585,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **BREAKING — `idle-timeout = 0` is refused on the Hono backend under Bun**
   (#1767). There it removed the only bound on a stalled request.
   *Migration:* set a positive value, or leave the key unset.
+- **An idle HTTP/2 session is closed after 72 s when
+  `actor-ts.http.server.idle-timeout` is unset**, on every HTTP/2 listener a
+  `node:http2` server backs, whether or not the client sends PINGs (#1757).
+  Fastify under Node already behaved so. Fastify under Bun let every PING
+  reset its timer, and Hono under Node had no bound at all. *Migration:* set
+  `idle-timeout` to a longer duration, or to `0` where the backend allows it,
+  to keep idle sessions open longer.
 - **BREAKING — `idempotent()` records a thrown handler's failure under the
   key instead of freeing it, and no longer records 5xx/408/429 responses**
   (#984). A retry gets 500 and must use a new key, so a partly applied
@@ -664,7 +671,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   A client no longer chooses a value's runtime class (RegExp, bigint,
   undefined, Map, Date, …). A JSON body is plain JSON, and a CBOR body
   accepts only the JSON data model; any richer CBOR type is a 400 that names
-  it. *Migration:* a route
+  it. `pickRequestSerializer` returns a plain-data serializer by default too.
+  *Migration:* a route
   that relies on rebuilt types opts in per tag with
   `entity(request, EntityOptions.create().withTags([...]))`. The same names
   apply to JSON and CBOR.
@@ -685,9 +693,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   *Migration:* upgrade every node in one window. To keep sending the refused
   types, list them in `admitted-tags` on every receiving node.
 - **HTTP/1.1 connections on Fastify's HTTP/2 listener under Bun are held to
-  `idle-timeout` and `request-timeout`** (#1756). When `idle-timeout` is
-  unset, an idle HTTP/2 session is closed at 72 s whether or not it sends
-  PINGs (#1757).
+  `idle-timeout` and `request-timeout`** (#1756).
 - **`rateLimit` no longer fails open silently** (#983). A cache outage or a
   missing `ioredis` is logged and counted, and the limiter can be set to
   fail closed.
