@@ -323,6 +323,34 @@ import { Aside } from '@astrojs/starlight/components';
   nicht die ~1 000, die auf den ersten Blick reichen würden.
 </Aside>
 
+### Die Familiengrenze
+
+Die Kardinalitätsgrenze beschränkt die Serien einer Familie; einen
+Metrik-**Namen**, der aus Request-Daten gebaut wird, etwa
+`` metrics.counter(`http_${path}_total`) ``, sieht sie nicht — der
+legt pro Wert eine neue Familie an.  Die Registry begrenzt deshalb
+auch, wie viele Familien sie hält: `maxFamilies`, Default **1 000**.
+Eine Familie lässt sich nicht in eine Overflow-Serie falten wie ein
+Label-Tupel — der Name ist ihre Identität —, also geben `counter`,
+`gauge` und `histogram` jenseits der Grenze für jeden weiteren Namen
+ein **No-op-Instrument** zurück, das nichts aufzeichnet, und die
+Registry loggt eine Warnung mit dem ersten abgewiesenen Namen.  Sie
+werfen nie, und jede vor der Grenze angelegte Familie zeichnet weiter
+auf.
+
+```ts
+const metricsOptions = MetricsRegistryOptions.create().withMaxFamilies(5_000);
+const metrics = system.extension(MetricsExtensionId).enable(metricsOptions);
+```
+
+Der Key in der Config-Datei ist
+[`actor-ts.metrics.max-families`](/de/reference/configuration/#actor-tsmetrics),
+geschichtet wie die Kardinalitätsgrenze, und die
+[prom-client-Bridge](/de/observability/metrics/prom-client-adapter/)
+beachtet ihn ebenfalls.  `0` schaltet sie ab.  Die Lösung für einen
+abgewiesenen Namen ist dieselbe wie für ein unbeschränktes Label:
+den variablen Teil in ein Label verschieben und `bucketize`n.
+
 ### Eine Serie entfernen
 
 Die Grenze beschränkt, wie viele Serien eine Familie **hält**;

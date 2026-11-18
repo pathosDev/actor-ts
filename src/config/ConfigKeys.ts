@@ -1481,6 +1481,7 @@ export const ConfigKeys = {
    */
   metrics: {
     maxSeriesPerFamily: 'actor-ts.metrics.max-series-per-family',
+    maxFamilies: 'actor-ts.metrics.max-families',
     namePrefix: 'actor-ts.metrics.name-prefix',
   },
 

@@ -117,6 +117,7 @@ type PromClientAdapterOptionsType = {
   registry:             PromClientRegistryLike;  // die Registry, in die publiziert wird — typischerweise client.register
   namePrefix?:          string;                  // Präfix für jeden Metriknamen — Default: ''
   maxSeriesPerFamily?:  number;                  // Kardinalitätsgrenze pro Familie — Default: 10 000, 0 schaltet ab
+  maxFamilies?:         number;                  // Grenze für die Anzahl der Familien — Default: 1 000, 0 schaltet ab
 };
 ```
 
@@ -128,20 +129,21 @@ die globale Standard-Registry). Das obige Plain-Object funktioniert
 überall dort, wo auch der Builder funktioniert — der Builder ist der
 dokumentierte Standard.
 
-Die beiden Skalare können auch aus einer Config-Datei kommen, als
+Die drei Skalare können auch aus einer Config-Datei kommen, als
 Block [`actor-ts.metrics`](/de/reference/configuration/#actor-tsmetrics):
 
 ```hocon
 actor-ts.metrics {
   name-prefix           = "actor_ts_"
   max-series-per-family = 50000
+  max-families          = 5000
 }
 ```
 
 `enablePromClient` legt den Block pro Feld unter seine Optionen:
 Eine Option, die du übergibst, gewinnt, die Datei füllt, was du
 offen lässt, und die eingebauten Defaults — kein Präfix, 10 000
-Serien — sind der Boden. Auch ein explizites `withNamePrefix('')`
+Serien, 1 000 Familien — sind der Boden. Auch ein explizites `withNamePrefix('')`
 ist ein Wert und schaltet ein konfiguriertes Präfix damit ab.
 `client` und `registry` haben keinen Key: Beides sind lebende
 Objekte, die eine Config-Datei nicht halten kann.
@@ -202,6 +204,13 @@ Label-Namen einer Metrik bei der Konstruktion fest und wirft bei
 einem `.labels(...)` mit irgendetwas anderem — ein synthetischer
 Marker-*Name* würde also genau den Aufruf sprengen, der den Schaden
 begrenzen soll.
+
+Die Brücke beachtet auch die
+[Familiengrenze](/de/observability/metrics/core-metrics/#die-familiengrenze),
+`maxFamilies` / `actor-ts.metrics.max-families`: Jenseits davon
+bekommt ein weiterer Metrikname ein No-op-Instrument, und prom-client
+sieht ihn nie, die Brücke konstruiert also höchstens `maxFamilies`
+Metriken.  Sie warnt einmal und wirft nie.
 
 Siehe [Kardinalitätsdisziplin](/de/observability/metrics/core-metrics/#kardinalitätsdisziplin)
 für `bucketize`, den Weg, die Grenze gar nicht erst zu erreichen.

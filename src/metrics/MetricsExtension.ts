@@ -345,6 +345,7 @@ export function withThreadLabel(sample: MetricSample, thread: string): MetricSam
  */
 const CONFIGURED_FIELD_KEYS: Readonly<Record<string, string>> = {
   maxSeriesPerFamily: ConfigKeys.metrics.maxSeriesPerFamily,
+  maxFamilies: ConfigKeys.metrics.maxFamilies,
   namePrefix: ConfigKeys.metrics.namePrefix,
 };
 
