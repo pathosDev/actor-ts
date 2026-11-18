@@ -447,7 +447,17 @@ export class DevToolsServer implements DevToolsHubContext {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    for (const tap of this.taps.values()) tap.uninstall();
+    // Every tap gets its turn even when one before it throws (#714).  The
+    // span tap's `uninstall()` is what releases the one-tap-per-system slot,
+    // and `stopped` above refuses a second `stop()` — so a throw that skipped
+    // it would keep the system closed to every later attach.
+    for (const tap of this.taps.values()) {
+      try {
+        tap.uninstall();
+      } catch (error) {
+        this.system.log.warn(`[devtools] the ${tap.stream} tap failed to uninstall: ${(error as Error).message}`);
+      }
+    }
     this.taps.clear();
     this.connectionCloseListeners.length = 0;
     // Leaves no actor recording behind: a ring left running because a
