@@ -988,6 +988,12 @@ export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
         path('own-header', get(() => ({ status: Status.OK, headers: { 'X-Content-Type-Options': 'off' }, body: 'hello' }))),
         path('already-nosniff', get(() => completeHtml(Status.OK, html`<p>hi</p>`))),
         path('http-error', get(() => { throw new HttpError(Status.Forbidden, 'nope'); })),
+        path('cased-error-nosniff', get(() => {
+          throw new HttpError(Status.Forbidden, 'nope', undefined, { 'X-Content-Type-Options': 'off' });
+        })),
+        path('cased-error-frame', get(() => {
+          throw new HttpError(Status.Forbidden, 'nope', undefined, { 'X-Frame-Options': 'SAMEORIGIN' });
+        })),
         path('boom', get(() => { throw new Error('kaboom'); })),
         path('guarded',
           withMiddleware(requestId(),
@@ -1016,6 +1022,22 @@ export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
       test("the response's own header wins, matched case-insensitively", async () => {
         const url = await urlOf(routes());
         expect((await fetch(`${url}/own-header`)).headers.get('x-content-type-options')).toBe('off');
+      });
+
+      // #1058: the error path used to build its headers by object spread, so a
+      // differently-cased key sat beside the default and `Headers` appended it.
+      test("a thrown HttpError's own header replaces the default, matched case-insensitively", async () => {
+        const url = await urlOf(routes());
+        const response = await fetch(`${url}/cased-error-nosniff`);
+        expect(response.status).toBe(403);
+        expect(response.headers.get('x-content-type-options')).toBe('off');
+      });
+
+      test("a thrown HttpError's own header replaces an opted-in bundle header", async () => {
+        const url = await urlOf(routes(), { configure: (b) => b.withSecurityHeaders({}) });
+        const response = await fetch(`${url}/cased-error-frame`);
+        expect(response.status).toBe(403);
+        expect(response.headers.get('x-frame-options')).toBe('SAMEORIGIN');
       });
 
       test('a handler that already sends nosniff does not get it twice', async () => {

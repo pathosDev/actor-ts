@@ -438,13 +438,13 @@ export class HonoBackend implements HttpServerBackend {
       if (err instanceof HttpError) {
         return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
           status: responseStatusOrServerError(err.status),
-          headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
+          headers: this.errorHeaders(err.headers),
         });
       }
       // No `message` field — see the note on FastifyBackend.writeError.
       return new Response(
         JSON.stringify({ error: 'Internal Server Error' }),
-        { status: 500, headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8' } },
+        { status: 500, headers: this.errorHeaders() },
       );
     });
 
@@ -786,6 +786,22 @@ export class HonoBackend implements HttpServerBackend {
       body,
       ...(remoteAddress ? { remoteAddress } : {}),
     };
+  }
+
+  /**
+   * The headers of a response the error mapping builds itself.  Written with
+   * `Headers.set`, like {@link writeResponse}, and never by object spread: a
+   * plain object can hold `x-frame-options` and `X-Frame-Options` side by
+   * side, and the `Headers` constructor appends the second to the first, so
+   * an error's own header would join the server-wide default instead of
+   * replacing it (#1058).
+   */
+  private errorHeaders(own?: Readonly<Record<string, string>>): Headers {
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(this.defaultResponseHeaders)) headers.set(key, value);
+    headers.set('content-type', 'application/json; charset=utf-8');
+    if (own) for (const [key, value] of Object.entries(own)) headers.set(key, value);
+    return headers;
   }
 
   /**
