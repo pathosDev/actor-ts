@@ -2076,8 +2076,8 @@ actor-ts {
   }
 
   # The registry MetricsExtension installs, read when it builds one: enable()
-  # takes the cap for the in-process registry, enablePromClient(...) takes both
-  # leaves for the prom-client bridge, and options passed to either call win
+  # takes the two caps for the in-process registry, enablePromClient(...) takes
+  # every leaf for the prom-client bridge, and options passed to either call win
   # per field.  A mesh worker's registry is enabled with no options, so it runs
   # with the cap from the main thread's effective config.  The scrape endpoint
   # and the mesh relay stay where they are served:
@@ -2088,6 +2088,11 @@ actor-ts {
     # and the prom-client bridge alike.  0 disables the cap -- only safe when
     # every label value comes from a bounded set.
     max-series-per-family = 10000
+    # Metric families one registry may hold; a factory asked for a further name
+    # past it returns a no-op instrument and warns once, never throws.  Covers
+    # the in-process registry and the prom-client bridge alike.  0 disables
+    # the cap.
+    max-families = 1000
     # Prepended to every metric name the prom-client bridge registers, e.g.
     # "actor_ts_".  The bridge only: the in-process registry, and the
     # GET /metrics route that renders it, keep the bare names.

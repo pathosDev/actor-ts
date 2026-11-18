@@ -132,6 +132,39 @@ export class SpanTap implements DevToolsTap {
       );
     }
     systemsWithLiveTap.add(this.system);
+    try {
+      this.swapTracerIn(emit);
+    } catch (error) {
+      // Not installed, so `uninstall()` will return early and never release
+      // the slot taken above — release it here, or the system is closed to
+      // every later attach (#714).  Nothing else needs undoing: the tracer
+      // swap is the last step that can throw, and it either happened whole
+      // or not at all.
+      systemsWithLiveTap.delete(this.system);
+      this.emit = null;
+      this.previousTracer = null;
+      throw error;
+    }
+    // Record from here, not from the first subscriber.  The messages
+    // worth looking at are the ones that already went past; asking the
+    // developer to press a button first means they are gone.
+    //
+    // Root spans are not behind the switch: without them a plain `tell`
+    // opens no span at all and the panel is empty — which is what
+    // `panels.tracing: false` already does, and what an operator who asked
+    // for traces without bodies is explicitly not asking for.
+    const tracing = this.system.extension(TracingExtensionId);
+    tracing.recordRootSpans(true);
+    if (this.capturePayloads) tracing.captureMessagePayloads(true);
+    this.warnAboutExportChanges();
+  }
+
+  /**
+   * Snapshot what tracing looked like and put this tap's tracer in front of
+   * it.  Everything in `install()` between taking the registry slot and
+   * being {@link installed} — split out so that window has one `try`.
+   */
+  private swapTracerIn(emit: (payload: DevToolsStreamPayload) => void): void {
     this.emit = emit;
     const tracing = this.system.extension(TracingExtensionId);
     this.previousTracer = tracing.isEnabled() ? tracing.get() : null;
@@ -156,7 +189,7 @@ export class SpanTap implements DevToolsTap {
       // removes one.
       //
       // Which is why `capturePayloads` belongs in this predicate and not
-      // only at the switch below.  With it off the tap flips nothing, so
+      // only at the switch in `install()`.  With it off the tap flips nothing, so
       // there is nothing of DevTools' to withhold, and a filter still
       // derived from `previousMessagePayloads` alone would strip the
       // attribute out of an export that was never ours — the tee's filter
@@ -168,17 +201,6 @@ export class SpanTap implements DevToolsTap {
       tracing.enable(new TeeTracer(this.previousTracer, (span) => this.onSpanEnd(span), withheld));
     }
     this.installed = true;
-    // Record from here, not from the first subscriber.  The messages
-    // worth looking at are the ones that already went past; asking the
-    // developer to press a button first means they are gone.
-    //
-    // Root spans are not behind the switch: without them a plain `tell`
-    // opens no span at all and the panel is empty — which is what
-    // `panels.tracing: false` already does, and what an operator who asked
-    // for traces without bodies is explicitly not asking for.
-    tracing.recordRootSpans(true);
-    if (this.capturePayloads) tracing.captureMessagePayloads(true);
-    this.warnAboutExportChanges();
   }
 
   /** Register the buffer-size control on `server`. */

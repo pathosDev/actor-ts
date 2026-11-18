@@ -113,6 +113,7 @@ type PromClientAdapterOptionsType = {
   registry:             PromClientRegistryLike;  // the Registry to publish into — typically client.register
   namePrefix?:          string;                  // prefix applied to every metric name — default: ''
   maxSeriesPerFamily?:  number;                  // per-family cardinality cap — default: 10 000, 0 disables
+  maxFamilies?:         number;                  // cap on the number of families — default: 1 000, 0 disables
 };
 ```
 
@@ -123,19 +124,21 @@ you already import; `registry` is the `Registry` it writes into
 plain object above works anywhere the builder does — the builder is
 the documented default.
 
-The two scalars can also come from a config file, as the
+The three scalars can also come from a config file, as the
 [`actor-ts.metrics`](/reference/configuration/#actor-tsmetrics) block:
 
 ```hocon
 actor-ts.metrics {
   name-prefix           = "actor_ts_"
   max-series-per-family = 50000
+  max-families          = 5000
 }
 ```
 
 `enablePromClient` layers the block under its options, per field:
 an option you pass wins, the file fills what you leave unset, and
-the built-in defaults — no prefix, 10 000 series — are the floor.
+the built-in defaults — no prefix, 10 000 series, 1 000 families —
+are the floor.
 An explicit `withNamePrefix('')` is a value as well, so it switches
 a configured prefix off.  `client` and `registry` have no key: both
 are live objects a config file cannot hold.
@@ -191,6 +194,13 @@ Reusing the declared names is not cosmetic: prom-client fixes a
 metric's label names at construction and throws on a `.labels(...)`
 carrying anything else, so a synthetic marker *name* would fail the
 very call meant to contain the damage.
+
+The bridge also honours the
+[family cap](/observability/metrics/core-metrics/#the-family-cap),
+`maxFamilies` / `actor-ts.metrics.max-families`: past it, a further
+metric name gets a no-op instrument and prom-client never sees it,
+so the bridge constructs at most `maxFamilies` metrics.  It warns
+once and never throws.
 
 See [cardinality discipline](/observability/metrics/core-metrics/#cardinality-discipline)
 for `bucketize`, the way to not reach the cap in the first place.

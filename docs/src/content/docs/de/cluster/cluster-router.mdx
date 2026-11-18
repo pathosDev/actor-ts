@@ -231,8 +231,16 @@ selbst:
 ```ts
 import { ClusterMailboxDepthAgent } from 'actor-ts/cluster';
 
-const stopServingDepths = ClusterMailboxDepthAgent.serve(cluster);
+const stopServingDepths = ClusterMailboxDepthAgent.serve(cluster, '/user/worker');
 ```
+
+Gib den Routee-Pfad an, an den der Router routet.  Der Agent
+antwortet nur für die Pfade, die er bedient — die Registrierung eines
+Routers bedient dessen `routeePath` —, ein Peer kann also nicht die
+Queue-Tiefe irgendeines anderen Actors auf dem Node auslesen: Eine
+Anfrage nach einem solchen bekommt dieselbe Stille wie eine nach
+einem Actor, den es nicht gibt.  Eine gemeldete Tiefe muss eine
+nicht-negative Ganzzahl sein; alles andere gilt nicht als Messwert.
 
 Vergisst du es, geht nichts kaputt: dieser Node meldet dann
 schlicht nie etwas, wird also übersprungen, solange andere Nodes

@@ -66,8 +66,22 @@ export const MAXIMUM_PEER_ACTORS = 10_000;
 /** How often a running session reports its sample count. */
 export const PROGRESS_INTERVAL_MS = 500;
 
-/** Longest auto-stopping run; a profiler is not a monitoring agent. */
+/**
+ * Longest profiling run, and the length of one that asked for none (#973):
+ * a profiler is a measurement, not a monitoring agent, so a session started
+ * without a `durationMs` stops itself here rather than never.
+ */
 export const MAXIMUM_DURATION_MS = 10 * 60 * 1000;
+
+/**
+ * Most distinct `(actor path, message type)` pairs one wallclock session
+ * holds (#973).  Under sharding an actor path carries the entity id, so the
+ * pair count grows with the entities a node serves, not with its code; past
+ * this many a new pair is counted as dropped instead of getting a bucket,
+ * and the result says how many samples that was.  Ten thousand matches the
+ * other DevTools caps and is far past what a flame graph can show.
+ */
+export const MAXIMUM_PROFILER_BUCKETS = 10_000;
 
 /** Refuse anything larger; a ring is a debugging aid, not a log. */
 export const MAXIMUM_CAPACITY = 10_000;

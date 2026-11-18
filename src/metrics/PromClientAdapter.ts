@@ -33,8 +33,16 @@ import type {
 } from './Metrics.js';
 import { OptionsError } from '../util/OptionsValidator.js';
 import { PROMETHEUS_METRIC_NAME_PATTERN } from './Constants.js';
-import { DEFAULT_HISTOGRAM_BUCKETS, overflowLabelsOf, warnCardinalityOverflow } from './Metrics.js';
-import { DEFAULT_MAX_SERIES_PER_FAMILY } from './MetricsRegistryOptions.js';
+import {
+  DEFAULT_HISTOGRAM_BUCKETS,
+  NOOP_COUNTER,
+  NOOP_GAUGE,
+  NOOP_HISTOGRAM,
+  overflowLabelsOf,
+  warnCardinalityOverflow,
+  warnFamilyCapReached,
+} from './Metrics.js';
+import { DEFAULT_MAX_FAMILIES, DEFAULT_MAX_SERIES_PER_FAMILY } from './MetricsRegistryOptions.js';
 
 /* ----------------------- prom-client surface ----------------------- */
 /* Structural — keep in sync with prom-client v15.x.  We only use the */
@@ -200,8 +208,25 @@ export function promClientRegistry(
     client, registry,
     namePrefix = DEFAULT_PROM_CLIENT_NAME_PREFIX,
     maxSeriesPerFamily = DEFAULT_MAX_SERIES_PER_FAMILY,
+    maxFamilies = DEFAULT_MAX_FAMILIES,
   } = settings;
   const families = new Map<string, Entry>();
+  let familyCapReported = false;
+
+  /**
+   * Whether a *new* family may be constructed (#1068).  Asked only after the
+   * memo miss, so a family the bridge already holds keeps writing through
+   * once the cap is reached; past it the caller hands back a no-op instrument
+   * and prom-client never sees the name.
+   */
+  function admitsNewFamily(name: string): boolean {
+    if (maxFamilies <= 0 || families.size < maxFamilies) return true;
+    if (!familyCapReported) {
+      familyCapReported = true;
+      warnFamilyCapReached(maxFamilies, name);
+    }
+    return false;
+  }
 
   function fullName(name: string): string {
     return namePrefix + name;
@@ -233,7 +258,7 @@ export function promClientRegistry(
     return out;
   }
 
-  function getOrCreateCounter(name: string, labels: Labels | undefined, options2: CounterOptions | undefined): CounterEntry {
+  function getOrCreateCounter(name: string, labels: Labels | undefined, options2: CounterOptions | undefined): CounterEntry | null {
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
@@ -242,6 +267,7 @@ export function promClientRegistry(
       }
       return existing;
     }
+    if (!admitsNewFamily(fullN)) return null;
     const labelNames = labels ? Object.keys(labels).sort() : [];
     const impl = new client.Counter({
       name: fullN,
@@ -257,7 +283,7 @@ export function promClientRegistry(
     return entry;
   }
 
-  function getOrCreateGauge(name: string, labels: Labels | undefined, options2: GaugeOptions | undefined): GaugeEntry {
+  function getOrCreateGauge(name: string, labels: Labels | undefined, options2: GaugeOptions | undefined): GaugeEntry | null {
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
@@ -266,6 +292,7 @@ export function promClientRegistry(
       }
       return existing;
     }
+    if (!admitsNewFamily(fullN)) return null;
     const labelNames = labels ? Object.keys(labels).sort() : [];
     const impl = new client.Gauge({
       name: fullN,
@@ -281,7 +308,7 @@ export function promClientRegistry(
     return entry;
   }
 
-  function getOrCreateHistogram(name: string, labels: Labels | undefined, options2: HistogramOptions | undefined): HistogramEntry {
+  function getOrCreateHistogram(name: string, labels: Labels | undefined, options2: HistogramOptions | undefined): HistogramEntry | null {
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
@@ -290,6 +317,7 @@ export function promClientRegistry(
       }
       return existing;
     }
+    if (!admitsNewFamily(fullN)) return null;
     const labelNames = labels ? Object.keys(labels).sort() : [];
     const buckets = options2?.buckets ?? DEFAULT_HISTOGRAM_BUCKETS;
     const impl = new client.Histogram({
@@ -337,6 +365,7 @@ export function promClientRegistry(
   return {
     counter(name, labels, options2): Counter {
       const entry = getOrCreateCounter(name, labels, options2);
+      if (entry === null) return NOOP_COUNTER;
       const promLabels = asPromLabels(seriesLabelsOf(entry, fullName(name), labels));
       // Local mirror of the value so the framework's `Counter.value`
       // contract (read for testing) keeps working without poking the
@@ -357,6 +386,7 @@ export function promClientRegistry(
 
     gauge(name, labels, options2): Gauge {
       const entry = getOrCreateGauge(name, labels, options2);
+      if (entry === null) return NOOP_GAUGE;
       const promLabels = asPromLabels(seriesLabelsOf(entry, fullName(name), labels));
       let mirror = 0;
       const child = entry.impl.labels(promLabels);
@@ -382,6 +412,7 @@ export function promClientRegistry(
 
     histogram(name, labels, options2): Histogram {
       const entry = getOrCreateHistogram(name, labels, options2);
+      if (entry === null) return NOOP_HISTOGRAM;
       const promLabels = asPromLabels(seriesLabelsOf(entry, fullName(name), labels));
       const child = entry.impl.labels(promLabels);
       // Mirror the bucket counts + sum + count locally so the
@@ -471,6 +502,7 @@ export function promClientRegistry(
       // own `Registry.clear()` works on its side — call that if you
       // own the registry exclusively.)
       families.clear();
+      familyCapReported = false;
     },
   };
 }

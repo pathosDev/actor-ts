@@ -312,6 +312,33 @@ import { Aside } from '@astrojs/starlight/components';
   sufficient.
 </Aside>
 
+### The family cap
+
+The cardinality cap bounds the series of one family; it cannot see a
+metric **name** built from request data, such as
+`` metrics.counter(`http_${path}_total`) ``, which mints a new family
+per value.  The registry therefore also caps how many families it
+holds: `maxFamilies`, default **1 000**.  A family cannot be folded
+into an overflow series the way a label tuple can — the name is its
+identity — so past the cap `counter`, `gauge` and `histogram` asked
+for a further name hand back a **no-op instrument** that records
+nothing, and the registry logs one warning naming the first refused
+name.  They never throw, and every family minted before the cap
+keeps recording.
+
+```ts
+const metricsOptions = MetricsRegistryOptions.create().withMaxFamilies(5_000);
+const metrics = system.extension(MetricsExtensionId).enable(metricsOptions);
+```
+
+The config-file key is
+[`actor-ts.metrics.max-families`](/reference/configuration/#actor-tsmetrics),
+layered the same way as the cardinality cap, and the
+[prom-client bridge](/observability/metrics/prom-client-adapter/) honours
+it too.  `0` disables it.  The fix for a refused name is the same as
+for an unbounded label: move the varying part into a label and
+`bucketize` it.
+
 ### Removing a series
 
 The cap bounds how many series a family **holds**; `remove` is what

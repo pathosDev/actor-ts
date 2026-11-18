@@ -224,8 +224,15 @@ hosts routees but no router, start it yourself:
 ```ts
 import { ClusterMailboxDepthAgent } from 'actor-ts/cluster';
 
-const stopServingDepths = ClusterMailboxDepthAgent.serve(cluster);
+const stopServingDepths = ClusterMailboxDepthAgent.serve(cluster, '/user/worker');
 ```
+
+Name the routee path the router routes to.  The agent answers only
+for the paths it serves — a router's own registration serves its
+`routeePath` — so a peer cannot read the queue depth of any other
+actor on the node: a query naming one gets the same silence as a
+query naming an actor that does not exist.  A reported depth has to
+be a non-negative integer; anything else is not taken as a reading.
 
 Forget it and nothing breaks: that node simply never reports, so
 routers skip it while every other node is answering, and fall back
