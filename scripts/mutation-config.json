@@ -145,6 +145,21 @@
       "tests/unit/cluster/ClusterRouterReachability.test.ts",
       "tests/unit/parallelism/ClusterRouterOverMesh.test.ts"
     ],
+    "src/cluster/router/MailboxDepthAgent.ts": [
+      "tests/integration/in-process/cluster/router/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/MailboxDepthReportGuard.test.ts"
+    ],
+    "src/cluster/router/MailboxDepthProbe.ts": [
+      "tests/integration/in-process/cluster/router/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/MailboxDepthReportGuard.test.ts"
+    ],
+    "src/cluster/router/MailboxDepthProtocol.ts": [
+      "tests/integration/in-process/cluster/router/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/ClusterRouterSmallestMailbox.test.ts",
+      "tests/unit/cluster/MailboxDepthReportGuard.test.ts"
+    ],
     "src/cluster/sharding/ShardCoordinator.ts": [
       "tests/integration/in-process/cluster/sharding/ClusterSharding.test.ts",
       "tests/integration/in-process/cluster/sharding/CoordinatorRestart.test.ts",

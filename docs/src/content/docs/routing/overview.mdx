@@ -233,7 +233,7 @@ export class Encoder extends Actor<EncodeCommand> {
 /** Runs once on every worker, after its node has joined the mesh. */
 export function setup(context: WorkerMeshSetupContext): void {
   context.system.spawn(Encoder, 'encoder');
-  ClusterMailboxDepthAgent.serve(context.cluster);   // only 'smallest-mailbox' reads it
+  ClusterMailboxDepthAgent.serve(context.cluster, '/user/encoder');   // only 'smallest-mailbox' reads it
 }
 ```
 
@@ -286,7 +286,7 @@ router that balances less than it seems to:
 - **`smallest-mailbox` needs the agent on every worker.**  The router
   reads mailbox depths from a small framework agent on each routee node,
   and a `smallest-mailbox` router starts that agent on its own node only.
-  The `ClusterMailboxDepthAgent.serve(context.cluster)` line in `setup`
+  The `ClusterMailboxDepthAgent.serve(context.cluster, '/user/encoder')` line in `setup`
   is what makes the workers report; without it nothing breaks, but no
   routee ever reports, and with no reading anywhere the strategy is
   plain round-robin.  That fallback is all-or-nothing, not per worker: a

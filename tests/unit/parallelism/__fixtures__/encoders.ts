@@ -37,5 +37,5 @@ export class Encoder extends Actor<EncodeCommand> {
 /** Runs once on every worker, after its node has joined the mesh. */
 export function setup(context: WorkerMeshSetupContext): void {
   context.system.spawn(Encoder, 'encoder');
-  ClusterMailboxDepthAgent.serve(context.cluster);   // only 'smallest-mailbox' reads it
+  ClusterMailboxDepthAgent.serve(context.cluster, '/user/encoder');   // only 'smallest-mailbox' reads it
 }

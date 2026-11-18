@@ -247,7 +247,7 @@ export class Encoder extends Actor<EncodeCommand> {
 /** Runs once on every worker, after its node has joined the mesh. */
 export function setup(context: WorkerMeshSetupContext): void {
   context.system.spawn(Encoder, 'encoder');
-  ClusterMailboxDepthAgent.serve(context.cluster);   // only 'smallest-mailbox' reads it
+  ClusterMailboxDepthAgent.serve(context.cluster, '/user/encoder');   // only 'smallest-mailbox' reads it
 }
 ```
 
@@ -303,7 +303,7 @@ die dritte ein Router, der weniger ausgleicht, als es scheint:
   Router liest Mailbox-Tiefen von einem kleinen Framework-Agenten auf
   jedem Routee-Node, und ein `smallest-mailbox`-Router startet diesen
   Agenten nur auf seinem eigenen Node.  Die Zeile
-  `ClusterMailboxDepthAgent.serve(context.cluster)` in `setup` ist, was
+  `ClusterMailboxDepthAgent.serve(context.cluster, '/user/encoder')` in `setup` ist, was
   die Worker berichten lässt; ohne sie bricht nichts, aber kein Routee
   berichtet je, und ohne irgendeine Messung ist die Strategie schlichtes
   Round-Robin.  Dieser Rückfall gilt ganz oder gar nicht, nicht pro
