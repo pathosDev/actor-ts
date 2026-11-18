@@ -140,14 +140,17 @@ export const DEFAULT_MAX_TOMBSTONES = 10_000;
 
 /**
  * Built-in default for {@link ClusterOptionsType.gossipFramesPerSecondPerSender}
- * — off (#1105).
+ * — 50 frames a second per sender (#1105, the maintainer's decision).
  *
- * Off because no single number is safe for every deployment: a legitimate
- * sender's rate follows *its* gossip interval, which this node does not know,
- * and a budget below it refuses healthy gossip — a partition with nothing to
- * say why.  A deployment that knows its interval sets one well above it.
+ * A legitimate sender's rate follows *its* gossip interval, which this node
+ * does not know, and a budget below it refuses healthy gossip — a partition
+ * with nothing to say why.  So the default sits far above any interval a
+ * deployment runs: the shipped 1 s interval sends one frame a second to a
+ * given peer at most, and even a 30 ms test interval stays under it.  The
+ * sizing rule for anything faster is `1000 / gossip-interval-ms` times a
+ * safety factor (at least 2), for the frames a join or a promotion adds.
  */
-export const DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER = 0;
+export const DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER = 50;
 
 /**
  * Built-in default for {@link ClusterOptionsType.minimumMembersBeforeUp} — how
@@ -767,8 +770,8 @@ export type ClusterOptionsType = {
    */
   readonly maxTombstones?: number;
   /**
-   * Gossip frames one sender may hand this node per second (#1105).  `0`
-   * disables the budget, and is the default.
+   * Gossip frames one sender may hand this node per second (#1105).
+   * Default: 50.  `0` disables the budget.
    *
    * The two caps above bound what *sticks*; they do not bound the work.  A
    * frame may be up to `maxFrameBytes` large, and every record in it runs
@@ -782,9 +785,11 @@ export type ClusterOptionsType = {
    * start of a sender's episode and one the end, with the count, rather than
    * one per frame.
    *
-   * A legitimate sender sends one frame per gossip interval at most, plus a
-   * few at join and promotion, so set it well above `1000 / gossipIntervalMs`
-   * of the fastest-gossiping member.
+   * Sizing: a legitimate sender sends one frame per gossip interval at most,
+   * plus a few at join and promotion, so the budget must stay above
+   * `1000 / gossipIntervalMs` of the fastest-gossiping member times a safety
+   * factor of at least 2.  The default of 50 covers intervals down to about
+   * 40 ms; a cluster gossiping faster raises it.
    */
   readonly gossipFramesPerSecondPerSender?: number;
   /**
@@ -1178,7 +1183,7 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('maxTombstones', maxTombstones);
   }
 
-  /** Gossip frames one sender may send per second.  0 disables.  Default: 0. */
+  /** Gossip frames one sender may send per second.  0 disables.  Default: 50. */
   withGossipFramesPerSecondPerSender(gossipFramesPerSecondPerSender: number): this {
     return this.set('gossipFramesPerSecondPerSender', gossipFramesPerSecondPerSender);
   }

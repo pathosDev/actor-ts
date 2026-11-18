@@ -11,8 +11,8 @@
  *
  * Pinned here: a sender above the budget is cut to it and a sender below it
  * passes unchanged, the budget refills with time, senders do not share a
- * budget, normal gossip at a reasonable budget never touches it, and `0` —
- * the default — turns it off.
+ * budget, normal gossip at a reasonable budget never touches it, a budget of
+ * 50 frames a second is on by default, and `0` turns it off.
  */
 import { afterEach, describe, expect, setSystemTime, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -228,13 +228,40 @@ describe('#1105 — gossip frames are budgeted per sender', () => {
     expect(framesAdmitted(node, quiet, firstVersion)).toBe(2);
   });
 
-  test('0, the default, turns the budget off', async () => {
-    const node = await startNode('gossip-throttle-off', 9_855);
+  test('0 turns the budget off', async () => {
+    const node = await startNode('gossip-throttle-off', 9_855, { budget: 0 });
     const sender = new NodeAddress('gossip-throttle-off', '10.0.105.1', 9_901);
     const firstVersion = Date.now() - 1_000;
-    burst(node, sender, 50, firstVersion);
-    expect(framesAdmitted(node, sender, firstVersion)).toBe(50);
+    burst(node, sender, 120, firstVersion);
+    expect(framesAdmitted(node, sender, firstVersion)).toBe(120);
     expect(internals(node.cluster).refusalCounts['rate-limit']).toBe(0);
+  });
+
+  test('a default-configured node holds a sender to 50 frames a second', async () => {
+    // The maintainer's default (#1105): on, at a rate far above any normal
+    // gossip interval.  No budget is set here, so this is the shipped number.
+    const node = await startNode('gossip-throttle-default', 9_862);
+    const loud = new NodeAddress('gossip-throttle-default', '10.0.105.1', 9_901);
+    const quiet = new NodeAddress('gossip-throttle-default', '10.0.105.2', 9_902);
+    const firstVersion = Date.now() - 60_000;
+    const start = Date.now();
+    setSystemTime(new Date(start));
+
+    // Eighty frames in one instant: the first fifty pass, the rest do not.
+    burst(node, loud, 80, firstVersion);
+    expect(framesAdmitted(node, loud, firstVersion)).toBe(50);
+    expect(internals(node.cluster).refusalCounts['rate-limit']).toBe(30);
+
+    // A sender at ten frames a second — ten times the shipped interval's
+    // rate — for three seconds is never refused.
+    for (let second = 0; second < 3; second += 1) {
+      for (let frame = 0; frame < 10; frame += 1) {
+        setSystemTime(new Date(start + second * 1_000 + frame * 100));
+        burst(node, quiet, 1, firstVersion + second * 10 + frame);
+      }
+    }
+    expect(framesAdmitted(node, quiet, firstVersion)).toBe(30);
+    expect(internals(node.cluster).refusalCounts['rate-limit']).toBe(30);
   });
 
   test('normal gossip between two nodes never touches a budget set well above its rate', async () => {

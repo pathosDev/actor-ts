@@ -3723,7 +3723,11 @@ export class Cluster {
     const rate = this.gossipFramesPerSecondPerSender;
     if (rate === 0) return true;
     const key = from.toString();
-    const now = Date.now();
+    // The system's clock, not `Date.now()`: the frames being counted are paced
+    // by the scheduler that clock belongs to, so on a virtual clock — a
+    // `ManualScheduler` driving a `MultiNodeSpec` — a wall-clock budget would
+    // see minutes of virtual gossip arrive in milliseconds and refuse it.
+    const now = this.system.clock.now();
     let budget = this.gossipSenderBudgets.get(key);
     if (budget === undefined) {
       if (this.gossipSenderBudgets.size >= GOSSIP_SENDER_BUDGET_SWEEP_THRESHOLD) this.sweepGossipSenderBudgets(now);

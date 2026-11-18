@@ -85,7 +85,11 @@ async function startNode(systemName: string, port: number): Promise<NodeHandle> 
     .withTransport(new InMemoryTransport(address))
     .withFailureDetector({ heartbeatIntervalMs: 600_000, unreachableAfterMs: 1_200_000, downAfterMs: 2_400_000 })
     .withFailureDetectorAutoDown(false)
-    .withGossipIntervalMs(600_000);
+    .withGossipIntervalMs(600_000)
+    // The cases probe the sequence bound by trying hundreds of frames within
+    // one virtual second; the per-sender frame budget (#1105) is a different
+    // guard and would refuse the probe, not the frame under test.
+    .withGossipFramesPerSecondPerSender(0);
   const cluster = await Cluster.join(system, clusterOptions);
   const node = { system, cluster };
   nodes.push(node);

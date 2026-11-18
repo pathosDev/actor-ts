@@ -685,10 +685,14 @@ einzelne abgewiesen wird. Diese Arbeit begrenzt pro Absender
 über dem Budget wird ganz verworfen, bevor ein Record gelesen wird,
 die Verbindung bleibt, und die Abweisungen zählt
 `cluster_gossip_records_refused_total{reason="rate-limit"}`.
-Standardmäßig ist es aus, weil die legitime Rate eines Absenders
-seinem eigenen Gossip-Intervall folgt, das der Empfänger nicht
-kennt; setze es deutlich über `1000 / gossip-interval`, sobald das
-für den Cluster feststeht.
+Standardmäßig ist es an, mit 50 Frames pro Sekunde — weit über dem
+einen Frame pro Sekunde, den ein Absender beim ausgelieferten
+Intervall von 1 s schickt. Die legitime Rate eines Absenders folgt
+seinem eigenen Gossip-Intervall, das der Empfänger nicht kennt; das
+Budget muss also darüber bleiben: etwa `1000 / gossip-interval-ms`,
+mal einem Sicherheitsfaktor von mindestens 2 für Join- und
+Beförderungs-Frames. Erhöhe es für einen Cluster, der schneller als
+alle 40 ms gossipt; `0` schaltet es ab.
 
 ### Warum die Mitgliedschaft zwei Grenzen braucht
 

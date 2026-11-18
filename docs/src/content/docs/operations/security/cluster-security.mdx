@@ -640,9 +640,13 @@ work is bounded per sender by
 over the budget is discarded whole before any record is read, the
 connection stays, and the refusals are counted under
 `cluster_gossip_records_refused_total{reason="rate-limit"}`. It is
-off by default, because a sender's legitimate rate follows its own
-gossip interval, which the receiver does not know; set it well
-above `1000 / gossip-interval` once that is fixed for the cluster.
+on by default at 50 frames a second, far above the one frame a
+second a sender at the shipped 1 s interval sends. A sender's
+legitimate rate follows its own gossip interval, which the receiver
+does not know, so the budget must stay above it: about
+`1000 / gossip-interval-ms`, times a safety factor of at least 2
+for join and promotion frames. Raise it for a cluster that gossips
+faster than every 40 ms; `0` turns it off.
 
 ### Why membership needs two caps
 

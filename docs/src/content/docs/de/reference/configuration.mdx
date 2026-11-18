@@ -58,7 +58,7 @@ actor-ts {
     weakly-up-after     = 0s      # 0 = opt-in only
     max-members         = 1000
     max-tombstones      = 10000
-    gossip-frames-per-second-per-sender = 0 # 0 = off
+    gossip-frames-per-second-per-sender = 50 # 0 = off
     tombstone {
       time-to-live   = 24h
       prune-interval = 5m
@@ -434,7 +434,7 @@ man daraus erneut zustellt.
 | `cluster.shutdown-after-unsuccessful-join` | `0s` | Wie lange ein Node `joining` oder `weakly-up` bleiben darf, bevor er den Join aufgibt.  Kann ihn zur Frist nichts mehr befördern, protokolliert er eine Warnung, verlässt den Cluster und führt die Coordinated-Shutdown-Pipeline mit `ClusterJoinUnsuccessfulReason` aus; andernfalls fragt er alle `seed-retry-interval` erneut.  `0` setzt keine Frist — siehe [Joining und Seeds](/de/cluster/joining-and-seeds/). |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
-| `cluster.gossip-frames-per-second-per-sender` | `0` | Gossip-Frames, die ein Absender diesem Node pro Sekunde zustellen darf; ein Frame über dem Budget wird ganz verworfen und unter `cluster_gossip_records_refused_total{reason="rate-limit"}` gezählt.  Deutlich über `1000 / gossip-interval` setzen.  `0` schaltet das Budget ab. |
+| `cluster.gossip-frames-per-second-per-sender` | `50` | Gossip-Frames, die ein Absender diesem Node pro Sekunde zustellen darf; ein Frame über dem Budget wird ganz verworfen und unter `cluster_gossip_records_refused_total{reason="rate-limit"}` gezählt.  Es muss über der echten Rate eines Absenders bleiben: `1000 / gossip-interval-ms` mal einem Sicherheitsfaktor von mindestens 2.  Der Default deckt Intervalle bis etwa 40 ms ab.  `0` schaltet das Budget ab. |
 | `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
 | `cluster.role.<role>.minimum-members-before-up` | *(nicht gesetzt)* | Schwelle pro Rolle, mit der obigen als UND verknüpft.  In `reference.conf` nur als Kommentar, da Rollennamen zum Deployment gehören. |
 | `cluster.run-coordinated-shutdown-when-down` | `on` | Was ein Node tut, sobald ihn seine **eigene** Downing-Entscheidung entfernt.  `on` verlässt die Mitgliedschaft und führt danach die Coordinated-Shutdown-Pipeline mit `ClusterDowningReason` aus, die das Actor-System beendet; `off` verlässt sie und lässt seine Actors weiterlaufen.  Siehe unten. |
