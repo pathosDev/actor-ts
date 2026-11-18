@@ -216,9 +216,12 @@ updates:
   # with `npm ci` from `package-lock.json`, so the npm updater is the one
   # that can keep the lockfile CI reads in step with the manifest.  Each
   # directory also carries a `bun.lock` that nothing in CI installs and that
-  # this entry does not write — whether that file stays at all is #1402, and
-  # until it is decided the `bun install --frozen-lockfile --dry-run` leg in
-  # `examples.yml` goes red on the directories a PR touches, naming the
+  # this entry does not write.  Both files stay (#1402), so a PR from here can
+  # go red in `examples.yml` on the directories it touches: the
+  # `bun install --frozen-lockfile --dry-run` leg when `bun.lock` contradicts
+  # the bumped manifest, and the lockfile agreement step when the bump moves
+  # `package-lock.json` to another major line or off an advisory `bun.lock`
+  # still carries (scripts/example-lockfile-agreement.mjs).  Either names the
   # lockfile to sync.
   #
   # Listed explicitly rather than globbed, like the matrix in
