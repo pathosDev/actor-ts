@@ -52,6 +52,7 @@ import {
 import { DeadLetter } from '../../../../src/SystemMessages.js';
 import { RecordingLogger } from '../../../util/RecordingLogger.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { nextShardToken } from '../../../util/ShardTokens.js';
 
 const TYPE_NAME = 'entity';
 const NUM_SHARDS = 8;
@@ -182,6 +183,7 @@ async function startRegion(systemName: string, port: number, bufferSize: number)
   const place = (shardId: number): void => {
     const home: ShardHome = {
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId,
       region: region.path.toString(),
       node: cluster.selfAddress.toJSON(),

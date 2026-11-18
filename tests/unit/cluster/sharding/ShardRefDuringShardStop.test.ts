@@ -52,6 +52,7 @@ import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { DeadLetter } from '../../../../src/SystemMessages.js';
 import { RecordingLogger } from '../../../util/RecordingLogger.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { nextShardToken } from '../../../util/ShardTokens.js';
 
 const TYPE_NAME = 'entity';
 const NUM_SHARDS = 8;
@@ -185,9 +186,9 @@ async function startRegion(systemName: string, port: number): Promise<Harness> {
     (region as ActorRef<unknown>).tell(new AuthenticatedShardingMessage(cluster.selfAddress, message));
   };
   const place = (shardId: number): void => {
-    directive({ kind: 'sharding.ShardHome', shardId, region: region.path.toString(), node: cluster.selfAddress.toJSON() });
+    directive({ kind: 'sharding.ShardHome', token: nextShardToken(), shardId, region: region.path.toString(), node: cluster.selfAddress.toJSON() });
   };
-  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId }); };
+  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId, token: nextShardToken() }); };
   const toShard = (shardId: number, message: unknown): void => {
     (region as ActorRef<unknown>).tell({ kind: 'sharding.ToShard', shardId, message });
   };
