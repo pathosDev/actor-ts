@@ -416,6 +416,7 @@ export const ConfigKeys = {
           packageName: 'actor-ts.io.broker.grpc.server.package-name',
           serviceName: 'actor-ts.io.broker.grpc.server.service-name',
           bind: 'actor-ts.io.broker.grpc.server.bind',
+          maxPendingRequestMessages: 'actor-ts.io.broker.grpc.server.max-pending-request-messages',
         },
       },
       /**

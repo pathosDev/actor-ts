@@ -12,6 +12,7 @@ import { SseOptionsValidator, type SseOptionsType } from '../../../../src/io/bro
 import { TcpSocketOptionsValidator, type TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
 import { UdpSocketOptionsValidator, type UdpSocketOptionsType } from '../../../../src/io/broker/UdpSocketOptions.js';
 import { GrpcClientOptionsValidator, type GrpcClientOptionsType } from '../../../../src/io/broker/GrpcClientOptions.js';
+import { GrpcServerOptionsValidator, type GrpcServerOptionsType } from '../../../../src/io/broker/GrpcServerOptions.js';
 import { EmailBridgeOptionsValidator, type EmailBridgeOptionsType } from '../../../../src/io/broker/EmailBridgeOptions.js';
 import type { EmailMessage } from '../../../../src/io/broker/EmailBridgeActor.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
@@ -554,6 +555,21 @@ describe('GrpcClientOptionsValidator', () => {
 
   test('accepts a positive deadlineMs', () => {
     expect(() => check({ deadlineMs: 30_000 })).not.toThrow();
+  });
+});
+
+describe('GrpcServerOptionsValidator (#1039)', () => {
+  const check = (s: Partial<GrpcServerOptionsType>): void => new GrpcServerOptionsValidator().validate(s);
+
+  test('rejects a pre-subscribe cap that is zero, negative or fractional', () => {
+    expect(() => check({ maxPendingRequestMessages: 0 })).toThrow(/maxPendingRequestMessages/);
+    expect(() => check({ maxPendingRequestMessages: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxPendingRequestMessages: 1.5 })).toThrow(OptionsError);
+  });
+
+  test('accepts a positive integer cap, and an unset one', () => {
+    expect(() => check({ maxPendingRequestMessages: 1 })).not.toThrow();
+    expect(() => check({})).not.toThrow();
   });
 });
 

@@ -113,6 +113,15 @@ never succeeds by accident.
 An `onData` subscriber receives `GrpcRequestStreamInbound` — either
 `{ kind: 'chunk', chunk }` or `{ kind: 'end' }`.
 
+Frames that arrive before the handler calls `onData` are held and
+replayed to it, because the handler runs a turn after the call
+arrives.  That hold is bounded: past
+`withMaxPendingRequestMessages(n)` frames (default `1024`) the call
+ends with `RESOURCE_EXHAUSTED` (status code 8) and the held frames
+are dropped.  The bound covers only the time before the first
+subscription, so a handler that calls `onData` in the turn it
+receives the call never meets it.
+
 ## Client
 
 ```ts
@@ -522,6 +531,8 @@ actor-ts.io.broker.grpc {
     package-name = "sensor.v1"
     service-name = "SensorService"
     bind         = "0.0.0.0:50051"
+    # Request-stream frames held before a handler subscribes.
+    max-pending-request-messages = 1024
   }
   client {
     proto-path   = "./proto/sensor.proto"
