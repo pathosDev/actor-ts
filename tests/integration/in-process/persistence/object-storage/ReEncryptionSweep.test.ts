@@ -34,6 +34,7 @@ import {
   InMemoryReEncryptProgressStore,
   ReEncryptIncompleteError,
   reEncryptObjectStorage,
+  type ReEncryptOptions,
 } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
 import {
   encodeBody,
@@ -384,6 +385,73 @@ describe('reEncryptObjectStorage — #108 info rotation', () => {
     });
     expect(result.rewrote).toBe(0);
     expect(result.skippedCurrent).toBe(2);
+  });
+});
+
+/* ===================== #1048 — `info` is validated before the corpus ===================== */
+
+/**
+ * `info` is required, but a JavaScript caller or a config deserialised at
+ * runtime can omit it.  Unchecked, the miss surfaced inside `deriveSubkey` —
+ * and with `newInfo` set, the rotation fallback caught that error, decoded
+ * under `newInfo` instead, and counted a corpus already there as converged:
+ * a green "nothing to do" for a call that named no source context at all.
+ * Each case below writes exactly that corpus, so the unguarded sweep answers
+ * instead of throwing.
+ */
+describe('reEncryptObjectStorage — #1048 info is refused before the corpus is touched', () => {
+  const newInfo = 'acme/prod/snapshot/v1';
+  const sameVersionRing = { active: { version: 1, key: v1 } };
+
+  /** Every backend call the sweep makes, by method name. */
+  function countingBackend(backend: ObjectStorageBackend, calls: string[]): ObjectStorageBackend {
+    return new Proxy(backend, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver) as unknown;
+        if (typeof value !== 'function') return value;
+        return (...callArguments: unknown[]) => {
+          calls.push(String(property));
+          return (value as (...forwarded: unknown[]) => unknown).apply(target, callArguments);
+        };
+      },
+    });
+  }
+
+  async function corpusAtNewInfo(): Promise<FilesystemObjectStorageBackend> {
+    const backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption({ mode: 'client-aes256-gcm', masterKeys: sameVersionRing, info: newInfo });
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await store.save('user-1', 1, { balance: 100 });
+    await store.save('user-2', 1, { balance: 200 });
+    return backend;
+  }
+
+  test('a missing info is refused, not reported as an already-converted corpus', async () => {
+    const calls: string[] = [];
+    const backend = countingBackend(await corpusAtNewInfo(), calls);
+    // The cast is the premise: the type says `info` is required, the caller
+    // this guards is the one the type never reached.
+    const options = { keyPrefix: '', keyring: sameVersionRing, newInfo } as unknown as ReEncryptOptions;
+    await expect(reEncryptObjectStorage(backend, options)).rejects.toThrow(/info must be a non-empty string/);
+    expect(calls).toEqual([]);
+  });
+
+  test('an empty info is refused the same way', async () => {
+    const calls: string[] = [];
+    const backend = countingBackend(await corpusAtNewInfo(), calls);
+    await expect(reEncryptObjectStorage(backend, { keyPrefix: '', keyring: sameVersionRing, info: '', newInfo }))
+      .rejects.toThrow(/info must be a non-empty string/);
+    expect(calls).toEqual([]);
+  });
+
+  test('an explicitly empty newInfo is refused rather than becoming the write context', async () => {
+    const calls: string[] = [];
+    const backend = countingBackend(await corpusAtNewInfo(), calls);
+    await expect(reEncryptObjectStorage(backend, { keyPrefix: '', keyring: sameVersionRing, info: newInfo, newInfo: '' }))
+      .rejects.toThrow(/newInfo must be a non-empty string/);
+    expect(calls).toEqual([]);
   });
 });
 
