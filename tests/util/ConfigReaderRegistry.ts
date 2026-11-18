@@ -1258,10 +1258,12 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.grpc.client.serviceName, 'Orders'],
     [ConfigKeys.io.broker.grpc.client.endpoint, 'orders.local:50051'],
     [ConfigKeys.io.broker.grpc.client.deadline, '2s'],
+    [ConfigKeys.io.broker.grpc.client.streamIdleTimeout, '5m'],
     [ConfigKeys.io.broker.grpc.server.protoPath, './service.proto'],
     [ConfigKeys.io.broker.grpc.server.packageName, 'orders.v1'],
     [ConfigKeys.io.broker.grpc.server.serviceName, 'Orders'],
     [ConfigKeys.io.broker.grpc.server.bind, '0.0.0.0:50051'],
+    [ConfigKeys.io.broker.grpc.server.maxPendingRequestMessages, 1024],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.jetstream.servers, ['nats://a:4222']],

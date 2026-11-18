@@ -118,6 +118,16 @@ gelingt also nie versehentlich.
 Ein `onData`-Subscriber erhält `GrpcRequestStreamInbound` — entweder
 `{ kind: 'chunk', chunk }` oder `{ kind: 'end' }`.
 
+Frames, die eintreffen, bevor der Handler `onData` aufruft, werden
+zurückgehalten und ihm danach nachgereicht, denn der Handler läuft
+erst einen Turn nach dem Eintreffen des Calls.  Dieser Puffer ist
+begrenzt: Ab mehr als `withMaxPendingRequestMessages(n)` Frames
+(Standardwert `1024`) endet der Call mit `RESOURCE_EXHAUSTED`
+(Status-Code 8), und die zurückgehaltenen Frames werden verworfen.
+Die Grenze gilt nur für die Zeit vor der ersten Subscription; ein
+Handler, der `onData` in dem Turn aufruft, in dem er den Call erhält,
+erreicht sie nie.
+
 ## Client
 
 ```ts
@@ -196,7 +206,21 @@ Actor routet die Antwort und alle Stream-Frames dorthin.
 **Unary**-Calls.  Ein gRPC-Deadline umfasst den gesamten RPC, und ein
 einzelner Wert kann nicht zugleich einen Request/Response-Call zügig
 scheitern lassen und einen langlebigen Stream laufen lassen — die drei
-Streaming-Modi bleiben deshalb unbegrenzt.
+Streaming-Modi haben deshalb keinen Deadline.
+
+Stattdessen haben sie einen **Idle-Timeout**.  Ein Server-Stream-,
+Client-Stream- oder Bidi-Call, über den
+`.withStreamIdleTimeoutMs(300000)` lang (der Standardwert, fünf
+Minuten) nichts geflossen ist, wird abgebrochen, und sein `target`
+erhält genau einen abschließenden Frame, der den Timeout nennt:
+`stream-error` für einen Server- oder Bidi-Stream, `rpc-error` für
+einen Client-Stream.  Jeder Frame in beide Richtungen setzt ihn
+zurück, auch das eigene `clientStreamSend` / `bidiSend` des Aufrufers;
+ein Stream, der weiter spricht, lebt also so lange er will.  Was er
+abräumt, ist eine Gegenseite, die noch verbunden ist und nicht mehr
+antwortet.  `0` schaltet ihn ab.  Ein Service, dessen Streams
+absichtlich länger als fünf Minuten schweigen, sollte einen Heartbeat
+senden oder den Wert erhöhen.
 
 ### Eingehende Frames
 
@@ -333,7 +357,8 @@ sind fortlaufend, und wer eine kennt, kennt auch die nächste.
 Server-Stream-Calls tragen ebenfalls eine `streamId` auf ihren
 `stream-data`- / `stream-end`-Frames, sodass ein einzelner
 Collector mehrere gleichzeitige Streams multiplexen kann.  Streams
-bleiben offen, bis eine Seite sie schließt oder der Actor stoppt.
+bleiben offen, bis eine Seite sie schließt, der Actor stoppt oder der
+Idle-Timeout sie abräumt.
 
 #### Handles, die nicht mehr auflösen
 
@@ -546,6 +571,8 @@ actor-ts.io.broker.grpc {
     package-name = "sensor.v1"
     service-name = "SensorService"
     bind         = "0.0.0.0:50051"
+    # Request-Stream-Frames, die vor der Subscription eines Handlers gehalten werden.
+    max-pending-request-messages = 1024
   }
   client {
     proto-path   = "./proto/sensor.proto"
@@ -553,6 +580,8 @@ actor-ts.io.broker.grpc {
     service-name = "SensorService"
     endpoint     = "sensor.svc:50051"
     deadline     = 30s
+    # Stream abbrechen, wenn so lange in keiner Richtung etwas floss; 0 = aus.
+    stream-idle-timeout = 5m
   }
 }
 ```

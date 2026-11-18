@@ -171,6 +171,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
       credentials: TLS_MATERIAL,
       deadlineMs: hocon('deadline'),
       channelOptions: GRPC_CHANNEL,
+      streamIdleTimeoutMs: hocon('stream-idle-timeout'),
     },
   },
   {
@@ -187,6 +188,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
       credentials: TLS_MATERIAL,
       health: codeOnly('supplying a HealthCheckRegistry is itself the opt-in'),
       channelOptions: GRPC_CHANNEL,
+      maxPendingRequestMessages: hocon('max-pending-request-messages'),
     },
   },
   {

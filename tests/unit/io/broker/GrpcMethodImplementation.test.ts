@@ -12,6 +12,7 @@ import {
   type GrpcUnaryCallback,
 } from '../../../../src/io/broker/GrpcServerActor.js';
 import { createGrpcStreamHandle } from '../../../../src/io/broker/GrpcClientActor.js';
+import { DEFAULT_MAX_PENDING_REQUEST_MESSAGES } from '../../../../src/io/broker/GrpcServerOptions.js';
 
 /**
  * Server-side call shapes for all four gRPC call classes (#5).
@@ -383,5 +384,99 @@ describe('createGrpcStreamHandle — the client-stream write capability (#5)', (
   test('tokens do not repeat across a batch', () => {
     const tokens = new Set(Array.from({ length: 500 }, (_, i) => createGrpcStreamHandle(i).token));
     expect(tokens.size).toBe(500);
+  });
+});
+
+/**
+ * The pre-subscribe hold is bounded (#1039).
+ *
+ * It exists because the handler subscribes a turn after the call arrives —
+ * but the peer, not the handler, decides how long the RPC stays open and how
+ * fast it streams, so a handler that never subscribes would otherwise let one
+ * client fill the server's memory.  Past the cap the call ends with
+ * RESOURCE_EXHAUSTED (8) and what was held is dropped, on both call classes
+ * that stream their requests.
+ */
+describe('buildGrpcMethodImplementation — the pre-subscribe buffer is capped (#1039)', () => {
+  const RESOURCE_EXHAUSTED = 8;
+
+  test('a client stream past the cap is answered RESOURCE_EXHAUSTED and its buffer dropped', () => {
+    const calls: GrpcClientStreamCall[] = [];
+    const implementation = buildGrpcMethodImplementation(
+      'Collect', { kind: 'clientStream', target: recordingRef(calls) }, 3,
+    ) as ClientStreamImplementation;
+    const fake = fakeReadableCall();
+    const answers: unknown[] = [];
+    implementation(fake.call, (err) => { answers.push(err); });
+
+    for (let i = 0; i < 3; i++) fake.pushData({ i });
+    // Exactly at the cap is still a request being held for its handler.
+    expect(answers).toEqual([]);
+
+    fake.pushData({ i: 3 });
+    expect(answers).toHaveLength(1);
+    expect((answers[0] as { code: number }).code).toBe(RESOURCE_EXHAUSTED);
+
+    // Nothing held survives the refusal, and nothing arriving after it is kept.
+    fake.pushData({ i: 4 });
+    const received: GrpcRequestStreamInbound[] = [];
+    calls[0]!.onData(recordingRef(received));
+    fake.pushData({ i: 5 });
+    expect(received).toEqual([]);
+
+    // The handler can no longer answer a call that has already been refused.
+    calls[0]!.respond({ total: 6 });
+    expect(answers).toHaveLength(1);
+  });
+
+  test('a bidi call past the cap fails with RESOURCE_EXHAUSTED once', () => {
+    const calls: GrpcBidiCall[] = [];
+    const implementation = buildGrpcMethodImplementation(
+      'Chat', { kind: 'bidi', target: recordingRef(calls) }, 2,
+    ) as ReadableImplementation;
+    const fake = fakeReadableCall();
+    implementation(fake.call);
+
+    for (let i = 0; i < 5; i++) fake.pushData({ i });
+    expect(fake.errors).toHaveLength(1);
+    expect(fake.errors[0]!.code).toBe(RESOURCE_EXHAUSTED);
+
+    const received: GrpcRequestStreamInbound[] = [];
+    calls[0]!.onData(recordingRef(received));
+    expect(received).toEqual([]);
+    calls[0]!.send({ text: 'too late' });
+    expect(fake.written).toEqual([]);
+  });
+
+  test('the cap bounds only the hold: a subscribed stream takes any number of frames', () => {
+    const calls: GrpcClientStreamCall[] = [];
+    const implementation = buildGrpcMethodImplementation(
+      'Collect', { kind: 'clientStream', target: recordingRef(calls) }, 2,
+    ) as ClientStreamImplementation;
+    const fake = fakeReadableCall();
+    const answers: unknown[] = [];
+    implementation(fake.call, (err) => { answers.push(err); });
+
+    fake.pushData({ i: 0 });
+    const received: GrpcRequestStreamInbound[] = [];
+    calls[0]!.onData(recordingRef(received));
+    for (let i = 1; i < 10; i++) fake.pushData({ i });
+
+    expect(answers).toEqual([]);
+    expect(received).toHaveLength(10);
+  });
+
+  test('without an explicit cap the built-in default applies', () => {
+    const calls: GrpcBidiCall[] = [];
+    const implementation = buildGrpcMethodImplementation(
+      'Chat', { kind: 'bidi', target: recordingRef(calls) },
+    ) as ReadableImplementation;
+    const fake = fakeReadableCall();
+    implementation(fake.call);
+
+    for (let i = 0; i < DEFAULT_MAX_PENDING_REQUEST_MESSAGES; i++) fake.pushData({ i });
+    expect(fake.errors).toEqual([]);
+    fake.pushData({ i: DEFAULT_MAX_PENDING_REQUEST_MESSAGES });
+    expect(fake.errors.map((e) => e.code)).toEqual([RESOURCE_EXHAUSTED]);
   });
 });

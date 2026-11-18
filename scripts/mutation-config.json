@@ -479,6 +479,28 @@
       "tests/unit/io/broker/BrokerShutdownPhase.test.ts",
       "tests/unit/io/broker/GrpcServerOptionsSurface.test.ts"
     ],
+    "src/io/broker/GrpcClientActor.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/GrpcClientActor.test.ts",
+      "tests/unit/io/broker/GrpcMethodImplementation.test.ts"
+    ],
+    "src/io/broker/GrpcClientOptions.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerOptionsValidators.test.ts",
+      "tests/unit/io/broker/GrpcClientActor.test.ts"
+    ],
+    "src/io/broker/GrpcServerActor.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/GrpcHealthService.test.ts",
+      "tests/unit/io/broker/GrpcMethodImplementation.test.ts",
+      "tests/unit/io/broker/GrpcServerActor.test.ts"
+    ],
+    "src/io/broker/GrpcServerOptions.ts": [
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/BrokerOptionsValidators.test.ts",
+      "tests/unit/io/broker/GrpcMethodImplementation.test.ts",
+      "tests/unit/io/broker/GrpcServerOptionsSurface.test.ts"
+    ],
     "src/io/broker/KafkaActor.ts": [
       "tests/integration/in-process/io/broker/KafkaActor.test.ts",
       "tests/integration/in-process/io/broker/Phase2.smoke.test.ts",
