@@ -468,6 +468,10 @@ const doorBindings = new Map<string, readonly EmittedBinding[]>(
  * Both need a call graph or a taint analysis, not a namespace walk.  So the
  * claim is: no door re-exports these bindings — under any name, through any
  * depth of `export * as`, but as *bindings*, not as effects.
+ *
+ * The effects are `tests/unit/ci/InternalSeamMentions.test.ts`'s (#1630): it
+ * refuses the mention every wrapper starts with — a seam's name in code
+ * outside its own module, or the seam's module imported as a namespace.
  */
 const doorsReaching = (
   doors: ReadonlyMap<string, readonly EmittedBinding[]>,
