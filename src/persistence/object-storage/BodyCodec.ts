@@ -190,8 +190,7 @@ export type DecodeOptions = {
    * key at all.  `allowUnencryptedBodies: true` re-admits plaintext
    * bodies for the migration window of a corpus written before
    * encryption was enabled, and for the tools that rewrite a body
-   * without deciding what it means (the re-encryption sweep, the
-   * layout migration).
+   * without deciding what it means (the re-encryption sweep).
    */
   readonly encryption?:
     & ({ readonly subKey: Uint8Array } | { readonly subKeyFor: SubKeyResolver })
