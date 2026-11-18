@@ -112,6 +112,16 @@ const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
   .withLog((message) => logger.warn(message));
 ```
 
+With `Cluster.bootstrap({ discovery: 'dns' })` — or `'auto'`, which
+builds the same provider — there is no provider to hand options
+to.  The pin is set in configuration instead, and reaches the
+provider the shorthand builds, along with the log that reports
+what it discards (#1107):
+
+```hocon
+actor-ts.discovery.dns.pinned-addresses = ["10.0.0.0/8"]
+```
+
 **Entry shape depends on the mode**, because the two modes resolve
 to different things:
 
