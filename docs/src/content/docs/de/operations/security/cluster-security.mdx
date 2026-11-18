@@ -778,11 +778,10 @@ Regeln:
   ist, und sie anzunehmen ist harmlos, denn ein joinender
   Knoten will ohnehin `up` werden. Begrenzt wird sie dadurch,
   wie wenig sie transportiert: den Status und eine Version, die
-  nur die Obergrenze `maxVersionSkewMs` beschränkt (standardmäßig
-  5 Minuten, siehe *Eine Version kann keine Adresse im Voraus
-  beanspruchen* unten) — ein Fremder kann den Record dieses
-  Knotens also bis zu so weit in die Zukunft datieren; die
-  Version zu klemmen verfolgt #1797. Mehr kommt nicht
+  höchstens einen Schritt über dem Record liegt, den dieser
+  Knoten hält — den Schritt, den eine echte Beförderung durch
+  den Leader macht —, ein Fremder kann den Record dieses Knotens
+  also nicht in die Zukunft datieren (#1797). Mehr kommt nicht
   herüber. Die Beförderung fragt nichts über ihren Absender,
   deshalb muss dieser Knoten seine eigenen Rollen, Inkarnation,
   Storage-Identitäten, Konfigurationsfakten und App-Version

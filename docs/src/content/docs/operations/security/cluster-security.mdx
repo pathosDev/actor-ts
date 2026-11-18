@@ -717,11 +717,10 @@ sit in front of the merge:
   outside because it is the leader's decision — and which is
   harmless to accept, since a joining node is already trying
   to become `up`. What bounds it is how little it carries: the
-  status, and a version limited only by the `maxVersionSkewMs`
-  cap (5 minutes by default, see *A version cannot claim an
-  address in advance* below), so a stranger can date this node's
-  record up to that far ahead — clamping the version is
-  tracked in #1797. Nothing else crosses over. The promotion asks
+  status, and a version at most one step past the record this
+  node holds — the step a genuine leader promotion takes — so a
+  stranger cannot date this node's record ahead (#1797). Nothing
+  else crosses over. The promotion asks
   nothing of its sender, which is why this node has to keep its
   own roles, incarnation, storage identities, configuration facts
   and app version over whatever the record says. Before #1104 the

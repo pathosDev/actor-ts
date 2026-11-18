@@ -4873,11 +4873,18 @@ export class Cluster {
    * local record for the same reason: the only status a claim about this node
    * may set is `up`, and a tombstone timestamp belongs to no `up` record.
    *
-   * What a promotion still carries is the status and the record's
-   * **version**, which is taken as sent — bounded by the #114 skew cap
-   * ({@link admitsVersion}, `maxVersionSkewMs`) and by nothing else, so a
-   * stranger can still push this node's version up to that bound.  Clamping it
-   * is tracked in #1797; this method deliberately leaves it alone.
+   * What a promotion carries is the status, and a **version** no more than
+   * one step past the record this node holds (#1797).  Taken as sent, the
+   * version was bounded only by the #114 skew cap ({@link admitsVersion},
+   * `maxVersionSkewMs`), so a stranger could date this node's own record up
+   * to five minutes ahead; the node gossiped it on as its own, and a restart
+   * inside that window lost to the ghost, its new seed version below it.  A
+   * genuine promotion is always the `withStatus` successor of a record this
+   * node gossiped — `joining@E` → `up@E+1`, `weakly-up@E+1` → `up@E+2`, and
+   * the #935 tie `weakly-up@E+1` against `up@E+1` stays a tie — so the clamp
+   * takes nothing from it.  Peers that learn the record from this node
+   * converge on the clamped version; a peer a stranger feeds directly holds
+   * what the stranger sent, which is the third-party claim #114 bounds.
    *
    * Substituting the local address is the one incarnation comparison that needs
    * no distributed agreement, because it only ever discards a peer's claim in
@@ -4925,8 +4932,11 @@ export class Cluster {
     // about it is an echo of ours or wrong.  Taken outright rather than with
     // `??`, so a promotion cannot hand a node that states none a label either.
     const ownAppVersion = this.selfAppVersion;
-    const ownRemovedAt = this.members.get(this.selfAddress.toString())?.removedAt;
+    const local = this.members.get(this.selfAddress.toString());
+    const ownRemovedAt = local?.removedAt;
+    const version = local === undefined ? member.version : Math.min(member.version, local.version + 1);
     if (member.address.incarnation === this.selfAddress.incarnation
+      && version === member.version
       && ownIdentities === member.storageIdentities
       && ownFacts === member.configurationFacts
       && ownAppVersion === member.appVersion
@@ -4935,7 +4945,7 @@ export class Cluster {
       return member;
     }
     return new Member(
-      this.selfAddress, member.status, member.version, this.selfRoles, ownRemovedAt,
+      this.selfAddress, member.status, version, this.selfRoles, ownRemovedAt,
       ownIdentities, ownFacts, ownAppVersion,
     );
   }
