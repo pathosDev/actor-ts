@@ -14,6 +14,7 @@ export {
   ConsumerControllerOptions,
   ConsumerControllerOptionsBuilder,
   ConsumerControllerOptionsValidator,
+  DEFAULT_MAX_INCARNATIONS_PER_PRODUCER,
   DEFAULT_MAX_OUT_OF_ORDER,
   DEFAULT_MAX_PRODUCERS,
   DEFAULT_PRODUCER_IDLE_TTL_MS,

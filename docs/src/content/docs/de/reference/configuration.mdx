@@ -2061,6 +2061,7 @@ beim ersten Zugriff auf die `HttpExtension`.
 | `reliable-delivery.consumer.max-producers` | `1024` | Für wie viele Producer der Consumer gleichzeitig Deduplizierungs-Zustand hält.  An der Grenze wird der am längsten unbenutzte Eintrag verdrängt.  `0` = unbegrenzt. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | Wie lange der Deduplizierungs-Eintrag eines Producers ohne Zustellung von ihm überlebt; der Sweep läuft in genau diesem Intervall.  `0` schaltet den Sweep ab. |
 | `reliable-delivery.consumer.max-out-of-order` | `1024` | Wie viele Sequenzen der Consumer für einen Producer oberhalb einer offenen Lücke höchstens behält.  An der Grenze wird ein Delivery abgewiesen — kein Handler-Aufruf, keine Bestätigung —, und dieser Producer steht, bis sich die Lücke schließt.  Halte den Wert über der `window-size` jedes Producers.  `0` = unbegrenzt. |
+| `reliable-delivery.consumer.max-incarnations-per-producer` | `4` | Für wie viele Inkarnationen einer `producerId` der Consumer höchstens ein Deduplizierungs-Fenster hält, die aktuelle eingeschlossen.  Eine neue Inkarnation wird neben der aktuellen gehalten und erst befördert, wenn die aktuelle `producer-idle-time-to-live` lang still war; über der Grenze wird ein Delivery unter einer weiteren Inkarnation abgewiesen — ein Dead Letter, kein Handler-Aufruf, keine Bestätigung.  `0` = unbegrenzt. |
 
 Beide Blöcke liegen unter dem, was `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` übergeben bekommt — ein explizites
@@ -2071,7 +2072,7 @@ danach injiziert —, deshalb behält ein Controller, den du selbst konstruierst
 und an `system.spawn` übergibst, seine eingebauten Defaults und sieht diesen
 Block nie.
 
-`0` ist die Schreibweise, mit der alle drei Consumer-Grenzen das `Infinity`
+`0` ist die Schreibweise, mit der alle vier Consumer-Grenzen das `Infinity`
 ihrer Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt
 nicht schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
 Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
@@ -2082,7 +2083,9 @@ auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0` bei
 Consumer behält: ein Eintrag je verschiedener Id, nie freigegeben.  `0` bei
 `max-out-of-order` tut dasselbe innerhalb eines Eintrags: ein Sender, der eine
 Sequenz zurückhält und die folgenden weiter schickt, lässt die Menge dieses
-Producers wachsen, solange er weitermacht.
+Producers wachsen, solange er weitermacht.  `0` bei
+`max-incarnations-per-producer` lässt einen Sender für jede erfundene
+Inkarnation eines Producers ein eigenes Deduplizierungs-Fenster anlegen.
 
 `max-out-of-order` ist eine Untergrenze ebenso wie eine Obergrenze.  Ein
 Producer hat `window-size` Sends unterwegs, wenn sich eine Lücke öffnet — eine

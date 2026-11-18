@@ -108,7 +108,6 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/crdt/LWWMap.ts': 2,
   'src/crdt/LWWRegister.ts': 1,
   'src/deadletters/DeadLetterQueue.ts': 2,
-  'src/delivery/ConsumerController.ts': 4,
   'src/devtools/cluster/Federation.ts': 3,
   'src/devtools/internal/ClusterMembership.ts': 3,
   'src/devtools/internal/NodeSampler.ts': 1,

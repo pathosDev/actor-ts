@@ -1922,6 +1922,7 @@ server with a WebSocket route — not when the `HttpExtension` is first fetched.
 | `reliable-delivery.consumer.max-producers` | `1024` | Most producers the consumer keeps deduplication state for at once.  At the cap the least-recently-used entry is evicted.  `0` = unbounded. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | How long a producer's deduplication entry survives with no delivery from it; the sweep runs on this same interval.  `0` turns the sweep off. |
 | `reliable-delivery.consumer.max-out-of-order` | `1024` | Most sequences the consumer retains for one producer above an open gap.  At the cap a delivery is refused — no handler call, no acknowledgment — and that producer stalls until the gap closes.  Keep it above every producer's `window-size`.  `0` = unbounded. |
+| `reliable-delivery.consumer.max-incarnations-per-producer` | `4` | Most incarnations of one `producerId` the consumer holds a deduplication window for, the live one included.  A new incarnation is held beside the live one and promoted only once the live one has been quiet for `producer-idle-time-to-live`; past the cap a delivery under yet another incarnation is refused — a dead letter, no handler call, no acknowledgment.  `0` = unbounded. |
 
 Both blocks layer under whatever `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` was passed, so an explicit `withWindowSize(…)`
@@ -1931,7 +1932,7 @@ context the cell injects afterwards — so a controller you construct yourself
 and hand to `system.spawn` keeps its built-in defaults and never sees this
 block.
 
-`0` is how all three consumer bounds spell the `Infinity` their option fields
+`0` is how all four consumer bounds spell the `Infinity` their option fields
 document, because `Infinity` cannot be written in HOCON at all: the number
 reader takes a numeric literal and the duration parser refuses a non-finite
 value.  It is the same spelling `cluster.max-members` and
@@ -1941,7 +1942,8 @@ on `max-producers` hands a peer the decision about how much this consumer
 retains — one entry per distinct id, never released.  `0` on
 `max-out-of-order` does the same inside one entry: a sender that withholds one
 sequence and keeps sending the ones after it grows that producer's set for as
-long as it keeps going.
+long as it keeps going.  `0` on `max-incarnations-per-producer` lets a sender
+mint a deduplication window per invented incarnation of one producer.
 
 `max-out-of-order` is a floor as well as a bound.  A producer has
 `window-size` sends in flight when a gap opens, so a cap below the largest

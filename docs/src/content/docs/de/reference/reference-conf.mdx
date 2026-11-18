@@ -1498,7 +1498,7 @@ actor-ts {
   }
 
   # Reliable delivery -- the push+ack protocol behind ReliableDelivery.producer
-  # and ReliableDelivery.consumer.  These five layer UNDER whatever those two
+  # and ReliableDelivery.consumer.  These six layer UNDER whatever those two
   # statics were passed, so an explicit withWindowSize(...) still wins.  They
   # are read THERE and nowhere else: neither controller can read config from
   # its constructor, so one constructed directly and handed to system.spawn
@@ -1549,6 +1549,21 @@ actor-ts {
       # producer's set for as long as it keeps sending, the growth #728
       # bounded.
       max-out-of-order = 1024
+
+      # Most incarnations of ONE producerId held at once, the live one
+      # included.  A delivery under an incarnation the consumer has not seen
+      # does not replace the live window: anybody who can reach the consumer
+      # can name a live producerId, so a replacement would let one envelope
+      # empty that producer's duplicate suppression (#1237).  The new
+      # incarnation is held beside the old one, deduplicated in its own
+      # window, and promoted -- the old window dropped -- once the old one has
+      # gone quiet for producer-idle-time-to-live.  Past the cap a delivery
+      # under yet another incarnation is refused as a dead letter, with no
+      # handler call and no acknowledgment, so its producer retransmits it
+      # until a held incarnation goes quiet.  4 covers a producer that
+      # restarts three times inside one idle TTL; 0 -- unbounded -- lets a
+      # sender mint windows for one producerId without limit.
+      max-incarnations-per-producer = 4
     }
   }
 

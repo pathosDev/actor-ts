@@ -281,6 +281,19 @@
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
     ],
+    "src/delivery/ConsumerController.ts": [
+      "tests/unit/delivery/ConsumerControllerUnhandled.test.ts",
+      "tests/unit/delivery/ConsumerIncarnationChangeover.test.ts",
+      "tests/unit/delivery/ConsumerReplyToAcrossNodes.test.ts",
+      "tests/unit/delivery/DeliveryOrderingProperties.test.ts",
+      "tests/unit/delivery/MultipleConsumers.test.ts",
+      "tests/unit/delivery/ReliableDelivery.test.ts"
+    ],
+    "src/delivery/ConsumerControllerOptions.ts": [
+      "tests/unit/config/ReliableDeliveryConfigDefaults.test.ts",
+      "tests/unit/delivery/ConsumerIncarnationChangeover.test.ts",
+      "tests/unit/options/NonBrokerOptionsValidators.test.ts"
+    ],
     "src/discovery/Receptionist.ts": [
       "tests/unit/discovery/Receptionist.test.ts",
       "tests/unit/discovery/ReceptionistGossipClaims.test.ts",
@@ -711,8 +724,17 @@
       "tests/unit/persistence/ProjectionRequiredOptions.test.ts",
       "tests/unit/persistence/TagLookbackWindow.test.ts"
     ],
+    "src/persistence/relational/RelationalDurableStateStore.ts": [
+      "tests/integration/in-process/persistence/PersistenceIdEnforcement.test.ts",
+      "tests/unit/persistence/CollationAdvisory.test.ts",
+      "tests/unit/persistence/StorageIdentity.test.ts"
+    ],
     "src/persistence/relational/RelationalJournal.ts": [
       "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
+      "tests/unit/persistence/CollationAdvisory.test.ts"
+    ],
+    "src/persistence/relational/RelationalSnapshotStore.ts": [
+      "tests/integration/in-process/persistence/PersistenceIdEnforcement.test.ts",
       "tests/unit/persistence/CollationAdvisory.test.ts"
     ],
     "src/persistence/replicated/ConflictResolver.ts": [
@@ -733,15 +755,6 @@
       "tests/integration/in-process/persistence/replicated/ResolverWiring.test.ts",
       "tests/integration/in-process/persistence/replicated/SingleWriter.test.ts",
       "tests/integration/in-process/persistence/replicated/Snapshotting.test.ts"
-    ],
-    "src/persistence/relational/RelationalDurableStateStore.ts": [
-      "tests/integration/in-process/persistence/PersistenceIdEnforcement.test.ts",
-      "tests/unit/persistence/CollationAdvisory.test.ts",
-      "tests/unit/persistence/StorageIdentity.test.ts"
-    ],
-    "src/persistence/relational/RelationalSnapshotStore.ts": [
-      "tests/integration/in-process/persistence/PersistenceIdEnforcement.test.ts",
-      "tests/unit/persistence/CollationAdvisory.test.ts"
     ],
     "src/runtime/http/BunHonoRunner.ts": [
       "tests/integration/in-process/http/websocket/HonoWebsocket.test.ts",
