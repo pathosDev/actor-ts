@@ -1281,9 +1281,11 @@ bleibt, ausgesprochen, damit niemand mehr erwartet:
 - Ein Knoten, dessen Uhr um mehr als den Vorlauf nach vorn springt,
   wird mit seinem Gossip abgewiesen, bis eine Minute solcher Frames
   den Empfänger seine Ablesung vergessen lässt. Ein Knoten von vor
-  v0.19 nummeriert seine Frames mit einem Zähler statt mit seiner
-  Uhr, gegen ihn nagelt ein Frame an der Kante also so lange fest,
-  wie dieser Zähler braucht, um darüber zu klettern.
+  v0.19, der seine Frames mit einem Zähler statt mit seiner Uhr
+  nummeriert, kommt gar nicht so weit: v0.19.0 spricht nur
+  Cluster-Wire-Version 3 und weist einen solchen Knoten beim
+  Handshake ab, also stempelt jeder Absender, dessen Gossip diese
+  Schranke erreicht, ihn mit seiner Uhr.
 
 Eine Adresse trägt zusätzlich eine **Inkarnation**: welcher
 *Prozess* unter diesem `system@host:port` antwortet, einmal pro

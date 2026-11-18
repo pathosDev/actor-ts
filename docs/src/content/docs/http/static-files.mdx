@@ -113,17 +113,16 @@ Two things follow from setting it:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Streaming is opt-in for a reason">
-  A stream body is **one-shot**, and two first-party pieces still mishandle
-  one: `idempotent()` serialises a body by checking for `Uint8Array`, so a
+  A stream body is **one-shot**, and one first-party piece still mishandles
+  it: `idempotent()` serialises a body by checking for `Uint8Array`, so a
   streamed response is stored as an empty object and the replay serves
-  nothing (#674); and the Express backend pipes a stream with no error
-  handler, so a mid-response failure takes the process or the request with it
-  (#979). `cached()` passes a streamed response through uncached (#980), so
-  combining it with `streamThreshold` is safe but caches nothing above the
-  threshold. Until those land, do not combine `streamThreshold` with
-  `idempotent()`, and prefer the default Fastify backend for a streaming
-  mount. Leaving streaming off is why the
-  out-of-the-box static route is unaffected by both.
+  nothing (#674). `cached()` passes a streamed response through uncached
+  (#980), so combining it with `streamThreshold` is safe but caches nothing
+  above the threshold. The backends are not the problem: all three — Fastify,
+  Express and Hono — report a stream body that fails, whether before its first
+  byte or after it (#979, #1829, #1830). Until #674 lands, do not combine
+  `streamThreshold` with `idempotent()`. Leaving streaming off is why the
+  out-of-the-box static route is unaffected.
 </Aside>
 
 <Aside type="note" title="Options only — no HOCON">

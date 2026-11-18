@@ -36,6 +36,14 @@ Nodes auf der neuen Version starten. Keine Zwischenversion macht eine dieser
 Etappen rollbar, ein Sprung über mehrere davon braucht also dieselbe
 Behandlung — einmal statt einmal pro Etappe.
 
+**Eine `ClusterClient`-Anwendung zieht im selben Fenster mit.** Eine separat
+deployte Anwendung, die den Cluster über
+[`ClusterClient`](/de/cluster/cluster-client/) erreicht, kündigt die
+Cluster-Wire-Version in ihrem eigenen `hello` an, und der Cluster prüft sie
+genau wie die eines Nodes: Ein v0.19.0-Cluster weist einen v0.18-Client ab,
+und ein v0.18-Cluster einen v0.19.0-Client.  Aktualisiere diese Anwendungen
+im selben Stopp-und-Start-Fenster wie die Nodes.
+
 **Ab v0.18.0 sagt es der Handshake.** Jedes `hello` und `hello-ack` trägt die
 Cluster-Wire-Versionen, die der Node spricht
 ([#823](https://github.com/pathosDev/actor-ts/issues/823)), und zwei Nodes

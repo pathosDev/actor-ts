@@ -71,9 +71,14 @@ it, pin an exact version rather than a range.
 A minor bump can also change the **cluster wire**.  The CHANGELOG records
 that per release but does not summarise it across releases, and when a
 release does change it, a rolling deployment is not safe — the cluster has
-to be upgraded in one step.
+to be upgraded in one step, and so does a separately deployed application
+that connects through
+[`ClusterClient`](/cluster/cluster-client/): a client speaks the same wire,
+and from v0.18.0 on the cluster refuses one on another wire version at the
+handshake, exactly as it refuses a node.
 [Upgrade strategies](/operations/upgrades/upgrade-strategies/#cluster-wire-compatibility-per-release)
-carries the per-release table; two consecutive releases are on it.
+carries the per-release table; four consecutive releases are on it, v0.16.0
+through v0.19.0.
 
 ## Supported versions
 

@@ -9,6 +9,18 @@ ausrollst — **ohne Downtime** und **ohne koordinierte Stops**.
 Jeder Node bedient weiter Traffic, während die neue Version
 Instanz-für-Instanz rausgeht.
 
+> **Nur innerhalb einer Release-Linie.** Ein Rolling Deploy setzt
+> voraus, dass alte und neue Nodes ein paar Minuten lang miteinander
+> reden können. Ein Release, das die Cluster-Wire-Version ändert —
+> das tat jedes Release von v0.16.0 bis v0.19.0 —, bricht diese
+> Annahme: Aktualisiere den Cluster dann in einem Schritt (alle Nodes
+> stoppen, dann alle Nodes auf der neuen Version starten), zusammen
+> mit jeder Anwendung, die sich über `ClusterClient` verbindet. Das
+> Muster unten gilt für die Schema- und Schlüsseländerungen, die du
+> zwischen solchen Releases ausrollst. Die Tabelle pro Release steht
+> unter
+> [Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/#cluster-wire-kompatibilität-pro-release).
+
 Die Rolling-Deploy-Story des Frameworks baut auf vier
 ausgelieferten Features:
 

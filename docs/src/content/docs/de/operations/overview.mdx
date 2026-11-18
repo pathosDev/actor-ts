@@ -103,7 +103,12 @@ lässt.
 ## Upgrades
 
 Das Framework unterstützt **rolling Deployments ohne Downtime**,
-wenn entsprechend konfiguriert. Zwei getrennte Anliegen:
+wenn entsprechend konfiguriert, innerhalb einer Release-Linie. Ein
+Release, das die Cluster-Wire-Version ändert — das tat jedes Release
+von v0.16.0 bis v0.19.0 —, lässt sich nicht rollen: alle Nodes
+stoppen, dann alle Nodes auf der neuen Version starten.
+[Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/#cluster-wire-kompatibilität-pro-release)
+nennt, welche Releases das sind. Zwei getrennte Anliegen:
 
 - **Code-Rollouts** — Ersetzen der Node-Binaries, während der
   Cluster läuft. Übernimmt K8s Rolling Update + Coordinated
