@@ -219,6 +219,18 @@ eigene Name macht jeden bewussten Off-Origin-Sprung mit einem Befehl
 auffindbar. Übergib eine Konstante oder ein Ziel aus deiner Allowlist —
 nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
 
+**Der Server prüft jeden Redirect, den er sendet, nicht nur die, die
+`redirect` baut** (#1056).  Ein `301`/`302`/`303`/`307`/`308`, dessen
+`location` auf einen anderen Host als den des Requests zeigt, wird mit der
+generischen `500` abgewiesen — ob ein Handler den Header selbst geschrieben
+hat (`complete(Status.Found, null, { location })`), ein geworfener
+`HttpError` ihn trägt oder eine `fallback()`-Route damit geantwortet hat.
+Die Abweisung wird auf `error` geloggt, ohne das Ziel.  Zwei Opt-ins lassen
+einen Redirect gehen: `redirectExternal(...)` pro Route und serverweit
+`withAllowedRedirectOrigins([...])` an `newServerAt(...)`, das exakte
+Origins nimmt (`https://payments.example`, ohne Pfad) oder `['*']`, um die
+Prüfung abzuschalten.  Ein leeres Ziel lehnt `redirect('')` mit `400` ab.
+
 ## Untrusted Input begrenzen
 
 - **Request-Bodies** sind auf jedem Backend bei **1 MiB** gekappt, und ein
@@ -518,7 +530,7 @@ einem angenommenen — die 101 schreibt das Backend selbst.  Siehe
 | CSRF (Browser-Formulare) | `csrfProtection(...)` |
 | API-Authentifizierung | `JwtAuth(...)` — Signatur, `exp`, `iss` und `aud` gegen die Schlüssel deines Ausstellers geprüft; `BearerTokenAuth(...)` für ein vorab geteiltes Operator-Token |
 | Keine internen Fehler-Leaks | `withErrorHandler` + generische Bodies |
-| Keine Open Redirects | `redirect(...)` — same-origin per Default |
+| Keine Open Redirects | jeder 3xx des Servers bleibt auf dem Origin des Requests, außer `redirectExternal(...)` oder `withAllowedRedirectOrigins(...)` erlaubt es |
 | Request-Korrelation | `requestId()` |
 | Begrenzte Latenz | `requestTimeout(...)` — die Frist auch aus `actor-ts.http.request-timeout` |
 | Sichere Dateiauslieferung | `getFromDirectory`-Defaults (dotfiles deny, Symlink-Confinement) |

@@ -530,9 +530,65 @@ function assertSameOriginTarget(url: string): void {
  * Use {@link redirectExternal} when leaving the origin is the intent.
  */
 export function redirect(url: string, status: number = Status.Found): HttpResponse {
+  // An empty `location` sends the browser back to the URL it asked for — a
+  // loop, never what a caller meant, so it is refused like any bad target
+  // (#1056).
+  if (url.trim() === '') throw new HttpError(Status.BadRequest, 'redirect target is empty');
   assertHeaderSafeTarget(url);
   assertSameOriginTarget(url);
   return { status, headers: { location: url }, body: null };
+}
+
+/**
+ * Marks a response {@link redirectExternal} built — the per-route opt-in the
+ * server's off-origin redirect guard honours (#1056).  A symbol key survives
+ * the object spread every decorating middleware performs, as the WebSocket
+ * accept mark does, and module-private so no handler can claim it for a
+ * response built by hand.
+ */
+const EXTERNAL_REDIRECT = Symbol('actor-ts.external-redirect');
+
+/** A response carrying the external-redirect mark. */
+type ExternalRedirectResponse = HttpResponse & { readonly [EXTERNAL_REDIRECT]: true };
+
+/** Whether `response` was built by {@link redirectExternal}.  @internal */
+export function isExplicitExternalRedirect(response: HttpResponse): boolean {
+  return (response as Partial<ExternalRedirectResponse>)[EXTERNAL_REDIRECT] === true;
+}
+
+/** The statuses whose `location` a browser follows. */
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+
+/** The `location` a redirect status carries, matched case-insensitively, or `undefined`.  @internal */
+export function redirectLocationOf(
+  status: number,
+  headers: Readonly<Record<string, string>> | undefined,
+): string | undefined {
+  if (!REDIRECT_STATUSES.has(status) || headers === undefined) return undefined;
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === 'location') return value;
+  }
+  return undefined;
+}
+
+/**
+ * The origin a `location` sends a browser to, as the browser reads it: leading
+ * whitespace ignored, backslashes read as slashes, relative references
+ * resolved against `requestHost`.  `null` for a target no browser would land
+ * on this origin with — a control character, a non-HTTP scheme, a value no
+ * URL parser accepts.  @internal
+ */
+export function redirectTargetOrigin(location: string, requestHost: string): { readonly host: string; readonly origin: string } | null {
+  if (CONTROL_CHARACTERS.test(location)) return null;
+  const candidate = location.trimStart().replaceAll('\\', '/');
+  let target: URL;
+  try {
+    target = new URL(candidate, `http://${requestHost}`);
+  } catch {
+    return null;
+  }
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return null;
+  return { host: target.host.toLowerCase(), origin: target.origin };
 }
 
 /**
@@ -550,7 +606,8 @@ export function redirect(url: string, status: number = Status.Found): HttpRespon
  */
 export function redirectExternal(url: string, status: number = Status.Found): HttpResponse {
   assertHeaderSafeTarget(url);
-  return { status, headers: { location: url }, body: null };
+  const response: ExternalRedirectResponse = { status, headers: { location: url }, body: null, [EXTERNAL_REDIRECT]: true };
+  return response;
 }
 
 /** Rejection — throw to short-circuit to a 4xx/5xx. */

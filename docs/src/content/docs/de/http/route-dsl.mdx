@@ -168,6 +168,18 @@ Nachbildung, die "nochmal" nach dem Passwort fragt.  Das Framework kann
 Handler nicht zur Prüfung zwingen — also prüft der Helper, zu dem sie
 ohnehin greifen.
 
+**Der Server prüft jeden Redirect, den er sendet, nicht nur die, die
+`redirect` baut** (#1056).  Ein `301`/`302`/`303`/`307`/`308`, dessen
+`location` auf einen anderen Host als den des Requests zeigt, wird mit der
+generischen `500` abgewiesen — ob ein Handler den Header selbst geschrieben
+hat (`complete(Status.Found, null, { location })`), ein geworfener
+`HttpError` ihn trägt oder eine `fallback()`-Route damit geantwortet hat.
+Die Abweisung wird auf `error` geloggt, ohne das Ziel.  Zwei Opt-ins lassen
+einen Redirect gehen: `redirectExternal(...)` pro Route und serverweit
+`withAllowedRedirectOrigins([...])` an `newServerAt(...)`, das exakte
+Origins nimmt (`https://payments.example`, ohne Pfad) oder `['*']`, um die
+Prüfung abzuschalten.  Ein leeres Ziel lehnt `redirect('')` mit `400` ab.
+
 ### `redirectExternal(url, status?)`
 
 ```ts

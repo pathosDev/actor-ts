@@ -484,7 +484,6 @@ describe('redirect — target validation (#125)', () => {
     ['dot-relative path', './sibling'],
     ['colon after a slash is not a scheme', '/notes/10:30'],
     ['single leading backslash reads as a path', `${BACKSLASH}dashboard`],
-    ['empty target means "this URL"', ''],
   ])('accepts a same-origin target — %s', (_label, target) => {
     const response = redirect(target);
     expect(response.status).toBe(Status.Found);
@@ -544,6 +543,17 @@ describe('redirect — target validation (#125)', () => {
     ['a Latin-1 letter', `/caf${String.fromCharCode(0xe9)}`],
   ])('accepts a character just above C1 — %s', (_label, target) => {
     expect(redirect(target).headers?.location).toBe(target);
+  });
+
+  // #1056: an empty `location` sends the browser back to the URL it asked
+  // for, which is a loop rather than a redirect, so it is refused too.
+  test.each([
+    ['empty', ''],
+    ['whitespace only', '   '],
+  ])('rejects an empty target — %s', (_label, target) => {
+    const err = thrownError(() => redirect(target));
+    expect(err.status).toBe(Status.BadRequest);
+    expect(err.message).toContain('empty');
   });
 
   test('rejects a scheme that hides a TAB — the case the runtimes let through', () => {

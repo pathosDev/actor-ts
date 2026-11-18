@@ -30,7 +30,14 @@ import { DEFAULT_REQUEST_ID_HEADER } from './middleware/RequestIdOptions.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
 import { configuredRequestDeadlineMs } from './middleware/Timeout.js';
-import { compileServerRoutes, defaultErrorResponse, type Route } from './Route.js';
+import {
+  compileServerRoutes,
+  defaultErrorResponse,
+  isExplicitExternalRedirect,
+  redirectLocationOf,
+  redirectTargetOrigin,
+  type Route,
+} from './Route.js';
 import { HttpError, Status, type HttpRequest, type HttpResponse } from './Types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
@@ -65,6 +72,20 @@ export interface ServerBuilder {
    * that supports `setErrorHandler` (all shipped backends do).
    */
   withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
+  /**
+   * Origins a redirect from **this whole server** may send the browser to
+   * (#1056).  A 301/302/303/307/308 whose `location` resolves to another
+   * origin than the request's is refused with the generic 500 — whether
+   * `redirect()` built it, a handler wrote the header itself, or an
+   * `HttpError` carries it — unless `redirectExternal()` built that response
+   * (the per-route opt-in) or its origin is named here.
+   *
+   * Each entry is an origin, `scheme://host[:port]` with no path, compared
+   * exactly: `https://pay.example` does not admit `http://pay.example`.
+   * `['*']` is the explicit opt-out and admits every target.  Throws an
+   * `Error` on an entry that is not an http(s) origin.
+   */
+  withAllowedRedirectOrigins(origins: ReadonlyArray<string>): ServerBuilder;
   /**
    * Connection-level bounds for **this whole server** — the idle window of a
    * keep-alive connection and of an HTTP/2 session, the header and request
@@ -166,6 +187,7 @@ export class HttpExtension implements Extension {
     // untouched builder has to leave it alone rather than overwrite it.
     let securityHeadersOptions: SecurityHeadersOptions | false | undefined;
     let serverOptions: HttpServerOptions | undefined;
+    let redirectPolicy: RedirectPolicy = SAME_ORIGIN_ONLY;
     const system = this.system;
     return {
       useBackend(b: HttpServerBackend): ServerBuilder {
@@ -182,6 +204,10 @@ export class HttpExtension implements Extension {
       },
       withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
         errorHandler = handler;
+        return this;
+      },
+      withAllowedRedirectOrigins(origins: ReadonlyArray<string>): ServerBuilder {
+        redirectPolicy = redirectPolicyOf(origins);
         return this;
       },
       async bind(routes: Route): Promise<ServerBinding> {
@@ -278,11 +304,15 @@ export class HttpExtension implements Extension {
               system.log.debug(`[http] ${request.method} ${request.path}`);
               try {
                 const out = await route.handler(request);
+                if (refusesRedirect(system.log, request, out, redirectPolicy)) return redirectRefusedResponse();
                 system.log.debug(
                   `[http] ${request.method} ${request.path} → ${out.status} (${Date.now() - start} ms)`,
                 );
                 return out;
               } catch (err) {
+                if (err instanceof HttpError && refusesRedirect(system.log, request, err, redirectPolicy)) {
+                  return redirectRefusedResponse();
+                }
                 // Records the id against `err` too: rethrown untouched, so an
                 // error handler gets the value the handler threw, and the
                 // backend's generic 500 writes the id its line names (#1064).
@@ -343,8 +373,12 @@ export class HttpExtension implements Extension {
             const start = Date.now();
             system.log.debug(`[http] (fallback) ${request.method} ${request.path}`);
             try {
-              return await fb.handler(request);
+              const out = await fb.handler(request);
+              return refusesRedirect(system.log, request, out, redirectPolicy) ? redirectRefusedResponse() : out;
             } catch (err) {
+              if (err instanceof HttpError && refusesRedirect(system.log, request, err, redirectPolicy)) {
+                return redirectRefusedResponse();
+              }
               // This branch answers with `defaultErrorResponse` instead of
               // re-throwing, so nothing downstream ever sees the error — the
               // log below is the only place it can survive at all.
@@ -534,6 +568,89 @@ function logRouteFailure(
     err,
   );
   return correlation;
+}
+
+/** Which off-origin redirect targets a server admits (#1056). */
+type RedirectPolicy = {
+  /** `withAllowedRedirectOrigins(['*'])` — the explicit opt-out. */
+  readonly allowAny: boolean;
+  /** Exact `URL.origin` strings a redirect may leave for. */
+  readonly origins: ReadonlySet<string>;
+};
+
+/** The default: a redirect stays on the request's origin unless `redirectExternal()` built it. */
+const SAME_ORIGIN_ONLY: RedirectPolicy = { allowAny: false, origins: new Set() };
+
+/**
+ * Validate and normalise `withAllowedRedirectOrigins` input.  An entry has to
+ * be an http(s) origin and nothing more: a path in it would suggest a prefix
+ * rule the exact origin comparison does not implement.
+ */
+function redirectPolicyOf(origins: ReadonlyArray<string>): RedirectPolicy {
+  if (origins.includes('*')) return { allowAny: true, origins: new Set() };
+  const normalised = new Set<string>();
+  for (const entry of origins) {
+    let parsed: URL | null = null;
+    try { parsed = new URL(entry); } catch { /* reported below */ }
+    if (
+      parsed === null
+      || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      || parsed.origin !== entry.replace(/\/$/, '').toLowerCase()
+    ) {
+      throw new Error(
+        `withAllowedRedirectOrigins: "${entry}" is not an origin — give scheme://host[:port] with no path, `
+        + 'for example "https://payments.example", or "*" to admit every target.',
+      );
+    }
+    normalised.add(parsed.origin);
+  }
+  return { allowAny: false, origins: normalised };
+}
+
+/**
+ * Whether the server refuses `response` as an off-origin redirect (#1056),
+ * logging the refusal if so.
+ *
+ * Runs on what the route tree produced, so a `location` written by hand
+ * (`complete(Status.Found, null, { location })`), one a thrown `HttpError`
+ * carries, and a `fallback()` answer are checked alike — `redirect()` alone
+ * guarded only the targets it built.  A target leaves the origin when the
+ * browser would resolve it to another host than the request's; a scheme
+ * change on the same host is not an open redirect and passes.  A target no
+ * browser could land on this origin with (`javascript:`, a control
+ * character, an unparsable value) counts as leaving it.
+ *
+ * The line names the request and the status, never the target: the target
+ * is very often attacker-supplied, and a log line is no place to paste it.
+ */
+function refusesRedirect(
+  log: Logger,
+  request: HttpRequest,
+  response: Pick<HttpResponse, 'status' | 'headers'>,
+  policy: RedirectPolicy,
+): boolean {
+  const location = redirectLocationOf(response.status, response.headers);
+  if (location === undefined || policy.allowAny) return false;
+  if (isExplicitExternalRedirect(response as HttpResponse)) return false;
+  const requestHost = (request.headers['host'] ?? request.headers[':authority'] ?? UNKNOWN_REQUEST_HOST).toLowerCase();
+  const target = redirectTargetOrigin(location, requestHost);
+  if (target !== null && (target.host === requestHost || policy.origins.has(target.origin))) return false;
+  log.error(
+    `[http] ${request.method} ${request.path} → 500: refused a ${response.status} off-origin redirect `
+    + '— build it with redirectExternal() or name its origin in withAllowedRedirectOrigins(...) if it is intended',
+  );
+  return true;
+}
+
+/**
+ * Stands in for a request that names no host (HTTP/1.0).  A relative target
+ * still resolves against it and passes; an absolute one can never match it.
+ */
+const UNKNOWN_REQUEST_HOST = 'request-host.invalid';
+
+/** The generic 500 a refused redirect turns into — it carries no `location`. */
+function redirectRefusedResponse(): HttpResponse {
+  return { status: Status.InternalServerError, body: { error: 'Internal Server Error' } };
 }
 
 /** The generic 500 of {@link defaultErrorResponse}, carrying the id its log line names. */
