@@ -385,6 +385,7 @@
       "tests/unit/http/HttpExtension.test.ts",
       "tests/unit/http/HttpServerClientCertificates.test.ts",
       "tests/unit/http/HttpServerTls.test.ts",
+      "tests/unit/http/OffOriginRedirectGuard.test.ts",
       "tests/unit/http/ShutdownDrainTask.test.ts"
     ],
     "src/http/middleware/BasicAuth.ts": [
@@ -399,6 +400,7 @@
       "tests/unit/http/middleware/RequestId.test.ts"
     ],
     "src/http/Route.ts": [
+      "tests/unit/http/OffOriginRedirectGuard.test.ts",
       "tests/unit/http/Route.test.ts"
     ],
     "src/http/websocket/SocketAdapter.ts": [
