@@ -52,12 +52,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `BrokerAcknowledgmentFailed` event for an acknowledgment the broker
   refused. The Kafka consumer logs its commit mode at start.
 
-- **`actor-ts.coordinated-shutdown.overall-timeout`** (30 s; `0` turns it
-  off) bounds a whole shutdown run (#920). Once it passes, the run halts with
-  an ERROR naming the phase and the tasks still pending, and `exit-process`
-  exits 1. `actor-system-terminate` gets its own 10 s budget, never less than
-  `default-phase-timeout`. A task that times out is logged at ERROR and keeps
-  running, and an exit waits for it, up to the deadline.
 - **`actor-ts.cluster.unreachable-gossip-rounds`** /
   `withUnreachableGossipRounds` (default 3; `0` turns it off) (#930).
 
@@ -248,9 +242,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **A bare `terminate()` shuts the downing provider down** (#1753). It
   releases a won lease and lets the process exit, where the renewal kept both
   alive.
-- **`NodeAddress.parse` refuses a `scheme://` prefix and any text after the
-  port** (#941). Before, it read the prefix into the system name, which never
-  matched the node's own address, and read `…:2552/system/x` as port 2552.
 - **`lease-majority` keeps the lease holder's whole side on an even split**
   (#1824). Every node owned its own lease, so every node acquired for itself,
   at most one won, and the winner's side-mates downed their own side, the
@@ -313,16 +304,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Before, 100 daemons landed on 58 shards and some always shared one. An id
   remembered from an earlier release that no longer names a daemon retires
   on start.
-
-- **Remember-entities no longer forgets an entity that stopped without being
-  passivated** (#954). An entity that exhausts its restart budget, fails under
-  `stoppingStrategy`, or calls `stopSelf` stays in the durable registry, and a
-  failover restores it. Its shard re-creates it once the restart backoff
-  ends, without waiting for a message. Only a passivation removes an entity
-  from the registry. `EntityStopped` carries a new optional `reason`
-  (`'passivated' | 'unrequested'`), and `ShardConfig` a new `rememberEntities`
-  field; a report without a reason, from an older region, counts as
-  `'passivated'`.
 
 - **By-tag consumers no longer drop an event whose write committed after
   they had passed its timestamp** (#957). Journals stamp an event before it
@@ -503,6 +484,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   change, use an atomic journal, or set
   `actor-ts.persistence.allow-non-atomic-batch-append = on` to accept that a
   failure can commit a prefix.
+- **BREAKING — remember-entities no longer forgets an entity that stopped
+  without being passivated** (#954). An entity that exhausts its restart
+  budget, fails under `stoppingStrategy`, or calls `stopSelf` stays in the
+  durable registry, and a failover restores it. Its shard re-creates it once
+  the restart backoff ends, without waiting for a message. Only a passivation
+  removes an entity from the registry. `EntityStopped` carries a new optional
+  `reason` (`'passivated' | 'unrequested'`), and `ShardConfig` a new
+  `rememberEntities` field; a report without a reason, from an older region,
+  counts as `'passivated'`. *Migration:* under remember-entities, an entity
+  that should end for good sends `Passivate` to its parent
+  (`new Passivate(stopMessage, this.self)`) instead of calling `stopSelf`,
+  which now counts as a stop nobody asked for.
 
 - **BREAKING — `KafkaActor`, `AmqpActor` and `MqttActor` acknowledge a
   delivery only after the target replies, which makes them at-least-once**
@@ -556,6 +549,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a positive finite number** (#1763), with an `OptionsError` before anything
   is sent. *Migration:* pass a finite deadline, or omit it to use
   `ask-timeout`.
+- **BREAKING — `NodeAddress.parse` refuses a `scheme://` prefix and any text
+  after the port** (#941). Before, it read the prefix into the system name,
+  which never matched the node's own address, and read `…:2552/system/x` as
+  port 2552. *Migration:* pass addresses as `system@host:port`, with no
+  scheme and no path.
 
 - **BREAKING — `actor-ts.http.shutdown-grace-period` defaults to `4s`**
   (#997). It used to be `0ms`, so a rolling deploy cut off requests still in
@@ -566,6 +564,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   shutdown is already running. *Migration:* set `0ms` to keep the old
   behaviour. A window of 5 s or more also needs a higher
   `service-requests-done` timeout.
+- **BREAKING — a coordinated-shutdown run is bounded by
+  `actor-ts.coordinated-shutdown.overall-timeout`, 30 s by default** (#920).
+  Once it passes, the run halts with an ERROR naming the phase and the tasks
+  still pending, and `exit-process` exits 1. Before, a run had no overall
+  deadline. `actor-system-terminate` gets its own 10 s budget, never less than
+  `default-phase-timeout`, where it used to get the 5 s default. A task that
+  times out is logged at ERROR and keeps running, and an exit waits for it, up
+  to the deadline. *Migration:* a deployment whose phase budgets add up to
+  more than 30 s raises `overall-timeout` to fit, and its Kubernetes grace
+  period with it, or sets it to `0` to keep an unbounded run.
 - **BREAKING — `idempotent()` records a thrown handler's failure under the
   key instead of freeing it, and no longer records 5xx/408/429 responses**
   (#984). A retry gets 500 and must use a new key, so a partly applied
@@ -573,7 +581,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   for an atomic handler that should be retried after a throw, and
   `cacheStatuses` to record a status the new default skips.
 
-- **WebSocket routes ping their peers every 30 s by default** (#651). A peer
+- **BREAKING — WebSocket routes ping their peers every 30 s by default**
+  (#651). A peer
   that answers nothing within one interval is dropped. *Migration:* clients
   that follow the WebSocket spec answer pings on their own. Set
   `heartbeat-interval = 0` to keep the old behaviour.
@@ -646,8 +655,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   refuses decodes to `Nobody`, and the bare `/user` guardian is refused as an
   envelope or watch target as well. Each refusal is counted on
   `cluster_envelope_refusals_total`.
-- **A `ClusterClient` given only half of a TLS client credential is refused
-  at construction** (#1085). Before, the half was dropped on the dial and the
+- **BREAKING — a `ClusterClient` given only half of a TLS client credential
+  is refused at construction** (#1085). Before, the half was dropped on the dial and the
   client fell back to one-way TLS while its configuration read as mutual TLS.
   *Migration:* supply both halves, or `ca` alone for one-way TLS.
 - **BREAKING — `entity()` decodes request bodies as plain data** (#967).
