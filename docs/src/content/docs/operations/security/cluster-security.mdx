@@ -107,6 +107,24 @@ plain TCP, one-way TLS, and a Deno listener (which cannot report
 one at all) behave exactly as before. The check strengthens mTLS
 deployments rather than adding a switch that can be left off.
 
+The price of that default is that the check goes quiet when a
+certificate stops arriving — a half-applied TLS bundle, or a
+backend that no longer reports one. A deployment that wants every
+peer to prove its name sets `requirePeerIdentity` on the
+transport, and a peer that presents no certificate is then refused
+with a WARN (#1190):
+
+```ts
+const transportOptions = TcpTransportOptions.create()
+  .withTls(tls)
+  .withRequirePeerIdentity(true);
+const transport = new TcpTransport(self, log, transportOptions);
+```
+
+It is refused at construction where no peer could ever present a
+certificate: without a `ca` holding one, with
+`requestClientCert: false`, and on Deno.
+
 <Aside type="caution" title="One-way TLS authenticates nobody">
   The `hello` handshake carries no credential of its own, so on a
   TLS cluster the peer certificate *is* the admission control.  A

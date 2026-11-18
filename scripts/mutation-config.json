@@ -211,12 +211,17 @@
       "tests/unit/cluster/singleton/SingletonManagerTimers.test.ts",
       "tests/unit/coordination/SingletonLeasePrecedence.test.ts"
     ],
+    "src/cluster/TcpTransportOptions.ts": [
+      "tests/unit/cluster/RequirePeerIdentity.test.ts",
+      "tests/unit/cluster/TcpTransportOptions.test.ts"
+    ],
     "src/cluster/Transport.ts": [
       "tests/integration/in-process/cluster/RefCodec.test.ts",
       "tests/integration/in-process/cluster/RemoteDeathWatch.test.ts",
       "tests/unit/InMemoryTransport.test.ts",
       "tests/unit/cluster/HelloNamingTheReceivingNode.test.ts",
       "tests/unit/cluster/PeerIdentity.test.ts",
+      "tests/unit/cluster/RequirePeerIdentity.test.ts",
       "tests/unit/cluster/TcpTransportBackpressure.test.ts",
       "tests/unit/cluster/TcpTransportBackpressureSockets.test.ts",
       "tests/unit/cluster/TcpTransportInboundCapRefusal.test.ts",

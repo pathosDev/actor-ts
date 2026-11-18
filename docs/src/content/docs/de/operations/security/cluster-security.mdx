@@ -114,6 +114,24 @@ gar keins melden kann) verhalten sich exakt wie vorher. Die
 Prüfung stärkt mTLS-Deployments, statt einen Schalter
 hinzuzufügen, den man vergessen kann.
 
+Der Preis dieses Standards: Die Prüfung verstummt, sobald kein
+Zertifikat mehr ankommt — bei einem halb ausgerollten TLS-Bundle
+oder einem Backend, das keins mehr meldet. Ein Deployment, in dem
+jeder Peer seinen Namen beweisen soll, setzt `requirePeerIdentity`
+auf dem Transport; ein Peer ohne Zertifikat wird dann mit einer
+WARN abgewiesen (#1190):
+
+```ts
+const transportOptions = TcpTransportOptions.create()
+  .withTls(tls)
+  .withRequirePeerIdentity(true);
+const transport = new TcpTransport(self, log, transportOptions);
+```
+
+Abgewiesen wird die Option schon bei der Konstruktion, wo kein Peer
+je ein Zertifikat vorlegen könnte: ohne einen `ca`, der eins
+enthält, mit `requestClientCert: false` und auf Deno.
+
 <Aside type="caution" title="Einseitiges TLS authentifiziert niemanden">
   Der `hello`-Handshake trägt selbst keinerlei Credential, also
   *ist* auf einem TLS-Cluster das Peer-Zertifikat die
