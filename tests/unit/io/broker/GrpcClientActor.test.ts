@@ -50,12 +50,16 @@ import type {
   GrpcServiceClient,
   GrpcServiceConstructor,
   GrpcStreamHandle,
+  RpcErrorMessage,
+  StreamErrorMessage,
 } from '../../../../src/io/broker/GrpcClientActor.js';
 import {
+  DEFAULT_GRPC_STREAM_IDLE_TIMEOUT_MS,
   GrpcClientOptions,
   type GrpcChannelOptions,
   type GrpcClientOptionsBuilder,
 } from '../../../../src/io/broker/GrpcClientOptions.js';
+import { ManualScheduler } from '../../../../src/testkit/ManualScheduler.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 /* ------------------------------- Fakes -------------------------------- */
@@ -70,9 +74,11 @@ type RecordedUnaryCall = {
 class FakeWritableCall {
   readonly writes: unknown[] = [];
   ended = false;
+  cancelled = 0;
 
   write(chunk: unknown): void { this.writes.push(chunk); }
   end(): void { this.ended = true; }
+  cancel(): void { this.cancelled++; }
 }
 
 type RecordedClientStreamCall = {
@@ -104,6 +110,9 @@ class FakeDuplexCall {
 
   write(chunk: unknown): void { this.writes.push(chunk); }
   end(): void { this.ended = true; }
+  /** Counted, not latched: an idle reap must cancel a call exactly once. */
+  cancelled = 0;
+  cancel(): void { this.cancelled++; }
 
   pushData(chunk: unknown): void { for (const listener of this.dataListeners) listener(chunk); }
   pushEnd(): void { for (const listener of this.endListeners) listener(); }
@@ -148,6 +157,14 @@ class FakeServiceClient {
   Chat = (): FakeDuplexCall => {
     const call = new FakeDuplexCall();
     this.bidiCalls.push(call);
+    return call;
+  };
+
+  /** Server-streaming: grpc-js hands back a readable call, which the duplex fake covers. */
+  readonly serverStreamCalls: FakeDuplexCall[] = [];
+  Watch = (_request: unknown): FakeDuplexCall => {
+    const call = new FakeDuplexCall();
+    this.serverStreamCalls.push(call);
     return call;
   };
 }
@@ -227,11 +244,12 @@ type Harness = {
   readonly targetRef: ActorRef<unknown>;
 };
 
-function newSystem(name: string, config?: ConfigObject): ActorSystem {
+function newSystem(name: string, config?: ConfigObject, scheduler?: ManualScheduler): ActorSystem {
   let systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   if (config) systemOptions = systemOptions.withConfig(config);
+  if (scheduler) systemOptions = systemOptions.withScheduler(scheduler);
   return ActorSystem.create(name, systemOptions);
 }
 
@@ -776,16 +794,17 @@ function registryEntryFields(
 }
 
 describe('GrpcClientActor — the stream registry stores only what it reads (#1510)', () => {
-  test('a live bidi entry carries the call and nothing else', async () => {
+  // `idle` joined `call` with #1222: the send paths read it, a caller write being activity.
+  test('a live bidi entry carries the call, its idle deadline and nothing else', async () => {
     const opened = await openBidiStream('grpc-bidi-entry-shape');
     try {
-      expect(registryEntryFields(opened.actor, 'bidiStreams')).toEqual([['call']]);
+      expect(registryEntryFields(opened.actor, 'bidiStreams')).toEqual([['call', 'idle']]);
     } finally {
       await opened.system.terminate();
     }
   });
 
-  test('a live client-stream entry carries the call and nothing else', async () => {
+  test('a live client-stream entry carries the call, its idle deadline and nothing else', async () => {
     const system = newSystem('grpc-client-stream-entry-shape');
     try {
       const { clientRef, actor, targetRef } = await boot(system, baseOptions());
@@ -794,7 +813,7 @@ describe('GrpcClientActor — the stream registry stores only what it reads (#15
         label: 'the client stream was opened',
       });
 
-      expect(registryEntryFields(actor, 'clientStreams')).toEqual([['call']]);
+      expect(registryEntryFields(actor, 'clientStreams')).toEqual([['call', 'idle']]);
     } finally {
       await system.terminate();
     }
@@ -1060,6 +1079,248 @@ describe('GrpcClientActor — a malformed stream command', () => {
       expect(letter.chunk).toEqual({ text: 'malformed' });
     } finally {
       await opened.system.terminate();
+    }
+  });
+});
+
+/* =============================== #1222 ================================ */
+
+/**
+ * A stream whose peer goes quiet is reaped (#1222).
+ *
+ * Nothing else does it: `disconnectImplementation` runs only on a stop, a
+ * shutdown or a lost connection, and a hung peer on a healthy connection
+ * triggers none of them, so the call and its closures stayed pinned for the
+ * life of the actor.  Each stream now carries an idle deadline — armed when it
+ * opens, pushed back by every frame in either direction — that cancels the
+ * call, reports one terminal frame and drops the registry entry.
+ *
+ * Time is a `ManualScheduler`'s, so "five minutes of silence" is an
+ * `advance`, not a wait.  The cancel runs inside `advance`; only the frame to
+ * the target crosses a mailbox and is awaited.
+ */
+type IdleHarness = Harness & { readonly system: ActorSystem; readonly scheduler: ManualScheduler };
+
+async function bootIdle(name: string, options: GrpcClientOptionsBuilder, config?: ConfigObject): Promise<IdleHarness> {
+  const scheduler = new ManualScheduler();
+  const system = newSystem(name, config, scheduler);
+  const harness = await boot(system, options);
+  return { ...harness, system, scheduler };
+}
+
+function terminalFrames(target: CollectingTarget): GrpcInbound[] {
+  return target.received.filter((frame) =>
+    frame.kind === 'stream-error' || frame.kind === 'stream-end' || frame.kind === 'rpc-error' || frame.kind === 'reply');
+}
+
+describe('GrpcClientActor — a silent stream is reaped (#1222)', () => {
+  test('a bidi stream that hears nothing for the timeout is cancelled, reported once and evicted', async () => {
+    const h = await bootIdle('grpc-idle-bidi', baseOptions().withStreamIdleTimeoutMs(1_000));
+    try {
+      h.clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: h.targetRef });
+      await awaitCondition(() => h.target.received.some((frame) => frame.kind === 'stream-started'), {
+        label: 'the bidi handshake reached the target actor',
+      });
+      const call = h.actor.fakeClient.bidiCalls[0]!;
+
+      h.scheduler.advance(999);
+      expect(call.cancelled).toBe(0);
+      h.scheduler.advance(1);
+      expect(call.cancelled).toBe(1);
+      expect(registryEntryFields(h.actor, 'bidiStreams')).toEqual([]);
+
+      await awaitCondition(() => terminalFrames(h.target).length > 0, { label: 'the idle stream-error arrived' });
+      // grpc-js answers its own cancel with an error; that one is not reported again.
+      call.pushError(new Error('Cancelled on client'));
+      call.pushData({ text: 'late' });
+      h.clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: h.targetRef });
+      await awaitCondition(() => h.actor.fakeClient.bidiCalls.length > 1, { label: 'a fence stream was opened' });
+      await awaitCondition(() => h.target.received.filter((frame) => frame.kind === 'stream-started').length > 1, {
+        label: 'the fence handshake reached the target actor',
+      });
+
+      const terminal = terminalFrames(h.target);
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]!.kind).toBe('stream-error');
+      expect((terminal[0] as StreamErrorMessage).error.message).toContain('idle');
+      expect(h.target.received.some((frame) => frame.kind === 'stream-data')).toBe(false);
+    } finally {
+      await h.system.terminate();
+    }
+  });
+
+  test('inbound data and the caller\'s own writes both push a bidi deadline back', async () => {
+    const h = await bootIdle('grpc-idle-bidi-activity', baseOptions().withStreamIdleTimeoutMs(1_000));
+    try {
+      h.clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: h.targetRef });
+      await awaitCondition(() => h.target.received.some((frame) => frame.kind === 'stream-started'), {
+        label: 'the bidi handshake reached the target actor',
+      });
+      const call = h.actor.fakeClient.bidiCalls[0]!;
+      const handle = publishedHandle(h.target);
+
+      h.scheduler.advance(600);
+      call.pushData({ text: 'server speaks' });
+      h.scheduler.advance(600);
+      expect(call.cancelled).toBe(0);
+
+      h.clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'caller speaks' } });
+      await awaitCondition(() => call.writes.length > 0, { label: 'the caller write reached the call' });
+      h.scheduler.advance(600);
+      expect(call.cancelled).toBe(0);
+
+      h.scheduler.advance(400);
+      expect(call.cancelled).toBe(1);
+    } finally {
+      await h.system.terminate();
+    }
+  });
+
+  test('a server stream that goes quiet is cancelled; one that keeps talking is not', async () => {
+    const h = await bootIdle('grpc-idle-server-stream', baseOptions().withStreamIdleTimeoutMs(1_000));
+    try {
+      h.clientRef.tell({ kind: 'serverStream', method: 'Watch', request: {}, target: h.targetRef });
+      h.clientRef.tell({ kind: 'serverStream', method: 'Watch', request: {}, target: h.targetRef });
+      await awaitCondition(() => h.actor.fakeClient.serverStreamCalls.length > 1, {
+        label: 'both server streams were opened',
+      });
+      const [quiet, chatty] = h.actor.fakeClient.serverStreamCalls as [FakeDuplexCall, FakeDuplexCall];
+
+      for (let i = 0; i < 4; i++) {
+        h.scheduler.advance(400);
+        chatty.pushData({ tick: i });
+      }
+      expect(quiet.cancelled).toBe(1);
+      expect(chatty.cancelled).toBe(0);
+
+      await awaitCondition(() => terminalFrames(h.target).length > 0, { label: 'the idle stream-error arrived' });
+      quiet.pushEnd();
+      chatty.pushEnd();
+      await awaitCondition(() => terminalFrames(h.target).length > 1, { label: 'the chatty stream ended' });
+      expect(terminalFrames(h.target).map((frame) => frame.kind)).toEqual(['stream-error', 'stream-end']);
+    } finally {
+      await h.system.terminate();
+    }
+  });
+
+  test('a client stream is reaped, including one half-closed whose reply never comes', async () => {
+    const h = await bootIdle('grpc-idle-client-stream', baseOptions().withStreamIdleTimeoutMs(1_000));
+    try {
+      h.clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: h.targetRef });
+      await awaitCondition(() => h.target.received.some((frame) => frame.kind === 'stream-started'), {
+        label: 'the client-stream handshake reached the target actor',
+      });
+      const recorded = h.actor.fakeClient.clientStreamCalls[0]!;
+      const handle = publishedHandle(h.target);
+
+      h.scheduler.advance(600);
+      h.clientRef.tell({ kind: 'clientStreamSend', handle, chunk: { value: 1 } });
+      await awaitCondition(() => recorded.call.writes.length > 0, { label: 'the write reached the call' });
+      h.scheduler.advance(600);
+      expect(recorded.call.cancelled).toBe(0);
+
+      h.clientRef.tell({ kind: 'clientStreamClose', handle });
+      await awaitCondition(() => recorded.call.ended, { label: 'the caller half-closed' });
+      h.scheduler.advance(1_000);
+      expect(recorded.call.cancelled).toBe(1);
+
+      await awaitCondition(() => terminalFrames(h.target).length > 0, { label: 'the idle rpc-error arrived' });
+      // grpc-js answers its own cancel through the callback; it is not reported again.
+      recorded.callback(new Error('Cancelled on client'), undefined);
+      h.clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: h.targetRef });
+      await awaitCondition(() => h.target.received.filter((frame) => frame.kind === 'stream-started').length > 1, {
+        label: 'a fence stream was opened',
+      });
+      const terminal = terminalFrames(h.target);
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]!.kind).toBe('rpc-error');
+      expect((terminal[0] as RpcErrorMessage).error.message).toContain('idle');
+    } finally {
+      await h.system.terminate();
+    }
+  });
+
+  test('a silent client stream that was never closed leaves the registry', async () => {
+    const h = await bootIdle('grpc-idle-client-stream-evict', baseOptions().withStreamIdleTimeoutMs(1_000));
+    try {
+      h.clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: h.targetRef });
+      await awaitCondition(() => h.actor.fakeClient.clientStreamCalls.length > 0, { label: 'the client stream opened' });
+      expect(registryEntryFields(h.actor, 'clientStreams')).toHaveLength(1);
+
+      h.scheduler.advance(1_000);
+      expect(h.actor.fakeClient.clientStreamCalls[0]!.call.cancelled).toBe(1);
+      expect(registryEntryFields(h.actor, 'clientStreams')).toEqual([]);
+    } finally {
+      await h.system.terminate();
+    }
+  });
+
+  test('the built-in default is five minutes', async () => {
+    const h = await bootIdle('grpc-idle-default', baseOptions());
+    try {
+      h.clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: h.targetRef });
+      await awaitCondition(() => h.actor.fakeClient.bidiCalls.length > 0, { label: 'the bidi stream opened' });
+      const call = h.actor.fakeClient.bidiCalls[0]!;
+
+      h.scheduler.advance(DEFAULT_GRPC_STREAM_IDLE_TIMEOUT_MS - 1);
+      expect(call.cancelled).toBe(0);
+      h.scheduler.advance(1);
+      expect(call.cancelled).toBe(1);
+      expect(DEFAULT_GRPC_STREAM_IDLE_TIMEOUT_MS).toBe(300_000);
+    } finally {
+      await h.system.terminate();
+    }
+  });
+
+  test('0 turns the timeout off, from the builder and from HOCON', async () => {
+    const fromBuilder = await bootIdle('grpc-idle-off-builder', baseOptions().withStreamIdleTimeoutMs(0));
+    const fromHocon = await bootIdle('grpc-idle-off-hocon', baseOptions(), {
+      'actor-ts': { io: { broker: { grpc: { client: { 'stream-idle-timeout': 0 } } } } },
+    });
+    try {
+      for (const h of [fromBuilder, fromHocon]) {
+        h.clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: h.targetRef });
+        await awaitCondition(() => h.actor.fakeClient.bidiCalls.length > 0, { label: 'the bidi stream opened' });
+        h.scheduler.advance(24 * 3_600_000);
+        expect(h.actor.fakeClient.bidiCalls[0]!.cancelled).toBe(0);
+        expect(registryEntryFields(h.actor, 'bidiStreams')).toHaveLength(1);
+      }
+    } finally {
+      await fromBuilder.system.terminate();
+      await fromHocon.system.terminate();
+    }
+  });
+
+  test('a HOCON stream-idle-timeout reaches the stream', async () => {
+    const h = await bootIdle('grpc-idle-hocon', baseOptions(), {
+      'actor-ts': { io: { broker: { grpc: { client: { 'stream-idle-timeout': '2s' } } } } },
+    });
+    try {
+      h.clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: h.targetRef });
+      await awaitCondition(() => h.actor.fakeClient.bidiCalls.length > 0, { label: 'the bidi stream opened' });
+      const call = h.actor.fakeClient.bidiCalls[0]!;
+      h.scheduler.advance(1_999);
+      expect(call.cancelled).toBe(0);
+      h.scheduler.advance(1);
+      expect(call.cancelled).toBe(1);
+    } finally {
+      await h.system.terminate();
+    }
+  });
+
+  test('a stopped client leaves no deadline behind to fire', async () => {
+    const h = await bootIdle('grpc-idle-stop', baseOptions().withStreamIdleTimeoutMs(1_000));
+    try {
+      h.clientRef.tell({ kind: 'serverStream', method: 'Watch', request: {}, target: h.targetRef });
+      await awaitCondition(() => h.actor.fakeClient.serverStreamCalls.length > 0, { label: 'the server stream opened' });
+      const pendingBefore = h.scheduler.pendingCount;
+      h.system.stop(h.clientRef);
+      await awaitCondition(() => h.actor.fakeClient.closeCount > 0, { label: 'the client disconnected' });
+      expect(h.scheduler.pendingCount).toBeLessThan(pendingBefore);
+      h.scheduler.advance(1_000);
+      expect(h.actor.fakeClient.serverStreamCalls[0]!.cancelled).toBe(0);
+    } finally {
+      await h.system.terminate();
     }
   });
 });

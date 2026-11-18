@@ -1369,6 +1369,7 @@ describe('readGrpcClientOptionsFromConfig', () => {
       service-name = "Orders"
       endpoint     = "orders.local:50051"
       deadline     = 2s
+      stream-idle-timeout = 5m
     }`);
     expectExactOptions(readGrpcClientOptionsFromConfig(config), {
       protoPath: ['./a.proto', './b.proto'],
@@ -1376,7 +1377,13 @@ describe('readGrpcClientOptionsFromConfig', () => {
       serviceName: 'Orders',
       endpoint: 'orders.local:50051',
       deadlineMs: 2_000,
+      streamIdleTimeoutMs: 300_000,
     });
+  });
+
+  test('stream-idle-timeout = 0 reads as 0, which turns the timeout off (#1222)', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.grpc.client.root}.stream-idle-timeout = 0`);
+    expectExactOptions(readGrpcClientOptionsFromConfig(config), { streamIdleTimeoutMs: 0 });
   });
 
   test.each([

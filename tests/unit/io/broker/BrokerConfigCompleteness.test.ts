@@ -171,6 +171,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
       credentials: TLS_MATERIAL,
       deadlineMs: hocon('deadline'),
       channelOptions: GRPC_CHANNEL,
+      streamIdleTimeoutMs: hocon('stream-idle-timeout'),
     },
   },
   {

@@ -404,6 +404,7 @@ export const ConfigKeys = {
           serviceName: 'actor-ts.io.broker.grpc.client.service-name',
           endpoint: 'actor-ts.io.broker.grpc.client.endpoint',
           deadline: 'actor-ts.io.broker.grpc.client.deadline',
+          streamIdleTimeout: 'actor-ts.io.broker.grpc.client.stream-idle-timeout',
         },
         /**
          * `GrpcServerActor` — a plain actor, not a `BrokerActor`, so it shares

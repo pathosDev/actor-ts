@@ -556,6 +556,12 @@ describe('GrpcClientOptionsValidator', () => {
   test('accepts a positive deadlineMs', () => {
     expect(() => check({ deadlineMs: 30_000 })).not.toThrow();
   });
+
+  test('rejects a negative streamIdleTimeoutMs, and accepts 0 as "off" (#1222)', () => {
+    expect(() => check({ streamIdleTimeoutMs: -1 })).toThrow(/streamIdleTimeoutMs/);
+    expect(() => check({ streamIdleTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ streamIdleTimeoutMs: 300_000 })).not.toThrow();
+  });
 });
 
 describe('GrpcServerOptionsValidator (#1039)', () => {
