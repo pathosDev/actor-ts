@@ -465,8 +465,16 @@ export function completeText(status: number, body: string, headers?: Record<stri
  * VT and DEL land in between (Node refuses them, `fetch` Headers accept
  * them), so the class spans all of C0 plus DEL instead of enumerating a
  * split that is a runtime detail.
+ *
+ * C1 (U+0080–U+009F) is in the class as well (#1057).  Both runtimes accept
+ * it in a header value and write it as a raw Latin-1 byte, and it falls
+ * between the two checks otherwise: `trimStart()` in the same-origin check
+ * strips ECMAScript whitespace, which C1 is not, so `\u0085//evil.example`
+ * was neither trimmed into a protocol-relative target nor refused.  Whether
+ * a browser or an intermediary strips that byte before parsing was not
+ * measured; the boundary is drawn so the answer does not matter.
  */
-const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/;
+const CONTROL_CHARACTERS = /[\x00-\x1f\x7f-\x9f]/;
 
 /** A scheme per RFC 3986 §3.1 — its presence means the target is absolute. */
 const SCHEME_PREFIX = /^[A-Za-z][A-Za-z0-9+.-]*:/;

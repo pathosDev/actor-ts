@@ -394,6 +394,9 @@
       "tests/unit/http/middleware/ClientIp.test.ts",
       "tests/unit/http/middleware/IpAllowlist.test.ts"
     ],
+    "src/http/Route.ts": [
+      "tests/unit/http/Route.test.ts"
+    ],
     "src/http/websocket/SocketAdapter.ts": [
       "tests/integration/in-process/http/websocket/FastifyWebsocket.test.ts",
       "tests/integration/in-process/http/websocket/HonoWebsocket.test.ts",
