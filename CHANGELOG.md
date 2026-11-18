@@ -585,7 +585,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **BREAKING — `idle-timeout = 0` is refused on the Hono backend under Bun**
   (#1767). There it removed the only bound on a stalled request.
   *Migration:* set a positive value, or leave the key unset.
-- **An idle HTTP/2 session is closed after 72 s when
+- **BREAKING — an idle HTTP/2 session is closed after 72 s when
   `actor-ts.http.server.idle-timeout` is unset**, on every HTTP/2 listener a
   `node:http2` server backs, whether or not the client sends PINGs (#1757).
   Fastify under Node already behaved so. Fastify under Bun let every PING
