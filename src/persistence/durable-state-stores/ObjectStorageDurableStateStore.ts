@@ -191,10 +191,25 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
         e,
       );
     }
-    let parsed: { revision: number; state: S; timestamp: number };
-    try { parsed = decodePayload(utf8Decoder.decode(decoded.payload), this.serializer) as { revision: number; state: S; timestamp: number }; }
+    let parsed: { persistenceId?: unknown; revision: number; state: S; timestamp: number };
+    try { parsed = decodePayload(utf8Decoder.decode(decoded.payload), this.serializer) as typeof parsed; }
     catch (e) {
       throw new JournalError(`ObjectStorageDurableStateStore.load: malformed JSON for ${persistenceId}`, e);
+    }
+    // The body names its entity (#1417), so a record copied or restored onto
+    // another entity's key is caught here with no authenticator configured —
+    // the check the snapshot store has made since #716.  Refused rather than
+    // answered as `none`, unlike a snapshot: durable state is the source of
+    // truth, and `none` would let the next upsert at revision 0 overwrite the
+    // object as if the entity had never existed.  A body with no id at all is
+    // what every earlier version wrote; there is no migration path for it.
+    // The body's own id is not rendered: it is whatever the writer put there.
+    if (parsed.persistenceId !== persistenceId) {
+      throw new JournalError(
+        `ObjectStorageDurableStateStore.load: the record at the key of ${persistenceId} does not name `
+        + 'the entity it was read for — it was copied from another key, or written by a version '
+        + 'before the body carried its persistenceId (#1417) and has to be rewritten',
+      );
     }
     this.assertNoRollback(persistenceId, parsed.revision);
     // Cache AFTER decode succeeds (integrity check inside decodeBody).
@@ -232,7 +247,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     const now = Date.now();
     const newRevision = expectedRevision + 1;
     const storageKey = this.keyFor(persistenceId);
-    const json = encodePayload({ revision: newRevision, state, timestamp: now }, this.serializer);
+    const json = encodePayload({ persistenceId, revision: newRevision, state, timestamp: now }, this.serializer);
     const active = await activeEncryptKey(encryption, persistenceId);
     const stampVersion = active && isVersionedKeyShape(encryption);
     const body = await encodeBody(utf8.encode(json), {

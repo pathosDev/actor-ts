@@ -1178,7 +1178,7 @@ describe('reEncryptObjectStorage — #739 integrity-tagged bodies', () => {
     // by hand because the store has bound its own writes since #612.
     const storageKey = 'state/user-1/state.json';
     const unbound = await encodeBody(
-      utf8(encodePayload({ revision: 1, state: { v: 1 }, timestamp: 1 })),
+      utf8(encodePayload({ persistenceId: 'user-1', revision: 1, state: { v: 1 }, timestamp: 1 })),
       { compression: 'none', integrity: { integrityKey } },
     );
     expect(unbound[4]! & FLAG_CONTEXT_BOUND).toBe(0);

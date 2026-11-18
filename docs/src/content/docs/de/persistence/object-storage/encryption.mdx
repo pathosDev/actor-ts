@@ -95,29 +95,26 @@ nicht mehr, und dafür ist kein Schalter nötig.
 `requireContextBinding` ist eine zweite Kontrolle mit einer anderen
 Aufgabe; siehe [Die Bindung verlangen](#die-bindung-verlangen).
 
-Ein Store ohne einen der beiden Authentifikatoren hat überhaupt keine
-Verschiebungserkennung, und genau dieser Store ist der Standard.  Er ist außerdem die einzige Form,
-die eine Konfigurationsdatei ausdrücken kann, denn beide
-Authentifikatoren brauchen einen 32-Byte-Schlüssel.
-`ObjectStorageDurableStateStore` schreibt einen Body aus
-`{ revision, state, timestamp }`, der keine Entity nennt, und `load`
-antwortet mit der `persistenceId`, nach der gefragt wurde, und dem
-State, den es gefunden hat — ein Datensatz, der auf den Key einer
-anderen Entity kopiert wurde, kommt also als deren State zurück.
-`ObjectStorageSnapshotStore` steht im selben Bucket nicht an derselben
-Stelle: Ein Snapshot-Body nennt die Entity, für die er geschrieben
-wurde, und der Store verweigert einen, der eine andere nennt — mit oder
-ohne Schlüssel.  Die beiden Stores unterscheiden sich hier tatsächlich
-— siehe
+Ein Store ohne einen der beiden Authentifikatoren ist der Standard, und
+er ist die einzige Form, die eine Konfigurationsdatei ausdrücken kann,
+denn beide Authentifikatoren brauchen einen 32-Byte-Schlüssel.  Eine
+Verschiebungserkennung einer Art hat er trotzdem: Der Body jedes Stores nennt die Entity, für
+die er geschrieben wurde, und der Store vergleicht diesen Namen mit der
+`persistenceId`, nach der gefragt wurde.
+`ObjectStorageSnapshotStore` antwortet für einen Body, der eine andere
+Entity nennt, mit `none`, und `ObjectStorageDurableStateStore` weist
+ihn mit einem `JournalError` ab
+([#1417](https://github.com/pathosDev/actor-ts/issues/1417)) — ein
+Datensatz, der auf den Key einer anderen Entity kopiert wurde, wird
+also ohne konfigurierte Schlüssel erkannt.  Siehe
 [Zwei Stores, ein Prefix](/de/persistence/object-storage/snapshot-store-backend/#zwei-stores-ein-prefix).
 
-Ob das zählt, ist eine Frage nach ein und demselben Schreiber.  Ein
-Objekt zu verschieben setzt Schreibzugriff auf den Bucket voraus, und
-in einem Klartext-Korpus ändert derselbe Zugriff den Body ebenso
-leicht.  Ein Entity-Name im Body finge das *Versehen* — eine
-Bucket-Kopie, ein Restore, ein halb fertiges Migrationsskript — und
-nicht einen absichtlichen Schreiber; deshalb ist die Kontrolle hier ein
-Authentifikator und kein Feld.
+Dieser Name fängt das *Versehen* — eine Bucket-Kopie, einen Restore,
+ein halb fertiges Skript — und nicht einen absichtlichen Schreiber.
+Ein Objekt zu verschieben setzt Schreibzugriff auf den Bucket voraus,
+und in einem Klartext-Korpus schreibt derselbe Zugriff einen Body, der
+jede beliebige Entity nennt.  Deshalb ist die Kontrolle gegen einen
+Schreiber ein Authentifikator und kein Feld.
 
 ## Konfiguration
 

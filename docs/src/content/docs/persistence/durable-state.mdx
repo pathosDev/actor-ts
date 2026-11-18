@@ -363,18 +363,23 @@ believes was ciphertext.  `compression()` is a performance hint,
 so it warns once and the record is written uncompressed;
 `{ mode: 'none' }` is accepted everywhere.
 
-Configuring either authenticator — `client-aes256-gcm` or
-`hmac-sha256` — buys a second thing besides privacy and
-tamper-evidence: it is what gives the object-storage store
-**move detection**.  Every write binds the body to the storage
-key it goes to, so a record that later turns up under another
-entity's key is refused, with nothing to switch on.  Without
-one — the default — nothing at that layer notices: a
-durable-state body is `{ revision, state, timestamp }` and names
-no entity, and `load` answers with the `persistenceId` you asked
-for.  The snapshot store is not in the same position, and
+The object-storage store has **move detection** at two strengths.
+Its body names the entity it was written for, and `load` refuses
+a body naming another one with a `JournalError`
+([#1417](https://github.com/pathosDev/actor-ts/issues/1417)) — so
+in the default configuration a record copied or restored onto
+another entity's key is caught, but not a deliberate writer, who
+can put any name into a plaintext body.  Configuring either
+authenticator — `client-aes256-gcm` or `hmac-sha256` — closes
+that too, besides buying privacy and tamper-evidence: every
+write binds the body to the storage key it goes to, with nothing
+to switch on.
 [What encryption does not cover](/persistence/object-storage/encryption/#what-encryption-does-not-cover)
-is where the asymmetry is set out.
+sets out both.
+
+A body written by an earlier version carries no `persistenceId`
+and is refused; there is no migration path, so such records have
+to be rewritten.
 
 See
 [Object storage encryption](/persistence/object-storage/encryption/)

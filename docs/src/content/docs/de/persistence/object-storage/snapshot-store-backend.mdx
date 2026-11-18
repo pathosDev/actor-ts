@@ -233,19 +233,23 @@ der innerhalb des Frameworks eine Längenprüfung nicht besteht.
 
 Was weder die Aufteilung noch der Filter liefert, ist eine
 Prüfung, *welcher* Entity ein Body gehört, sobald er an einem
-wohlgeformten Key dieses Stores liegt — und da unterscheiden
-sich die beiden.  `ObjectStorageSnapshotStore` vergleicht die
-`persistenceId`, die sein Body trägt, mit der, nach der gefragt
-wurde; das ist der Satz weiter oben über einen Body, der eine
-*andere* `persistenceId` nennt.  `ObjectStorageDurableStateStore`
-hat kein solches Feld zum Vergleichen: Sein Body ist
-`{ revision, state, timestamp }`, ein Datensatz am Key einer
-anderen Entity lädt also als deren State.  Die
-Verschiebungserkennung kommt auf dieser Seite daher, dass der
-Body an seinen Storage-Key gebunden wird — und das erkauft man
+wohlgeformten Key dieses Stores liegt.  Dafür vergleichen beide
+Stores die `persistenceId`, die ihr Body trägt, mit der, nach der
+gefragt wurde.  `ObjectStorageSnapshotStore` antwortet für einen
+Body, der eine andere Entity nennt, mit `none`; das ist der Satz
+weiter oben über einen Body, der eine *andere* `persistenceId`
+nennt.  `ObjectStorageDurableStateStore` weist ihn mit einem
+`JournalError` ab, denn Durable State ist die Quelle der Wahrheit,
+und `none` ließe den nächsten Write die Entity von vorn beginnen
+([#1417](https://github.com/pathosDev/actor-ts/issues/1417)).
+Das gilt auch für einen Store ohne einen der beiden
+Authentifikatoren, und es fängt einen kopierten oder
+wiederhergestellten Datensatz — nicht einen absichtlichen
+Schreiber, der in einen Klartext-Body jeden Namen schreiben kann.
+Gegen einen Schreiber kommt die Verschiebungserkennung daher, dass
+der Body an seinen Storage-Key gebunden wird — und das erkauft man
 sich, indem man `client-aes256-gcm` oder `hmac-sha256`
-konfiguriert.  Ein Store ohne einen der beiden Authentifikatoren
-hat keine.  Siehe
+konfiguriert.  Siehe
 [Was Verschlüsselung nicht abdeckt](/de/persistence/object-storage/encryption/#was-verschlüsselung-nicht-abdeckt).
 
 <Aside type="caution" title="Einen bestehenden Bucket migrieren">
@@ -260,8 +264,11 @@ hat keine.  Siehe
   Objekte, wenn du so weit bist.
 
   **Für Durable State gibt es keinen Migrationspfad.**  Er *ist*
-  die Quelle der Wahrheit, und diese Version liest die alten Keys
-  nicht.  Jeder vorher geschriebene
+  die Quelle der Wahrheit, und diese Version liest weder die alten
+  Keys noch einen Body, der seine `persistenceId` nicht trägt — was
+  keine frühere Version geschrieben hat
+  ([#1417](https://github.com/pathosDev/actor-ts/issues/1417)).
+  Jeder vorher geschriebene
   Durable-State-Record muss deshalb von der Anwendung über den
   Store dieser Version neu geschrieben werden.  Ein mit
   `upsert(id, 0, state)` geschriebener Record beginnt wieder bei

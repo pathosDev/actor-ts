@@ -376,21 +376,25 @@ er für Chiffrat hält.  `compression()` ist ein Performance-Hinweis,
 warnt also einmal, und der Datensatz wird unkomprimiert
 geschrieben; `{ mode: 'none' }` wird überall akzeptiert.
 
-Einen der beiden Authentifikatoren zu konfigurieren —
-`client-aes256-gcm` oder `hmac-sha256` — erkauft neben
-Vertraulichkeit und Manipulationserkennung noch etwas Zweites:
-Erst dadurch bekommt der Object-Storage-Store eine
-**Verschiebungserkennung**.  Jeder Write bindet den Body an den
-Storage-Key, auf den er geht; ein Datensatz, der später unter
-dem Key einer anderen Entity auftaucht, wird abgelehnt, und
-dafür ist nichts einzuschalten.  Ohne einen davon — der
-Standard — bemerkt es auf dieser Ebene nichts: Ein
-Durable-State-Body ist `{ revision, state, timestamp }` und
-nennt keine Entity, und `load` antwortet mit der
-`persistenceId`, nach der gefragt wurde.  Der Snapshot-Store
-steht nicht an derselben Stelle;
+Der Object-Storage-Store hat eine **Verschiebungserkennung** in
+zwei Stärken.  Sein Body nennt die Entity, für die er geschrieben
+wurde, und `load` weist einen Body, der eine andere nennt, mit
+einem `JournalError` ab
+([#1417](https://github.com/pathosDev/actor-ts/issues/1417)) — in
+der Standardkonfiguration wird ein Datensatz, der auf den Key
+einer anderen Entity kopiert oder wiederhergestellt wurde, also
+erkannt — aber nicht einen absichtlichen Schreiber, der in einen
+Klartext-Body jeden Namen schreiben kann.  Einen der beiden
+Authentifikatoren zu konfigurieren — `client-aes256-gcm` oder
+`hmac-sha256` — schließt auch das, neben Vertraulichkeit und
+Manipulationserkennung: Jeder Write bindet den Body an den
+Storage-Key, auf den er geht, und dafür ist nichts einzuschalten.
 [Was Verschlüsselung nicht abdeckt](/de/persistence/object-storage/encryption/#was-verschlüsselung-nicht-abdeckt)
-legt den Unterschied dar.
+legt beides dar.
+
+Ein von einer früheren Version geschriebener Body trägt keine
+`persistenceId` und wird abgewiesen; einen Migrationspfad gibt es
+nicht, solche Datensätze müssen neu geschrieben werden.
 
 Siehe
 [Object-Storage-Verschlüsselung](/de/persistence/object-storage/encryption/)
