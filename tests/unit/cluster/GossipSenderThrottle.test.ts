@@ -137,6 +137,22 @@ describe('#1105 — gossip frames are budgeted per sender', () => {
     expect(framesAdmitted(node, sender, firstVersion)).toBe(3);
   });
 
+  test('a long-idle sender bursts to exactly one second\'s worth, and no further', async () => {
+    const node = await startNode('gossip-throttle-burst-cap', 9_861, { budget: 5 });
+    const sender = new NodeAddress('gossip-throttle-burst-cap', '10.0.105.1', 9_901);
+    const firstVersion = Date.now() - 60_000;
+    const start = Date.now();
+    setSystemTime(new Date(start));
+    burst(node, sender, 5, firstVersion);
+    expect(framesAdmitted(node, sender, firstVersion)).toBe(5);
+
+    // Ten idle seconds would earn fifty frames; the bucket holds five.
+    setSystemTime(new Date(start + 10_000));
+    burst(node, sender, 6, firstVersion + 5);
+    expect(framesAdmitted(node, sender, firstVersion)).toBe(10);
+    expect(internals(node.cluster).refusalCounts['rate-limit']).toBe(1);
+  });
+
   test('a clock stepped backwards earns nothing, and leaves no debt behind', async () => {
     const node = await startNode('gossip-throttle-clock-step', 9_860, { budget: 2 });
     const sender = new NodeAddress('gossip-throttle-clock-step', '10.0.105.1', 9_901);
