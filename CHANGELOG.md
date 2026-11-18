@@ -184,12 +184,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   before this, the window never elapsed in virtual time. Production behaviour
   is unchanged.
 
-- **An actor whose constructor throws is stopped** (#914). Its watchers get
-  `Terminated`, it leaves its parent, and its queued messages go to dead
-  letters. Before, it was left suspended forever. The same holds when a
-  supervisor's `supervisorStrategy()` or decider itself throws: the throw
-  now escalates as a failure of the supervising actor and is logged at
-  ERROR, where it used to strand the failed child.
+- **An actor whose constructor throws is stopped, whatever its supervisor
+  decides** (#914, #1384). Its watchers get `Terminated`, it leaves its
+  parent, and its queued messages go to dead letters. Before, it was left
+  suspended forever: its messages were never processed and its watchers never
+  heard of it. The same holds when a supervisor's `supervisorStrategy()` or
+  decider itself throws: the throw now escalates as a failure of the
+  supervising actor and is logged at ERROR, where it used to strand the failed
+  child. The supervision stress test found the `Resume` case.
 - **A terminating actor with queued user messages no longer busy-spins its
   dispatcher** until its last child stops (#915). Measured over one
   teardown, the dispatcher went from about 101 900 executions to fewer than
@@ -295,9 +297,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Before, every respawn waited only the minimum delay, a respawn storm.
   `OffloadPool` says its budget is unlimited instead of logging `restart 0`.
 
-- **`LWWRegister.merge` is commutative when timestamp and replica id both
-  tie** (#950). The value now decides, so two writes from one replica within
-  one millisecond converge on every node. `LWWMap` inherits the fix. The
+- **Last-writer-wins converges on every node when two writes tie on both
+  timestamp and replica id** (#950, #1841). `LWWRegister.merge` and
+  `LastWriterWinsResolver.resolve` kept a different value depending on the
+  order of their arguments, so two writes from one replica within one
+  millisecond could leave replicas diverged. The value now breaks the tie,
+  ranked by `canonicalOrderKey`, an injective key that never throws. `LWWMap`
+  inherits the fix. `LWWRegister.equals` (and `LWWMap.equals` through it) no
+  longer throws on a `bigint` value and no longer calls `{ v: undefined }`
+  equal to `{}`. Objects that differ only in key order now compare equal. The
   DistributedData coordinator-state store stamps each snapshot above the one
   it replaces, so the later snapshot wins even after the clock steps
   backwards.
@@ -346,14 +354,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   - If it landed, the event is folded and broadcast.
   - A snapshot no longer counts an unfolded event as covered.
   - A restarted instance waits for its predecessor's in-flight appends, so
-    it never reuses a `seqAtReplica`.
+    it never reuses a `seqAtReplica`, even when its own start fails while it
+    waits (#1844).
   - Recovery re-publishes the replica's own events written after the
     snapshot.
 
   A rejected replicated `persist` now means "not confirmed": the event may
   still be folded and broadcast later.
-- **`LastWriterWinsResolver` is commutative when two events tie on both
-  timestamp and replica**: the payload breaks the tie.
 - **Express no longer crashes the process on Node or hangs the request on
   Bun when a `ReadableStream` body fails** (#979). A client that disconnects
   cancels the source.
@@ -373,11 +380,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is logged. After a restart, a hub no longer runs `onClientDisconnected`
   for connections it never connected.
 
-- **An actor whose constructor throws is stopped when its supervisor answers
-  `Resume`** (#1384). Before, it stayed in `creating` for good: its messages
-  were never processed, its parent kept it, and its watchers never got
-  `Terminated`. `Restart` already stopped it (#914). The supervision stress
-  test found this.
 - **The HOCON parser refuses a document nested deeper than 256 levels**, with
   a parse error naming the line (#1369). Each key of a path expression, each
   object under a key and each list counts as a level. Before, deep nesting
@@ -391,22 +393,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **Property tests generate inputs up to the `maxLength` they state**
   (#1774). fast-check's default size had capped every length at ten.
 
-- **`LWWRegister.merge` and `LastWriterWinsResolver.resolve` converge on a
-  full `(timestamp, replica)` tie for every pair of values** (#1841). The
-  tie-break key was a JSON rendering, so several distinct values got the same
-  key: `1n` and `"1n"`, `undefined` and any function, `-0` and `0`, and a
-  field holding `undefined` and a missing field. The two argument orders then
-  kept different values, and replicas could diverge, which #950 had set out to
-  end. The key is now the injective, never-throwing `canonicalOrderKey`.
-  `LWWRegister.equals` (and `LWWMap.equals` through it) no longer throws on a
-  `bigint` value and no longer calls `{ v: undefined }` equal to `{}`. Objects
-  that differ only in key order now compare equal.
-- **A replicated event-sourced actor whose restart ran out of
-  `recovery-timeout` no longer lets the next instance recover early**
-  (#1732, #1844). The restart's start failed while it was still waiting for its
-  predecessor's in-flight journal append. Its `postStop` then handed over only
-  its own drain, so the next instance could recover without that event and
-  reuse its `seqAtReplica`.
 - **On Bun, the Hono backend treats a `requestDeadlineMs` of `0` as "no
   deadline"**, as `0` means everywhere else (#1843). An explicit
   `idleTimeoutMs` is no longer reported as cutting before a deadline that does
