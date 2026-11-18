@@ -247,6 +247,22 @@ is `tests/nightly/DeliveryOrderingDeep.nightly.ts`, run by `nightly-flakes.yml`
 by path.  Its name is what keeps `bun test` from collecting it — not an
 environment variable, which `NoEnvironmentGatedSkips.test.ts` forbids.
 
+The sharding coordinator handshake gets the same treatment (#1823).
+`tests/unit/cluster/sharding/ShardingHandshakeOrderingProperties.test.ts` runs a
+real coordinator and two real regions on a two-node `MultiNodeSpec`, and every
+frame between the nodes — `GetShardHome`, `ShardHome`, `Register`, gossip, a
+hand-off — is released by the scheduler.  Between two scheduled phases the
+leader may restart, which is the window the registration barrier exists for
+(#1272).  The model checks one home per shard at any time, no placement before
+the region still hosting a shard has claimed it, and no shard left without a
+home once the network has drained.  Dropping the barrier turns it red, and the
+printed path replays the failure.  Its deep run is
+`tests/nightly/ShardingHandshakeDeep.nightly.ts`.
+
+Every nightly job — the scheduled orderings, the deep decoder inputs and the
+time-factor run included — goes through the stress harness and feeds the
+report job, so a red night in any of them files the `nightly-flake` issue.
+
 ### Inputs nobody chose
 
 Every decoder that reads bytes from outside is also fed bytes no encoder wrote

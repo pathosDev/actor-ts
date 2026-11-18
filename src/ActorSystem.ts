@@ -1347,31 +1347,46 @@ export class ActorSystem {
    * microtask-only loop can spin against it forever without the runner's own
    * timeout ever firing (#1360).
    *
-   * Only `/user` is inspected, for the reason {@link awaitQuiescence} gives:
-   * the framework actors under `/system` are never quiet by design.
+   * By default only `/user` is inspected, for the reason
+   * {@link awaitQuiescence} gives: on a real clock the framework actors under
+   * `/system` are never quiet by design.  `scope: 'everything'` inspects
+   * `/system` too, which is what a caller driving a virtual clock wants — see
+   * {@link _isTreeQuiescent}.
    *
    * @returns whether the tree actually became quiet. A `false` means the budget
    *   ran out, which is a finding rather than a timing accident.
    */
-  async _settle(maxTurns: number = SETTLE_MAX_TURNS): Promise<boolean> {
+  async _settle(maxTurns: number = SETTLE_MAX_TURNS, scope: 'user' | 'everything' = 'user'): Promise<boolean> {
     if (this._terminated) return true;
     for (let turn = 0; turn < maxTurns; turn++) {
       // Probed before the first yield, so an already-quiet system pays nothing.
-      if (this.isUserTreeQuiescent()) return true;
+      if (this._isTreeQuiescent(scope)) return true;
       await sleep(0);
     }
-    return this.isUserTreeQuiescent();
+    return this._isTreeQuiescent(scope);
+  }
+
+  /**
+   * @internal Is every cell under `/user` — and, for `'everything'`, every
+   * cell under `/system` — out of work right now?  A terminated system is.
+   *
+   * `/system` is quiet only where nothing re-arms its actors but a timer: on
+   * a virtual clock a heartbeat, a gossip tick or a failure-detector sweep
+   * fires only when the clock is advanced, so between advances the framework
+   * actors drain like any other.  That is the clock `MultiNodeSpec` runs on,
+   * and sharding regions, coordinators and the singleton manager all live
+   * there, so settling `/user` alone let virtual time run ahead of their
+   * queued cross-node work (#1835).
+   */
+  _isTreeQuiescent(scope: 'user' | 'everything' = 'user'): boolean {
+    if (this._terminated) return true;
+    if (!isSubtreeQuiescent(this.userGuardianCell)) return false;
+    return scope === 'user' || isSubtreeQuiescent(this.systemGuardianCell);
   }
 
   /** Is every cell under `/user` — the guardian included — out of work? */
   private isUserTreeQuiescent(): boolean {
-    const busy = (cell: ActorCell<unknown>): boolean => {
-      if (!cell._isQuiescent()) return true;
-      let childBusy = false;
-      cell._eachChildCell((child) => { childBusy ||= busy(child); });
-      return childBusy;
-    };
-    return !busy(this.userGuardianCell);
+    return isSubtreeQuiescent(this.userGuardianCell);
   }
 
   /**
@@ -1747,6 +1762,14 @@ export function readShutdownDrainTimeoutFromConfig(config: Config): number | und
  */
 function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+}
+
+/** Is `cell` and every cell below it out of work? */
+function isSubtreeQuiescent(cell: ActorCell<unknown>): boolean {
+  if (!cell._isQuiescent()) return false;
+  let quiet = true;
+  cell._eachChildCell((child) => { quiet &&= isSubtreeQuiescent(child); });
+  return quiet;
 }
 
 /**

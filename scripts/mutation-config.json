@@ -171,6 +171,7 @@
       "tests/unit/cluster/sharding/ShardPlacementReachability.test.ts",
       "tests/unit/cluster/sharding/ShardRegisterConflict.test.ts",
       "tests/unit/cluster/sharding/ShardingAuthority.test.ts",
+      "tests/unit/cluster/sharding/ShardingHandshakeOrderingProperties.test.ts",
       "tests/unit/cluster/sharding/ShardingRefusalLogEscaping.test.ts",
       "tests/unit/cluster/sharding/ShardingRoleFromConfig.test.ts",
       "tests/unit/cluster/sharding/ShardingUnhandledDrops.test.ts",
@@ -245,6 +246,14 @@
       "tests/unit/cluster/sharding/ShardingRefusalLogEscaping.test.ts",
       "tests/unit/parallelism/SpawnProtocol.test.ts",
       "tests/unit/worker/MetricsRelay.test.ts"
+    ],
+    "src/config/HoconParser.ts": [
+      "tests/unit/config/HoconObjectPrototypeKeys.test.ts",
+      "tests/unit/config/HoconParser.test.ts",
+      "tests/unit/config/HoconParserFuzz.test.ts",
+      "tests/unit/config/HoconProperties.test.ts",
+      "tests/unit/config/ResolveLayer.test.ts",
+      "tests/unit/config/SubstitutionChainLength.test.ts"
     ],
     "src/crdt/LWWRegister.ts": [
       "tests/unit/cluster/sharding/DistributedDataCoordinatorStateStore.test.ts",
@@ -716,6 +725,14 @@
       "tests/integration/in-process/persistence/PersistAllAtomicity.test.ts",
       "tests/integration/in-process/persistence/PersistentActorStoreFailure.test.ts",
       "tests/unit/testkit/FaultInjectingStores.test.ts"
+    ],
+    "src/testkit/MultiNodeSpec.ts": [
+      "tests/multi-node/AdvanceSettlesSystemTree.test.ts",
+      "tests/multi-node/DowningVirtualClock.test.ts",
+      "tests/multi-node/PartitionHeal.test.ts",
+      "tests/multi-node/RepeatedFaultEpisodes.test.ts",
+      "tests/unit/testkit/MultiNodeSpec.test.ts",
+      "tests/unit/testkit/MultiNodeSpecClock.test.ts"
     ],
     "src/util/CanonicalOrderKey.ts": [
       "tests/integration/in-process/persistence/replicated/ConflictResolver.test.ts",
