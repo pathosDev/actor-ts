@@ -690,8 +690,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   - `ClusterClient` reads the same key and now honours
     `actor-ts.serialization.read-constraints`.
 
-  *Migration:* upgrade every node in one window. To keep sending the refused
-  types, list them in `admitted-tags` on every receiving node.
+  *Migration:* upgrade every node in one window. A separately deployed
+  `ClusterClient` app announces the wire version in its own `hello` and is
+  refused just like a node, so upgrade it in the same window. To keep sending
+  the refused types, list them in `admitted-tags` on every receiving node.
 - **HTTP/1.1 connections on Fastify's HTTP/2 listener under Bun are held to
   `idle-timeout` and `request-timeout`** (#1756).
 - **`rateLimit` no longer fails open silently** (#983). A cache outage or a
