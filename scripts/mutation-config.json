@@ -77,6 +77,7 @@
       "tests/unit/cluster/GossipMergeCapBypasses.test.ts",
       "tests/unit/cluster/GossipReplayGuard.test.ts",
       "tests/unit/cluster/GossipSenderField.test.ts",
+      "tests/unit/cluster/GossipSenderThrottle.test.ts",
       "tests/unit/cluster/GossipSequencePinning.test.ts",
       "tests/unit/cluster/JoinGiveUpWithoutSeeds.test.ts",
       "tests/unit/cluster/MemberAppVersion.test.ts",
@@ -88,6 +89,7 @@
       "tests/unit/cluster/MembershipTransitionLogs.test.ts",
       "tests/unit/cluster/NodeIncarnation.test.ts",
       "tests/unit/cluster/OwnPromotionRoles.test.ts",
+      "tests/unit/cluster/OwnPromotionVersion.test.ts",
       "tests/unit/cluster/PeerWordUnreachableWindow.test.ts",
       "tests/unit/cluster/RestartedIncarnation.test.ts",
       "tests/unit/cluster/SelfClaimRefusalNoise.test.ts",
@@ -138,7 +140,17 @@
       "tests/integration/in-process/cluster/sharding/ClusterSharding.test.ts",
       "tests/integration/in-process/cluster/sharding/CoordinatorRestart.test.ts",
       "tests/integration/in-process/cluster/sharding/CoordinatorState.test.ts",
+      "tests/unit/cluster/GossipSenderThrottle.test.ts",
       "tests/unit/cluster/UnreachablePeerContact.test.ts"
+    ],
+    "src/cluster/pubsub/DistributedPubSubMediator.ts": [
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSub.test.ts",
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSubCaps.test.ts",
+      "tests/unit/cluster/DistributedPubSubMembershipGossip.test.ts"
+    ],
+    "src/cluster/pubsub/DistributedPubSubOptions.ts": [
+      "tests/unit/config/PubSubAndReceptionistConfigDefaults.test.ts",
+      "tests/unit/options/NonBrokerOptionsValidators.test.ts"
     ],
     "src/cluster/router/ClusterRouter.ts": [
       "tests/integration/in-process/cluster/router/ClusterRouter.test.ts",
@@ -210,12 +222,17 @@
       "tests/unit/cluster/singleton/SingletonManagerTimers.test.ts",
       "tests/unit/coordination/SingletonLeasePrecedence.test.ts"
     ],
+    "src/cluster/TcpTransportOptions.ts": [
+      "tests/unit/cluster/RequirePeerIdentity.test.ts",
+      "tests/unit/cluster/TcpTransportOptions.test.ts"
+    ],
     "src/cluster/Transport.ts": [
       "tests/integration/in-process/cluster/RefCodec.test.ts",
       "tests/integration/in-process/cluster/RemoteDeathWatch.test.ts",
       "tests/unit/InMemoryTransport.test.ts",
       "tests/unit/cluster/HelloNamingTheReceivingNode.test.ts",
       "tests/unit/cluster/PeerIdentity.test.ts",
+      "tests/unit/cluster/RequirePeerIdentity.test.ts",
       "tests/unit/cluster/TcpTransportBackpressure.test.ts",
       "tests/unit/cluster/TcpTransportBackpressureSockets.test.ts",
       "tests/unit/cluster/TcpTransportInboundCapRefusal.test.ts",
@@ -261,6 +278,11 @@
       "tests/unit/crdt/LWWRegisterEquals.test.ts",
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/discovery/Receptionist.ts": [
+      "tests/unit/discovery/Receptionist.test.ts",
+      "tests/unit/discovery/ReceptionistGossipClaims.test.ts",
+      "tests/unit/discovery/ReceptionistSubscriberCaps.test.ts"
     ],
     "src/http/backend/ExpressBackend.ts": [
       "tests/integration/in-process/http/ExpressHttp.test.ts",
@@ -791,6 +813,10 @@
       "tests/unit/UtilExports.test.ts",
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
+    ],
+    "src/util/SenderClaimQuota.ts": [
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSubCaps.test.ts",
+      "tests/unit/discovery/ReceptionistGossipClaims.test.ts"
     ],
     "src/worker/WorkerMesh.ts": [
       "tests/integration/in-process/cluster/WorkerMesh.test.ts",

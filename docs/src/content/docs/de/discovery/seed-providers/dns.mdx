@@ -113,6 +113,16 @@ const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
   .withLog((message) => logger.warn(message));
 ```
 
+Mit `Cluster.bootstrap({ discovery: 'dns' })` — oder `'auto'`, das
+denselben Provider baut — gibt es keinen Provider, dem man Optionen
+übergeben könnte.  Der Pin wird dann in der Konfiguration gesetzt
+und erreicht den Provider, den die Kurzform baut, samt dem Log, das
+meldet, was er verwirft (#1107):
+
+```hocon
+actor-ts.discovery.dns.pinned-addresses = ["10.0.0.0/8"]
+```
+
 **Die Form der Einträge hängt vom Modus ab**, weil die beiden Modi
 zu Unterschiedlichem auflösen:
 

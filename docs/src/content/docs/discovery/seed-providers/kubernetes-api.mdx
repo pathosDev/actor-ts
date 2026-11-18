@@ -144,6 +144,16 @@ const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create
   .withLog((message) => logger.warn(message));
 ```
 
+With `Cluster.bootstrap({ discovery: 'kubernetes' })` — or `'auto'`,
+which builds the same provider — there is no provider to hand
+options to.  The pin is set in configuration instead, and reaches
+the provider the shorthand builds, along with the log that reports
+what it discards (#1107):
+
+```hocon
+actor-ts.discovery.kubernetes.pinned-addresses = ["10.244.0.0/16"]
+```
+
 Entries here are **CIDRs only** — Endpoints always resolve to IPs,
 so a host suffix could never match and is rejected at
 construction, as are an empty list and a malformed CIDR.  Addresses

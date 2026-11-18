@@ -84,6 +84,7 @@ import { DEFAULT_PROM_CLIENT_NAME_PREFIX } from '../../../src/metrics/PromClient
 import { DEFAULT_OTEL_TRACER_NAME } from '../../../src/tracing/OtelAdapterOptions.js';
 import { DEFAULT_OTEL_LOGGER_NAME } from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import {
+  DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
@@ -100,9 +101,11 @@ import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
   DEFAULT_MAX_TOPICS,
+  DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER,
 } from '../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
+  DEFAULT_MAX_REGISTRATIONS_CLAIMED_PER_SENDER,
   DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
 } from '../../../src/discovery/ReceptionistOptions.js';
 import { DEFAULT_DISCOVERY_METHOD, DEFAULT_NEW_CLUSTER_ENABLED } from '../../../src/cluster/ClusterBootstrapOptions.js';
@@ -429,6 +432,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.unreachable-gossip-rounds', kind: 'int', constant: DEFAULT_UNREACHABLE_GOSSIP_ROUNDS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
+  { key: 'actor-ts.cluster.gossip-frames-per-second-per-sender', kind: 'int', constant: DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER },
   // In the table rather than in FEATURE_SWITCHES, though `1` is the "off"
   // value: the off state here is not a field being absent at the read site but
   // a real threshold that a real comparison evaluates, so there is a constant
@@ -573,8 +577,10 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },
   { key: 'actor-ts.cluster.pub-sub.max-topics', kind: 'int', constant: DEFAULT_MAX_TOPICS },
   { key: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic', kind: 'int', constant: DEFAULT_MAX_REMOTE_NODES_PER_TOPIC },
+  { key: 'actor-ts.cluster.pub-sub.max-topics-claimed-per-sender', kind: 'int', constant: DEFAULT_MAX_TOPICS_CLAIMED_PER_SENDER },
   { key: 'actor-ts.cluster.receptionist.max-subscribers-per-key', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_KEY },
   { key: 'actor-ts.cluster.receptionist.max-subscriptions-total', kind: 'int', constant: DEFAULT_MAX_SUBSCRIPTIONS_TOTAL },
+  { key: 'actor-ts.cluster.receptionist.max-registrations-claimed-per-sender', kind: 'int', constant: DEFAULT_MAX_REGISTRATIONS_CLAIMED_PER_SENDER },
 
   /* --- sharding --- */
   { key: 'actor-ts.sharding.number-of-shards', kind: 'int', constant: DEFAULT_NUM_SHARDS },

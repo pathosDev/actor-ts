@@ -1,6 +1,8 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { detectRuntime, type RuntimeKind } from '../runtime/Detect.js';
 import type { TlsTransportOptionsType } from '../runtime/tcp/index.js';
+import { holdsCertificate, requiresClientCertificate } from '../runtime/tcp/TcpBackend.js';
 import type { ReadConstraintsOptions } from '../serialization/ReadConstraintsOptions.js';
 import type { WireDecodeOptions } from '../serialization/WireDecodeOptions.js';
 import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS } from './Constants.js';
@@ -33,6 +35,32 @@ export type TcpTransportOptionsType = {
    * explicitly to say the choice was made rather than forgotten (#591).
    */
   readonly tls?: TlsTransportOptionsType | null;
+  /**
+   * Refuse a peer whose socket reports no TLS certificate (#1190).  Default:
+   * `false`.
+   *
+   * Every handshake is held to the certificate the peer presented (#912): a
+   * `hello` or `hello-ack` claiming an address the certificate does not name
+   * is refused.  Where the socket reports **no** certificate the check has
+   * nothing to compare and, by default, admits — a plaintext cluster, one-way
+   * TLS and Deno all look like that, and refusing them would break each one
+   * rather than harden it.  The cost of that default is that identity binding
+   * degrades to nothing without a word when a TLS bundle is half applied or a
+   * backend stops reporting the certificate.  `true` turns the absence into a
+   * refusal: every peer proves its name, or the connection is closed with a
+   * WARN.
+   *
+   * Lives here and not on the shared {@link TlsTransportOptionsType} because
+   * the identity check is this transport's: the same TLS shape configures the
+   * HTTP server, the brokers and the log sinks, where the field would be
+   * accepted and ignored.
+   *
+   * Refused at construction where it cannot hold: without a `tls` whose `ca`
+   * holds a certificate (nothing asks a peer for one), with
+   * `requestClientCert: false` (the listener asks for none), and on Deno,
+   * whose TLS connection reports no peer certificate at all.
+   */
+  readonly requirePeerIdentity?: boolean;
   /**
    * Per-frame size cap (security).  Frames whose length-prefix exceeds this
    * are rejected before any payload bytes are buffered — the 4-GiB-claim DoS
@@ -283,6 +311,36 @@ export function findConnectDeadlineOrderingViolation(
 }
 
 /**
+ * Why `requirePeerIdentity: true` cannot hold with these settings, or
+ * `undefined` when it can (#1190).
+ *
+ * Each refusal is a configuration under which no peer could ever present a
+ * certificate, so the option would refuse every connection — a node that
+ * cannot join — while reading as "identity enforced".  Refusing it at
+ * construction turns that into a startup error that names the cause.
+ */
+function findRequirePeerIdentityViolation(
+  s: Partial<TcpTransportOptionsType>,
+  runtime: RuntimeKind = detectRuntime(),
+): string | undefined {
+  if (s.requirePeerIdentity !== true) return undefined;
+  const tls = s.tls ?? undefined;
+  if (tls === undefined || !holdsCertificate(tls.ca)) {
+    return 'needs a `tls` with a `ca` holding a certificate; with no `ca` nothing asks a peer for '
+      + 'a certificate, so every peer would be refused';
+  }
+  if (!requiresClientCertificate(tls)) {
+    return 'cannot hold with `requestClientCert: false`: the listener asks inbound peers for no '
+      + 'certificate, so every one of them would be refused';
+  }
+  if (runtime === 'deno') {
+    return 'cannot hold on Deno: `Deno.TlsConn` reports no peer certificate, so every peer would be '
+      + 'refused. Run this node on Node.js or Bun, or leave requirePeerIdentity off';
+  }
+  return undefined;
+}
+
+/**
  * Fluent builder for {@link TcpTransportOptionsType}.
  *
  *     const transportOptions = TcpTransportOptions.create()
@@ -299,6 +357,11 @@ export class TcpTransportOptionsBuilder extends OptionsBuilder<TcpTransportOptio
   /** TLS material for the listener and the dialer.  `null` is plaintext. */
   withTls(tls: TlsTransportOptionsType | null): this {
     return this.set('tls', tls);
+  }
+
+  /** Refuse a peer that presents no TLS certificate.  Default: false. */
+  withRequirePeerIdentity(requirePeerIdentity: boolean): this {
+    return this.set('requirePeerIdentity', requirePeerIdentity);
   }
 
   /** Per-frame wire cap in bytes.  Default: 16 MiB. */
@@ -378,6 +441,10 @@ export class TcpTransportOptionsValidator extends OptionsValidator<TcpTransportO
     // node that cannot be joined rather than a node with no cap.
     this.positiveInt('maxInboundConnections');
     this.positiveNumber('incompleteFrameIdleMs');
+    const peerIdentityViolation = findRequirePeerIdentityViolation(s);
+    if (peerIdentityViolation !== undefined) {
+      this.fail('requirePeerIdentity', peerIdentityViolation, true);
+    }
     // The two cross-field rules, and why each is a rule rather than a sentence
     // in the docs is beside it — {@link findStallDeadlineOrderingViolation}
     // and {@link findConnectDeadlineOrderingViolation} — along with why both

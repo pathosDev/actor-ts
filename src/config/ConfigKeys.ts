@@ -1672,6 +1672,13 @@ export const ConfigKeys = {
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
     /**
+     * Gossip frames one sender may hand this node per second (#1105) — the
+     * work bound beside the two memory caps above.  `0` disables it.  Read by
+     * `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.gossipFramesPerSecondPerSender`.
+     */
+    gossipFramesPerSecondPerSender: 'actor-ts.cluster.gossip-frames-per-second-per-sender',
+    /**
      * Members that must be present before anything is promoted to `up` (#837)
      * — the leader's promotions and a founder's own self-election alike.
      *
@@ -2051,6 +2058,7 @@ export const ConfigKeys = {
       maxSubscribersPerTopic: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic',
       maxTopics: 'actor-ts.cluster.pub-sub.max-topics',
       maxRemoteNodesPerTopic: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic',
+      maxTopicsClaimedPerSender: 'actor-ts.cluster.pub-sub.max-topics-claimed-per-sender',
       sendToDeadLettersWhenNoSubscribers:
         'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
     },
@@ -2064,6 +2072,7 @@ export const ConfigKeys = {
       gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
       maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
       maxSubscriptionsTotal: 'actor-ts.cluster.receptionist.max-subscriptions-total',
+      maxRegistrationsClaimedPerSender: 'actor-ts.cluster.receptionist.max-registrations-claimed-per-sender',
     },
   },
 

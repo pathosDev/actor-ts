@@ -1373,10 +1373,14 @@ describe('gossip-interval validators', () => {
     expect(() => check({ maxSubscribersPerTopic: 0 })).toThrow(/maxSubscribersPerTopic/);
     expect(() => check({ maxTopics: 0 })).toThrow(/maxTopics/);
     expect(() => check({ maxRemoteNodesPerTopic: 2.5 })).toThrow(/maxRemoteNodesPerTopic/);
+    // #1074: a quota of 0 would drop every peer's claims — a mediator nothing
+    // remote can publish to.
+    expect(() => check({ maxTopicsClaimedPerSender: 0 })).toThrow(/maxTopicsClaimedPerSender/);
     expect(() => check({
       maxSubscribersPerTopic: 10_000,
       maxTopics: 10_000,
       maxRemoteNodesPerTopic: 1_000,
+      maxTopicsClaimedPerSender: 1_024,
       sendToDeadLettersWhenNoSubscribers: false,
     })).not.toThrow();
   });

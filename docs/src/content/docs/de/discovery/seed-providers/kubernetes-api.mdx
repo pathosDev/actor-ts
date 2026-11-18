@@ -148,6 +148,16 @@ const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create
   .withLog((message) => logger.warn(message));
 ```
 
+Mit `Cluster.bootstrap({ discovery: 'kubernetes' })` — oder `'auto'`,
+das denselben Provider baut — gibt es keinen Provider, dem man
+Optionen übergeben könnte.  Der Pin wird dann in der Konfiguration
+gesetzt und erreicht den Provider, den die Kurzform baut, samt dem
+Log, das meldet, was er verwirft (#1107):
+
+```hocon
+actor-ts.discovery.kubernetes.pinned-addresses = ["10.244.0.0/16"]
+```
+
 Einträge sind hier **ausschließlich CIDRs** — Endpoints lösen immer
 zu IPs auf, ein Host-Suffix könnte also nie greifen und wird bei
 der Konstruktion abgelehnt, ebenso eine leere Liste und ein

@@ -288,6 +288,8 @@ export class TcpTransport implements Transport {
   readonly maxFrameBytes: number;
   /** TLS material for both listener and dialer; `null` is plaintext. */
   private readonly tls: TlsTransportOptionsType | null;
+  /** Whether a peer with no certificate is refused rather than admitted (#1190). */
+  private readonly requirePeerIdentity: boolean;
   /**
    * Interface and port to bind, which need not be what {@link self}
    * advertises — a container binds `0.0.0.0` on its own port and tells its
@@ -347,6 +349,7 @@ export class TcpTransport implements Transport {
     const settings = options as TcpTransportOptionsType;
     new TcpTransportOptionsValidator().validate(settings);
     this.tls = settings.tls ?? null;
+    this.requirePeerIdentity = settings.requirePeerIdentity ?? false;
     this.maxFrameBytes = settings.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
     this.bindHost = settings.bindHost ?? self.host;
     this.bindPort = settings.bindPort ?? self.port;
@@ -1109,9 +1112,12 @@ export class TcpTransport implements Transport {
    * cluster is documented as unauthenticated, one-way TLS has no client
    * certificate by design, and Deno cannot report one — in all three the
    * transport has nothing to verify against, and rejecting on that basis
-   * would break every one of them rather than harden anything.  The check
-   * therefore strengthens mTLS deployments without introducing a new
-   * configuration knob that could be left off.
+   * would break every one of them rather than harden anything.  So the
+   * default strengthens mTLS deployments without a knob that could be left
+   * off — and, as its price, degrades to nothing without a word when a TLS
+   * bundle is half applied.  `requirePeerIdentity` (#1190) is the deliberate
+   * opposite: the absence is then a refusal, and the options validator has
+   * already refused the settings under which no peer could present one.
    */
   private certificateAdmits(
     connection: Connection,
@@ -1119,7 +1125,15 @@ export class TcpTransport implements Transport {
     frame: 'hello' | 'hello-ack',
   ): boolean {
     const certificate = connection.socket?.peerCertificate?.();
-    if (certificate === undefined) return true;
+    if (certificate === undefined) {
+      if (!this.requirePeerIdentity) return true;
+      this.log.warn(
+        `${frame} rejected: peer claims ${sanitizeNodeAddressForLog(claimed)} but presented no certificate, `
+        + 'and requirePeerIdentity is set — closing the connection',
+      );
+      this.dropConnection(connection);
+      return false;
+    }
     if (certificateVouchesFor(certificate, claimed)) return true;
 
     const vouchedFor = [

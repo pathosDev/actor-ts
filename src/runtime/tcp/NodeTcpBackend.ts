@@ -1,5 +1,10 @@
 import { Lazy } from '../../util/Lazy.js';
-import { listenerTlsOptions, listenerUsesTls, toPeerCertificate } from './TcpBackend.js';
+import {
+  assertDialCredentialIsWhole,
+  listenerTlsOptions,
+  listenerUsesTls,
+  toPeerCertificate,
+} from './TcpBackend.js';
 import type {
   PeerCertificate,
   TcpBackend,
@@ -60,6 +65,7 @@ export class NodeTcpBackend implements TcpBackend {
     signal?: AbortSignal;
   }): Promise<TcpSocketLike> {
     const { host, port, tls, handlers, signal } = options;
+    if (tls !== undefined) assertDialCredentialIsWhole(tls);
     // Asked again once the module is loaded: the first dial `import()`s it,
     // and an abort that lands meanwhile must dial nothing at all — dialling
     // and then destroying still sends a SYN to a peer that was given up on.
