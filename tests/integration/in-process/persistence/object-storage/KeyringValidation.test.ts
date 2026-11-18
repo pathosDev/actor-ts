@@ -38,6 +38,7 @@ import { registerObjectStoragePlugins } from '../../../../../src/persistence/obj
 import { ObjectStoragePluginOptions } from '../../../../../src/persistence/object-storage/ObjectStoragePluginOptions.js';
 import { encryptionByPrefix } from '../../../../../src/persistence/object-storage/PluginConfig.js';
 import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
+import { decodeBody, encodeBody } from '../../../../../src/persistence/object-storage/BodyCodec.js';
 import {
   KEY_VERSION_EXHAUSTION_THRESHOLD,
   MAX_KEY_VERSION,
@@ -325,5 +326,20 @@ describe('a reused key version after the retired entry is gone (#1050)', () => {
     const reader = new ObjectStorageSnapshotStore(readerOptions);
     await expect(reader.loadLatest('user-1'))
       .rejects.toThrow(/key version 1 failed to authenticate.*probably not the key it was written with/s);
+  });
+
+  test('a failure that is not an authentication failure keeps its own message', async () => {
+    // A wrong-length subkey fails before WebCrypto runs, so it is not an
+    // `OperationError` — relabelling it "probably a reused version" would
+    // send the operator after the wrong cause.
+    const body = await encodeBody(new TextEncoder().encode('{}'), {
+      compression: 'none',
+      encryption: { subKey: new Uint8Array(32).fill(0x11) },
+    });
+    let caught: unknown = null;
+    try {
+      await decodeBody(body, { encryption: { subKey: new Uint8Array(16) } });
+    } catch (error) { caught = error; }
+    expect((caught as Error).message).toBe('subkey must be 32 bytes');
   });
 });
