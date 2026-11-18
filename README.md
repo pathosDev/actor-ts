@@ -509,6 +509,23 @@ deliberately not measured yet.  Reproduce with
 `bun run bench:compare -- --rounds=100`.
 
 ---
+## Known security caveats
+
+**Deferred work inherits the log context (MDC) of the turn that started
+it.** `AsyncLocalStorage` binds a promise to the context current when it
+was created, so a background drain, a batch flush or a raw `setTimeout`
+started inside one message's turn stamps *that* turn's fields — tenant,
+user, correlation id — onto every log line and every `tell` it makes
+later. When the deferred work serves another principal, that is a
+cross-tenant data leak, not just a confusing log line. The framework
+cannot see such a promise, so closing it is the caller's job:
+`LogContext.runFresh(callback)` for work that belongs to nobody (it starts
+from an empty context), and `LogContext.runEach(entries, callback)` for a
+batch whose items each carry the context captured when they were
+enqueued. See
+[What is still yours to close](https://actor-ts.dev/fundamentals/logging/#what-is-still-yours-to-close).
+
+---
 ## Roadmap & status
 
 See [`ROADMAP.md`](./ROADMAP.md) for what's done and what's planned.  The
