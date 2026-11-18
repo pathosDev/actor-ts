@@ -20,6 +20,11 @@ import {
   type SummaryDocument,
 } from '../../../scripts/stress-test.mjs';
 
+/** Every character a RegExp reads as syntax, backslash included, made literal. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * The nightly measurement has to reach somebody.
  *
@@ -480,7 +485,7 @@ describe('the nightly workflow wires every job into the report', () => {
       expect(jobText).toContain(`name: ${job}-\${{ github.run_id }}-\${{ github.run_attempt }}`);
       const path = downloadPathFor(job);
       expect(path).not.toBeNull();
-      expect(reportJob).toMatch(new RegExp(`--summary="[^":]+:${path!.replace(/[.]/g, '\\.')}/summary\\.json"`));
+      expect(reportJob).toMatch(new RegExp(`--summary="[^":]+:${escapeRegExp(path!)}/summary\\.json"`));
     },
   );
 });
