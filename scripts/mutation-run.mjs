@@ -323,7 +323,11 @@ function balanceOf(source, mask, start, end) {
   return depth;
 }
 
-const CALL_STATEMENT = /^(?:await\s+)?(?:this\.|[A-Za-z_$][\w$]*)[\w$.?#[\]'"]*\(.*\)(?:\.[\w$]+\(.*\))*;$/;
+// A callee, its `(`, and a line that ends in `);`.  A chained tail such as
+// `).next(…)` is already covered by `.*`; spelling it out as its own repeated
+// group was the nested quantifier CodeQL flagged as exponential (js/redos),
+// and dropping it matches exactly the same lines.
+const CALL_STATEMENT = /^(?:await\s+)?(?:this\.|[A-Za-z_$][\w$]*)[\w$.?#[\]'"]*\(.*\);$/;
 
 /**
  * Statement-level candidates, one line at a time.  Only a statement that both

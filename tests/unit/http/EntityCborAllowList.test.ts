@@ -38,6 +38,8 @@ const SAMPLES: Readonly<Record<JsonTreeTagName, unknown>> = {
   'bigint': 12n,
   'number': Number.POSITIVE_INFINITY,
   'undefined': undefined,
+  // Deliberately catastrophic (js/redos): the test proves this pattern is refused
+  // before it is ever compiled, so it has to be one that would backtrack.
   'regexp': /(a+)+$/g,
   'url': new URL('file:///etc/passwd'),
   'error': new TypeError('x'),
@@ -139,6 +141,7 @@ describe('entity() on a CBOR body — through a live route', () => {
     const url = `http://${binding.host}:${binding.port}/`;
     const encoder = new CborEncoder();
 
+    // A deliberately catastrophic pattern (js/redos): it must be refused, never compiled.
     const hostile = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/cbor' }, body: new Uint8Array(encoder.encode({ p: /(a+)+$/ })),
     });
