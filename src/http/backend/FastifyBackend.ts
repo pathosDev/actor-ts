@@ -7,6 +7,7 @@ import {
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   drainWindowOf,
   headerCapReachesHttp2Streams,
+  NOT_FOUND_RESPONSE,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -204,6 +205,8 @@ export class FastifyBackend implements HttpServerBackend {
     | ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse)
     | null = null;
   private streamFailureHandler: ((err: unknown, request: HttpRequest | undefined) => void) | null = null;
+  /** Whether a not-found handler reached Fastify; `listen` installs the default otherwise. */
+  private notFoundSet = false;
   private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
 
   constructor(options: object = {}) {
@@ -295,6 +298,7 @@ export class FastifyBackend implements HttpServerBackend {
   /** `return reply` for the reason spelled out on {@link registerRoute} — a
    *  not-found handler serving an SPA fallback is a streaming body too. */
   setNotFound(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+    this.notFoundSet = true;
     this.app.setNotFoundHandler(async (req: FastifyRequest, reply: FastifyReply) => {
       const adapted = this.adaptRequest(req);
       const response = await handler(adapted);
@@ -412,6 +416,10 @@ export class FastifyBackend implements HttpServerBackend {
         .register(plugin, { options: { maxPayload: transportFrameCapOf(this.wsRegistered) } });
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(reg);
     }
+    // No not-found hook set: the framework's own 404 goes through the same
+    // writer, so it carries the default headers — Fastify's would carry none
+    // and echo the request path into its body (#1059).
+    if (!this.notFoundSet) this.setNotFound(() => NOT_FOUND_RESPONSE);
     const address = await this.app.listen({ host, port });
     // Fastify overrides two of the four on its own — `keepAliveTimeout` to
     // 72 s and `requestTimeout` to 0 (no bound) — so this is the write that

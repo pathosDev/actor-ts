@@ -49,7 +49,7 @@ const routes =
 `X-Content-Type-Options: nosniff` braucht keine Einrichtung. Geschrieben
 wird der Header vom **Backend**, nicht von einer Middleware — er erreicht
 damit auch die Responses, die keine Middleware sieht: das backend-eigene
-Fehler-Mapping, den `fallback`-404 und den 413 bei zu großem Body. Ein
+Fehler-Mapping, den 404 für einen Pfad ohne passende Route und den 413 bei zu großem Body. Ein
 Header aus dem Handler gewinnt weiterhin.
 
 Er ist bewusst der einzige, der per Default an ist — es ist der einzige

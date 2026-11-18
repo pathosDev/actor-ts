@@ -133,9 +133,11 @@ middleware the one closest to the handler sets it, and the server-wide
 carries. So a route under `hsts()` gets the configured policy even on a server
 whose `withSecurityHeaders({ hsts })` names another one, and only the responses
 no route-level HSTS reaches — a body-parse `413`, say — carry the server-wide
-policy. The backend's own `404` for a path no route matches carries none, on
-every backend: it is answered outside every decorator. A tree that ends in a
-`fallback(...)` answers that `404` itself, and then it carries the policy
+policy. So does the framework's own `404` for a path no route matches, on every
+backend: without a `fallback(...)` the server still answers it itself, with a
+fixed `{"error":"Not Found"}` body, through the same writer as every other
+response. A tree that ends in a `fallback(...)` answers that `404` with its own
+handler instead, and it carries the policy just the same
 ([#1059](https://github.com/pathosDev/actor-ts/issues/1059)).
 
 import { Aside } from '@astrojs/starlight/components';

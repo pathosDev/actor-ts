@@ -1059,6 +1059,39 @@ export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
 
       test('the fallback 404 carries it', carriesNosniff('/nowhere', 404));
 
+      // #1059: without a fallback() the backend used to answer an unrouted path
+      // itself, outside the default headers, and Fastify echoed the path back.
+      describe('the framework 404 of a tree without fallback()', () => {
+        const unfallbacked = (): Route => path('plain', get(() => complete(Status.OK, 'hello')));
+
+        test('carries nosniff and a fixed JSON body that does not echo the path', async () => {
+          const url = await urlOf(unfallbacked());
+          const response = await fetch(`${url}/nowhere-${'q'.repeat(8)}`);
+          expect(response.status).toBe(404);
+          expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+          expect(response.headers.get('content-type')).toContain('application/json');
+          const text = await response.text();
+          expect(JSON.parse(text)).toEqual({ error: 'Not Found' });
+          expect(text).not.toContain('nowhere');
+        });
+
+        test('carries an opted-in bundle too', async () => {
+          const url = await urlOf(unfallbacked(), { configure: (b) => b.withSecurityHeaders({}) });
+          const response = await fetch(`${url}/nowhere`);
+          await response.arrayBuffer();
+          expect(response.status).toBe(404);
+          expect(response.headers.get('x-frame-options')).toBe('DENY');
+        });
+
+        test('withSecurityHeaders(false) still opts it out', async () => {
+          const url = await urlOf(unfallbacked(), { configure: (b) => b.withSecurityHeaders(false) });
+          const response = await fetch(`${url}/nowhere`);
+          await response.arrayBuffer();
+          expect(response.status).toBe(404);
+          expect(response.headers.get('x-frame-options')).toBeNull();
+        });
+      });
+
       test('withSecurityHeaders(false) opts out entirely', async () => {
         const url = await urlOf(routes(), { configure: (b) => b.withSecurityHeaders(false) });
         expect((await fetch(`${url}/plain`)).headers.get('x-content-type-options')).toBeNull();

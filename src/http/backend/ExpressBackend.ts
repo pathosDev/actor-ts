@@ -19,6 +19,7 @@ import {
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   drainWindowOf,
+  NOT_FOUND_RESPONSE,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -406,18 +407,18 @@ export class ExpressBackend implements HttpServerBackend {
     if (this.wsRegistered.length > 0) await this.attachWebsocketRoutes(this.app);
     // Apply routes.  Express treats patterns like "/users/:id" natively.
     for (const route of this.registered) this.attachRoute(route);
-    // 404 + error middlewares MUST come last.
-    if (this.notFoundHandler) {
-      const handler = this.notFoundHandler;
-      const notFound: ExpressHandler = async (req, res, next) => {
-        try {
-          const adapted = this.adaptRequest(req);
-          const out = await handler(adapted);
-          await this.writeResponse(res, out, adapted);
-        } catch (err) { next(err); }
-      };
-      this.app.use(notFound);
-    }
+    // 404 + error middlewares MUST come last.  With no not-found hook set the
+    // framework's own 404 is written here too, rather than by Express's final
+    // handler, so it carries the default headers (#1059).
+    const handler = this.notFoundHandler ?? ((): HttpResponse => NOT_FOUND_RESPONSE);
+    const notFound: ExpressHandler = async (req, res, next) => {
+      try {
+        const adapted = this.adaptRequest(req);
+        const out = await handler(adapted);
+        await this.writeResponse(res, out, adapted);
+      } catch (err) { next(err); }
+    };
+    this.app.use(notFound);
     this.app.use(this.makeErrorMiddleware());
 
     // The server is built here rather than by `app.listen()`, which is

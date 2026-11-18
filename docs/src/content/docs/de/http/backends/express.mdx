@@ -95,7 +95,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 Jede Response, die dieses Backend schreibt, trägt
 `X-Content-Type-Options: nosniff` — inklusive seines Fehler-Mappings, des
-`fallback`-404 und des 413 bei zu großem Body, die keine Middleware sieht.
+404 für einen Pfad ohne passende Route und des 413 bei zu großem Body, die keine Middleware sieht.
 Ein Header aus der Response selbst gewinnt weiterhin.
 
 Konfiguriert wird das **pro Server, nicht pro Backend** — eine Oberfläche

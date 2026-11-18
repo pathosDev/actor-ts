@@ -153,7 +153,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## Security headers
 
 Every response this backend writes carries
-`X-Content-Type-Options: nosniff` — its error mapping, the `fallback` 404
+`X-Content-Type-Options: nosniff` — its error mapping, the 404 for a path no route matches
 and the body-too-large 413 included, none of which a middleware sees.
 A response's own header still wins.
 

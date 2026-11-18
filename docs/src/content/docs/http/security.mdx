@@ -47,7 +47,7 @@ const routes =
 
 `X-Content-Type-Options: nosniff` needs no setup. The **backend** writes it,
 not a middleware, so it also reaches the responses no middleware sees: the
-backend's own error mapping, the `fallback` 404 and the body-too-large 413.
+backend's own error mapping, the 404 for a path no route matches and the body-too-large 413.
 A handler's own header still wins.
 
 It is the only one on by default, deliberately — it is the only header of

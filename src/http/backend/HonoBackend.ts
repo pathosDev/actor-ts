@@ -18,6 +18,7 @@ import {
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   drainWindowOf,
+  NOT_FOUND_RESPONSE,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -412,17 +413,18 @@ export class HonoBackend implements HttpServerBackend {
       this.attachRoute(r, r.method === 'GET' && !explicitHead.has(r.pattern));
     }
 
-    if (this.notFoundHandler) {
-      const handler = this.notFoundHandler;
-      app.notFound(async (context) => {
-        if (contentLengthExceeds(contentLengthHeader(context), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
-        const read = await this.readBodyWithinCap(context);
-        if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
-        const request = this.buildRequest(context, read.body);
-        const response = await handler(request);
-        return this.writeResponse(response, { request, context });
-      });
-    }
+    // With no not-found hook set the framework's own 404 is written here too,
+    // rather than by Hono's plain-text default, so it carries the default
+    // headers (#1059).
+    const notFoundHandler = this.notFoundHandler ?? ((): HttpResponse => NOT_FOUND_RESPONSE);
+    app.notFound(async (context) => {
+      if (contentLengthExceeds(contentLengthHeader(context), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      const read = await this.readBodyWithinCap(context);
+      if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      const request = this.buildRequest(context, read.body);
+      const response = await notFoundHandler(request);
+      return this.writeResponse(response, { request, context });
+    });
 
     app.onError(async (err, context) => {
       const request = await this.adaptRequest(context);
