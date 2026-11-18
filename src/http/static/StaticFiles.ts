@@ -13,12 +13,15 @@
  * below `maxFileSize` nothing can buffer past it.
  *
  * **Why streaming is opt-in and not the default (#465).**  A stream body is
- * one-shot and two first-party pieces still mishandle one: `idempotent()`
+ * one-shot and one first-party piece still mishandles one: `idempotent()`
  * serialises a body by testing for `Uint8Array` and stores a stream as `{}`
- * (#674; `cached()` passes a stream through uncached since #980), and
- * `ExpressBackend` pipes it with no error handler (#979).  Turning streaming on by default would make both live for the
- * out-of-the-box static route rather than latent.  The default stays buffered
- * until those land; flipping it is then a one-line change here.
+ * (#674; `cached()` passes a stream through uncached since #980).  The
+ * backends no longer do: Express used to pipe a stream with no error handler
+ * (#979), and since #979, #1829 and #1830 all three backends report a stream
+ * body that fails, before its first byte or after it.  Turning streaming on by
+ * default would make #674 live for the out-of-the-box static route rather than
+ * latent.  The default stays buffered until it lands; flipping it is then a
+ * one-line change here.
  */
 import { basename, join, sep } from 'node:path';
 import { concat, get, path, redirect, type Route } from '../Route.js';
