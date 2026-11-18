@@ -2065,6 +2065,7 @@ export const ConfigKeys = {
       gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
       maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
       maxSubscriptionsTotal: 'actor-ts.cluster.receptionist.max-subscriptions-total',
+      maxRegistrationsClaimedPerSender: 'actor-ts.cluster.receptionist.max-registrations-claimed-per-sender',
     },
   },
 

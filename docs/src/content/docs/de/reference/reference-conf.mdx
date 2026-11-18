@@ -1082,11 +1082,15 @@ actor-ts {
     # Cluster-wide service registry (Receptionist).  Subscribers are watched,
     # so a stopped one is dropped; the caps bound the ones that are still alive.
     # The total counts key/subscriber pairs, not distinct subscribers — one
-    # subscriber on three keys spends three of it.
+    # subscriber on three keys spends three of it.  What a peer's gossip may
+    # make this node hold is bounded per sender: at most
+    # max-registrations-claimed-per-sender actor paths, a key naming none
+    # counted as one.
     receptionist {
       gossip-interval = 1s
       max-subscribers-per-key = 1000
       max-subscriptions-total = 10000
+      max-registrations-claimed-per-sender = 10000
     }
   }
 

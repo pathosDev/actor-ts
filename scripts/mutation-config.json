@@ -279,6 +279,11 @@
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
     ],
+    "src/discovery/Receptionist.ts": [
+      "tests/unit/discovery/Receptionist.test.ts",
+      "tests/unit/discovery/ReceptionistGossipClaims.test.ts",
+      "tests/unit/discovery/ReceptionistSubscriberCaps.test.ts"
+    ],
     "src/http/backend/ExpressBackend.ts": [
       "tests/integration/in-process/http/ExpressHttp.test.ts",
       "tests/integration/in-process/http/websocket/BackendTransportFrameCap.test.ts",
@@ -758,7 +763,8 @@
       "tests/unit/util/CanonicalOrderKey.test.ts"
     ],
     "src/util/SenderClaimQuota.ts": [
-      "tests/integration/in-process/cluster/pubsub/DistributedPubSubCaps.test.ts"
+      "tests/integration/in-process/cluster/pubsub/DistributedPubSubCaps.test.ts",
+      "tests/unit/discovery/ReceptionistGossipClaims.test.ts"
     ],
     "src/worker/WorkerMesh.ts": [
       "tests/integration/in-process/cluster/WorkerMesh.test.ts",

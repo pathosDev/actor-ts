@@ -611,6 +611,7 @@ path as much as to local calls:
 | Pub-sub topics one peer may claim | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` |
 | Receptionist subscribers per key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
 | Receptionist subscriptions total | `cluster.receptionist.max-subscriptions-total` | `10000` |
+| Receptionist registrations one peer may claim | `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` |
 
 A claim over a cap is dropped and logged rather than refused on
 the wire — the frame is well-formed, and dropping the connection

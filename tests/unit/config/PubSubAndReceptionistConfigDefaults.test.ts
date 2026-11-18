@@ -66,6 +66,7 @@ describe('readReceptionistOptionsFromConfig', () => {
         gossip-interval          = 2s
         max-subscribers-per-key  = 16
         max-subscriptions-total    = 64
+        max-registrations-claimed-per-sender = 128
       }
     `);
 
@@ -73,6 +74,7 @@ describe('readReceptionistOptionsFromConfig', () => {
       gossipIntervalMs: 2_000,
       maxSubscribersPerKey: 16,
       maxSubscriptionsTotal: 64,
+      maxRegistrationsClaimedPerSender: 128,
     });
   });
 
@@ -87,6 +89,7 @@ describe('readReceptionistOptionsFromConfig', () => {
       gossipIntervalMs: 1_000,
       maxSubscribersPerKey: 1_000,
       maxSubscriptionsTotal: 10_000,
+      maxRegistrationsClaimedPerSender: 10_000,
     });
   });
 });
