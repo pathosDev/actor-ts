@@ -74,9 +74,14 @@ statt eines Bereichs.
 Ein Minor-Bump kann auch den **Cluster-Wire** ändern. Das CHANGELOG hält
 das pro Release fest, fasst es aber nicht über Releases hinweg zusammen —
 und wenn ein Release ihn ändert, ist ein Rolling Deployment nicht sicher:
-der Cluster muss in einem Schritt aktualisiert werden.
+der Cluster muss in einem Schritt aktualisiert werden, und mit ihm eine
+separat deployte Anwendung, die sich über
+[`ClusterClient`](/de/cluster/cluster-client/) verbindet: Ein Client spricht
+dasselbe Wire, und ab v0.18.0 weist der Cluster einen Client mit einer anderen
+Wire-Version beim Handshake ab, genau wie einen Node.
 [Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/#cluster-wire-kompatibilität-pro-release)
-trägt die Tabelle pro Release; zwei aufeinanderfolgende Releases stehen darauf.
+trägt die Tabelle pro Release; vier aufeinanderfolgende Releases stehen darauf,
+v0.16.0 bis v0.19.0.
 
 ## Unterstützte Versionen
 

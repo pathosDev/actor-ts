@@ -1167,9 +1167,11 @@ expects more:
   empty-mark case of the second residual below.
 - A node whose clock steps forward by more than the lead has its
   gossip refused until a minute of such frames makes the receiver
-  forget its reading. A node from before v0.19 numbers its frames
-  with a counter rather than its clock, so against it a frame at
-  the edge pins for as long as that counter takes to climb past it.
+  forget its reading. A node from before v0.19, which numbers its
+  frames with a counter rather than its clock, never gets this far:
+  v0.19.0 speaks cluster wire version 3 only and refuses such a node
+  at the handshake, so every sender whose gossip reaches this bound
+  stamps it from its clock.
 
 An address additionally carries an **incarnation**: which
 *process* is answering at that `system@host:port`, minted once
