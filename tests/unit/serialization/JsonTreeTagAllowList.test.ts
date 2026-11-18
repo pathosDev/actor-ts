@@ -28,6 +28,8 @@ const SAMPLES: Readonly<Record<JsonTreeTagName, unknown>> = {
   'bigint': 12n,
   'number': Number.NaN,
   'undefined': [undefined],
+  // Deliberately catastrophic (js/redos): the test proves this pattern is refused
+  // before it is ever compiled, so it has to be one that would backtrack.
   'regexp': /(a+)+$/g,
   'url': new URL('file:///etc/passwd'),
   'error': new TypeError('x'),
