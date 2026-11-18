@@ -467,6 +467,14 @@ describe('SseOptionsValidator', () => {
     expect(() => check({ url: 'http://host/events', idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
     expect(() => check({ url: 'http://host/events', connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
   });
+
+  // #371 — a cap of 0 would refuse the first byte, so the cap is positive.
+  test('maxBufferChars must be a positive whole number', () => {
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 1 })).not.toThrow();
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 0 })).toThrow(/maxBufferChars/);
+    expect(() => check({ url: 'http://host/events', maxBufferChars: -5 })).toThrow(/maxBufferChars/);
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 1.5 })).toThrow(/maxBufferChars/);
+  });
 });
 
 describe('TcpSocketOptionsValidator', () => {

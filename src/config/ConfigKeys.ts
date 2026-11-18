@@ -593,6 +593,8 @@ export const ConfigKeys = {
         headers: 'actor-ts.io.broker.sse.headers',
         idleTimeout: 'actor-ts.io.broker.sse.idle-timeout',
         connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
+        /** A count of UTF-16 code units, not a size — hence the unit stays in the name (#371). */
+        maxBufferChars: 'actor-ts.io.broker.sse.max-buffer-chars',
       },
       /**
        * `TcpSocketActor`.  `framing` is the block both TCP actors carry, so its

@@ -493,6 +493,15 @@
       "tests/unit/io/broker/BrokerTlsForwarding.test.ts",
       "tests/unit/io/broker/ForgedMqttSignals.test.ts"
     ],
+    "src/io/broker/SseActor.ts": [
+      "tests/integration/in-process/io/broker/SseActor.test.ts",
+      "tests/unit/io/broker/BrokerConfigReaders.test.ts",
+      "tests/unit/io/broker/SseInboundBuffering.test.ts"
+    ],
+    "src/io/broker/SseOptions.ts": [
+      "tests/unit/io/broker/BrokerOptionsValidators.test.ts",
+      "tests/unit/io/broker/SseInboundBuffering.test.ts"
+    ],
     "src/io/broker/TcpServerActor.ts": [
       "tests/unit/io/broker/BrokerConfigReaders.test.ts",
       "tests/unit/io/broker/TcpServerActor.test.ts",

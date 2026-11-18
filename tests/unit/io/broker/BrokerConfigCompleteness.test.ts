@@ -322,6 +322,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
       target: ACTOR_REF,
       idleTimeoutMs: hocon('idle-timeout'),
       connectTimeoutMs: hocon('connect-timeout'),
+      maxBufferChars: hocon('max-buffer-chars'),
     },
   },
   {

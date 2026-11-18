@@ -303,7 +303,7 @@ export type {
   SseCommand,
   SseEvent,
 } from './SseActor.js';
-export { SseOptions, SseOptionsBuilder, SseOptionsValidator } from './SseOptions.js';
+export { DEFAULT_SSE_MAX_BUFFER_CHARS, SseOptions, SseOptionsBuilder, SseOptionsValidator } from './SseOptions.js';
 export type { SseOptionsType } from './SseOptions.js';
 
 // Email bridge (#1133) — IMAP IDLE in, pooled SMTP out.
