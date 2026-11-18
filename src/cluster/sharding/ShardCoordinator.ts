@@ -1227,9 +1227,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * Not {@link warnRoleMatchesNoRegion}'s case, and deliberately not its line:
    * the role, if there is one, does match, and the remedy is not a
    * configuration change but a member coming back or being decided about.
-   * While #930 is open, a member cut off by a symmetric partition is not heard
-   * from again after the network heals, so it does not come back on its own
-   * and only the decision ends the wait.  What decides about a member that
+   * A member cut off by a symmetric partition comes back on its own once the
+   * network heals only while it is still a member, parked at `unreachable`;
+   * once it has been removed, that run is not heard from again — only a
+   * restart, a new incarnation, joins — so there the decision is what ends
+   * the wait (#930).  What decides about a member that
    * stopped answering depends on the downing configuration, so the line names
    * each route by its key: with a split-brain strategy, the strategy's
    * verdict; without one, the failure detector itself at `down-after` while
@@ -2056,10 +2058,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * re-asks for the shards it buffered, so the shard is allocated then without
    * the coordinator watching reachability itself; a member that is removed
    * takes its regions with it, and the request waits for a region that can
-   * host the type.  While #930 is open, a member cut off by a symmetric
-   * partition is not heard from again after the network heals, so it does not
-   * come back on its own: there the request waits until auto-down, a strategy
-   * or an operator removes the member.
+   * host the type.  A member cut off by a symmetric partition and still parked
+   * at `unreachable` comes back on its own once the network heals (#930); one
+   * that auto-down, a strategy or an operator has removed does not, and the
+   * request waits for a region that can host the type, as above.
    */
   private tryAllocate(shardId: number): void {
     // Held until the regions that may already run the shard have claimed it;

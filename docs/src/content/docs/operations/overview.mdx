@@ -102,7 +102,12 @@ uncovered.
 ## Upgrades
 
 The framework supports **rolling deployments without downtime**
-when configured for it.  Two distinct concerns:
+when configured for it, within a release line.  A release that
+changes the cluster wire version — every release from v0.16.0
+through v0.19.0 did — cannot be rolled: stop every node, then start
+every node on the new version.
+[Upgrade strategies](/operations/upgrades/upgrade-strategies/#cluster-wire-compatibility-per-release)
+lists which releases those are.  Two distinct concerns:
 
 - **Code rollouts** — replacing node binaries while the cluster
   stays up.  Handled by K8s rolling updates + coordinated

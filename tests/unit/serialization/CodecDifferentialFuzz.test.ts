@@ -24,8 +24,8 @@
  *    `{"__date__":"x"}`), but the CBOR encoder writes it as `1(NaN)`, and the
  *    CBOR decoder then charges that NaN to `number` — so under a list naming
  *    `date` without `number` the JSON side accepts what the CBOR side refuses,
- *    and the JSON encoder refuses an Invalid Date outright.  Recorded on #1369
- *    as a follow-up rather than asserted here.
+ *    and the JSON encoder refuses an Invalid Date outright.  Tracked as an open
+ *    point of #1836 rather than asserted here.
  *
  * Values are compared by their CBOR encoding, which is deterministic and keys
  * a `Map` by structure; `toEqual` compares object keys of a `Map` by identity

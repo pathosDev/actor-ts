@@ -39,7 +39,7 @@ export type StaticFilesOptionsType = {
    *
    * Unset by default, i.e. nothing streams.  Opt-in rather than on because a
    * streaming body is one-shot and the middleware that would corrupt it is
-   * still being fixed — see the `static-files` docs and #674 / #979.
+   * still being fixed — see the `static-files` docs and #674.
    */
   readonly streamThreshold?: number;
 };

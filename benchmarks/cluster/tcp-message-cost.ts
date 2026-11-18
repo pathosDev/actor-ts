@@ -17,22 +17,26 @@
  *                 decoder and its guards, and the dispatch on the far side.
  *
  * There is deliberately no "both nodes on this thread" tier, although the
- * mesh benchmark has one and it would be the cheaper thing to run on CI.  It
- * was measured on 2026-09-18 (Bun 1.4.2, Windows 11) and it loses frames:
- * bursts of 500, 1 000 and 1 500 arrive complete, bursts of 2 000 and up all
- * stop at the same point and drop the rest silently — 1 640 frames of this
- * benchmark's 119-byte envelope, 1 509 of a 130-byte one, the same ~195 KB,
- * so the ceiling is a byte budget and it will sit elsewhere on Linux CI.  The
- * far decoder holds no pending bytes, the association stays up, and the count
- * ask sent after the burst is lost with them, so the first symptom is an
- * `AskTimeoutError`.  That is #931: `socket.write()`'s byte count is
- * discarded, and with both nodes on one event loop the receiver cannot drain
- * while the synchronous tell loop fills the loopback buffers, so the kernel's
- * buffers are the whole ceiling.  With the far node on its own thread the same
- * bursts arrive complete.  A one-thread tier belongs here once #931 lands,
- * with "runs at TELL_BATCH 10 000 without throwing" as its acceptance — until
- * then, sizing the batch down to fit under the ceiling would measure the
- * buffer, not the framework: at 1 000 the one-thread variant passes green.
+ * mesh benchmark has one and it would be the cheaper thing to run on CI.
+ * With both nodes on one event loop the receiver cannot read while the
+ * synchronous tell loop is writing, so a burst outruns the socket however the
+ * transport handles it.  Before #931 it was lost silently: measured on
+ * 2026-09-18 (Bun 1.4.2, Windows 11), bursts of 500, 1 000 and 1 500 arrived
+ * complete, bursts of 2 000 and up all stopped at the same ~195 KB — 1 640
+ * frames of this benchmark's 119-byte envelope, 1 509 of a 130-byte one —
+ * because `socket.write()`'s byte count was discarded and the kernel's
+ * buffers were the whole ceiling; the count ask sent after the burst was lost
+ * with them, so the first symptom was an `AskTimeoutError`.  #931 made the
+ * write honest and bounded the per-peer outbox at
+ * `actor-ts.remote.outbound-queue-size` (1 000 frames by default), dropping
+ * the oldest frame with a WARN once it is full.  So a one-thread burst at
+ * TELL_BATCH 10 000 still loses its oldest frames — now by design, and the
+ * completion check below turns that into a throw.  The one-thread tier the
+ * issue once suggested as its acceptance ("runs at TELL_BATCH 10 000 without
+ * throwing") was therefore dropped on purpose rather than added: it would
+ * measure the queue bound, not the framework, and sizing the batch down to
+ * fit under the bound would measure the bound just the same.  With the far
+ * node on its own thread every burst arrives complete.
  *
  * Every tell batch is completion-verified: the counter is asked for its count
  * after the batch and the row throws if it disagrees with what was sent
