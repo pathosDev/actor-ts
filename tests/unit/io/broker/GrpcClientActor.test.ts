@@ -1324,3 +1324,40 @@ describe('GrpcClientActor — a silent stream is reaped (#1222)', () => {
     }
   });
 });
+
+/**
+ * A stream that finishes normally takes its silence deadline with it.
+ *
+ * `idleWatches` is the one place every armed deadline is held, so a stream
+ * whose end left its watch behind would leak one entry per stream for the
+ * life of the actor, and every disconnect would walk the pile.  Read through
+ * a cast for the same reason as the #1510 pins: the set is private.
+ */
+function armedIdleWatchCount(actor: FakeGrpcClientActor): number {
+  const watches = (actor as unknown as Record<string, Set<object> | undefined>)['idleWatches'];
+  if (!watches) throw new Error("GrpcClientActor has no 'idleWatches' set to read");
+  return watches.size;
+}
+
+describe('GrpcClientActor — a stream that finishes releases its idle deadline (#1222)', () => {
+  test('a server stream that ends, a replied client stream and a closed bidi stream leave no watch armed', async () => {
+    const h = await bootIdle('grpc-idle-release', baseOptions().withStreamIdleTimeoutMs(1_000));
+    try {
+      h.clientRef.tell({ kind: 'serverStream', method: 'Watch', request: {}, target: h.targetRef });
+      h.clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: h.targetRef });
+      h.clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: h.targetRef });
+      await awaitCondition(() => h.actor.fakeClient.bidiCalls.length > 0, { label: 'all three streams opened' });
+      expect(armedIdleWatchCount(h.actor)).toBe(3);
+
+      h.actor.fakeClient.serverStreamCalls[0]!.pushEnd();
+      h.actor.fakeClient.clientStreamCalls[0]!.callback(null, { total: 1 });
+      h.actor.fakeClient.bidiCalls[0]!.pushEnd();
+      await awaitCondition(() => terminalFrames(h.target).length === 3, { label: 'all three streams finished' });
+
+      expect(terminalFrames(h.target).map((frame) => frame.kind).sort()).toEqual(['reply', 'stream-end', 'stream-end']);
+      expect(armedIdleWatchCount(h.actor)).toBe(0);
+    } finally {
+      await h.system.terminate();
+    }
+  });
+});
