@@ -9,6 +9,7 @@ import { detectRuntime } from '../../runtime/Detect.js';
 import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
 import { closeIdleConnectionsWhileDraining, nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
+import { requestIdHeadersOfError } from '../middleware/RequestId.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
@@ -753,6 +754,7 @@ export class ExpressBackend implements HttpServerBackend {
         return;
       }
       res.status(500).setHeader('content-type', 'application/json; charset=utf-8');
+      for (const [k, v] of Object.entries(requestIdHeadersOfError(err))) res.setHeader(k, v);
       // No `message` field — see the note on FastifyBackend.writeError.
       res.end(JSON.stringify({ error: 'Internal Server Error' }));
     };

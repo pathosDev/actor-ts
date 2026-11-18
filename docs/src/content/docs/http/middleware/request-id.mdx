@@ -24,8 +24,11 @@ header; otherwise a fresh id is generated with
 A **short-circuit that throws** is echoed too: the 401 or 403 an auth or
 CSRF layer below throws comes back carrying the id, which is exactly the
 response whose log line someone will later go looking for. An unhandled
-throw is the exception — it maps to the generic 500, which deliberately
-carries nothing from the thrown value, so that one arrives without an id.
+throw is rethrown untouched, so an error handler further out still receives
+the value the handler threw. The id is recorded against that value instead:
+the generic 500 carries it in the same header, and the error log line names
+it. A `withErrorHandler` that builds its own 500 reads it back with
+`requestIdOfError(err)`, which returns `{ headerName, id }` or `undefined`.
 
 ## Reading the id back
 

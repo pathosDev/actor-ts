@@ -10,6 +10,7 @@ import {
   type WSEventsLike,
 } from '../../runtime/http/index.js';
 import { OptionsError } from '../../util/OptionsValidator.js';
+import { requestIdHeadersOfError } from '../middleware/RequestId.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
@@ -446,7 +447,7 @@ export class HonoBackend implements HttpServerBackend {
       // No `message` field — see the note on FastifyBackend.writeError.
       return new Response(
         JSON.stringify({ error: 'Internal Server Error' }),
-        { status: 500, headers: this.errorHeaders() },
+        { status: 500, headers: this.errorHeaders(requestIdHeadersOfError(err)) },
       );
     });
 

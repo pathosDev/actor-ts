@@ -109,10 +109,14 @@ die der Handler gewählt hat (ein `404`, ein `401`), und bleibt daher auf der
 für einen Wurf in einer `fallback`-Route, der zu einem 500 gemappt und nicht
 erneut geworfen wird: ohne die Logzeile bliebe davon nirgends eine Spur.
 
-Der Zusatz `[x-request-id=…]` erscheint, wenn der Request diesen Header trug
-und sein Wert eine wohlgeformte Id ist — siehe
-**[Request-Id](/de/http/middleware/request-id/)**. Lies sie mit
-`requestIdOf(request)` statt von Hand: die Funktion wendet dieselbe
+Jede solche Zeile endet mit einem Zusatz `[header=id]`, und die generische 500
+trägt dieselbe Id in diesem Header, sodass der Aufrufer immer den Schlüssel zur
+Zeile hat. Die Id ist die, die die innerste `requestId()`-Middleware vergeben
+hat, sofern eine lief; sonst das eigene `x-request-id` des Requests, wenn es
+eine wohlgeformte Id ist; sonst eine frische — siehe
+**[Request-Id](/de/http/middleware/request-id/)**. Ein `withErrorHandler`
+liest sie mit `requestIdOfError(err)` vom geworfenen Wert ab. Lies eine
+eingehende Id mit `requestIdOf(request)` statt von Hand: die Funktion wendet dieselbe
 Formprüfung an, und genau die verhindert, dass ein client-kontrollierter
 String über einen eingebetteten Zeilenumbruch einen Log-Eintrag fälscht.
 

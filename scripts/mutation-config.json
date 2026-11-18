@@ -394,6 +394,10 @@
       "tests/unit/http/middleware/ClientIp.test.ts",
       "tests/unit/http/middleware/IpAllowlist.test.ts"
     ],
+    "src/http/middleware/RequestId.ts": [
+      "tests/unit/http/ErrorLogging.test.ts",
+      "tests/unit/http/middleware/RequestId.test.ts"
+    ],
     "src/http/Route.ts": [
       "tests/unit/http/Route.test.ts"
     ],

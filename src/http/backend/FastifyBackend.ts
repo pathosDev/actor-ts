@@ -1,5 +1,6 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { requestIdHeadersOfError } from '../middleware/RequestId.js';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
@@ -711,7 +712,9 @@ export class FastifyBackend implements HttpServerBackend {
     // its text routinely carries file paths, SQL fragments or driver internals.
     // Matches `defaultErrorResponse` in Route.ts, which the WebSocket-reject
     // and `fallback()` paths already use.  To surface or log the detail,
-    // install `withErrorHandler` on the server builder.
+    // install `withErrorHandler` on the server builder.  The request id the
+    // error log line names goes out with it (#1064).
+    for (const [k, v] of Object.entries(requestIdHeadersOfError(err))) reply.header(k, v);
     reply.status(500).send({ error: 'Internal Server Error' });
   }
 }

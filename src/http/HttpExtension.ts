@@ -8,6 +8,7 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
+import { randomUuid } from '../util/RandomString.js';
 import type { HttpServerBackend, ListenerProtocol, ServerBinding, ServerOptionsReport } from './backend/HttpServerBackend.js';
 import { DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS } from './Constants.js';
 import { HttpClient } from './HttpClient.js';
@@ -19,12 +20,18 @@ import {
   HttpServerOptionsValidator,
 } from './HttpServerOptions.js';
 import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } from './HttpServerOptions.js';
-import { requestIdOf } from './middleware/RequestId.js';
+import {
+  rememberRequestIdOfError,
+  requestIdOf,
+  requestIdOfError,
+  type RequestIdCorrelation,
+} from './middleware/RequestId.js';
+import { DEFAULT_REQUEST_ID_HEADER } from './middleware/RequestIdOptions.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
 import { configuredRequestDeadlineMs } from './middleware/Timeout.js';
 import { compileServerRoutes, defaultErrorResponse, type Route } from './Route.js';
-import { HttpError, type HttpRequest, type HttpResponse } from './Types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from './Types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {
@@ -276,6 +283,9 @@ export class HttpExtension implements Extension {
                 );
                 return out;
               } catch (err) {
+                // Records the id against `err` too: rethrown untouched, so an
+                // error handler gets the value the handler threw, and the
+                // backend's generic 500 writes the id its line names (#1064).
                 logRouteFailure(system.log, request, err, Date.now() - start);
                 throw err;
               }
@@ -338,8 +348,8 @@ export class HttpExtension implements Extension {
               // This branch answers with `defaultErrorResponse` instead of
               // re-throwing, so nothing downstream ever sees the error — the
               // log below is the only place it can survive at all.
-              logRouteFailure(system.log, request, err, Date.now() - start);
-              return defaultErrorResponse(err);
+              const correlation = logRouteFailure(system.log, request, err, Date.now() - start);
+              return correlation === undefined ? defaultErrorResponse(err) : internalServerErrorWith(correlation);
             }
           });
         }
@@ -491,29 +501,48 @@ export class HttpExtension implements Extension {
  * anywhere.  Hence `error`, and the error value itself — the `Logger`
  * contract passes it through to the sink, which is what preserves a stack.
  *
- * The id is reported as the header it came from rather than as "the" request
- * id: it is whatever the caller sent, and `requestId({ trustIncoming: false })`
- * would have replaced it downstream.  `requestIdOf` bounds it to a
- * well-formed id first — a raw client string on a log line can forge records
- * with an embedded newline.  Only the default header is consulted; a server
- * that renames it should log its own id from `withErrorHandler`.
+ * Every such line names a request id, and the generic 500 carries the same
+ * one, so the caller holds the key to the log line (#1064).  It is the id
+ * the innermost `requestId()` middleware assigned, when one ran — that is
+ * the id the failing handler saw, and with `trustIncoming: false` not the
+ * one the caller sent.  Failing that, the caller's own `x-request-id`, which
+ * `requestIdOf` bounds to a well-formed id first: a raw client string on a
+ * log line can forge records with an embedded newline.  Failing that, a
+ * fresh one.  The id is recorded against the thrown value, so an error
+ * handler further out reads the same one with `requestIdOfError`.
+ *
+ * Returns that id for a non-`HttpError` throw, and `undefined` for an
+ * `HttpError`, whose response is the handler's own.
  */
 function logRouteFailure(
   log: Logger,
   request: HttpRequest,
   err: unknown,
   elapsedMs: number,
-): void {
+): RequestIdCorrelation | undefined {
   if (err instanceof HttpError) {
     log.debug(`[http] ${request.method} ${request.path} → ${err.status} (${elapsedMs} ms)`);
-    return;
+    return undefined;
   }
-  const correlation = requestIdOf(request);
+  const correlation = requestIdOfError(err) ?? {
+    headerName: DEFAULT_REQUEST_ID_HEADER,
+    id: requestIdOf(request) ?? randomUuid(),
+  };
+  rememberRequestIdOfError(err, correlation);
   log.error(
-    `[http] ${request.method} ${request.path} → 500 after ${elapsedMs} ms`
-    + `${correlation ? ` [x-request-id=${correlation}]` : ''}`,
+    `[http] ${request.method} ${request.path} → 500 after ${elapsedMs} ms [${correlation.headerName}=${correlation.id}]`,
     err,
   );
+  return correlation;
+}
+
+/** The generic 500 of {@link defaultErrorResponse}, carrying the id its log line names. */
+function internalServerErrorWith(correlation: RequestIdCorrelation): HttpResponse {
+  return {
+    status: Status.InternalServerError,
+    headers: { [correlation.headerName]: correlation.id },
+    body: { error: 'Internal Server Error' },
+  };
 }
 
 /** A field of a {@link ServerOptionsReport} that is also a field of the policy — one an operator can set. */

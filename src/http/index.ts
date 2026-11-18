@@ -75,6 +75,7 @@ export {
   SameOriginOptionsValidator,
   requestId,
   requestIdOf,
+  requestIdOfError,
   DEFAULT_REQUEST_ID_HEADER,
   RequestIdOptions,
   RequestIdOptionsBuilder,
@@ -106,6 +107,7 @@ export type {
   OriginScheme,
   SameOriginOptionsType,
   RequestIdOptionsType,
+  RequestIdCorrelation,
   BasicAuthOptionsType,
   TimeoutOptionsType,
   JwtClaims,
@@ -181,7 +183,7 @@ export {
   HttpServerOptionsValidator,
 } from './HttpServerOptions.js';
 export type { HttpServerOptionsType, HttpTlsOptionsType } from './HttpServerOptions.js';
-export { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './backend/HttpServerBackend.js';
+export { DEFAULT_RESPONSE_SECURITY_HEADERS, NOT_FOUND_RESPONSE, PAYLOAD_TOO_LARGE_RESPONSE } from './backend/HttpServerBackend.js';
 export type {
   HttpServerBackend,
   RouteRegistration,

@@ -1057,6 +1057,16 @@ export function runHttpBackendSuite(fixture: HttpBackendSuiteFixture): void {
 
       test('the generic 500 carries it', carriesNosniff('/boom', 500));
 
+      // #1064: the backend's own generic 500 names the id the error log line names.
+      test('the generic 500 carries a request id, the caller\'s own when well-formed', async () => {
+        const url = await urlOf(routes());
+        const generated = await fetch(`${url}/boom`);
+        expect(generated.status).toBe(500);
+        expect(generated.headers.get('x-request-id')).toMatch(/^[A-Za-z0-9._-]{1,64}$/);
+        const echoed = await fetch(`${url}/boom`, { headers: { 'x-request-id': 'caller-id-7' } });
+        expect(echoed.headers.get('x-request-id')).toBe('caller-id-7');
+      });
+
       test('the fallback 404 carries it', carriesNosniff('/nowhere', 404));
 
       // #1059: without a fallback() the backend used to answer an unrouted path
