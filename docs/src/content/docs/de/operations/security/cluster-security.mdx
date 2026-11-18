@@ -182,6 +182,14 @@ schwächeren Zustand zu starten, als sie sich lesen:
   gewollt, aber vor einem Rolling Restart gut zu wissen.
 </Aside>
 
+Die Wählseite lehnt die eine der vier Formen ab, die auch dort
+falsch ist: **ein halbes Client-Credential**, `cert` ohne `key` oder
+umgekehrt, wobei leer als nicht gesetzt zählt.  Jede Runtime ließ
+die Hälfte bisher fallen und wählte einseitiges TLS unter einer
+Konfiguration, die sich wie mTLS las; jetzt schlägt das Wählen mit
+einem Fehler fehl, der das fehlende Feld nennt (#1085).  `{ ca }`
+allein bleibt das gewöhnliche einseitige Wählen.
+
 Einem mTLS-Cluster **beitreten** kann ein Deno-Knoten sehr wohl:
 er präsentiert beim Wählen sein eigenes `cert`/`key`, und der
 Listener (auf Node.js oder Bun) authentifiziert ihn wie jeden

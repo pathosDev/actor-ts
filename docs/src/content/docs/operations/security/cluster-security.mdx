@@ -171,6 +171,13 @@ in a weaker state than they read as:
   knowing before a rolling restart.
 </Aside>
 
+The dial side refuses the one shape of the four that is wrong
+there too: **half a client credential**, `cert` without `key` or
+the reverse, empty counting as absent.  Every runtime used to drop
+the half and dial one-way TLS under a configuration that read as
+mTLS; the dial now fails with an error naming the missing field
+(#1085).  `{ ca }` alone stays the ordinary one-way dial.
+
 A Deno node can still **join** an mTLS cluster: it presents its
 own `cert` / `key` when dialling, so the listener (on Node.js or
 Bun) authenticates it like any other peer.  Only *hosting* the

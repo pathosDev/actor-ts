@@ -1,4 +1,4 @@
-import { listenerUsesTls } from './TcpBackend.js';
+import { assertDialCredentialIsWhole, listenerUsesTls } from './TcpBackend.js';
 import type {
   TcpBackend,
   TcpListener,
@@ -81,6 +81,7 @@ export class DenoTcpBackend implements TcpBackend {
     handlers: TcpSocketHandlers;
     signal?: AbortSignal;
   }): Promise<TcpSocketLike> {
+    if (options.tls !== undefined) assertDialCredentialIsWhole(options.tls);
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');
     const { signal } = options;
@@ -145,7 +146,8 @@ export class DenoTcpBackend implements TcpBackend {
     };
     if (tls.ca !== undefined) options.caCerts = [asString(tls.ca)];
     // Both halves or neither — a key without its certificate is not a
-    // credential, and Deno's own type pairs them for the same reason.
+    // credential, and Deno's own type pairs them for the same reason.  Half
+    // of one never gets this far: `connect` refuses it first (#1085).
     if (tls.cert !== undefined && tls.key !== undefined) {
       options.cert = asString(tls.cert);
       options.key = asString(tls.key);
