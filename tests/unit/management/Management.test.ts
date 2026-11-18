@@ -21,9 +21,12 @@ import {
   HealthCheckRegistryOptions,
   healthChecksOf,
   isHealthy,
+  defaultManagementRoutesOptions,
   managementRoutes,
   ManagementRoutesOptions,
+  readManagementRoutesOptionsFromConfig,
 } from '../../../src/management/index.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import {
   DefaultMetricsRegistry,
@@ -747,6 +750,21 @@ describe('managementRoutes — the topology endpoints are opt-in (#971)', () => 
       await binding.unbind();
       await cluster.leave(); await sys.terminate();
     }
+  });
+
+  // The route test above runs on a system that always layers reference.conf,
+  // which publishes `false` for all three leaves — so a built-in default
+  // flipped to `true` would never reach it.  The floor `mergeOptions` starts
+  // from is pinned on its own here, so a flipped constant fails in this suite
+  // and not only in DocumentedDefaults, which pins the two layers together.
+  test('the built-in floor itself serves no topology endpoint', () => {
+    expect(defaultManagementRoutesOptions.enableMembersEndpoint).toBe(false);
+    expect(defaultManagementRoutesOptions.enableLeaderEndpoint).toBe(false);
+    expect(defaultManagementRoutesOptions.enableShardsEndpoint).toBe(false);
+    const published = readManagementRoutesOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+    expect(published.enableMembersEndpoint).toBe(false);
+    expect(published.enableLeaderEndpoint).toBe(false);
+    expect(published.enableShardsEndpoint).toBe(false);
   });
 
   test('each flag switches on its own endpoint and no other', async () => {
