@@ -106,7 +106,14 @@ describe('membership converges on a degraded network', () => {
       );
 
       spec.degrade('a', 'b', { latencyMs: 50 });
-      await spec.advance(5_000);
+      // One gossip interval per step.  A single `advance(5_000)` fires every
+      // detection tick in the span before any frame is delivered, so every
+      // node — on clean links too — heard nothing for 5 s, marked every peer
+      // unreachable at unreachable-after and auto-down removed one at
+      // down-after: a frozen network, not a slow link.  Whether the view had
+      // recovered by the end depended on where the span ended; since auto-down
+      // tombstones (#1834) it does not recover at all.
+      for (let elapsed = 0; elapsed < 5_000; elapsed += 100) await spec.advance(100);
 
       // 50 ms on a 100 ms gossip interval is late, not gone: nobody is
       // unreachable and the view is unchanged.
