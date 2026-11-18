@@ -36,6 +36,12 @@ name: examples
 #                       `package.json` beside it.  These directories
 #                       carry two lockfiles and only the npm one was
 #                       ever installed here.  #1402.
+#   - the lockfile agreement step
+#                     — the two lockfiles disagreeing past the
+#                       tolerance in scripts/example-lockfile-agreement.mjs:
+#                       another major line of a package, or an advisory
+#                       naming one lockfile's version while the other's
+#                       is clear.  #1402.
 #
 # There is no committed bundle here to check for staleness any more: the
 # output under `examples/*/static/{angular,next,react,svelte}/` is gitignored
@@ -78,6 +84,7 @@ on:
       - '.bun-version'
       - 'bun.lock'
       - '.github/workflows/examples.yml'
+      - 'scripts/example-lockfile-agreement.mjs'
   pull_request:
     branches: [main, develop]
     paths:
@@ -88,6 +95,7 @@ on:
       - '.bun-version'
       - 'bun.lock'
       - '.github/workflows/examples.yml'
+      - 'scripts/example-lockfile-agreement.mjs'
   workflow_dispatch:
 
 # Least privilege, stated rather than inherited: the repository default is
@@ -142,7 +150,7 @@ jobs:
       # because `fast-uri` appears in no `package.json` and 3.1.0 still
       # satisfies the `^3.0.1` that `ajv` asks for.  That class — the one
       # #1401 actually was — needs a cross-lockfile version-map
-      # comparison, and this step is not it.
+      # comparison, and this step is not it: the agreement step below is.
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -166,6 +174,30 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+
+      # The cross-lockfile half of #1402.  The maintainer kept both lockfiles,
+      # so the two have to agree, within the tolerance documented in
+      # scripts/example-lockfile-agreement.mjs.  Its offline half — no
+      # package on another major line — also runs in `bun test`
+      # (tests/unit/ci/ExampleLockfileAgreement.test.ts); the advisory half
+      # needs the registry, so it is this step: an advisory one lockfile's
+      # report lists while the other lockfile resolves the package clear.
+      #
+      # Both audits read a lockfile and query the advisory endpoint; neither
+      # installs or runs anything, which is why this sits before `npm ci`.
+      # They exit non-zero whenever they find something, so their status is
+      # not the verdict — the script is, and it refuses a report that is not
+      # one (a network error, npm's `error` object) rather than reading it as
+      # "nothing flagged".
+      - name: The two lockfiles agree (no install)
+        working-directory: ${{ matrix.directory }}
+        run: |
+          bun audit --json > "$RUNNER_TEMP/bun-audit.json" || true
+          npm audit --package-lock-only --json > "$RUNNER_TEMP/npm-audit.json" || true
+          bun "$GITHUB_WORKSPACE/scripts/example-lockfile-agreement.mjs" \
+            --bun-audit="$RUNNER_TEMP/bun-audit.json" \
+            --npm-audit="$RUNNER_TEMP/npm-audit.json" \
+            .
 
       - name: Install (npm ci — fails on a desynced lockfile)
         working-directory: ${{ matrix.directory }}

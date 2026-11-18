@@ -191,6 +191,18 @@ kommunizieren ausschließlich über das gepackte Tarball, und der
 Versions-Guard liest die Version aus genau diesen Bytes statt aus
 einer zweiten Kopie des Baums.
 
+Die Aktualisierung des Knowledge-Graphen folgt derselben
+Aufteilung. Sie führt ein fremdes Python-Werkzeug aus, also
+installiert und startet ein Job es ohne jede Credential und lädt
+den neu gebauten Graphen hoch, und ein zweiter Job mit der
+Push-Credential committet dieses Artefakt und installiert nichts.
+pip hat kein Lockfile, deshalb liest die Installation eine
+gehashte Requirements-Datei mit `--require-hashes` und
+`--only-binary :all:`: Jede Distribution im Closure ist über ihren
+sha256 gepinnt, und kein Build-Code eines Pakets läuft bei der
+Installation. Die Testdatei erkennt `pip`-, `pipx`- und
+`uv`-Installationen ebenso wie die JavaScript-Varianten.
+
 `trustedDependencies: []` in der Root-`package.json` schließt die
 andere Hälfte. Bun führt Install-Skripte einer Dependency nur für
 die dort genannten Pakete aus, und eine leere Liste beschreibt

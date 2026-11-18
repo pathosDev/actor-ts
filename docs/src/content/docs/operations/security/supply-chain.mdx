@@ -179,6 +179,16 @@ communicate only through the packed tarball, and the version
 guard reads its version out of those same bytes rather than out
 of a second copy of the tree.
 
+The knowledge-graph refresh follows the same split. It runs a
+third-party Python tool, so one job installs and runs it with no
+credential and uploads the rebuilt graph, and a second job holding
+the push credential commits that artifact and installs nothing.
+pip has no lockfile, so the install reads a hashed requirements
+file with `--require-hashes` and `--only-binary :all:`: every
+distribution in the closure is pinned by its sha256, and no
+package's build code runs at install time. The test file reads
+`pip`, `pipx` and `uv` installs as well as the JavaScript ones.
+
 `trustedDependencies: []` in the root `package.json` closes the
 other half. Bun runs a dependency's install scripts only for
 packages named there, and an empty list is the honest description

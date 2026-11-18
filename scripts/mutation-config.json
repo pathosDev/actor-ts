@@ -680,6 +680,9 @@
       "tests/unit/logging/SyslogSink.test.ts",
       "tests/unit/logging/TcpLogSinkDial.test.ts"
     ],
+    "src/logging/ParseableSinkOptions.ts": [
+      "tests/unit/logging/ParseableSink.test.ts"
+    ],
     "src/logging/StreamDrain.ts": [
       "tests/unit/logging/TcpLogSinkBackpressure.test.ts"
     ],
