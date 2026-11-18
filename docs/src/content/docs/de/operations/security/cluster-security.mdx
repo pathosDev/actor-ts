@@ -668,6 +668,18 @@ Senke die Defaults für ein Deployment, dessen legitime Zahlen
 weit darunter liegen: eine Obergrenze begrenzt nur den Schaden,
 und eine weit über der echten Nutzung begrenzt sehr wenig.
 
+Die Grenzen beschränken, was bleibt, nicht die Arbeit: Jeder Record
+eines Gossip-Frames wird dekodiert und geprüft, auch wenn jeder
+einzelne abgewiesen wird. Diese Arbeit begrenzt pro Absender
+`cluster.gossip-frames-per-second-per-sender` (#1105) — ein Frame
+über dem Budget wird ganz verworfen, bevor ein Record gelesen wird,
+die Verbindung bleibt, und die Abweisungen zählt
+`cluster_gossip_records_refused_total{reason="rate-limit"}`.
+Standardmäßig ist es aus, weil die legitime Rate eines Absenders
+seinem eigenen Gossip-Intervall folgt, das der Empfänger nicht
+kennt; setze es deutlich über `1000 / gossip-interval`, sobald das
+für den Cluster feststeht.
+
 ### Warum die Mitgliedschaft zwei Grenzen braucht
 
 Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe: Die

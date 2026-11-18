@@ -10,6 +10,7 @@ import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import {
   COLD_START_STALL_AFTER_SEED_ROUNDS,
+  GOSSIP_SENDER_BUDGET_SWEEP_THRESHOLD,
   GOSSIP_SEQUENCE_AHEAD_RESET_AFTER_MS,
   GOSSIP_SEQUENCE_AHEAD_RESET_MIN_FRAMES,
   GOSSIP_SEQUENCE_LEAD_MS,
@@ -45,6 +46,7 @@ import {
   DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
   DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
+  DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
@@ -185,7 +187,7 @@ const UP_THRESHOLD_STATUSES: ReadonlySet<MemberStatus> = new Set<MemberStatus>([
  */
 const GOSSIP_REFUSAL_REASONS = [
   'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame', 'self-claim', 'removed-run',
-  'foreign-cluster',
+  'foreign-cluster', 'rate-limit',
 ] as const;
 
 /** One of {@link GOSSIP_REFUSAL_REASONS}. */
@@ -193,6 +195,18 @@ type GossipRefusalReason = typeof GOSSIP_REFUSAL_REASONS[number];
 
 /** Refusals since startup, one running total per reason. */
 type GossipRefusalCounts = Record<GossipRefusalReason, number>;
+
+/**
+ * One gossip sender's frame budget (#1105): a token bucket that refills at
+ * `gossipFramesPerSecondPerSender` and holds at most that many frames, plus
+ * the episode of refusals currently running against it.
+ */
+type GossipSenderBudget = {
+  frames: number;
+  refilledAt: number;
+  refusedFrames: number;
+  refusedRecords: number;
+};
 
 /**
  * What a receiver has learned about one gossip sender's clock, beside its
@@ -369,6 +383,8 @@ export class Cluster {
   private readonly maxVersionSkewMs: number;
   private readonly maxMembers: number;
   private readonly maxTombstones: number;
+  /** See {@link admitsGossipRate}; `0` is off (#1105). */
+  private readonly gossipFramesPerSecondPerSender: number;
   /** See {@link publishConfigurationFact} — the allow-list of what leaves this node (#844). */
   private readonly configurationCheckedPaths: ReadonlySet<string>;
   /** See {@link placementCandidates} — what a divergence does beyond being reported (#844). */
@@ -441,7 +457,15 @@ export class Cluster {
     'self-claim': 0,
     'removed-run': 0,
     'foreign-cluster': 0,
+    'rate-limit': 0,
   };
+
+  /**
+   * One frame budget per connection peer (#1105), keyed like
+   * {@link acceptedGossipSequences} and dropped with it.  Empty while the
+   * budget is off.  See {@link admitsGossipRate}.
+   */
+  private readonly gossipSenderBudgets = new Map<string, GossipSenderBudget>();
 
   /**
    * The highest {@link GossipMessage.sequence} accepted from each connection
@@ -787,6 +811,8 @@ export class Cluster {
     this.maxVersionSkewMs = options.maxVersionSkewMs ?? DEFAULT_MAX_VERSION_SKEW_MS;
     this.maxMembers = options.maxMembers ?? DEFAULT_MAX_MEMBERS;
     this.maxTombstones = options.maxTombstones ?? DEFAULT_MAX_TOMBSTONES;
+    this.gossipFramesPerSecondPerSender = options.gossipFramesPerSecondPerSender
+      ?? DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER;
     this._envelopeTrust = new EnvelopeTrust(
       system,
       this.log,
@@ -3151,6 +3177,11 @@ export class Cluster {
     // by naming it once per interval, which suspends its singleton and shard
     // failover (#939); and a gossip frame is no heartbeat, so it has no sample
     // to give either (#1451).
+    //
+    // The frame budget goes first of all (#1105): it is the guard on the work
+    // the rest of this method does, so a frame over it must cost nothing past
+    // the lookup.
+    if (!this.admitsGossipRate(from, message.members.length)) return;
     if (!this.admitsGossipSequence(from, message.sequence)) {
       this.refusalCounts['replayed-frame'] += message.members.length;
       this.reportRefusals(from, 'replayed-frame', message.members.length);
@@ -3658,7 +3689,86 @@ export class Cluster {
       .with('removed-run', () =>
         'a run this node removed — the same address and incarnation as a tombstone it holds; only a '
         + 'restart, with a new incarnation, can join again (#940, #823)')
+      .with('rate-limit', () =>
+        `the sender is over gossipFramesPerSecondPerSender (${this.gossipFramesPerSecondPerSender}); `
+        + 'its frames are discarded whole until the budget refills (#1105)')
       .exhaustive();
+  }
+
+  /**
+   * Whether `from` may hand this node another gossip frame now (#1105).
+   *
+   * A token bucket per connection peer: it refills continuously at
+   * {@link gossipFramesPerSecondPerSender} frames a second and holds at most
+   * one second's worth, so a sender may burst to the budget and then keeps
+   * pace with it.  The bound is on frames rather than on records because the
+   * frame is what a sender chooses to send; what one frame can carry is
+   * {@link maxFrameBytes}'s to bound.
+   *
+   * Not `util/TokenBucket`, whose refill keeps the latest instant it has seen:
+   * after the wall clock steps backwards it earns nothing until the clock is
+   * past that instant again, which here would refuse every frame from the
+   * peer for the length of the step — a partition.  This bucket refills from
+   * the stepped clock and only declines to earn across the step itself.
+   *
+   * A refused frame is counted under `rate-limit` with every record it
+   * carried, but the WARN is per **episode**, not per frame: one when a
+   * sender first goes over, and one with the totals once a frame of its is
+   * admitted again.  Per-frame logging would hand the sender the log
+   * amplification the budget exists to take away.  The connection stays — a
+   * loud but well-meaning peer should not cost a healthy link, the same
+   * trade-off the map caps make.
+   */
+  private admitsGossipRate(from: NodeAddress, records: number): boolean {
+    const rate = this.gossipFramesPerSecondPerSender;
+    if (rate === 0) return true;
+    const key = from.toString();
+    const now = Date.now();
+    let budget = this.gossipSenderBudgets.get(key);
+    if (budget === undefined) {
+      if (this.gossipSenderBudgets.size >= GOSSIP_SENDER_BUDGET_SWEEP_THRESHOLD) this.sweepGossipSenderBudgets(now);
+      budget = { frames: rate, refilledAt: now, refusedFrames: 0, refusedRecords: 0 };
+      this.gossipSenderBudgets.set(key, budget);
+    } else {
+      // `max(0, …)`: a clock stepped backwards earns nothing rather than a debt.
+      const elapsed = Math.max(0, now - budget.refilledAt);
+      budget.frames = Math.min(rate, budget.frames + (elapsed * rate) / 1_000);
+      budget.refilledAt = now;
+    }
+    if (budget.frames >= 1) {
+      budget.frames -= 1;
+      if (budget.refusedFrames > 0) {
+        this.log.warn(
+          `gossip: ${from} is back under gossipFramesPerSecondPerSender (${rate}); `
+          + `${budget.refusedFrames} frame(s) carrying ${budget.refusedRecords} member record(s) were discarded`,
+        );
+        budget.refusedFrames = 0;
+        budget.refusedRecords = 0;
+      }
+      return true;
+    }
+    if (budget.refusedFrames === 0) {
+      this.log.warn(`gossip: discarding frames from ${from} — ${this.refusalDetail('rate-limit')}`);
+    }
+    budget.refusedFrames += 1;
+    budget.refusedRecords += records;
+    this.refusalCounts['rate-limit'] += records;
+    metricsOf(this.system).counter(
+      'cluster_gossip_records_refused_total', { reason: 'rate-limit' },
+      { help: 'Cumulative count of gossiped member records refused by a merge-path guard.' },
+    ).inc(records);
+    return false;
+  }
+
+  /**
+   * Drop every budget idle for a second — refilled by then, so the same as
+   * holding none.  An episode still open on one ends without its closing
+   * WARN, which is the price of the bound.
+   */
+  private sweepGossipSenderBudgets(now: number): void {
+    for (const [key, budget] of this.gossipSenderBudgets) {
+      if (now - budget.refilledAt >= 1_000) this.gossipSenderBudgets.delete(key);
+    }
   }
 
   private onEnvelope(from: NodeAddress, message: EnvelopeMessage): void {
@@ -5024,6 +5134,7 @@ export class Cluster {
     // own clock rather than from where the previous one left off (#112).
     this.acceptedGossipSequences.delete(key);
     this.gossipSenderClocks.delete(key);
+    this.gossipSenderBudgets.delete(key);
     // Likewise, or the next incarnation would inherit this one's silence clock
     // and interval window (#1103).  A tombstone's entry already went in
     // `setMember`; this is the one for the routes that delete a live member.

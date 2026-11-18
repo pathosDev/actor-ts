@@ -329,8 +329,12 @@ For monitoring cluster health:
   this node's clock, or ran more than ten seconds past the clock that
   peer has shown — a duplicate, someone re-sending a frame captured
   off the wire, or someone re-sending one with its `sequence` rewritten
-  to clear the mark. The counter is incremented once per frame with
-  that frame's count, and the label set is closed at those four values.
+  to clear the mark. `reason="rate-limit"` is the records of whole
+  frames a sender sent past `gossip-frames-per-second-per-sender`
+  (#1105) — a peer louder than its gossip interval explains, or a
+  budget set below the cluster's interval. The counter is incremented
+  once per frame with that frame's count, and the label set is closed
+  in code.
 - `cluster_envelope_from_mismatch_total` should sit at zero too. It
   moves when an envelope's payload names a sender other than the
   connection it arrived on — a client old enough to still send that

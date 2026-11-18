@@ -624,6 +624,17 @@ Lower the defaults for a deployment where the legitimate numbers
 are far below them: a cap is only a bound on the damage, and one
 set far above real usage bounds very little.
 
+The caps bound what sticks, not the work: every record in a gossip
+frame is decoded and checked even when each one is refused. That
+work is bounded per sender by
+`cluster.gossip-frames-per-second-per-sender` (#1105) — a frame
+over the budget is discarded whole before any record is read, the
+connection stays, and the refusals are counted under
+`cluster_gossip_records_refused_total{reason="rate-limit"}`. It is
+off by default, because a sender's legitimate rate follows its own
+gossip interval, which the receiver does not know; set it well
+above `1000 / gossip-interval` once that is fixed for the cluster.
+
 ### Why membership needs two caps
 
 Splitting members from tombstones is not tidiness: the two kinds

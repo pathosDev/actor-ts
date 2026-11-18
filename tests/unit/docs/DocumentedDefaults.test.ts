@@ -84,6 +84,7 @@ import { DEFAULT_PROM_CLIENT_NAME_PREFIX } from '../../../src/metrics/PromClient
 import { DEFAULT_OTEL_TRACER_NAME } from '../../../src/tracing/OtelAdapterOptions.js';
 import { DEFAULT_OTEL_LOGGER_NAME } from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import {
+  DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
@@ -429,6 +430,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.unreachable-gossip-rounds', kind: 'int', constant: DEFAULT_UNREACHABLE_GOSSIP_ROUNDS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
+  { key: 'actor-ts.cluster.gossip-frames-per-second-per-sender', kind: 'int', constant: DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER },
   // In the table rather than in FEATURE_SWITCHES, though `1` is the "off"
   // value: the off state here is not a field being absent at the read site but
   // a real threshold that a real comparison evaluates, so there is a constant

@@ -543,6 +543,16 @@ actor-ts {
     max-members = 1000
     max-tombstones = 10000
 
+    # Gossip frames one sender may hand this node per second (#1105).  The
+    # caps above bound what sticks, not the work: every record in a frame is
+    # decoded and checked even when all of them are refused.  A frame over
+    # the budget is discarded whole and counted under
+    # cluster_gossip_records_refused_total{reason="rate-limit"}; the
+    # connection stays.  The budget refills continuously and holds at most
+    # one second's worth.  Set it well above 1000 / gossip-interval, plus
+    # headroom for join and promotion frames.  0 disables it.
+    gossip-frames-per-second-per-sender = 0
+
     # Members that must be present before ANYTHING moves to "up" -- the
     # leader's promotions and a founder's own self-election alike.  1 is what
     # every release before this key did: the first node forms a cluster of one

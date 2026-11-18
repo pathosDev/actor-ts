@@ -139,6 +139,17 @@ export const DEFAULT_MAX_MEMBERS = 1_000;
 export const DEFAULT_MAX_TOMBSTONES = 10_000;
 
 /**
+ * Built-in default for {@link ClusterOptionsType.gossipFramesPerSecondPerSender}
+ * — off (#1105).
+ *
+ * Off because no single number is safe for every deployment: a legitimate
+ * sender's rate follows *its* gossip interval, which this node does not know,
+ * and a budget below it refuses healthy gossip — a partition with nothing to
+ * say why.  A deployment that knows its interval sets one well above it.
+ */
+export const DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER = 0;
+
+/**
  * Built-in default for {@link ClusterOptionsType.minimumMembersBeforeUp} — how
  * many members must be present before anything is promoted to `up` (#837).
  *
@@ -756,6 +767,27 @@ export type ClusterOptionsType = {
    */
   readonly maxTombstones?: number;
   /**
+   * Gossip frames one sender may hand this node per second (#1105).  `0`
+   * disables the budget, and is the default.
+   *
+   * The two caps above bound what *sticks*; they do not bound the work.  A
+   * frame may be up to `maxFrameBytes` large, and every record in it runs
+   * through decoding, `maySpeakFor`, the version cap and the cap accounting
+   * even when each one is refused — so a peer could keep this node busy
+   * without leaving anything in the map.  The budget is per connection peer,
+   * refills continuously and holds at most one second's worth.  A frame over
+   * it is discarded whole before any record is decoded and counted under
+   * `cluster_gossip_records_refused_total{reason="rate-limit"}`; the
+   * connection stays, the same trade-off the caps make.  One WARN marks the
+   * start of a sender's episode and one the end, with the count, rather than
+   * one per frame.
+   *
+   * A legitimate sender sends one frame per gossip interval at most, plus a
+   * few at join and promotion, so set it well above `1000 / gossipIntervalMs`
+   * of the fastest-gossiping member.
+   */
+  readonly gossipFramesPerSecondPerSender?: number;
+  /**
    * Refuse an inbound envelope whose target path this node did not register a
    * handler for, unless {@link trustedSelectionPaths} names it.  Default:
    * `false` (#877).
@@ -1146,6 +1178,11 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('maxTombstones', maxTombstones);
   }
 
+  /** Gossip frames one sender may send per second.  0 disables.  Default: 0. */
+  withGossipFramesPerSecondPerSender(gossipFramesPerSecondPerSender: number): this {
+    return this.set('gossipFramesPerSecondPerSender', gossipFramesPerSecondPerSender);
+  }
+
   /**
    * Admit an inbound envelope by name only when {@link withTrustedSelectionPaths}
    * lists its target.  Default: off.  `/system` is refused either way (#877).
@@ -1300,6 +1337,7 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // sharding entity cap.
     this.nonNegativeInt('maxMembers');
     this.nonNegativeInt('maxTombstones');
+    this.nonNegativeInt('gossipFramesPerSecondPerSender');
     // Positive, with no `0 = off` reading: the off state of a member threshold
     // is `1` — "one member is enough", which is what every release before #837
     // did — and `0` would be a threshold nothing can fail, spelled as a value
@@ -1719,7 +1757,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'publishStatsIntervalMs' | 'shutdownAfterUnsuccessfulJoinMs'
   | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
-  | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
+  | 'maxMembers' | 'maxTombstones' | 'gossipFramesPerSecondPerSender' | 'downing' | 'splitBrainResolver'
   | 'runCoordinatedShutdownWhenDown' | 'downSmallerIsland'
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
@@ -1844,6 +1882,9 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   }
   if (config.hasPath(keys.maxMembers)) out.maxMembers = config.getInt(keys.maxMembers);
   if (config.hasPath(keys.maxTombstones)) out.maxTombstones = config.getInt(keys.maxTombstones);
+  if (config.hasPath(keys.gossipFramesPerSecondPerSender)) {
+    out.gossipFramesPerSecondPerSender = config.getInt(keys.gossipFramesPerSecondPerSender);
+  }
   if (config.hasPath(keys.minimumMembersBeforeUp)) {
     out.minimumMembersBeforeUp = config.getInt(keys.minimumMembersBeforeUp);
   }

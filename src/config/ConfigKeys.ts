@@ -1665,6 +1665,13 @@ export const ConfigKeys = {
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
     /**
+     * Gossip frames one sender may hand this node per second (#1105) — the
+     * work bound beside the two memory caps above.  `0` disables it.  Read by
+     * `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.gossipFramesPerSecondPerSender`.
+     */
+    gossipFramesPerSecondPerSender: 'actor-ts.cluster.gossip-frames-per-second-per-sender',
+    /**
      * Members that must be present before anything is promoted to `up` (#837)
      * — the leader's promotions and a founder's own self-election alike.
      *

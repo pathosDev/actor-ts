@@ -771,6 +771,17 @@ export const OUTBOUND_REFUSAL_REPORT_INTERVAL_MS = 30_000;
 export const GOSSIP_SEQUENCE_LEAD_MS = 10_000;
 
 /**
+ * How many per-sender gossip budgets `Cluster` holds before it sweeps out the
+ * ones that have refilled (#1105).
+ *
+ * A full budget is the same as no entry at all, so the sweep loses nothing;
+ * what it bounds is a peer that hands this node frames under ever-new
+ * connection identities.  What survives a sweep is the senders active within
+ * the last second, which the inbound connection cap already bounds.
+ */
+export const GOSSIP_SENDER_BUDGET_SWEEP_THRESHOLD = 1_024;
+
+/**
  * How fast the learned clock offset of a gossip sender may rise, in
  * milliseconds per millisecond — one millisecond per second (#1262).
  *
