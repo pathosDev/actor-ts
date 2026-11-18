@@ -13,7 +13,9 @@ Zustellung.  Er:
   Budget — höchstens `maxProducers` Producer, Einträge, die
   `producerIdleTtlMs` lang untätig waren, werden weggeräumt, und höchstens
   `maxOutOfOrder` Sequenzen werden oberhalb einer offenen Lücke im Strom
-  eines Producers behalten.
+  eines Producers behalten.  Eine neue Inkarnation eines Producers wird neben
+  der aktuellen gehalten, statt sie zu ersetzen, höchstens
+  `maxIncarnationsPerProducer` pro Producer.
 - Weist ein fehlerhaftes Envelope ab — ohne `replyTo`, mit einer `seq`, die
   keine positive Safe-Integer ist, oder mit einem leeren bzw. zu langen
   Identifier — als Dead Letter, ohne den Handler zu rufen und ohne zu ACKen.
@@ -57,6 +59,7 @@ type ConsumerControllerOptionsType<T> = {
   maxProducers?: number;         // default 1024,   Infinity = no cap
   producerIdleTtlMs?: number;    // default 300000, Infinity = no sweep
   maxOutOfOrder?: number;        // default 1024,   Infinity = no cap
+  maxIncarnationsPerProducer?: number; // default 4, Infinity = no cap
 };
 ```
 
@@ -66,11 +69,12 @@ type ConsumerControllerOptionsType<T> = {
 | `maxProducers` | Wie viele Producer die Dedup-Map gleichzeitig hält.  Darüber hinaus wird der Eintrag des am längsten nicht genutzten Producers verdrängt. |
 | `producerIdleTtlMs` | Wie lange der Eintrag eines Producers ohne Delivery von ihm überlebt.  Ein Hintergrund-Sweep räumt die abgelaufenen weg. |
 | `maxOutOfOrder` | Wie viele Sequenzen ein einzelner Producer oberhalb einer offenen Lücke behalten darf.  Darüber hinaus weist der Consumer das Delivery ab — kein Handler-Aufruf und kein ACK —, das Fenster dieses Producers stallt also. |
+| `maxIncarnationsPerProducer` | Wie viele Inkarnationen eines Producers nebeneinander gehalten werden, die aktuelle eingeschlossen.  Darüber hinaus wird ein Delivery unter einer weiteren Inkarnation als Dead Letter abgewiesen — kein Handler-Aufruf und kein ACK.  Siehe *Woran der Dedup-Schlüssel gebunden ist*. |
 
 Du konfigurierst weiterhin weder eine Buffer-Größe noch eine Consumer-ID, und
 die Grenzen dafür, was ein eingehendes *Envelope* enthalten darf, bleiben nicht
 konfigurierbar: sie existieren, um Wire-Input zu begrenzen, und ein Limit, das
-der Sender anheben könnte, ist kein Limit.  Die drei Optionen oben sind eine
+der Sender anheben könnte, ist kein Limit.  Die vier Grenzen oben sind eine
 andere Art von Grenze — ein Budget, das dieser Consumer auf seinen eigenen Heap
 anwendet, und genau so etwas sollte ein Betreiber einstellen können.
 
@@ -93,7 +97,7 @@ dieser Seite verwendet.
 
 ### Aus HOCON
 
-Alle drei Grenzen werden zusätzlich aus
+Alle vier Grenzen werden zusätzlich aus
 [`actor-ts.reliable-delivery.consumer`](/de/reference/configuration/#actor-tsreliable-delivery)
 gelesen, in der üblichen Reihenfolge des Projekts: **explizite Optionen
 schlagen HOCON, und HOCON schlägt die eingebauten Defaults**.
@@ -103,10 +107,11 @@ actor-ts.reliable-delivery.consumer {
   max-producers              = 64
   producer-idle-time-to-live = 1m
   max-out-of-order           = 256
+  max-incarnations-per-producer = 4
 }
 ```
 
-`0` ist die Schreibweise, mit der alle drei Schlüssel das `Infinity` der
+`0` ist die Schreibweise, mit der alle vier Schlüssel das `Infinity` der
 Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt nicht
 schreiben — der Zahlen-Reader nimmt ein numerisches Literal, und der
 Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
@@ -116,7 +121,8 @@ Map ist auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0` bei
 `max-producers` überlässt damit einem Peer die Entscheidung, wie viel dieser
 Consumer behält, und mit `0` bei `max-out-of-order` kann ein Sender, der eine
 Sequenz zurückhält, die Menge dieses Producers wachsen lassen, solange er
-weiter sendet.
+weiter sendet.  Mit `0` bei `max-incarnations-per-producer` kann ein Sender für
+jede erfundene Inkarnation eines Producers ein eigenes Fenster anlegen.
 
 `handler` hat keinen Schlüssel — er ist eine Funktion und das einzige
 Pflichtfeld, keine Stellschraube.
@@ -336,13 +342,42 @@ Jeder Producer pflegt seine eigene Seq.  Der Consumer
 dedupliziert **pro Producer** automatisch — er hält einen
 separaten `(contiguous, above)`-Dedup-State pro `producerId`,
 sodass die Seq-Räume zweier Producer nicht kollidieren.  Der Eintrag hält
-außerdem fest, welche *Inkarnation* dieser `producerId` die Zähler beschreiben —
-ein Delivery einer neuen Inkarnation ersetzt ihn, statt einen zweiten Eintrag
-anzulegen.  Damit bleibt ein neu startender Producer bei einem Eintrag statt
-einem pro Neustart, zum Preis eines möglichen weiteren Duplikats: ein
-nachlaufendes Delivery der ausscheidenden Inkarnation setzt das Fenster erneut
-zurück, ein paar schon behandelte Seqs können um den Wechsel herum also zweimal
-laufen.
+außerdem fest, welche *Inkarnation* dieser `producerId` die Zähler beschreiben.
+
+### Woran der Dedup-Schlüssel gebunden ist
+
+Das Fenster ist auf die `producerId` und darin auf die Inkarnation
+geschlüsselt — und **beide schreibt, wer auch immer das Envelope gebaut hat**.
+Nichts an einem `Delivery` bindet es an den Producer, den es nennt; der
+Consumer kann den Neustart eines Producers also nicht davon unterscheiden, dass
+jemand anderes diesen Producer unter einer erfundenen Inkarnation nennt.
+Deshalb lässt er eine unbekannte Inkarnation das aktuelle Fenster nie
+*ersetzen*:
+
+- **Die neue Inkarnation wird neben der aktuellen gehalten**, dedupliziert in
+  einem eigenen Fenster.  Ihre Nachrichten erreichen den Handler sofort und nur
+  einmal, und das Fenster des aktuellen Producers bleibt unberührt — sein
+  erneutes Senden einer schon behandelten Sequenz ist weiterhin ein Duplikat.
+- **Befördert wird sie erst, wenn die aktuelle Inkarnation `producerIdleTtlMs`
+  lang still war**, beim nächsten Delivery danach.  Die Beförderung macht ihr
+  Fenster zum aktuellen und verwirft das alte.  Das ist derselbe Beleg, den der
+  Idle-Sweep schon als „dieser Producer ist weg“ nimmt: ein echter Neustart
+  konvergiert — die alte Inkarnation sendet nicht mehr —, während eine
+  gefälschte Inkarnation nicht weiter kommt, als das Warten auf den Sweep sie
+  brächte.
+- **Pro Producer werden höchstens `maxIncarnationsPerProducer` gehalten**
+  (Default 4, die aktuelle eingeschlossen).  Ein Delivery unter einer weiteren
+  Inkarnation wird abgewiesen: ein Dead Letter, kein Handler-Aufruf und kein
+  ACK, sodass sein Producer erneut sendet, bis eine gehaltene Inkarnation die
+  Idle-TTL lang still war und ihren Platz freigibt.
+
+Was der Wechsel weiterhin kostet, ist ein mögliches Duplikat: ein nachlaufendes
+Delivery der ausscheidenden Inkarnation nach der Beförderung ist wieder eine
+unbekannte Inkarnation, bekommt ein frisches Fenster, und ein paar schon
+behandelte Seqs können zweimal laufen.  Mit `producerIdleTtlMs: Infinity` wird
+keine Inkarnation je still, ein neu gestarteter Producer bleibt also gehalten,
+und einer, der öfter neu startet, als die Grenze zulässt, wird abgewiesen —
+lass den Sweep an, wo Producer neu starten.
 
 Wie viele Einträge es insgesamt gibt, ist Sache von `maxProducers` und nicht der
 Inkarnation — bei mehr verschiedenen Producern als das werden die am längsten

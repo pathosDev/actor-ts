@@ -2211,6 +2211,7 @@ export const ConfigKeys = {
       maxProducers: 'actor-ts.reliable-delivery.consumer.max-producers',
       producerIdleTimeToLive: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live',
       maxOutOfOrder: 'actor-ts.reliable-delivery.consumer.max-out-of-order',
+      maxIncarnationsPerProducer: 'actor-ts.reliable-delivery.consumer.max-incarnations-per-producer',
     },
   },
 

@@ -262,6 +262,19 @@
       "tests/unit/crdt/Properties.test.ts",
       "tests/unit/util/CanonicalOrderKey.test.ts"
     ],
+    "src/delivery/ConsumerController.ts": [
+      "tests/unit/delivery/ConsumerControllerUnhandled.test.ts",
+      "tests/unit/delivery/ConsumerIncarnationChangeover.test.ts",
+      "tests/unit/delivery/ConsumerReplyToAcrossNodes.test.ts",
+      "tests/unit/delivery/DeliveryOrderingProperties.test.ts",
+      "tests/unit/delivery/MultipleConsumers.test.ts",
+      "tests/unit/delivery/ReliableDelivery.test.ts"
+    ],
+    "src/delivery/ConsumerControllerOptions.ts": [
+      "tests/unit/config/ReliableDeliveryConfigDefaults.test.ts",
+      "tests/unit/delivery/ConsumerIncarnationChangeover.test.ts",
+      "tests/unit/options/NonBrokerOptionsValidators.test.ts"
+    ],
     "src/http/backend/ExpressBackend.ts": [
       "tests/integration/in-process/http/ExpressHttp.test.ts",
       "tests/integration/in-process/http/websocket/BackendTransportFrameCap.test.ts",

@@ -189,7 +189,7 @@ import {
   DEFAULT_DELIVERY_OVERFLOW,
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
 } from '../../../src/logging/DeliveryOptions.js';
-import { DEFAULT_MAX_OUT_OF_ORDER, DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
+import { DEFAULT_MAX_INCARNATIONS_PER_PRODUCER, DEFAULT_MAX_OUT_OF_ORDER, DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
 import { DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR, DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES, DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS, DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR, DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS } from '../../../src/pattern/CircuitBreakerOptions.js';
 import {
   DEFAULT_CONSOLE_SINK_FORMAT,
@@ -665,15 +665,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.debug.event-stream', kind: 'bool', constant: DEFAULT_DEBUG_EVENT_STREAM },
 
   /* --- reliable delivery --- */
-  // The three consumer bounds publish `0` as their opt-out while the fields
+  // The four consumer bounds publish `0` as their opt-out while the fields
   // document `Infinity`, so the reader translates — and the published literal
-  // is still the constant, which is what these three entries pin (#861,
-  // #1471).
+  // is still the constant, which is what these four entries pin (#861,
+  // #1471, #1237).
   { key: 'actor-ts.reliable-delivery.producer.resend-timeout', kind: 'duration', constant: DEFAULT_RESEND_TIMEOUT_MS },
   { key: 'actor-ts.reliable-delivery.producer.window-size', kind: 'int', constant: DEFAULT_WINDOW_SIZE },
   { key: 'actor-ts.reliable-delivery.consumer.max-producers', kind: 'int', constant: DEFAULT_MAX_PRODUCERS },
   { key: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live', kind: 'duration', constant: DEFAULT_PRODUCER_IDLE_TTL_MS },
   { key: 'actor-ts.reliable-delivery.consumer.max-out-of-order', kind: 'int', constant: DEFAULT_MAX_OUT_OF_ORDER },
+  { key: 'actor-ts.reliable-delivery.consumer.max-incarnations-per-producer', kind: 'int', constant: DEFAULT_MAX_INCARNATIONS_PER_PRODUCER },
 
   /* --- circuit breaker --- */
   // `call-timeout` is comment-only in reference.conf and so is not part of the
