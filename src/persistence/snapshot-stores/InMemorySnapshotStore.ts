@@ -9,6 +9,7 @@ import type {
   InMemorySnapshotStoreOptions,
   InMemorySnapshotStoreOptionsType,
 } from './InMemorySnapshotStoreOptions.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 /**
  * In-process snapshot store.  `loadLatest` picks the newest snapshot per
@@ -59,6 +60,7 @@ export class InMemorySnapshotStore implements SnapshotStore {
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+    assertValidPersistenceId(persistenceId, 'InMemorySnapshotStore.save');
     // In-memory store ignores compression / encryption / integrity options.
     const stored = decodePayload(encodePayload(state));
     const list = this.store.get(persistenceId) ?? [];

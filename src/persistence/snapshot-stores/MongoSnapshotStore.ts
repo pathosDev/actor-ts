@@ -12,7 +12,7 @@ import { DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N } from '../Constants.j
 import { MongoStore } from '../journals/MongoStore.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
-import { assertStringPersistenceId } from '../storage/PersistenceIdValidator.js';
+import { assertStringPersistenceId, assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import {
   MongoSnapshotStoreOptionsValidator,
   type MongoSnapshotStoreOptions,
@@ -80,6 +80,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
    */
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     assertStringPersistenceId(persistenceId, 'MongoSnapshotStore.save');
+    assertValidPersistenceId(persistenceId, 'MongoSnapshotStore.save');
     const { database } = await this.ensureOpen();
     const now = Date.now();
     try {

@@ -516,8 +516,12 @@ chat example relies on it: a DM channel is
 inside it cannot split off an extra field, and nothing anywhere
 splits an ID back apart.
 
-The same rules run again inside `journal.append()` — defence in
-depth for a journal reached without an actor — and, for
+The same rules run again inside `journal.append()`,
+`snapshotStore.save()` and `durableStateStore.upsert()` — defence in
+depth for a store reached without an actor, such as a migration
+script or a store wrapper. Only the writes are checked: `read`,
+`load` and `delete` still answer for an ID these rules refuse, so a
+stream written before them stays readable and removable — and, for
 [`DurableStateActor`](/persistence/durable-state/), in the options
 validator, where a violation is an `OptionsError` on the
 `persistenceId` field.

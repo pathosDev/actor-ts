@@ -39,6 +39,7 @@ import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { ObjectStorageDurableStateStoreOptionsValidator } from './ObjectStorageDurableStateStoreOptions.js';
 import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsType } from './ObjectStorageDurableStateStoreOptions.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 /**
  * DurableState backed by any `ObjectStorageBackend`.  Each
@@ -215,6 +216,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     state: S,
     options?: PersistenceOptions,
   ): Promise<DurableStateRecord<S>> {
+    assertValidPersistenceId(persistenceId, 'ObjectStorageDurableStateStore.upsert');
     if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
       throw new JournalError(`DurableState.upsert: expectedRevision must be a non-negative integer, got ${expectedRevision}`);
     }
