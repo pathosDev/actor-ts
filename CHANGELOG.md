@@ -31,13 +31,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cases; `nightly-flakes.yml` runs a deeper 3 000-case exploration. "Ordering
   under test control" in the flake-diagnosis docs explains it (EN + DE).
 
-- **Every supervised failure is logged by the parent** (#916). The line gives
-  the actor path, the message type, the cause and the directive, with the
-  cause passed as an argument so its stack is rendered. It is at ERROR, or
-  WARN for `Resume`, at most once per actor per second, and the next line
-  counts what the throttle held back. A crash-looping actor used to be
-  restarted with no log output at any level. `actor_restarted_total` now
-  carries a `class` label.
 - **`Journal.atomicBatchAppend`**, a capability every in-tree journal now
   declares, and `NonAtomicBatchAppendError` (#959). A journal that declares
   nothing counts as unknown and is never refused.
@@ -190,6 +183,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   dispatcher** until its last child stops (#915). Measured over one
   teardown, the dispatcher went from about 101 900 executions to fewer than
   20.
+- **Every supervised failure is logged by the parent** (#916). The line gives
+  the actor path, the message type, the cause and the directive, with the
+  cause passed as an argument so its stack is rendered. It is at ERROR, or
+  WARN for `Resume`, at most once per actor per second, and the next line
+  counts what the throttle held back. A crash-looping actor used to be
+  restarted with no log output at any level. `actor_restarted_total` now
+  carries a `class` label.
 - **The stock loggers never throw on a value they cannot render** (#1749).
   Lifecycle and supervision steps act before they log, so a throwing logger
   can no longer skip a supervision step.
@@ -219,8 +219,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   backpressure episode can no longer wedge the outbound path. A failing
   AMQP ack is logged and published instead of being silently ignored
   (#976).
-- **The CoordinatedShutdown `service-stop` task no longer leaves a live
-  connection attached to a stopped broker actor** (#1223).
 
 - **A symmetric partition heals once the network does** (#930). Heartbeats
   now keep going to unreachable members, and gossip reaches one of them every
@@ -249,6 +247,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (its lowest member when none is `up`) consults the lease, and the rest of
   the side follows its verdict through the membership. This covers leases
   built from configuration and leases passed in code alike.
+- **`KubernetesLease.release()` no longer deletes a Lease record this node
+  does not hold** (#1659). Past the TTL it sends nothing. Otherwise the
+  DELETE carries the `resourceVersion` this holder last wrote as a
+  precondition. A refused precondition (409/412) means "no longer ours" and
+  resolves cleanly. Before, a holder stepping down on a stale view could
+  delete its successor's record.
+- **A node that won a `lease-majority` arbitration stays tied to the lease
+  after the decision is applied** (#1660). If the lease is later reported
+  lost, the node downs itself instead of running beside the side that took
+  the lease.
 - **`TcpTransport` honours socket back-pressure** (#931):
   - A native Bun socket used to cut the frame stream mid-frame and drop the
     connection; Node and Deno buffered without bound.
@@ -284,9 +292,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **Under coordinated shutdown, offloaded actors get their `postStop`**
   (#1754): parallelism shuts the workers down in `before-cluster-shutdown`,
   before `worker-mesh-terminate` stops the threads.
-- **`maxRestarts: -1` keeps the worker respawn backoff growing** (#1255).
-  Before, every respawn waited only the minimum delay, a respawn storm.
-  `OffloadPool` says its budget is unlimited instead of logging `restart 0`.
 
 - **Last-writer-wins converges on every node when two writes tie on both
   timestamp and replica id** (#950, #1841). `LWWRegister.merge` and
@@ -351,6 +356,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (#984); the claim lapses after `lockTtlMs`. `cached()` no longer replays
   `x-ratelimit-*` headers, and the docs give `rateLimit(cached(h))` as the
   correct nesting (#983).
+- **`idempotent()` releases and overwrites its claim only while it holds its
+  own token** (#1082). A handler that overran its claim can no longer delete
+  a retry's claim and let a third request run beside it.
 
 - **A WebSocket hub's `onClientConnected` / `onClientDisconnected` signals
   can no longer be dropped by a bounded hub mailbox or a dropping throttle**
@@ -574,6 +582,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   to the deadline. *Migration:* a deployment whose phase budgets add up to
   more than 30 s raises `overall-timeout` to fit, and its Kubernetes grace
   period with it, or sets it to `0` to keep an unbounded run.
+- **BREAKING — `idle-timeout = 0` is refused on the Hono backend under Bun**
+  (#1767). There it removed the only bound on a stalled request.
+  *Migration:* set a positive value, or leave the key unset.
 - **BREAKING — `idempotent()` records a thrown handler's failure under the
   key instead of freeing it, and no longer records 5xx/408/429 responses**
   (#984). A retry gets 500 and must use a new key, so a partly applied
@@ -605,16 +616,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
-- **`KubernetesLease.release()` no longer deletes a Lease record this node
-  does not hold** (#1659). Past the TTL it sends nothing. Otherwise the
-  DELETE carries the `resourceVersion` this holder last wrote as a
-  precondition. A refused precondition (409/412) means "no longer ours" and
-  resolves cleanly. Before, a holder stepping down on a stale view could
-  delete its successor's record.
-- **A node that won a `lease-majority` arbitration stays tied to the lease
-  after the decision is applied** (#1660). If the lease is later reported
-  lost, the node downs itself instead of running beside the side that took
-  the lease.
 - **A gossip frame restamped inside `maxVersionSkewMs` no longer pins the
   receiver's replay mark against the real sender** (#1262).
   - Nodes stamp gossip sequences from their wall clock.
@@ -687,20 +688,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `idle-timeout` and `request-timeout`** (#1756). When `idle-timeout` is
   unset, an idle HTTP/2 session is closed at 72 s whether or not it sends
   PINGs (#1757).
-- **BREAKING — `idle-timeout = 0` is refused on the Hono backend under Bun**
-  (#1767). There it removed the only bound on a stalled request.
-  *Migration:* set a positive value, or leave the key unset.
 - **`rateLimit` no longer fails open silently** (#983). A cache outage or a
   missing `ioredis` is logged and counted, and the limiter can be set to
   fail closed.
-- **`idempotent()` releases and overwrites its claim only while it holds its
-  own token** (#1082). A handler that overran its claim can no longer delete
-  a retry's claim and let a third request run beside it.
 - **Samples no longer key a rate limiter, an idempotency scope or a cache on
   a header the client can set** (#1248). This covers `x-forwarded-for` in
   the shipped REST example, and `x-user-id`, `x-account` and `x-tenant-id`
   in the docs. The samples use `clientIpResolver` or a verified claim
   instead.
+- **`maxRestarts: -1` keeps the worker respawn backoff growing** (#1255).
+  Before, every respawn waited only the minimum delay, a respawn storm.
+  `OffloadPool` says its budget is unlimited instead of logging `restart 0`.
+- **The CoordinatedShutdown `service-stop` task no longer leaves a live
+  connection attached to a stopped broker actor** (#1223).
 
 ## [0.18.0] — 2026-11-10
 
