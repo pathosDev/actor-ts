@@ -851,7 +851,7 @@ describe('withClusterConfigDefaults', () => {
 /**
  * #591 — the predicate behind the startup warning.  It is the whole reason
  * `actor-ts.remote.tls.enabled` stopped being a dead key: nothing honours the
- * flag yet (#941), so reading it is all there is, and what the read is worth
+ * flag yet (#1854), so reading it is all there is, and what the read is worth
  * lies entirely in when it answers `true`.
  */
 describe('isRemoteTlsRequested', () => {
