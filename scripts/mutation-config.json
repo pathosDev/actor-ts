@@ -387,6 +387,9 @@
       "tests/unit/http/HttpServerTls.test.ts",
       "tests/unit/http/ShutdownDrainTask.test.ts"
     ],
+    "src/http/middleware/BasicAuth.ts": [
+      "tests/unit/http/middleware/BasicAuth.test.ts"
+    ],
     "src/http/middleware/ClientIp.ts": [
       "tests/unit/http/middleware/ClientIp.test.ts",
       "tests/unit/http/middleware/IpAllowlist.test.ts"
