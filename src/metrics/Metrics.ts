@@ -225,18 +225,30 @@ class HistogramImplementation implements Histogram {
  * reusable — the next tuple mints a real series again — but the overflow
  * child stays, because it is the standing record that tuples were
  * discarded and its counter still holds how many.
+ *
+ * `labelNames` is the label-name set of the first *labelled* tuple the
+ * family minted, recorded once and never changed.  The overflow tuple is
+ * built from it rather than from the tuple the cap rejected (#1067): an
+ * unlabeled rejected tuple would otherwise give an empty overflow tuple,
+ * which is the key of the family's regular unlabeled series — the folded
+ * counts landed there and no series carried the marker — and a rejected
+ * tuple naming a subset of the labels gave an overflow series shaped
+ * unlike its siblings.  The prom-client bridge fixes its names the same
+ * way, because prom-client declares them when the family is constructed.
  */
 type CounterFamily = {
   readonly kind: 'counter';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: CounterImplementation }>;
   overflowKey?: string;
+  labelNames?: ReadonlyArray<string>;
 };
 type GaugeFamily = {
   readonly kind: 'gauge';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: GaugeImplementation }>;
   overflowKey?: string;
+  labelNames?: ReadonlyArray<string>;
 };
 type HistogramFamily = {
   readonly kind: 'histogram';
@@ -244,6 +256,7 @@ type HistogramFamily = {
   readonly buckets: ReadonlyArray<number>;
   readonly children: Map<string, { labels: Labels; metric: HistogramImplementation }>;
   overflowKey?: string;
+  labelNames?: ReadonlyArray<string>;
 };
 
 type Family = CounterFamily | GaugeFamily | HistogramFamily;
@@ -481,6 +494,10 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
     if (this.maxSeriesPerFamily > 0 && family.children.size >= this.maxSeriesPerFamily) {
       return this.overflowChildOf<M>(name, family, labels, factory);
     }
+    if (family.labelNames === undefined) {
+      const labelNames = Object.keys(labels);
+      if (labelNames.length > 0) family.labelNames = labelNames;
+    }
     const metric = factory();
     // Stored normalised, not as passed.  The child is the series, and what the
     // series *is* has to be the tuple every exporter will carry: `collect()`
@@ -495,8 +512,9 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
    * The family is at its cap: hand back its single overflow child,
    * creating it (and warning once) on the first tuple that overflows.
    *
-   * The overflow tuple reuses the *label names* of that first rejected
-   * tuple with every value replaced by {@link METRICS_OVERFLOW_LABEL_VALUE},
+   * The overflow tuple reuses the family's *label names* (see
+   * `labelNames` on the family types) with every value replaced by
+   * {@link METRICS_OVERFLOW_LABEL_VALUE},
    * so the series stays shaped like its siblings and a dashboard grouping
    * on those labels still sees it.  A synthetic label *name* would not
    * work: Prometheus reserves `__`-prefixed names and strips them at
@@ -507,7 +525,10 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
     name: string, family: Family, labels: Labels, factory: () => M,
   ): M {
     if (family.overflowKey === undefined) {
-      const overflowLabels = overflowLabelsOf(Object.keys(labels));
+      // No names recorded means every series the family holds is the
+      // unlabeled one, so the rejected tuple cannot be `{}` (that would have
+      // been the memo hit) and its own names are the only ones there are.
+      const overflowLabels = overflowLabelsOf(family.labelNames ?? Object.keys(labels));
       const key = seriesKey(overflowLabels);
       family.overflowKey = key;
       if (!family.children.has(key)) {

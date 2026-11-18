@@ -543,6 +543,15 @@
       "tests/unit/http/ShutdownDrain.test.ts",
       "tests/unit/management/BuiltInHealthChecks.test.ts"
     ],
+    "src/metrics/Metrics.ts": [
+      "tests/unit/metrics/Metrics.test.ts",
+      "tests/unit/metrics/MetricsCardinality.test.ts",
+      "tests/unit/metrics/MetricsLabelValueNormalisation.test.ts",
+      "tests/unit/metrics/MetricsNameValidation.test.ts",
+      "tests/unit/metrics/MetricsSeriesKey.test.ts",
+      "tests/unit/metrics/PrometheusC0SeriesIdentityClaims.test.ts",
+      "tests/unit/metrics/PrometheusExporter.test.ts"
+    ],
     "src/parallelism/ParallelismExtension.ts": [
       "tests/unit/parallelism/ClusterRouterOverMesh.test.ts",
       "tests/unit/parallelism/DisabledByDefault.test.ts",
