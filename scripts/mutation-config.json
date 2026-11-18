@@ -270,6 +270,24 @@
       "tests/unit/config/ResolveLayer.test.ts",
       "tests/unit/config/SubstitutionChainLength.test.ts"
     ],
+    "src/crdt/DistributedData.ts": [
+      "tests/unit/crdt/DistributedDataActorRefSubscribers.test.ts",
+      "tests/unit/crdt/DistributedDataAuthority.test.ts",
+      "tests/unit/crdt/DistributedDataDecodeIdentity.test.ts",
+      "tests/unit/crdt/DistributedDataDecodeIsolation.test.ts",
+      "tests/unit/crdt/DistributedDataGossipFrameCap.test.ts",
+      "tests/unit/crdt/DistributedDataIdentityRegistry.test.ts",
+      "tests/unit/crdt/DistributedDataMergeTypeMismatch.test.ts",
+      "tests/unit/crdt/DistributedDataModifierFailure.test.ts",
+      "tests/unit/crdt/DistributedDataProtoKey.test.ts",
+      "tests/unit/crdt/DistributedDataQuorumCaps.test.ts",
+      "tests/unit/crdt/DistributedDataReplicatorUnbounded.test.ts",
+      "tests/unit/crdt/DistributedDataRestartReload.test.ts",
+      "tests/unit/crdt/DistributedDataSubscriberCost.test.ts",
+      "tests/unit/crdt/DistributedDataSubscribers.test.ts",
+      "tests/unit/crdt/DistributedDataSubscriptionIdentity.test.ts",
+      "tests/unit/crdt/DurableDistributedData.test.ts"
+    ],
     "src/crdt/LWWRegister.ts": [
       "tests/unit/cluster/sharding/DistributedDataCoordinatorStateStore.test.ts",
       "tests/unit/crdt/CrdtWireValidation.test.ts",
