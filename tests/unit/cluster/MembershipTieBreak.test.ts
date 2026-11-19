@@ -38,6 +38,14 @@ type Observer = { readonly system: ActorSystem; readonly cluster: Cluster };
 /**
  * A node whose seed nobody answers on and whose periodic tasks all lie far
  * past the virtual clock, so only the frames a case delivers move it.
+ *
+ * The per-sender frame budget is off (#1105).  Every record here is relayed
+ * through the one {@link SENDER}, and the virtual clock never moves, so the
+ * budget never refills: with it on, the 51st frame and every one after it is
+ * discarded whole.  The suite delivers well over fifty, so whichever cases
+ * ran last — an accident of test order — saw nothing merged at all.  The
+ * budget is pinned by its own suite; this one is about what a merge does with
+ * the frames it admits.
  */
 async function startObserver(port: number): Promise<Observer> {
   const address = new NodeAddress(SYSTEM, OBSERVER_HOST, port);
@@ -53,6 +61,7 @@ async function startObserver(port: number): Promise<Observer> {
     .withSeeds([`${UNANSWERED_SEED_HOST}:${port}`])
     .withSeedRetryIntervalMs(600_000)
     .withGossipIntervalMs(600_000)
+    .withGossipFramesPerSecondPerSender(0)
     .withFailureDetector({ heartbeatIntervalMs: 600_000, unreachableAfterMs: 1_200_000, downAfterMs: 2_400_000 });
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster };
@@ -159,6 +168,9 @@ describe('membership merge converges under any delivery order (#935)', () => {
           const base = Date.now();
           for (const { status, offset } of inOrder) deliver(left, subject, status, base + offset);
           for (const { status, offset } of shuffled) deliver(right, subject, status, base + offset);
+          // Both observers holding nothing would be equal too: a view neither
+          // of them merged into says nothing about the order of arrival.
+          expect(heldRecord(left, subject)).toBeDefined();
           expect(heldRecord(left, subject)).toEqual(heldRecord(right, subject));
         },
       ),
