@@ -461,6 +461,7 @@
       "tests/unit/http/Http1OnHttp2Listener.test.ts",
       "tests/unit/http/Http1OnHttp2ListenerTimers.test.ts",
       "tests/unit/http/Http2SessionIdle.test.ts",
+      "tests/unit/http/Http2SessionIdleDefault.test.ts",
       "tests/unit/http/Http2StreamDeadlineExpiry.test.ts",
       "tests/unit/http/HttpConfigDefaults.test.ts",
       "tests/unit/http/HttpExtension.test.ts",

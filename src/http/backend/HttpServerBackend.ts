@@ -672,6 +672,23 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
   maxConnections: false,
 });
 
+/** What {@link setHttp2SessionIdleDefaultOverride} put in place of the default; `null` while the default governs. */
+let http2SessionIdleDefaultOverrideMs: number | null = null;
+
+/**
+ * Test-only hook: arm the framework's session idle timer on an HTTP/2 listener
+ * with `idle-timeout` unset at `milliseconds` instead of
+ * {@link DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS}.  Pass `null` to restore the
+ * default.  It exists so a live session can be driven down the unset path —
+ * the one #1757 bounds — without waiting 72 s for it; a set `idle-timeout`
+ * never reads it.  Deliberately not re-exported from any barrel, exactly like
+ * `setRuntimeOverride`: it is an internal seam, and it is read at `listen()`,
+ * so it reaches the framework-built backends as well as a hand-applied server.
+ */
+export function setHttp2SessionIdleDefaultOverride(milliseconds: number | null): void {
+  http2SessionIdleDefaultOverrideMs = milliseconds;
+}
+
 /**
  * Install a resolved `actor-ts.http.server` policy on the server a backend
  * just started listening on, and report what actually took — the
@@ -819,8 +836,8 @@ export function applyServerOptions(
     // never closed on Hono under Node.  The framework's own timer at
     // Fastify's value makes it one bound on every pair (#1757); HTTP/1.1
     // keep-alive keeps the backend's own.
-    enforceSessionIdleTimeout(server, DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS, hostTimers);
-    http2SessionIdleDefaultMs = DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS;
+    http2SessionIdleDefaultMs = http2SessionIdleDefaultOverrideMs ?? DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS;
+    enforceSessionIdleTimeout(server, http2SessionIdleDefaultMs, hostTimers);
   }
   if (options.headerTimeoutMs !== undefined) {
     const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
