@@ -17,6 +17,9 @@
  *     value on every runtime: a session pinged every 250 ms is closed about
  *     800 ms after its response, and a handler slower than the bound is
  *     answered with no GOAWAY under it.
+ *   - **Unset, the session is bounded by the framework's default** (#1757),
+ *     PINGs or not, on Fastify and — under Node — on Hono, with the 72 s
+ *     default shortened through an internal seam.
  *   - **idle-timeout bounds the HTTP/1.1 connections on the same port** on
  *     Bun as on Node (#1756).
  *   - **The binding report says which protocol a bound holds for.**  On Bun
@@ -38,7 +41,7 @@ import { connect as http2Connect } from 'node:http2';
 import { connect as tlsConnect } from 'node:tls';
 
 export const name = 'http2 connection bounds';
-export const description = 'request-timeout answers a stalled HTTP/2 stream 408 at the deadline and leaves a request received in full to its handler, and idle-timeout closes a session with no stream open at the same value on every runtime, PINGs or not, on the Fastify HTTP/2 listener';
+export const description = 'request-timeout answers a stalled HTTP/2 stream 408 at the deadline and leaves a request received in full to its handler, and idle-timeout closes a session with no stream open at the same value on every runtime, PINGs or not, on the Fastify HTTP/2 listener — and unset, at the framework default on Fastify and on Hono under Node';
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
 /** The request deadline the listener is bound with. */
@@ -163,6 +166,91 @@ async function idleTimeoutLeg(context, runtime) {
       throw new Error(`a GOAWAY arrived ${Math.round(answered.endedAt - goawayAt)}ms before the response of a handler still working on ${runtime} — idle-timeout fired under a request in flight`);
     }
   });
+}
+
+/** The default the seam stands in for 72 s in the unset legs. */
+const DEFAULT_STAND_IN_MS = 300;
+/** A client that pings well inside the default. */
+const DEFAULT_PING_INTERVAL_MS = 50;
+/** The latest the session may close under the stand-in: the value plus slack for a loaded runner. */
+const DEFAULT_CLOSE_WITHIN_MS = DEFAULT_STAND_IN_MS + 1_200;
+
+/**
+ * The internal seam that shortens the unset default for a run, reached the way
+ * the TCP cases reach runtime plumbing — it is no public API, and no barrel
+ * publishes it.
+ */
+async function loadSessionIdleSeam() {
+  const fromBuild = globalThis.process?.env?.ACTOR_TS_SMOKE_USE_DIST === '1'
+    || globalThis.Deno?.env?.get?.('ACTOR_TS_SMOKE_USE_DIST') === '1';
+  const backendPath = fromBuild ? '../../../dist/http/backend/HttpServerBackend.js' : '../../../src/http/backend/HttpServerBackend.ts';
+  const { setHttp2SessionIdleDefaultOverride } = await import(new URL(backendPath, import.meta.url).href);
+  return setHttp2SessionIdleDefaultOverride;
+}
+
+/**
+ * idle-timeout **unset** (#1757): a session that opens no stream and pings
+ * every 50 ms is closed at the framework's default, on every pair a
+ * `node:http2` server backs — Fastify on any runtime that builds one, and
+ * Hono on Node.  Before the default, Fastify under Node closed it at its own
+ * 72 s, Fastify under Bun never while the PINGs kept coming, and Hono under
+ * Node never at all.  The default is 72 s, so the internal seam stands in a
+ * short value for it; the path is the unset one, since a set idle-timeout
+ * never reads the seam.  The seam is put back, and the system, binding,
+ * session and pinger released, on every path.
+ */
+async function defaultIdleLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime) {
+  const backends = runtime === 'node' ? ['fastify', 'hono'] : ['fastify'];
+  const setHttp2SessionIdleDefaultOverride = await loadSessionIdleSeam();
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  for (const backend of backends) {
+    setHttp2SessionIdleDefaultOverride(DEFAULT_STAND_IN_MS);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { http: { backend } } });
+    const system = ActorSystem.create(`smoke-http2-idle-default-${backend}`, systemOptions);
+    let binding;
+    let session;
+    let pinger;
+    try {
+      const serverOptions = HttpServerOptions.create().withTls({ cert, key }).withHttp2();
+      binding = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .withServerOptions(serverOptions)
+        .bind(routes);
+      const reported = binding.serverOptionsReport?.http2SessionIdleDefaultMs;
+      if (reported !== DEFAULT_STAND_IN_MS) {
+        throw new Error(`${backend} on ${runtime} reports the HTTP/2 session default as ${reported}, not the ${DEFAULT_STAND_IN_MS}ms stand-in — the unset path was not taken`);
+      }
+      session = http2Connect(`https://127.0.0.1:${binding.port}`, { ca, servername: 'localhost' });
+      session.on('error', () => { /* observed as the 'close' that follows */ });
+      await new Promise((resolve, reject) => {
+        session.once('connect', resolve);
+        session.once('close', () => { reject(new Error(`the ${backend} session closed before it connected on ${runtime}`)); });
+      });
+      if (session.alpnProtocol !== 'h2') {
+        throw new Error(`${backend} negotiated ${session.alpnProtocol}, not h2, on ${runtime} — the leg proves nothing about sessions`);
+      }
+      const since = performance.now();
+      pinger = setInterval(() => {
+        if (!session.closed && !session.destroyed) session.ping(() => { /* the answer is not the point */ });
+      }, DEFAULT_PING_INTERVAL_MS);
+      const closedAfterMs = await sessionClosedAfter(session, since);
+      if (closedAfterMs === null) {
+        throw new Error(`an idle HTTP/2 session pinged every ${DEFAULT_PING_INTERVAL_MS}ms was still open ${WATCH_MS}ms in with idle-timeout unset, on ${backend} under ${runtime}`);
+      }
+      if (closedAfterMs > DEFAULT_CLOSE_WITHIN_MS || closedAfterMs < DEFAULT_STAND_IN_MS / 2) {
+        throw new Error(`an idle HTTP/2 session closed ${Math.round(closedAfterMs)}ms in, outside ${DEFAULT_STAND_IN_MS / 2}–${DEFAULT_CLOSE_WITHIN_MS}ms for a ${DEFAULT_STAND_IN_MS}ms default, on ${backend} under ${runtime}`);
+      }
+    } finally {
+      clearInterval(pinger);
+      session?.destroy();
+      if (binding) await binding.unbind().catch(() => {});
+      await system.terminate();
+      setHttp2SessionIdleDefaultOverride(null);
+    }
+  }
 }
 
 /**
@@ -318,6 +406,7 @@ export async function run({ actorTs, runtime, loadEntry }) {
   } finally {
     await system.terminate();
   }
+  await defaultIdleLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime);
   await reportLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime);
 }
 
