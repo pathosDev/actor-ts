@@ -2209,11 +2209,11 @@ describe('workflow hygiene', () => {
         '    permissions:',
         '      contents: write',
         '    steps:',
-        "      - run: python3 -m pip install --disable-pip-version-check 'graphifyy==0.9.46'",
+        "      - run: python3 -m pip install --disable-pip-version-check 'graphifyy==0.9.70'",
       ],
     };
     expect(privilegedWriteScopesOf(job)).toEqual(['contents']);
-    expect(thirdPartyCodeRunBy(job)).toBe("- run: python3 -m pip install --disable-pip-version-check 'graphifyy==0.9.46'");
+    expect(thirdPartyCodeRunBy(job)).toBe("- run: python3 -m pip install --disable-pip-version-check 'graphifyy==0.9.70'");
   });
 
   /**

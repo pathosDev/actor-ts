@@ -14,9 +14,9 @@
 #     -o requirements.txt
 #
 # then put this header back on top.
-graphifyy==0.9.46 \
-    --hash=sha256:35d854d66884c623a8e25ca059b54744ade91ae17ffc0f79fd39e108a1666b5d \
-    --hash=sha256:9af794a52d550fd87e0e3c3f68cbf81409109cf11c175aa0088bb28d10124fda
+graphifyy==0.9.70 \
+    --hash=sha256:4e22d94a8288a52cb3663915f1c1321e15f1503b94d173aab5db906375c229cd \
+    --hash=sha256:6cb0f060b93778552511e8881c92700d7879a0023b89d69936c77cc9b42239da
     # via -r requirements.in
 networkx==3.7 \
     --hash=sha256:e3fd2c13a7814cee3746340d8d7f8598a67f16a58bf47fb7f8793fab6efca1b0 \
