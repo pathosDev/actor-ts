@@ -148,6 +148,7 @@ describe('ReliableDelivery — resilience', () => {
       producerId: 'test-producer',
       incarnation: 'test-incarnation',
       seq: 1,
+      floor: 1,
       body: 'once',
       replyTo: selfProbe as never,
     };
@@ -296,6 +297,7 @@ describe('ReliableDelivery — the handler is serialised (#643)', () => {
       producerId: 'orders',
       incarnation: 'incarnation-1',
       seq: 1,
+      floor: 1,
       body: 'body',
       // A minimal reply target: nothing here is attached to a system, so the
       // ack must land somewhere that needs no cell behind it.

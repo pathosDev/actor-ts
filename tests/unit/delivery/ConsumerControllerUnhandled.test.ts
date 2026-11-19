@@ -73,6 +73,7 @@ const deliver = (consumer: ActorRef<Delivery<unknown>>, replyTo: TestProbe, seq:
     producerId: 'stray-neighbour',
     incarnation: 'incarnation-1',
     seq,
+    floor: seq,
     body,
     replyTo: replyTo as never,
   });

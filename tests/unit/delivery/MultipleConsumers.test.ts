@@ -4,19 +4,25 @@
  * The delivery pages used to suggest splitting one logical stream across N
  * consumers with "a custom router on top".  That cannot work, and no router
  * can make it work, because the obstacle is the consumer's own window: it
- * keys its deduplication state on `(producerId, incarnation)` and advances
- * only over a gap-free run of sequence numbers.  A consumer handed every
- * other sequence of one stream never sees its gaps close.  It handles up to
- * `maxOutOfOrder` sequences above the first gap, then refuses the rest — no
- * handler call and no acknowledgment — and the producer stalls on its own
- * retransmits, which are refused in turn.
+ * keys its deduplication state on `(producerId, incarnation)` and holds it on
+ * one consumer only.
+ *
+ * Before the producer's floor (#1862) the split stalled outright: a consumer
+ * handed every other sequence never saw its gaps close, handled up to
+ * `maxOutOfOrder` sequences above the first one, and refused the rest.  The
+ * floor closes those gaps once the other consumer's acknowledgments reach the
+ * producer, so the first case now pins the stall only while the gap is still
+ * held open: every delivery carries floor 1, as it does while seq 1 is
+ * unacknowledged.  What the floor cannot give a split stream is deduplication
+ * across consumers — a retransmit the router hands to the other consumer runs
+ * the handler a second time, where one consumer would absorb it — and the
+ * router case pins exactly that.
  *
  * What the pages say instead is one producer per consumer, each its own
  * `(producerId, incarnation)` stream, with the caller choosing the stream.
- * The last case is that advice running under the very cap that stalls the
- * first two, so the pair discriminates: the split stalls and the per-consumer
- * streams drain.  Work-pulling — one producer, consumers pulling by demand —
- * is #1470's to build.
+ * The last case is that advice running under the same cap, and it drains.
+ * Work-pulling — one producer, consumers pulling by demand — is #1470's to
+ * build.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
@@ -53,16 +59,21 @@ type ControllerSlot = { controller: ConsumerController<number> | null };
  * Under `/user` so `kit.settle()` covers it — the facade spawns under
  * `/system/delivery`, which the settle deliberately does not inspect — and
  * kept so `outOfOrderFor` can say the window is parked at the cap rather
- * than merely slow.
+ * than merely slow.  `holdHandler`, when given, is awaited after a body is
+ * recorded, so a test can keep the handler running while time moves on.
  */
 const spawnConsumer = (
   kit: TestKit,
   slot: ControllerSlot,
   handled: number[],
   name: string,
+  holdHandler: () => Promise<void> = () => Promise.resolve(),
 ): ActorRef<Delivery<number>> => {
   const consumerOptions = ConsumerControllerOptions.create<number>()
-    .withHandler((body) => { handled.push(body); })
+    .withHandler(async (body) => {
+      handled.push(body);
+      await holdHandler();
+    })
     .withMaxOutOfOrder(MAX_OUT_OF_ORDER);
   return kit.system.spawn<Delivery<number>>(() => {
     slot.controller = new ConsumerController<number>(consumerOptions);
@@ -70,13 +81,17 @@ const spawnConsumer = (
   }, name);
 };
 
-/** A hand-built delivery of `seq` from one fixed `(producerId, incarnation)`. */
+/**
+ * A hand-built delivery of `seq` from one fixed `(producerId, incarnation)`,
+ * carrying floor 1: the producer still holds seq 1 unacknowledged.
+ */
 const deliver = (consumer: ActorRef<Delivery<number>>, replyTo: unknown, seq: number): void => {
   consumer.tell({
     kind: 'reliable-delivery.delivery',
     producerId: 'one-stream',
     incarnation: 'incarnation-1',
     seq,
+    floor: 1,
     body: seq,
     replyTo,
   } as never);
@@ -97,8 +112,8 @@ class RoundRobinRouter extends Actor<Delivery<number>> {
   }
 }
 
-describe('Multiple consumers — one stream split across them stalls (#1470)', () => {
-  test('a consumer fed every other sequence of one stream handles maxOutOfOrder of them and refuses the rest', async () => {
+describe('Multiple consumers — one stream split across them (#1470)', () => {
+  test('a consumer fed every other sequence of one stream, while seq 1 is unacknowledged, handles maxOutOfOrder of them and refuses the rest', async () => {
     const kit = TestKit.create('multiple-consumers-even-half', quietOptions());
     const handled: number[] = [];
     const slot: ControllerSlot = { controller: null };
@@ -120,9 +135,10 @@ describe('Multiple consumers — one stream split across them stalls (#1470)', (
     expect(acknowledgments.messageCount).toBe(MAX_OUT_OF_ORDER);
     expect(slot.controller?.outOfOrderFor('one-stream')).toBe(MAX_OUT_OF_ORDER);
 
-    // A stall, not a delay: the producer's retransmits of the refused twelve
-    // meet the same full window, because the sequences that would close the
-    // gaps went to the other consumer and never come here.
+    // A stall for as long as seq 1 stays unacknowledged: the retransmits of
+    // the refused twelve meet the same full window, because the sequences
+    // that would close the gaps went to the other consumer and never come
+    // here, and the floor cannot rise past a seq the producer still holds.
     for (let seq = 18; seq <= 40; seq += 2) deliver(consumer, acknowledgments, seq);
     await kit.settle();
     expect(handled).toHaveLength(MAX_OUT_OF_ORDER);
@@ -131,20 +147,21 @@ describe('Multiple consumers — one stream split across them stalls (#1470)', (
     await kit.system.terminate();
   });
 
-  test('a router splitting one producer across two consumers stalls both, retransmits included', async () => {
+  test('a router splitting one producer across two consumers runs a retransmitted message on both', async () => {
     // The advice the pages used to give, end to end: a real producer whose
     // `consumer` is a router alternating between two consumers.  Virtual
-    // time, so the producer's retransmits fire when the test says and not
-    // before — the stall below is then a state, not a race.  Everything is
-    // spawned under /user so one settle covers the producer as well; that is
-    // also why the sends carry no `confirm`, which the kit's structured-clone
-    // check refuses on a /user recipient.
-    const { kit } = TestKit.withManualScheduler('multiple-consumers-router', quietOptions());
+    // time, so the producer's retransmit fires when the test says and not
+    // before.  Everything is spawned under /user so one settle covers the
+    // producer as well; that is also why the send carries no `confirm`, which
+    // the kit's structured-clone check refuses on a /user recipient.
+    const { kit, scheduler } = TestKit.withManualScheduler('multiple-consumers-router', quietOptions());
     const odd: number[] = [];
     const even: number[] = [];
+    let releaseOdd: () => void = () => {};
+    const oddGate = new Promise<void>((resolve) => { releaseOdd = resolve; });
     const oddSlot: ControllerSlot = { controller: null };
     const evenSlot: ControllerSlot = { controller: null };
-    const oddConsumer = spawnConsumer(kit, oddSlot, odd, 'odd-consumer');
+    const oddConsumer = spawnConsumer(kit, oddSlot, odd, 'odd-consumer', () => oddGate);
     const evenConsumer = spawnConsumer(kit, evenSlot, even, 'even-consumer');
     const router = kit.system.spawn<Delivery<number>>(
       () => new RoundRobinRouter([oddConsumer, evenConsumer]),
@@ -157,27 +174,30 @@ describe('Multiple consumers — one stream split across them stalls (#1470)', (
       .withWindowSize(16)
       .withResendTimeout(1_000);
     const producer = kit.system.spawn(() => new ProducerController<number>(producerOptions), 'producer');
-    for (let job = 1; job <= 40; job++) producer.tell({ kind: 'reliable-delivery.send', body: job });
+    // One job: the router hands it to the odd consumer, and its retransmit —
+    // the router's second delivery — to the even one.
+    producer.tell({ kind: 'reliable-delivery.send', body: 1 });
+    await awaitCondition(() => odd.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the odd consumer started handling job 1',
+    });
+
+    // The odd consumer is still inside its handler when the resend timer
+    // fires.  One consumer would absorb that retransmit as the duplicate it
+    // is; the router hands it to a consumer that has never seen the seq.
+    scheduler.advance(1_000);
+    await awaitCondition(() => even.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the retransmit reached the even consumer',
+    });
+    releaseOdd();
     await kit.settle();
 
-    // Each consumer fills its window above its first gap and stops: the odd
-    // one handles 1 and then 3..17 above the gap at 2, the even one 2..16
-    // above the gap at 1.  Seventeen of forty, and the producer's window is
-    // left full of sequences neither consumer will ever take.
-    expect(odd).toEqual([1, 3, 5, 7, 9, 11, 13, 15, 17]);
-    expect(even).toEqual([2, 4, 6, 8, 10, 12, 14, 16]);
-    expect(oddSlot.controller?.outOfOrderFor('split-stream')).toBe(MAX_OUT_OF_ORDER);
-    expect(evenSlot.controller?.outOfOrderFor('split-stream')).toBe(MAX_OUT_OF_ORDER);
-
-    // Three resend periods: the whole window is retransmitted three times,
-    // through the same router to the same consumers, and refused every time —
-    // the sequences that would close either gap were acknowledged long ago by
-    // the other consumer and are never sent again.
-    await kit.advance(1_000);
-    await kit.advance(1_000);
-    await kit.advance(1_000);
-    expect(odd).toHaveLength(9);
-    expect(even).toHaveLength(MAX_OUT_OF_ORDER);
+    // The handler ran twice for one message, once on each consumer — the
+    // deduplication the protocol promises holds per consumer, never across
+    // them.
+    expect(odd).toEqual([1]);
+    expect(even).toEqual([1]);
 
     await kit.system.terminate();
   });

@@ -15,7 +15,8 @@ It:
   stream.  A new incarnation of a producer is held beside the live one rather
   than replacing it, at most `maxIncarnationsPerProducer` per producer.
 - Refuses a malformed envelope — one with no `replyTo`, a `seq` that is not a
-  positive safe integer, or an empty / over-long identifier — as a dead letter,
+  positive safe integer, a `floor` that is not one or lies above its `seq`, or
+  an empty / over-long identifier — as a dead letter,
   without running the handler and without acking.
 - Invokes a user **handler function** with each message body.
 - Acks back to the producer **automatically** after the handler
@@ -174,6 +175,32 @@ send stays in the producer's own window and keeps being retried.  It cannot
 deadlock, because the sequence that closes the gap is admitted however full
 the set is — it drains the set rather than growing it.
 
+### The producer's floor
+
+Every `Delivery` carries a `floor`: the lowest seq its producer still holds
+unacknowledged.  Everything below it has been acknowledged, so the handler has
+already run for it and the producer will never send it again.  On admission
+the consumer raises the window the delivery lands in to `floor - 1` and
+releases any retained sequences at or below it.
+
+That is what lets a producer carry on after the consumer forgot it.  The idle
+sweep, an LRU eviction, a promotion over its incarnation, the release of a
+quiet held incarnation and a restart of the consumer all drop a window, while
+the producer's seq counter carries on at N+1.  Without the floor, the next
+window waited at 0 for seqs 1..N that would never come again, retained every
+delivery from N+1 out of order, and refused the producer for good at
+`maxOutOfOrder`.  With it, the window starts where the producer actually is.
+Sequences still in flight are at or above the floor, so each of them still
+reaches the handler, in whatever order they arrive.
+
+A floor moves only the window of the incarnation its envelope names.  One
+under an incarnation the consumer has not seen lands in that incarnation's
+held window and never reaches the live one, so it cannot make the live
+producer's messages look like duplicates.  A floor above its own `seq` is
+refused as malformed.  An envelope without a `floor`, from a producer that
+predates the field, is read as floor 1, which is the old behaviour, stall
+included, so run the same version on both sides.
+
 Read `consumer.trackedProducers` for the current entry count.  It should sit
 near the number of producers actually talking to this consumer; climbing with
 the message count is the symptom the budget exists to prevent.
@@ -284,7 +311,9 @@ accepted on its next retransmit.
 
 See [Why the dedup state has a budget](#why-the-dedup-state-has-a-budget) for
 both halves.  Losing an entry never drops a message; it costs a duplicate.
-Reaching the out-of-order cap never drops one either; it costs a stall.
+Reaching the out-of-order cap never drops one either; it costs a stall.  Nor
+does a lost entry strand the producer: [the producer's
+floor](#the-producers-floor) starts the next window where the producer stands.
 
 ## Failure semantics
 
