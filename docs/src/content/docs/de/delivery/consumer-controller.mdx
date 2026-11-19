@@ -17,7 +17,8 @@ Zustellung.  Er:
   der aktuellen gehalten, statt sie zu ersetzen, höchstens
   `maxIncarnationsPerProducer` pro Producer.
 - Weist ein fehlerhaftes Envelope ab — ohne `replyTo`, mit einer `seq`, die
-  keine positive Safe-Integer ist, oder mit einem leeren bzw. zu langen
+  keine positive Safe-Integer ist, mit einem `floor`, der keine ist oder über
+  seiner `seq` liegt, oder mit einem leeren bzw. zu langen
   Identifier — als Dead Letter, ohne den Handler zu rufen und ohne zu ACKen.
 - Ruft eine User-**Handler-Funktion** mit dem Message-Body auf.
 - ACKt **automatisch** an den Producer zurück, sobald der
@@ -185,6 +186,34 @@ daraus nicht werden, denn die Sequenz, die die Lücke schließt, wird immer
 zugelassen, egal wie voll die Menge ist — sie leert die Menge, statt sie zu
 vergrößern.
 
+### Der Floor des Producers
+
+Jedes `Delivery` trägt einen `floor`: die niedrigste Seq, die sein Producer
+noch ungeACKt hält.  Alles darunter ist geACKt — der Handler ist dafür also
+schon gelaufen, und der Producer schickt es nie wieder.  Beim Zulassen hebt der
+Consumer das Fenster, in dem das Delivery landet, auf `floor - 1` an und gibt
+alle behaltenen Sequenzen auf oder unter dieser Marke frei.
+
+Genau das lässt einen Producer weitermachen, nachdem der Consumer ihn vergessen
+hat.  Der Idle-Sweep, eine LRU-Verdrängung, eine Promotion über seine
+Inkarnation, die Freigabe einer ruhigen gehaltenen Inkarnation und ein Neustart
+des Consumers verwerfen alle ein Fenster, während der Seq-Zähler des Producers
+bei N+1 weiterläuft.  Ohne Floor wartete das nächste Fenster bei 0 auf die Seqs
+1..N, die nie wieder kommen, behielt jedes Delivery ab N+1 außer der Reihe und
+wies den Producer bei `maxOutOfOrder` endgültig ab.  Mit ihm beginnt das
+Fenster dort, wo der Producer tatsächlich steht.  Sequenzen, die noch unterwegs
+sind, liegen auf oder über dem Floor, also erreicht jede von ihnen weiterhin
+den Handler, in welcher Reihenfolge sie auch ankommen.
+
+Ein Floor bewegt nur das Fenster der Inkarnation, die sein Envelope nennt.
+Einer unter einer Inkarnation, die der Consumer nicht kennt, landet in deren
+gehaltenem Fenster und erreicht das aktuelle nie — er kann die Nachrichten des
+echten Producers also nicht als Duplikate erscheinen lassen.  Ein Floor über
+seiner eigenen `seq` wird als fehlerhaft abgewiesen.  Ein Envelope ohne
+`floor`, von einem Producer, der das Feld noch nicht kennt, zählt als Floor 1:
+das alte Verhalten, Stall inklusive — betreibe also auf beiden Seiten dieselbe
+Version.
+
 `consumer.trackedProducers` liefert die aktuelle Anzahl der Einträge.  Sie
 sollte nahe an der Zahl der Producer liegen, die tatsächlich mit diesem
 Consumer sprechen; steigt sie mit der Nachrichtenzahl, ist genau das das
@@ -305,7 +334,9 @@ Siehe [Warum der Dedup-State ein Budget
 hat](#warum-der-dedup-state-ein-budget-hat) für beide Hälften.  Ein verlorener
 Eintrag verwirft nie eine Nachricht, er kostet ein Duplikat.  Die
 Out-of-order-Grenze zu erreichen verwirft ebenfalls keine, sie kostet einen
-Stall.
+Stall.  Und ein verlorener Eintrag lässt den Producer auch nicht hängen: [der
+Floor des Producers](#der-floor-des-producers) lässt das nächste Fenster dort
+beginnen, wo der Producer steht.
 
 ## Failure-Semantik
 

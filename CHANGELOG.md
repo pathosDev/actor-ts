@@ -477,6 +477,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   corpus (#1048). A reused master-key version now fails with an error naming
   the version and the likely cause (#1050).
 
+- **A `ConsumerController` no longer stalls a live producer for good after
+  dropping its dedup window** (#1862). The window can be dropped by the idle
+  sweep, an LRU eviction, an incarnation promotion, the release of a held
+  incarnation, or a consumer restart. The producer then resumed at a later seq
+  into a fresh window, filled `maxOutOfOrder` and was refused from then on,
+  retransmitting forever. Every `Delivery` now carries the producer's
+  low-water mark `floor`, and the consumer raises its window to it. A floor
+  under an unknown incarnation moves only that incarnation's held window. A
+  router that splits one stream across consumers no longer stalls on the gaps
+  either, once acks come back.
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
@@ -702,6 +713,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a new `max-topics-claimed-per-sender` (1024) limits each peer's claims
   (#1074). A node whose peers announce more than 1024 topics each needs that
   limit raised.
+
+- **BREAKING: `Delivery` has a new required field `floor`**, the lowest seq
+  the producer still holds unacknowledged (#1862). This changes the delivery
+  wire format. **Migration:** upgrade producers and consumers together; a
+  `Delivery` without `floor` is read as floor 1, which brings the stall
+  back. A hand-built `Delivery` sets `floor` to the lowest unacknowledged
+  seq, never above `seq`.
 
 ### Security
 
