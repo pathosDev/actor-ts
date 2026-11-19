@@ -116,6 +116,17 @@ export type WorkerTransportMessage = {
 type RestartState = {
   /** Sliding-window tally; refuses once the allowance inside the window is spent. */
   readonly budget: RestartBudget;
+  /**
+   * The tally the backoff exponent is read from — the budget itself, except
+   * under an unlimited allowance.  `RestartBudget` records nothing when
+   * `maxRetries < 0`, so reading the exponent off it pinned every respawn at
+   * the minimum delay for the life of the process (#1255).  The separate tally
+   * is a budget too, so it prunes with the same window — a slot that stayed up
+   * past `restartWindowMs` starts from the minimum again — and it is capped at
+   * the attempt that reaches the ceiling, past which a longer record changes
+   * no delay; so it stays bounded even under `restartWindowMs: 0`.
+   */
+  readonly backoffTally: RestartBudget;
   /** Pending respawn timer, so `terminate()` can cancel a scheduled attempt. */
   timer: ReturnType<typeof setTimeout> | undefined;
   /** Set when the budget refused a restart — the slot never comes back. */
@@ -606,7 +617,12 @@ export class WorkerCluster {
     // the sliding window, so a slot that stayed up long enough to leave the
     // window behind restarts from the minimum delay again instead of staying
     // pinned at the ceiling for the process lifetime.
-    const delayMs = this.backoff.delayFor(state.budget.recordedRestarts - 1);
+    // Under an unlimited allowance the budget recorded nothing, so the
+    // exponent comes from the tally kept for it alone.  Its refusal is
+    // ignored: a full tally means the ceiling is reached, not that the slot
+    // retires.
+    if (state.backoffTally !== state.budget) state.backoffTally.registerRestart();
+    const delayMs = this.backoff.delayFor(state.backoffTally.recordedRestarts - 1);
     // A granted restart used to arm the timer in silence, so a mesh churning
     // inside its budget looked healthy for the process lifetime (#1276).  The
     // budget's own tally is quoted, except under an unlimited allowance:
@@ -695,20 +711,34 @@ export class WorkerCluster {
   private restartStateFor(index: number): RestartState {
     const existing = this.restartStates.get(index);
     if (existing !== undefined) return existing;
-    const state: RestartState = {
-      // `RestartBudget` reads only these two fields, which is why it takes a
-      // `Pick` — a worker slot has no actor to apply a `Directive` to and no
-      // supervision scope to name.
-      budget: new RestartBudget({
-        maxRetries: this.options.maxRestarts,
+    // `RestartBudget` reads only these two fields, which is why it takes a
+    // `Pick` — a worker slot has no actor to apply a `Directive` to and no
+    // supervision scope to name.
+    const budget = new RestartBudget({
+      maxRetries: this.options.maxRestarts,
+      withinTimeRangeMs: this.options.restartWindowMs,
+    });
+    const backoffTally = this.options.maxRestarts < 0
+      ? new RestartBudget({
+        maxRetries: attemptsToReachCeiling(this.options.restartMinBackoffMs, this.options.restartMaxBackoffMs),
         withinTimeRangeMs: this.options.restartWindowMs,
-      }),
-      timer: undefined,
-      retired: false,
-    };
+      })
+      : budget;
+    const state: RestartState = { budget, backoffTally, timer: undefined, retired: false };
     this.restartStates.set(index, state);
     return state;
   }
+}
+
+/**
+ * How many recorded restarts it takes for `min × 2^(n-1)` to reach `max` —
+ * the length past which a backoff tally changes no delay.  At least one, so
+ * the first restart is always recorded, and never more than the attempt at
+ * which `exponentialBackoff` stops computing and answers the ceiling outright.
+ */
+function attemptsToReachCeiling(minMs: number, maxMs: number): number {
+  if (minMs <= 0 || maxMs <= minMs) return 1;
+  return Math.min(Math.ceil(Math.log2(maxMs / minMs)) + 1, 31);
 }
 
 /**

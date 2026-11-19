@@ -114,6 +114,26 @@ import { Aside } from '@astrojs/starlight/components';
   Express und Hono identisch.
 </Aside>
 
+## Den Durchlauf wiederverwenden
+
+Die Auflösung, die `trustedProxies` einschaltet, ist als
+`clientIpResolver` öffentlich — für alles andere, das hinter einem Proxy
+die Adresse des Clients braucht: einen
+[Rate-Limit-Key](/de/http/middleware/rate-limit/#hinter-einem-reverse-proxy),
+eine Logzeile, einen Audit-Eintrag:
+
+```ts
+import { clientIpResolver } from 'actor-ts/http';
+
+const clientIp = clientIpResolver(['10.0.0.0/8']);
+const address = clientIp(request);   // string, oder undefined ohne Socket-Peer
+```
+
+Derselbe Durchlauf, dieselben Rückfälle: keine benannten Proxys heißt
+Socket-Peer, eine erschöpfte Kette heißt Socket-Peer, kein Socket-Peer
+heißt `undefined`.  `resolveClientIp(request, trustedProxies)` ist die
+Einmal-Form.
+
 ## Wie weiter
 
 - **[Bearer-Token-Auth](/de/http/middleware/bearer-token/)** — der

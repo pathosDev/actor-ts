@@ -74,6 +74,34 @@ entscheiden.  Die beiden Anwendungs-Samples sind dabei: Chat- und
 Voice-Smoke-Test laufen beide im Gate und bringen jeweils ihr
 eigenes Backend mit.
 
+### Die zwei Lockfiles der Frontends
+
+Jedes mitgelieferte Frontend unter `examples/{chat,voice}/frontend-*`
+trägt eine `package-lock.json` (die installieren `npm ci` in CI und
+der dokumentierte Build) und eine `bun.lock` (für `bun install`).
+Dependabot schreibt nur die npm-Datei neu, und die beiden Resolver
+stimmen ohnehin nie Version für Version überein, deshalb hält CI sie
+an eine Toleranz statt an Gleichheit. Zwei Abweichungen schlagen
+fehl:
+
+- **eine andere Major-Linie** eines Pakets, das beide Dateien
+  auflösen — die Major-Version, unter 1.0.0 `0.<minor>`. Patch- und
+  Minor-Unterschiede gehen durch. Diese Hälfte liest nur die beiden
+  Dateien und läuft deshalb in `bun test`
+  (`tests/unit/ci/ExampleLockfileAgreement.test.ts`).
+- **ein Advisory, das die Version der einen Datei nennt, während
+  die der anderen sauber ist.** Diese Hälfte braucht die
+  Advisory-Datenbank: Der `examples`-Workflow führt `bun audit --json`
+  über `bun.lock` und `npm audit --package-lock-only --json` über
+  `package-lock.json` aus, die beide nichts installieren, und gibt
+  beide Berichte an `scripts/example-lockfile-agreement.mjs`. Sind
+  beide Dateien vom selben Advisory betroffen, gilt das als
+  Übereinstimmung; ob gepatcht wird, ist Dependabots Frage.
+
+Schlägt es fehl, die veraltete Hälfte synchronisieren — meist mit
+`bun update <package> --lockfile-only` im betreffenden Verzeichnis.
+Die Regel selbst steht oben im Skript.
+
 ## Ein Beispiel auswählen
 
 Wenn du sehen willst...

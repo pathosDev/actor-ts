@@ -15,6 +15,7 @@ import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+import { nextShardToken } from '../../../../util/ShardTokens.js';
 
 /**
  * `completeHandOff` used to clear `shardHomes` without ever replaying the
@@ -154,7 +155,7 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
     // Begin the handoff, then queue behind it. The region is single-threaded,
     // so by the time it reads this second message the shard is already marked
     // `'handing-off'` and the message can only be buffered.
-    tellAsCoordinator(node, { kind: 'sharding.HandOff', shardId });
+    tellAsCoordinator(node, { kind: 'sharding.HandOff', shardId, token: nextShardToken() });
     node.region.tell({ id: ENTITY_ID, kind: 'work' });
 
     // Single node, so the coordinator hands the shard straight back — the only
@@ -176,7 +177,7 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
     await waitFor(() => delivered === 1);
     expect(entityIsUp(node, shardId)).toBe(true);
 
-    tellAsCoordinator(node, { kind: 'sharding.HandOff', shardId });
+    tellAsCoordinator(node, { kind: 'sharding.HandOff', shardId, token: nextShardToken() });
     await waitFor(() => !entityIsUp(node, shardId));
     // An absence: nothing was queued, so nothing may be delivered.  Both counts
     // already hold at t=0 and a poll on them would return immediately.

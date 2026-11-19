@@ -41,6 +41,16 @@ export type PromClientAdapterOptionsType = {
    * in-process registry uses; `0` disables the cap.
    */
   readonly maxSeriesPerFamily?: number;
+  /**
+   * Cap on the number of metric families the bridge constructs on the
+   * prom-client side, mirroring the `DefaultMetricsRegistry` cap (#1068).
+   * Past it, an instrument factory asked for a further name returns a no-op
+   * instrument and the bridge warns once; it never throws.
+   *
+   * Default: `DEFAULT_MAX_FAMILIES`, the same 1 000 the in-process registry
+   * uses; `0` disables the cap.
+   */
+  readonly maxFamilies?: number;
 };
 
 /**
@@ -80,6 +90,11 @@ export class PromClientAdapterOptionsBuilder extends OptionsBuilder<PromClientAd
   withMaxSeriesPerFamily(maxSeriesPerFamily: number): this {
     return this.set('maxSeriesPerFamily', maxSeriesPerFamily);
   }
+
+  /** Cap on the number of metric families.  `0` disables the cap. */
+  withMaxFamilies(maxFamilies: number): this {
+    return this.set('maxFamilies', maxFamilies);
+  }
 }
 
 /** Validates resolved {@link PromClientAdapterOptionsType} settings. */
@@ -90,6 +105,7 @@ export class PromClientAdapterOptionsValidator extends OptionsValidator<PromClie
   protected rules(): void {
     // `>= 0` rather than `>= 1`: 0 is the documented cap opt-out.
     this.nonNegativeInt('maxSeriesPerFamily');
+    this.nonNegativeInt('maxFamilies');
   }
 }
 
@@ -108,11 +124,11 @@ export const PromClientAdapterOptions = PromClientAdapterOptionsBuilder;
  * namespace the application imports and the `Registry` it publishes into —
  * which a config file cannot hold, so they stay code-only.
  */
-export type PromClientAdapterConfigDefaults = Pick<PromClientAdapterOptionsType, 'namePrefix' | 'maxSeriesPerFamily'>;
+export type PromClientAdapterConfigDefaults = Pick<PromClientAdapterOptionsType, 'namePrefix' | 'maxSeriesPerFamily' | 'maxFamilies'>;
 
 /**
  * Read `actor-ts.metrics.*` for the prom-client bridge: the prefix, and the
- * cap the in-process registry reads from the same leaf.
+ * two caps the in-process registry reads from the same leaves.
  *
  * The `Config` is a **required argument**, and nothing here calls
  * `Config.load()`.  The one consumer is `MetricsExtension.enablePromClient()`,
@@ -131,5 +147,6 @@ export function readPromClientAdapterOptionsFromConfig(config: Config): PromClie
   const out: { -readonly [K in keyof PromClientAdapterConfigDefaults]: PromClientAdapterConfigDefaults[K] } = {};
   if (config.hasPath(keys.namePrefix)) out.namePrefix = config.getString(keys.namePrefix);
   if (config.hasPath(keys.maxSeriesPerFamily)) out.maxSeriesPerFamily = config.getInt(keys.maxSeriesPerFamily);
+  if (config.hasPath(keys.maxFamilies)) out.maxFamilies = config.getInt(keys.maxFamilies);
   return out;
 }

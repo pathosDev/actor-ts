@@ -65,7 +65,7 @@ export type Envelope<T = unknown> = {
    * This envelope carries something the framework cannot send again, so no
    * load-shedding policy may discard it (#729).
    *
-   * Four envelopes take it today, and the test for admitting a fifth is the
+   * Five envelopes take it today, and the test for admitting a sixth is the
    * property they share, not their subject: it is sent once, nothing on the
    * framework's side still holds what it would take to send it again, and what
    * is lost when it is dropped is not a *message* but a piece of state outside
@@ -96,6 +96,17 @@ export type Envelope<T = unknown> = {
    * a `closeAll(1008, 'rate limited')` that returns normally while the peers
    * stay connected is a control that failed open — a security outcome, from a
    * bound the operator set to cap *frames*.
+   *
+   * The `connected` and `disconnected` a connection reports to its hub (#986).
+   * The hub's `clients` map and its `onClientConnected` /
+   * `onClientDisconnected` hooks are kept from exactly these two signals, and
+   * each is sent once, by a connection actor that is about to start or about
+   * to be gone. A bounded or throttled hub that shed a `disconnected` kept the
+   * entry and whatever the hook would have released for the life of the
+   * process, and one that shed a `connected` ran a disconnect for a client it
+   * never registered. What is lost is the hub's account of who is connected,
+   * outside the mailbox, and nothing re-sends it — the death-watch reaper
+   * catches a lost disconnect, but only as a fallback.
    *
    * The `DistributedDataChanged` a DistributedData replicator posts to an actor
    * subscribed to one of its keys (#1468).  It passes the same test, and again
@@ -311,7 +322,7 @@ export class Mailbox<T = unknown> {
    * `dequeueUser`, its `size` and its `drainUser`, so not even a dead letter
    * comes out of it.
    *
-   * **The door decides undroppability, never position (#1431).**  Five call
+   * **The door decides undroppability, never position (#1431).**  Six call
    * sites reach it, all through `ActorCell.postSignalEnvelope`:
    * `ActorCell._notifyWatcher`, with the `Terminated` of a local death;
    * `ActorCell.onWatchNotify`, with the `Terminated` of a death another node
@@ -319,7 +330,9 @@ export class Mailbox<T = unknown> {
    * report (#918); `ConnectionWiring.postAcceptCommand`, with the
    * `websocket-accept` that hands an upgraded socket to its hub (#717);
    * `WebsocketConnection.close`, with the `close` a connection sends its own
-   * actor (#985); and `DistributedData.offerToSubscriber`, with the
+   * actor (#985); `WebsocketConnectionActor.reportLifecycle`, with the
+   * `connected` and `disconnected` a connection reports to its hub (#986);
+   * and `DistributedData.offerToSubscriber`, with the
    * `DistributedDataChanged` a replicator posts to an actor subscribed to one
    * of its keys (#1468).  Two of those depend on arriving *late*: death watch
    * promises that every `tell` already queued is handled before the

@@ -16,10 +16,11 @@ actor-ts {
     # already have before the stop cascade starts.  The wait ends as soon as
     # the tree goes quiet, so an idle system pays a tick rather than the
     # budget; what is still queued when the budget runs out is dead-lettered
-    # exactly as it was before.  Keep it under
-    # coordinated-shutdown.default-phase-timeout — the last phase awaits
-    # terminate(), so a drain as long as the phase leaves no room to stop
-    # anything.  0 disables draining and restores the pre-#663 behaviour.
+    # exactly as it was before.  Keep it under the budget of the
+    # coordinated-shutdown phase actor-system-terminate (10s unless set) —
+    # that phase awaits terminate(), so a drain as long as the phase leaves
+    # no room to stop anything.  0 disables draining and restores the
+    # pre-#663 behaviour.
     #
     # A throttled or suspended mailbox is never waited on: neither drains at
     # a rate a shutdown can wait for.
@@ -470,6 +471,14 @@ actor-ts {
   cluster {
     gossip-interval = 1s
     seed-retry-interval = 3s
+
+    # On every how-many-th gossip round one unreachable member also receives
+    # the round's frame, so the two halves of a healed partition exchange the
+    # membership they changed while apart.  Heartbeats go to unreachable
+    # members on every beat regardless -- they are what marks a returning
+    # peer reachable again.  0 sends unreachable members no gossip.
+    unreachable-gossip-rounds = 3
+
     weakly-up-after = 0s   # 0 disables auto weakly-up promotion
 
     # How often this node publishes a snapshot of its own membership view --
@@ -514,6 +523,18 @@ actor-ts {
     # liveness, so nothing but the TTL below ever reclaims it.
     max-members = 1000
     max-tombstones = 10000
+
+    # Gossip frames one sender may hand this node per second (#1105).  The
+    # caps above bound what sticks, not the work: every record in a frame is
+    # decoded and checked even when all of them are refused.  A frame over
+    # the budget is discarded whole and counted under
+    # cluster_gossip_records_refused_total{reason="rate-limit"}; the
+    # connection stays.  The budget refills continuously and holds at most
+    # one second's worth.  It must stay above a sender's real rate: about
+    # 1000 / gossip-interval-ms, times a safety factor of at least 2 for join
+    # and promotion frames.  50 covers intervals down to about 40ms; raise it
+    # for a cluster that gossips faster.  0 disables it.
+    gossip-frames-per-second-per-sender = 50
 
     # Members that must be present before ANYTHING moves to "up" -- the
     # leader's promotions and a founder's own self-election alike.  1 is what
@@ -714,10 +735,15 @@ actor-ts {
       #
       # No upper bound against failure-detector.down-after: with a strategy
       # configured the detector parks an unreachable peer and evicts nothing,
-      # so the window has no deadline to out-run.  Ignored entirely when
-      # active-strategy = off -- there is no decision to delay then: the
-      # detector removes the peer at down-after (failure-detector.auto-down =
-      # on, the default), or parks it when auto-down = off.
+      # so the window has no deadline to out-run.  With active-strategy = off
+      # there is no decision to delay: the detector removes the peer at
+      # down-after (failure-detector.auto-down = on, the default), or parks it
+      # when auto-down = off.
+      #
+      # Also, with or without a strategy, how long an unreachable mark this
+      # node holds on another node's word must stand, while the member keeps
+      # talking to this node, before a heartbeat may clear it here.  The node
+      # whose detector made the mark clears it on the first heartbeat.
       stable-after = 20s
 
       # Down EVERY member, self included, when the view never once holds still
@@ -997,6 +1023,14 @@ actor-ts {
       # starts first, so it is always the one that gives up first.
       connect-timeout = 5s
 
+      # How many frames are held for a contact point that has stopped taking
+      # them -- its socket pushed back and has not drained -- before the next
+      # send or ask is refused with an error.  Refused rather than dropped: an
+      # envelope is a command its caller is waiting on.  The same 1000 as
+      # remote.outbound-queue-size, which bounds the same quantity on a node's
+      # own connections.
+      outbound-queue-size = 1000
+
       # Cluster-side endpoint, started per node with
       # system.extension(ClusterClientReceptionistId).start(cluster).
       receptionist {
@@ -1012,12 +1046,16 @@ actor-ts {
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
     # one mediator can be made to hold -- by local subscribers and by a peer's
     # gossiped topic claims alike.  A Subscribe over a cap is answered with
-    # SubscribeRejected, never silently dropped.
+    # SubscribeRejected, never silently dropped.  max-topics bounds two pools
+    # separately -- topics with a local subscriber, and topics only peers
+    # claim -- so a peer's claims never deny a local Subscribe; one sender
+    # may claim at most max-topics-claimed-per-sender of them.
     pub-sub {
       gossip-interval = 1s
       max-subscribers-per-topic = 10000
       max-topics = 10000
       max-remote-nodes-per-topic = 1000
+      max-topics-claimed-per-sender = 1024
       # A publish that reached no subscriber goes to system.deadLetters, so a
       # mistyped topic is observable instead of silent.  off = discard it.
       send-to-dead-letters-when-no-subscribers = on
@@ -1026,11 +1064,15 @@ actor-ts {
     # Cluster-wide service registry (Receptionist).  Subscribers are watched,
     # so a stopped one is dropped; the caps bound the ones that are still alive.
     # The total counts key/subscriber pairs, not distinct subscribers — one
-    # subscriber on three keys spends three of it.
+    # subscriber on three keys spends three of it.  What a peer's gossip may
+    # make this node hold is bounded per sender: at most
+    # max-registrations-claimed-per-sender actor paths, a key naming none
+    # counted as one.
     receptionist {
       gossip-interval = 1s
       max-subscribers-per-key = 1000
       max-subscriptions-total = 10000
+      max-registrations-claimed-per-sender = 10000
     }
   }
 
@@ -1136,7 +1178,7 @@ actor-ts {
     tls {
       # Read but NOT honoured: the transport the cluster builds for itself is
       # always plaintext.  Setting this to true only buys a startup WARN that
-      # says so — encrypting the wire is issue #941.
+      # says so — encrypting the wire is issue #1854.
       enabled = false
     }
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
@@ -1199,12 +1241,13 @@ actor-ts {
 
     # How many frames are held for a peer that cannot take them right now,
     # oldest dropped first -- the newest membership and heartbeat state is the
-    # state worth keeping.  Today that is the buffer in front of the
-    # handshake, so a send racing the handshake is held rather than lost; the
-    # key is named for the category rather than that one buffer, because the
-    # post-handshake backpressure queue is the same quantity with the same
-    # policy and the same warning and will land under this key rather than a
-    # second one.
+    # state worth keeping.  Two buffers, one bound each: the one in front of
+    # the handshake, so a send racing the handshake is held rather than lost,
+    # and the one behind a socket that pushes back, so a peer that stops
+    # reading costs this node at most this many frames instead of its heap.
+    # Frames are held whole, never cut: what the peer receives is a frame
+    # stream with gaps, each gap reported by a warning when it opens and
+    # another naming its size when the socket drains.
     outbound-queue-size = 1000
 
     # How many inbound connections this node accepts before it refuses sockets
@@ -1435,7 +1478,7 @@ actor-ts {
   }
 
   # Reliable delivery -- the push+ack protocol behind ReliableDelivery.producer
-  # and ReliableDelivery.consumer.  These five layer UNDER whatever those two
+  # and ReliableDelivery.consumer.  These six layer UNDER whatever those two
   # statics were passed, so an explicit withWindowSize(...) still wins.  They
   # are read THERE and nowhere else: neither controller can read config from
   # its constructor, so one constructed directly and handed to system.spawn
@@ -1486,6 +1529,21 @@ actor-ts {
       # producer's set for as long as it keeps sending, the growth #728
       # bounded.
       max-out-of-order = 1024
+
+      # Most incarnations of ONE producerId held at once, the live one
+      # included.  A delivery under an incarnation the consumer has not seen
+      # does not replace the live window: anybody who can reach the consumer
+      # can name a live producerId, so a replacement would let one envelope
+      # empty that producer's duplicate suppression (#1237).  The new
+      # incarnation is held beside the old one, deduplicated in its own
+      # window, and promoted -- the old window dropped -- once the old one has
+      # gone quiet for producer-idle-time-to-live.  Past the cap a delivery
+      # under yet another incarnation is refused as a dead letter, with no
+      # handler call and no acknowledgment, so its producer retransmits it
+      # until a held incarnation goes quiet.  4 covers a producer that
+      # restarts three times inside one idle TTL; 0 -- unbounded -- lets a
+      # sender mint windows for one producerId without limit.
+      max-incarnations-per-producer = 4
     }
   }
 
@@ -1524,14 +1582,31 @@ actor-ts {
       # effective ceiling and this one never binds.
       max-string-length = 20M
     }
+
+    # What the cluster wire builds out of a peer's frame.  A frame is a tagged
+    # JSON tree, so a tag in a body asks the receiver to construct a class;
+    # only the tags listed here are honoured.  A frame using any other tag is
+    # refused -- skipped and logged with the tag's name; the connection stays
+    # up -- never delivered with its value turned into a plain object.  The
+    # default is the data tags.  regexp, undefined, error and url are left
+    # out: a node that sends one across lists it here, on every node that
+    # receives it.  [] decodes frames as plain JSON.  Names: date, bytes,
+    # typed-array, map, set, bigint, bidirectional-map,
+    # bidirectional-multi-map, number, undefined, regexp, url, error.
+    wire {
+      admitted-tags = [date, bytes, typed-array, map, set, bigint, bidirectional-map, bidirectional-multi-map, number]
+    }
   }
 
   http {
     backend = "fastify"   # fastify | express | hono
-    # In-flight drain window for unbind() before connections are forced.
-    # 0 keeps the historical behaviour (force immediately); raise it if you
-    # want in-flight requests to finish on shutdown.
-    shutdown-grace-period = 0ms
+    # How long unbind() lets requests in flight finish before it forces their
+    # connections closed -- the same on every backend; 0 forces at once.  On
+    # shutdown the server stops accepting in service-unbind, /ready has gone
+    # 503 a phase earlier, and the drain is a service-requests-done task, so
+    # keep this under that phase's budget (default-phase-timeout, 5s): 4s
+    # leaves a second for the forced close.
+    shutdown-grace-period = 4s
 
     # Connection-level bounds for the server itself -- the listening socket a
     # bind() opens, not a route on it.  withServerOptions(...) wins per field,
@@ -1577,8 +1652,9 @@ actor-ts {
     #     balancer's idle window and the balancer never posts a request onto a
     #     socket that is closing, against node:http's 5s on Express and
     #     Hono-on-Node.  Set a duration to make them agree, or 0 to disable it
-    #     -- which on the Hono backend under Bun leaves a stalled body
-    #     unbounded, below.
+    #     -- except on the Hono backend under Bun, where 0 is refused, below.
+    #     On an HTTP/2 listener an idle session is closed at 72s when this is
+    #     unset, on every backend, PINGs or not.
     #     On the Hono backend under Bun it is Bun.serve's own idleTimeout, a
     #     wider bound: whole-connection inactivity, so a handler that writes
     #     nothing for that long, a long poll or a sparse SSE stream is cut
@@ -1590,7 +1666,8 @@ actor-ts {
     #     routes -- so the 503 is written first: 36s for the built-in 30s.
     #     There it is also the only bound on a request whose body stops
     #     arriving and on a connection idle between requests -- none of the
-    #     other timeouts is installed -- so 0 leaves such a connection open
+    #     other timeouts is installed -- so bind() refuses 0, which Bun.serve
+    #     reads as never closing and which would leave such a connection open
     #     until the client closes it.  A value whose earliest cut lands less
     #     than 2s past the deadline makes bind() warn: the 5s below cuts a
     #     handler that has written nothing from 4s on.
@@ -1764,6 +1841,13 @@ actor-ts {
       # drop-head | drop-new | reject.
       # connection-mailbox-capacity = 1024
       # connection-mailbox-overflow = "drop-head"
+      # Each connection pings its peer this often and drops it, as 1001
+      # "heartbeat timeout", when nothing arrived since the previous ping --
+      # a half-open peer is reaped within two intervals.  0 turns it off.
+      heartbeat-interval = 30s
+      # Close a connection with 1001 "idle timeout" after this long without an
+      # inbound message (pongs do not count).  0 turns it off.
+      idle-timeout = 0s
     }
   }
 
@@ -1830,6 +1914,15 @@ actor-ts {
     # this.  Groups are cut from what one poll returned, so the poll interval
     # is the window and nothing is held back to fill a group.
     group-after-envelopes = 20
+
+    # By-tag projections only: how far behind its newest handled event each
+    # poll re-reads.  An event is stamped before its write commits, so a slow
+    # writer's event can turn up after the projection has passed its stamp;
+    # the re-read still delivers it, and what was already handled is skipped
+    # by (persistence id, sequence number).  Sized to the longest write
+    # deadline a shipped journal applies (D1's 30s); an event that commits
+    # later than this after its stamp is missed.  0 reads forward only.
+    lookback-window = 30s
   }
 
   # Fleet-wide defaults for BackoffSupervisor.  The options passed to a single
@@ -1958,6 +2051,11 @@ actor-ts {
     enable-leave-endpoint   = false
     enable-down-endpoint    = false
     enable-metrics-endpoint = false
+    # So do the three that disclose the cluster's topology -- every member's
+    # internal host:port and roles, the leader, a type's shard-to-region map.
+    enable-members-endpoint = false
+    enable-leader-endpoint  = false
+    enable-shards-endpoint  = false
     # Extend the auth middleware over /health and /ready too.  Off, because a Kubernetes
     # probe cannot present a credential and would restart the pod on the 401.
     auth-protect-health     = false
@@ -1978,8 +2076,8 @@ actor-ts {
   }
 
   # The registry MetricsExtension installs, read when it builds one: enable()
-  # takes the cap for the in-process registry, enablePromClient(...) takes both
-  # leaves for the prom-client bridge, and options passed to either call win
+  # takes the two caps for the in-process registry, enablePromClient(...) takes
+  # every leaf for the prom-client bridge, and options passed to either call win
   # per field.  A mesh worker's registry is enabled with no options, so it runs
   # with the cap from the main thread's effective config.  The scrape endpoint
   # and the mesh relay stay where they are served:
@@ -1990,6 +2088,11 @@ actor-ts {
     # and the prom-client bridge alike.  0 disables the cap -- only safe when
     # every label value comes from a bounded set.
     max-series-per-family = 10000
+    # Metric families one registry may hold; a factory asked for a further name
+    # past it returns a no-op instrument and warns once, never throws.  Covers
+    # the in-process registry and the prom-client bridge alike.  0 disables
+    # the cap.
+    max-families = 1000
     # Prepended to every metric name the prom-client bridge registers, e.g.
     # "actor_ts_".  The bridge only: the in-process registry, and the
     # GET /metrics route that renders it, keep the bare names.
@@ -2031,10 +2134,10 @@ actor-ts {
   persistence {
     # Behaviour of every PersistentActor and ReplicatedEventSourcedActor in
     # this system, read once by PersistenceExtension -- a replicated actor's
-    # appends of events from its peers excepted until #958.  The sub-blocks
+    # appends of events from its peers included (#958).  The sub-blocks
     # below are plugin-id namespaces and belong to the backend that owns them;
-    # these six are not, which is why they sit one level above where a plugin
-    # id can appear.
+    # the leaves directly in this block are not, which is why they sit one
+    # level above where a plugin id can appear.
 
     # Journal replays allowed to run at once, system-wide.  0 = uncapped.
     #   A shard hand-off re-creates every entity it owns at once and each one
@@ -2058,6 +2161,24 @@ actor-ts {
     #   rejected load, and swallowing the first would turn an integrity check
     #   into a retry.
     snapshot-is-optional = false
+    # Recover a PersistentActor whose journal was compacted completely -- it
+    #   has seen events, holds none of them, and no snapshot covers them --
+    #   as initialState(), resuming its sequence at the journal's high-water
+    #   mark.  off fails that recovery with JournalIntegrityError through
+    #   onRecoveryFailure, as a compacted prefix already does: the state those
+    #   events produced is gone, and starting empty would answer every later
+    #   command from a state that never existed.  Turn it on only where losing
+    #   the state is intended.
+    allow-fully-compacted-recovery = false
+    # Let persistAll hand more than one event to a journal that cannot append
+    #   a batch atomically -- D1, MongoDB and Cassandra, whose journals say
+    #   so.  off refuses such a batch with
+    #   NonAtomicBatchAppendError before anything is written.  on writes it,
+    #   and a failure partway through can commit a prefix: persistAll rejects,
+    #   its callback does not run, the actor's state stays behind the journal,
+    #   and the next recovery adopts the prefix.  A single-event persist is
+    #   atomic everywhere and never refused.
+    allow-non-atomic-batch-append = false
 
     # The circuit-breaker each store is called through, BY ID -- the numbers
     #   live under actor-ts.circuit-breaker.<id>, layered over
@@ -3076,7 +3197,17 @@ actor-ts {
   }
 
   coordinated-shutdown {
+    # Budget of every phase that names none.  actor-system-terminate, the
+    # phase that drains and tears the system down, is seeded with 10s and
+    # never less than this; set it under phases to change it.
     default-phase-timeout = 5s
+    # Bound on a whole run -- the number to size a Kubernetes grace period
+    # against, not the sum of the phase budgets.  Past it the run halts in
+    # the phase it is in and logs, at error, the tasks still pending;
+    # exit-process then exits 1 where exit-code is 0.  An exit at the end of
+    # a run waits for tasks a phase budget abandoned, but never past this.
+    # 0 sets no deadline.
+    overall-timeout = 30s
     terminate-actor-system = true
     exit-process = false   # call process.exit once a run ends, completed or halted
     # Status that exit carries.  Only consulted when exit-process is on; a
@@ -3091,8 +3222,10 @@ actor-ts {
     # get.
     exit-code = 0
 
-    # Framework components register their own teardown in the pipeline: the
-    # HTTP server unbinds in service-unbind, broker actors close their
+    # Framework components register their own teardown in the pipeline:
+    # readiness turns red in before-service-unbind, the HTTP server stops
+    # accepting in service-unbind and drains in service-requests-done, broker
+    # actors close their
     # connections in service-stop, a joined cluster leaves in cluster-leave,
     # DevTools detaches with the rest of the service layer.  Set false to keep
     # the phases and register everything yourself -- for an embedder that owns

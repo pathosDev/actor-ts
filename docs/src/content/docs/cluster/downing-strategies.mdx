@@ -483,6 +483,21 @@ block instead of from `withLease(…)` — see
 the strategy's first decision, from the address the decision carries,
 because the strategy is constructed before the node's address exists.
 
+### One arbiter per side
+
+Every node owns its own lease instance, so on an even split only one
+node per side asks the lease: the side's lowest-addressed reachable
+`up` member, the same order `KeepOldest` uses.  Its side-mates never
+touch the lease and decide nothing; they follow the arbiter through
+the membership.  An arbiter that wins downs the other side, and the
+side-mates see those members removed.  An arbiter that loses downs its
+own side and leaves; once it is `leaving`, the next member in line is
+the arbiter, and its acquire loses to the lease the other side holds.
+So an even split ends with the lease holder's whole side up.  Before
+v0.19.0 every node acquired for itself, at most one node won, and its
+side-mates downed their side, the winner included
+([issue #1824](https://github.com/pathosDev/actor-ts/issues/1824)).
+
 ### When an acquire is abandoned
 
 The interesting case is not "the lease said no" but "the lease
@@ -541,6 +556,34 @@ An acquire that takes longer than the lease's TTL can never produce
 a usable win: the strategy keeps arbitrating and decides nothing,
 the same posture as while an acquire is pending.
 
+### After a win is applied
+
+Re-validation only helps while the win is still being asked for.
+Once the cluster has applied it, the other side is tombstoned in
+this side's view, the next view has nobody unreachable, and the
+strategy is not asked about that partition again.  A winner that
+stalls past the TTL *after* that point loses the lease all the same
+— and if the other side arbitrates late, its stability window having
+opened later or its first acquire having been abandoned, it wins the
+lapsed lease and downs this side while this side goes on running
+(#1660).
+
+So a win the strategy has handed out keeps its survival tied to the
+lease.  When the backend reports the lease lost (`onLost`, which both
+built-in backends fire from the first renewal tick past the deadline),
+this node downs itself: it leaves exactly as a decision naming it
+would, with `run-coordinated-shutdown-when-down` deciding what follows,
+and logs at warn why.  It cannot tell a lapse nobody noticed from a
+takeover, so it fails closed — the cluster stops rather than forks.
+
+The watch lasts until the strategy is shut down, not for a fixed
+window after the win: the other side can arbitrate for as long as any
+of its members runs and still sees this one unreachable, and nothing
+on this side learns when that has stopped.  The price is that a lease
+lost much later — the lease backend unreachable for longer than the
+TTL — also takes the node that holds it out.  A win that was computed
+but never handed out, and a lost or majority decision, arm nothing.
+
 ### When this node leaves
 
 A won arbitration keeps the lease, and the backend renews it for as
@@ -557,6 +600,17 @@ unwanted — a third case beside the two above, and their first two
 rules cover it: a win the attempt reports afterwards is dropped and
 released where it lands.  A release that fails is logged and the
 leave goes on; the record then runs out at its TTL.
+
+A node that terminates without leaving gives the lease back too.
+`system.terminate()` on its own runs no coordinated shutdown under the
+shipped `coordinated-shutdown.run-by-actor-system-terminate = false`,
+so it does not leave — but `Cluster.join` registers a termination
+step that stops the failure-detector tick and calls the strategy's
+`shutdown()`, so the record is released and its renewal no longer
+keeps the process alive.  The hook runs once per join, whichever of a
+leave and a terminate reaches it first.  The peers still learn that
+such a node is gone only from their failure detectors, so leave
+first where you can.
 
 The strategy decides nothing after it, so a node that joins again
 needs a fresh one.  A strategy selected in configuration is built anew
@@ -591,6 +645,7 @@ The provider interface is tiny:
 interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
   shutdown?(): Promise<void>;         // optional: give back what it holds
+  bindSelfDown?(downSelf: (reason: string) => void): void;  // optional: down this node later
 }
 
 type ClusterPartitionView = {
@@ -606,6 +661,13 @@ for a strategy that holds something it has to give back: the cluster
 calls it once when this node leaves, after the last `decide()`, and
 `LeaseMajority` releases its lease there.  A `shutdown()` that throws
 or rejects is logged, and the leave goes on.
+
+`bindSelfDown()` is for a strategy whose verdict can stop being true
+after it was applied.  The cluster calls it once, with a function that
+makes this node leave exactly as a decision naming it would; the
+cluster stops asking `decide()` about a partition once a decision on it
+was applied, so this is the only way back.  `LeaseMajority` uses it
+when the lease behind an applied win is lost.
 
 Useful for app-specific rules — e.g. "always keep the node
 hosting role=primary," or "if the partition includes the
@@ -672,25 +734,26 @@ import { Aside } from '@astrojs/starlight/components';
 There is no separate quarantine. What keeps a removed member out is
 its tombstone: the `removed` record the cluster keeps for the address,
 which refuses any record for it at the same or an older version.
-Whether a removal leaves one — and so whether the process that was
-removed can carry on talking and be let back in — depends on the
-route that removed it. *The same run* below means that process: the
-same incarnation, still announcing the version it had when it was
-removed.
+Every removal leaves one, so the process that was removed cannot
+carry on talking and be let back in; what depends on the
+configuration is whether anything removes it at all. *The same run*
+below means that process: the same incarnation, still announcing the
+version it had when it was removed.
 
 | Removed by | Leaves behind | The same run speaks again |
 | --- | --- | --- |
 | `Cluster.down()` or `POST /cluster/down` | A tombstone. | Refused until the tombstone is pruned. |
 | A strategy's decision, or `down-all-when-unstable` | A tombstone. | Refused until the tombstone is pruned. |
 | The peer's own `leave` | A tombstone. | Refused until the tombstone is pruned. |
-| The failure detector with no strategy — `failure-detector.auto-down = on`, the default | Nothing — the entry is deleted. | Readmitted on its next gossip frame; a heartbeat alone finds no entry to bring back. |
+| The failure detector with no strategy — `failure-detector.auto-down = on`, the default | A tombstone. | Refused until the tombstone is pruned. |
 | Nobody: no strategy and `auto-down = off`, the opt-out | Nothing is removed — the peer is parked at `unreachable`. | Back to `up` on its next heartbeat to this node. |
 
 The last row's way back needs the peer to send this node a heartbeat,
-which ends a pause, not a partition: after a symmetric partition
-heals, neither side heartbeats or gossips a peer it holds
-unreachable, so the parked members stay parked and the cluster stays
-split until an operator acts
+and that works after a partition as well as after a pause: every node
+keeps heartbeating the members it holds unreachable, and gossips one of
+them every `unreachable-gossip-rounds`-th round, so once a symmetric
+partition heals the heartbeats get through, the parked members return
+to `up` and the two halves merge
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 A tombstone refuses for the larger of `tombstone.time-to-live` and
@@ -729,9 +792,10 @@ announced for it and its remote watchers were sent a node-loss
 refuse a survivor's stale record of it either, which is why a crashed
 member keeps coming back under `auto-down`
 ([what the detector decides](/cluster/failure-detector/#what-the-detector-decides--and-doesnt)
-has the measurement). Nor does deleting help a healed partition:
-neither side heartbeats or gossips a peer it holds unreachable, and
-after the delete there is no entry to address at all
+has the measurement). Nor does deleting help a healed partition: after
+the delete there is no entry left to heartbeat, so the two sides never
+address each other again — where a peer parked at `unreachable` keeps
+being heartbeated through the partition and returns once it heals
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 **A restart is readmitted by version.** A process seeds its version

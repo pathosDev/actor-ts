@@ -386,17 +386,39 @@ export async function updateLease(
   );
 }
 
-/** DELETE — best-effort, returns void.  404 is treated as success (already gone). */
+/**
+ * What a conditional DELETE found: the record was removed, it was already gone
+ * (404), or the API server refused because the record moved since the
+ * `resourceVersion` the caller named (a precondition conflict).
+ */
+export type DeleteLeaseOutcome = 'deleted' | 'gone' | 'conflict';
+
+/**
+ * DELETE, conditional on the record still carrying `resourceVersion` (#1659).
+ *
+ * The precondition travels as `DeleteOptions.preconditions`, so the API server
+ * itself refuses to delete a record somebody wrote after the caller last saw
+ * it — the only place the check can be made without a read-then-delete race.
+ * The refusal is a 409; 412 is accepted as the same answer, because both mean
+ * "not the record you named", and neither is an error the caller should
+ * retry blindly.
+ */
 export async function deleteLease(
   creds: K8sCredentials,
   namespace: string,
   name: string,
+  resourceVersion: string,
   call: K8sCallOptions,
-): Promise<void> {
+): Promise<DeleteLeaseOutcome> {
   const response = await k8sRequest(creds, {
-    method: 'DELETE', path: leasePath(namespace, name), ...call,
+    method: 'DELETE',
+    path: leasePath(namespace, name),
+    body: { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { resourceVersion } },
+    ...call,
   });
-  if (response.status === 200 || response.status === 202 || response.status === 404) return;
+  if (response.status === 200 || response.status === 202) return 'deleted';
+  if (response.status === 404) return 'gone';
+  if (response.status === 409 || response.status === 412) return 'conflict';
   throw new K8sLeaseError(`DELETE lease ${namespace}/${name} → HTTP ${response.status}`, response);
 }
 

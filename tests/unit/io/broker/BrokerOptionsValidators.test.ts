@@ -12,6 +12,7 @@ import { SseOptionsValidator, type SseOptionsType } from '../../../../src/io/bro
 import { TcpSocketOptionsValidator, type TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
 import { UdpSocketOptionsValidator, type UdpSocketOptionsType } from '../../../../src/io/broker/UdpSocketOptions.js';
 import { GrpcClientOptionsValidator, type GrpcClientOptionsType } from '../../../../src/io/broker/GrpcClientOptions.js';
+import { GrpcServerOptionsValidator, type GrpcServerOptionsType } from '../../../../src/io/broker/GrpcServerOptions.js';
 import { EmailBridgeOptionsValidator, type EmailBridgeOptionsType } from '../../../../src/io/broker/EmailBridgeOptions.js';
 import type { EmailMessage } from '../../../../src/io/broker/EmailBridgeActor.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
@@ -74,6 +75,31 @@ describe('BrokerOptionsValidator — common broker fields (via Kafka)', () => {
   });
 });
 
+describe('acknowledgment fields (#975–#977), on all three consuming brokers', () => {
+  const validators = [
+    ['Kafka', (s: object): void => new KafkaOptionsValidator().validate(s as Partial<KafkaOptionsType>)],
+    ['AMQP', (s: object): void => new AmqpOptionsValidator().validate(s as Partial<AmqpOptionsType>)],
+    ['MQTT', (s: object): void => new MqttOptionsValidator().validate(s as Partial<MqttOptionsType>)],
+  ] as const;
+
+  for (const [name, check] of validators) {
+    test(`${name}: accepts both modes and a positive timeout`, () => {
+      expect(() => check({ acknowledgment: 'on-reply', acknowledgmentTimeoutMs: 1 })).not.toThrow();
+      expect(() => check({ acknowledgment: 'on-delivery' })).not.toThrow();
+    });
+
+    test(`${name}: refuses a word that is no mode`, () => {
+      expect(() => check({ acknowledgment: 'on-commit' })).toThrow(OptionsError);
+      expect(() => check({ acknowledgment: 'on-commit' })).toThrow("'on-reply', 'on-delivery'");
+    });
+
+    test(`${name}: refuses a timeout that is not positive`, () => {
+      expect(() => check({ acknowledgmentTimeoutMs: 0 })).toThrow(OptionsError);
+      expect(() => check({ acknowledgmentTimeoutMs: -5 })).toThrow(OptionsError);
+    });
+  }
+});
+
 describe('KafkaOptionsValidator', () => {
   const check = (s: Partial<KafkaOptionsType>): void => new KafkaOptionsValidator().validate(s);
 
@@ -123,9 +149,17 @@ describe('RedisStreamsOptionsValidator', () => {
     expect(() => check({ url: 'amqp://host' })).toThrow(OptionsError);
   });
 
-  test('rejects a negative blockMs but accepts 0 (block indefinitely)', () => {
+  test('rejects a negative blockMs', () => {
     expect(() => check({ blockMs: -1 })).toThrow(OptionsError);
-    expect(() => check({ blockMs: 0 })).not.toThrow();
+    expect(() => check({ blockMs: 1 })).not.toThrow();
+  });
+
+  // `BLOCK 0` never returns on an idle stream, and `quit()` queues behind the
+  // in-flight read — so a stop would wait forever for a reply nothing sends
+  // (#982).  Refused rather than clamped: a silent rewrite of the configured
+  // value would answer a different question than the one written.
+  test('rejects blockMs = 0, which would hold quit() on stop indefinitely (#982)', () => {
+    expect(() => check({ blockMs: 0 })).toThrow(OptionsError);
   });
 });
 
@@ -434,6 +468,14 @@ describe('SseOptionsValidator', () => {
     expect(() => check({ url: 'http://host/events', idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
     expect(() => check({ url: 'http://host/events', connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
   });
+
+  // #371 — a cap of 0 would refuse the first byte, so the cap is positive.
+  test('maxBufferChars must be a positive whole number', () => {
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 1 })).not.toThrow();
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 0 })).toThrow(/maxBufferChars/);
+    expect(() => check({ url: 'http://host/events', maxBufferChars: -5 })).toThrow(/maxBufferChars/);
+    expect(() => check({ url: 'http://host/events', maxBufferChars: 1.5 })).toThrow(/maxBufferChars/);
+  });
 });
 
 describe('TcpSocketOptionsValidator', () => {
@@ -521,6 +563,27 @@ describe('GrpcClientOptionsValidator', () => {
 
   test('accepts a positive deadlineMs', () => {
     expect(() => check({ deadlineMs: 30_000 })).not.toThrow();
+  });
+
+  test('rejects a negative streamIdleTimeoutMs, and accepts 0 as "off" (#1222)', () => {
+    expect(() => check({ streamIdleTimeoutMs: -1 })).toThrow(/streamIdleTimeoutMs/);
+    expect(() => check({ streamIdleTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ streamIdleTimeoutMs: 300_000 })).not.toThrow();
+  });
+});
+
+describe('GrpcServerOptionsValidator (#1039)', () => {
+  const check = (s: Partial<GrpcServerOptionsType>): void => new GrpcServerOptionsValidator().validate(s);
+
+  test('rejects a pre-subscribe cap that is zero, negative or fractional', () => {
+    expect(() => check({ maxPendingRequestMessages: 0 })).toThrow(/maxPendingRequestMessages/);
+    expect(() => check({ maxPendingRequestMessages: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxPendingRequestMessages: 1.5 })).toThrow(OptionsError);
+  });
+
+  test('accepts a positive integer cap, and an unset one', () => {
+    expect(() => check({ maxPendingRequestMessages: 1 })).not.toThrow();
+    expect(() => check({})).not.toThrow();
   });
 });
 

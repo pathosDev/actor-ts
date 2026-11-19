@@ -247,6 +247,7 @@ interface TcpServerOptionsType extends BrokerCommonOptionsType {
   target?:         ActorRef<TcpServerMessage>; // required
   tls?:            TlsTransportOptionsType;    // serve TLS instead of plaintext
   maxConnections?: number;                     // admission cap; default Infinity
+  maxBufferedBytes?: number;                   // held per connection that pushes back; default 4 MiB
 }
 ```
 
@@ -262,6 +263,7 @@ actor-ts.io.broker.tcp-server {
   bind-host       = "0.0.0.0"  # the default
   bind-port       = 9000       # required; 0 lets the OS pick
   max-connections = 1024       # admission cap; unset = unlimited
+  max-buffered-bytes = 4M      # held per connection that pushes back; the default
   framing {
     kind           = "lines"
     delimiter      = ${?ACTOR_TS_TCP_SERVER_DELIMITER}            # lines only; unset = "\n"
@@ -320,7 +322,8 @@ class EchoHandler extends Actor<TcpServerMessage> {
 
 `connectionClosed` arrives for every ending: the peer hung up, the
 connection errored, you sent `close`, a frame breached its size cap,
-or the actor stopped and unbound the port.  One signal, one code path.
+the peer stopped reading past `maxBufferedBytes`, or the actor stopped
+and unbound the port.  One signal, one code path.
 
 ### Serving TLS
 
@@ -368,6 +371,15 @@ file is the wrong place for a private key.
   single client take the service down for everyone.  Either way the
   pending bytes go with the socket: the point of a cap is not to log
   the breach but to stop holding what caused it.
+- **A client that stops reading costs at most `maxBufferedBytes`.**
+  Once its socket pushes back, the listener writes nothing more to that
+  connection until the socket drains, and holds the payloads sent
+  meanwhile, whole and in order — up to `maxBufferedBytes` (default
+  4 MiB, `max-buffered-bytes`).  Past that the connection is aborted
+  and the `target` gets `connectionClosed`, as for a breached frame
+  cap: a stream with a payload missing from its middle would be worse
+  than no stream.  The other connections are not held up.  A `close`
+  writes what is held ahead of its FIN.
 - **`outboundBuffer` defaults to `0`** here, unlike every other broker
   actor.  Buffering while disconnected exists so a message survives a
   reconnect — but "disconnected" for a listener means the port is

@@ -4,6 +4,7 @@ import { ActorSystem } from '../ActorSystem.js';
 import { ActorSystemOptions } from '../ActorSystemOptions.js';
 import { Cluster } from '../cluster/Cluster.js';
 import { ClusterOptions, type ClusterOptionsType } from '../cluster/ClusterOptions.js';
+import { SETTLE_MAX_TURNS } from '../Constants.js';
 import type { DowningProvider } from '../cluster/downing/index.js';
 import { type Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
@@ -477,11 +478,45 @@ export class MultiNodeSpec {
    * The multi-node twin of `TestKit.advance`, and it settles every system
    * rather than one: a gossip tick on node A produces work on node B, so
    * settling only the node whose timer fired would leave the cluster
-   * half-way through the round the advance started.
+   * half-way through the round the advance started.  See
+   * {@link settleEveryNode} for what settled means.
    */
   async advance(ms: number): Promise<void> {
     this.requireVirtualClock('advance').advance(ms);
-    for (const node of this.nodes.values()) await node.system._settle();
+    await this.settleEveryNode();
+  }
+
+  /**
+   * Yield event-loop turns until every node is quiet at once — `/user` and
+   * `/system` both — or the turn budget is spent (#1835).
+   *
+   * `/system` is where the cluster's own actors live: sharding regions and
+   * coordinators, the singleton manager, receptionist and pub-sub.  Settling
+   * `/user` alone returned while their cross-node work was still a few turns
+   * from landing, so the next step moved the clock on past a reply that had
+   * merely not run yet, and an ask timed out on virtual time without ever
+   * having been slow.  On the virtual clock this harness requires, nothing
+   * re-arms a framework actor but a timer, so `/system` drains between
+   * advances like any other tree.
+   *
+   * One fixed point over all nodes rather than one settle per node: a reply
+   * node B sends while it settles lands on node A, which an earlier, per-node
+   * settle had already declared quiet.  Delivery between nodes is a
+   * microtask, so after one macrotask turn it is in the receiver's mailbox,
+   * where the probe sees it.
+   */
+  private async settleEveryNode(): Promise<void> {
+    for (let turn = 0; turn < SETTLE_MAX_TURNS; turn++) {
+      if (this.everyNodeQuiescent()) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  private everyNodeQuiescent(): boolean {
+    for (const node of this.nodes.values()) {
+      if (!node.system._isTreeQuiescent('everything')) return false;
+    }
+    return true;
   }
 
   /**
@@ -507,7 +542,7 @@ export class MultiNodeSpec {
 
     // Probed before the first advance, so a condition that already holds costs
     // no virtual time — the same rule `awaitQuiescence` follows for real time.
-    for (const node of this.nodes.values()) await node.system._settle();
+    await this.settleEveryNode();
     if (cond()) return;
 
     while (scheduler.now() < deadline) {

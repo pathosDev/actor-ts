@@ -82,6 +82,21 @@ export const DEFAULT_DOWN_SMALLER_ISLAND = false;
 export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
 
 /**
+ * Built-in default for {@link ClusterOptionsType.unreachableGossipRounds} —
+ * on every how-many-th gossip round one `unreachable` member also receives the
+ * round's frame (#930).
+ *
+ * Three: a peer cut off by a partition hears this node's full view within
+ * three gossip intervals of the link coming back (3 s on the shipped 1 s
+ * interval), while a peer that is really gone costs one extra frame every
+ * three rounds rather than one every round.  Heartbeats go to unreachable
+ * members on every beat regardless, and they are what marks a returning peer
+ * reachable; this gossip is what then carries the membership the two halves
+ * changed while apart.
+ */
+export const DEFAULT_UNREACHABLE_GOSSIP_ROUNDS = 3;
+
+/**
  * Built-in default for {@link ClusterOptionsType.maxVersionSkewMs} — how far
  * ahead of the local wall-clock a gossiped member version may be.  The full
  * reasoning for both the rule and the number is on `Cluster.admitsVersion`
@@ -122,6 +137,20 @@ export const DEFAULT_MAX_MEMBERS = 1_000;
  * by two caps rather than one.
  */
 export const DEFAULT_MAX_TOMBSTONES = 10_000;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.gossipFramesPerSecondPerSender}
+ * — 50 frames a second per sender (#1105, the maintainer's decision).
+ *
+ * A legitimate sender's rate follows *its* gossip interval, which this node
+ * does not know, and a budget below it refuses healthy gossip — a partition
+ * with nothing to say why.  So the default sits far above any interval a
+ * deployment runs: the shipped 1 s interval sends one frame a second to a
+ * given peer at most, and even a 30 ms test interval stays under it.  The
+ * sizing rule for anything faster is `1000 / gossip-interval-ms` times a
+ * safety factor (at least 2), for the frames a join or a promotion adds.
+ */
+export const DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER = 50;
 
 /**
  * Built-in default for {@link ClusterOptionsType.minimumMembersBeforeUp} — how
@@ -453,6 +482,13 @@ export type ClusterOptionsType = {
   /** How often to resend the initial join gossip to seeds until self is Up. */
   readonly seedRetryIntervalMs?: number;
   /**
+   * On every how-many-th gossip round one `unreachable` member also receives
+   * the round's frame, so the two halves of a healed partition exchange the
+   * membership they changed while apart (#930).  `0` sends none.  Default
+   * {@link DEFAULT_UNREACHABLE_GOSSIP_ROUNDS}.
+   */
+  readonly unreachableGossipRounds?: number;
+  /**
    * How long to keep a `removed` tombstone in the local members map
    * before pruning it.  Tombstones exist so stale gossip from a slow
    * peer can't resurrect a definitively-removed address; the TTL
@@ -700,8 +736,8 @@ export type ClusterOptionsType = {
    * node has never seen and get an entry allocated for each, with no join
    * involved (#138).  Such a phantom is never heard from, so the failure
    * detector declares it `down`.  Under the default `failureDetectorAutoDown`
-   * the detector then deletes it at `downAfterMs` — without a tombstone, so a
-   * node that still carries the phantom gossips it straight back — and with
+   * the detector then tombstones it at `downAfterMs`, which frees its live
+   * slot (#1834) — and with
    * a strategy configured, or the switch off, it parks it at `unreachable`,
    * where it holds its slot until a strategy or an operator removes it
    * (#1426).  This cap is therefore the whole bound on the live residue, not
@@ -722,8 +758,8 @@ export type ClusterOptionsType = {
    * `removed` records for addresses this node has never seen therefore parks
    * entries here for 24 h.  That is one of the two variants of #138 that
    * accumulate; the other is a live phantom — parked at `unreachable` when a
-   * strategy is configured or auto-down is off, deleted and gossiped straight
-   * back under the default — which {@link maxMembers} bounds (#1426).
+   * strategy is configured or auto-down is off, tombstoned at `downAfterMs`
+   * under the default (#1834) — which {@link maxMembers} bounds (#1426).
    *
    * Refusing one costs nothing: a tombstone for an address with no local
    * record suppresses nothing that exists.  Locally-minted tombstones
@@ -733,6 +769,29 @@ export type ClusterOptionsType = {
    * Default: 10 000.
    */
   readonly maxTombstones?: number;
+  /**
+   * Gossip frames one sender may hand this node per second (#1105).
+   * Default: 50.  `0` disables the budget.
+   *
+   * The two caps above bound what *sticks*; they do not bound the work.  A
+   * frame may be up to `maxFrameBytes` large, and every record in it runs
+   * through decoding, `maySpeakFor`, the version cap and the cap accounting
+   * even when each one is refused — so a peer could keep this node busy
+   * without leaving anything in the map.  The budget is per connection peer,
+   * refills continuously and holds at most one second's worth.  A frame over
+   * it is discarded whole before any record is decoded and counted under
+   * `cluster_gossip_records_refused_total{reason="rate-limit"}`; the
+   * connection stays, the same trade-off the caps make.  One WARN marks the
+   * start of a sender's episode and one the end, with the count, rather than
+   * one per frame.
+   *
+   * Sizing: a legitimate sender sends one frame per gossip interval at most,
+   * plus a few at join and promotion, so the budget must stay above
+   * `1000 / gossipIntervalMs` of the fastest-gossiping member times a safety
+   * factor of at least 2.  The default of 50 covers intervals down to about
+   * 40 ms; a cluster gossiping faster raises it.
+   */
+  readonly gossipFramesPerSecondPerSender?: number;
   /**
    * Refuse an inbound envelope whose target path this node did not register a
    * handler for, unless {@link trustedSelectionPaths} names it.  Default:
@@ -857,11 +916,11 @@ export type ClusterOptionsType = {
    * now, before the oldest are dropped.  Default: 1000
    * (`MAX_PENDING_FRAMES` in `cluster/Constants.ts`) (#846).
    *
-   * Today that is the pre-handshake buffer — a `send` racing the handshake is
-   * held rather than lost — and the name is the category rather than that one
-   * buffer: #931 adds the post-handshake backpressure queue, the same quantity
-   * with the same drop-oldest policy and the same one-shot WARN, and it lands
-   * under this field rather than a second one.
+   * Two buffers carry it: the pre-handshake one — a `send` racing the
+   * handshake is held rather than lost — and, since #931, the one behind a
+   * socket that pushes back, with the same drop-oldest policy.  Frames are
+   * held whole, so a peer that stops reading sees gaps, never a cut frame;
+   * see `TcpTransportOptionsType.outboundQueueSize`.
    */
   readonly outboundQueueSize?: number;
   /**
@@ -1008,6 +1067,11 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('seedRetryIntervalMs', ms);
   }
 
+  /** On every how-many-th gossip round one `unreachable` member also receives the round's frame; `0` sends none. */
+  withUnreachableGossipRounds(unreachableGossipRounds: number): this {
+    return this.set('unreachableGossipRounds', unreachableGossipRounds);
+  }
+
   /** How long to keep a `removed` tombstone before pruning it.  Default 24 h. */
   withTombstoneTtlMs(ms: number): this {
     return this.set('tombstoneTtlMs', ms);
@@ -1117,6 +1181,11 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   /** Cap on `removed` tombstones gossip may introduce.  0 disables.  Default: 10000. */
   withMaxTombstones(maxTombstones: number): this {
     return this.set('maxTombstones', maxTombstones);
+  }
+
+  /** Gossip frames one sender may send per second.  0 disables.  Default: 50. */
+  withGossipFramesPerSecondPerSender(gossipFramesPerSecondPerSender: number): this {
+    return this.set('gossipFramesPerSecondPerSender', gossipFramesPerSecondPerSender);
   }
 
   /**
@@ -1249,6 +1318,7 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // strategy configuration.
     this.positiveNumber('gossipIntervalMs');
     this.positiveNumber('seedRetryIntervalMs');
+    this.nonNegativeInt('unreachableGossipRounds');
     this.positiveNumber('tombstoneTtlMs');
     this.positiveNumber('tombstonePruneIntervalMs');
     // Non-negative, not positive: 0 is the documented HOCON default and reads
@@ -1272,6 +1342,7 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // sharding entity cap.
     this.nonNegativeInt('maxMembers');
     this.nonNegativeInt('maxTombstones');
+    this.nonNegativeInt('gossipFramesPerSecondPerSender');
     // Positive, with no `0 = off` reading: the off state of a member threshold
     // is `1` — "one member is enough", which is what every release before #837
     // did — and `0` would be a threshold nothing can fail, spelled as a value
@@ -1686,12 +1757,12 @@ export function resolveAdvertisedPort(
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
   'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles' | 'appVersion'
-  | 'gossipIntervalMs' | 'seedRetryIntervalMs'
+  | 'gossipIntervalMs' | 'seedRetryIntervalMs' | 'unreachableGossipRounds'
   | 'failureDetectorImplementation' | 'failureDetectorAutoDown' | 'failureDetector' | 'phiAccrual'
   | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'publishStatsIntervalMs' | 'shutdownAfterUnsuccessfulJoinMs'
   | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
-  | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
+  | 'maxMembers' | 'maxTombstones' | 'gossipFramesPerSecondPerSender' | 'downing' | 'splitBrainResolver'
   | 'runCoordinatedShutdownWhenDown' | 'downSmallerIsland'
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
@@ -1801,6 +1872,9 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(keys.seedRetryInterval)) {
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);
   }
+  if (config.hasPath(keys.unreachableGossipRounds)) {
+    out.unreachableGossipRounds = config.getInt(keys.unreachableGossipRounds);
+  }
   if (config.hasPath(keys.weaklyUpAfter)) out.weaklyUpAfterMs = config.getDuration(keys.weaklyUpAfter);
   if (config.hasPath(keys.publishStatsInterval)) {
     out.publishStatsIntervalMs = config.getDuration(keys.publishStatsInterval);
@@ -1813,6 +1887,9 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   }
   if (config.hasPath(keys.maxMembers)) out.maxMembers = config.getInt(keys.maxMembers);
   if (config.hasPath(keys.maxTombstones)) out.maxTombstones = config.getInt(keys.maxTombstones);
+  if (config.hasPath(keys.gossipFramesPerSecondPerSender)) {
+    out.gossipFramesPerSecondPerSender = config.getInt(keys.gossipFramesPerSecondPerSender);
+  }
   if (config.hasPath(keys.minimumMembersBeforeUp)) {
     out.minimumMembersBeforeUp = config.getInt(keys.minimumMembersBeforeUp);
   }
@@ -1888,7 +1965,7 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
  *
  * Deliberately **not** part of {@link ClusterConfigDefaults}: there is no
  * `ClusterOptionsType` field to merge it into, because nothing honours it yet
- * (#941).  It exists so `Cluster` can say out loud that the flag is set and
+ * (#1854).  It exists so `Cluster` can say out loud that the flag is set and
  * the socket is still plaintext — an operator who configures encryption and
  * gets neither encryption nor a word about it is the whole defect (#591).
  *

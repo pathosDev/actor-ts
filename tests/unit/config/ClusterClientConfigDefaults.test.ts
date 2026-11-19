@@ -27,6 +27,7 @@ import { expectExactOptions } from '../../util/ExactOptions.js';
 import {
   ClusterClientOptions,
   DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
+  DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE,
   DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
   readClusterClientOptionsFromConfig,
   withClusterClientConfigDefaults,
@@ -42,6 +43,7 @@ import {
   type TcpListener,
   type TcpSocketLike,
 } from '../../../src/runtime/tcp/index.js';
+import { CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 /**
  * #858 — `actor-ts.cluster.client` is the block for the one config consumer in
@@ -126,7 +128,7 @@ async function handshakingContactPoint(): Promise<TcpListener> {
           if (frame.kind !== 'hello') continue;
           const acknowledgment: HelloAcknowledgmentMessage = {
             kind: 'hello-ack',
-            wireVersion: 2,
+            wireVersion: CLUSTER_WIRE_VERSION,
             self: new NodeAddress('contact-point', '127.0.0.1', boundPort, 'test-run').toJSON(),
           };
           sock.write(encodeFrame(acknowledgment));
@@ -220,6 +222,7 @@ describe('readClusterClientOptionsFromConfig', () => {
         system-name     = "checkout-client"
         ask-timeout     = 250ms
         connect-timeout = 750ms
+        outbound-queue-size = 64
       }
     `);
 
@@ -228,6 +231,7 @@ describe('readClusterClientOptionsFromConfig', () => {
       systemName: 'checkout-client',
       askTimeoutMs: 250,
       connectTimeoutMs: 750,
+      outboundQueueSize: 64,
     });
   });
 
@@ -252,6 +256,7 @@ describe('readClusterClientOptionsFromConfig', () => {
       systemName: DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
       askTimeoutMs: DEFAULT_ASK_TIMEOUT_MS,
       connectTimeoutMs: DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
+      outboundQueueSize: DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE,
     });
   });
 

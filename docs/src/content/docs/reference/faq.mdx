@@ -334,8 +334,9 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
   Four common causes:
   - **The ref points at a stopped actor** — messages route to
     `/deadLetters` (check the system log).
-  - **The mailbox is full** with `reject` overflow — `tell` throws
-    `MailboxFullError` at the sender.  Catch it where you tell.
+  - **The mailbox is full** — a bounded mailbox sheds under its
+    overflow policy, and under `reject` each refused message is a
+    dead letter naming the full actor.  `tell` never throws for it.
   - **Recovery hasn't finished** for a `PersistentActor` — messages
     sent before `onRecoveryComplete` wait in the mailbox.  Slow
     recovery causes apparent delays.
@@ -349,7 +350,9 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
 
 <Aside type="caution" title="Why does my actor keep restarting?">
   Usually `onReceive` is throwing.  Check the system log — every
-  failure is logged with the error and the directive applied.
+  failure is logged with the error and the directive applied, at
+  ERROR (`Resume` at WARN), at most one line per actor per second;
+  the next line says how many failures in between were not logged.
   The default supervisor restarts up to 10/minute; once that
   threshold is exceeded it stops the child, logging "Restart
   threshold exceeded (10 in 60000ms) — stopping children".

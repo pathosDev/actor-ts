@@ -223,6 +223,12 @@ import { Aside } from '@astrojs/starlight/components';
   consistent — but the caller's error does not mean "nothing was written".
   Single-event appends are unaffected. MongoDB carries the same caveat for the
   same reason; libSQL does not, because it has interactive transactions.
+
+  So the journal declares `atomicBatchAppend: false`, and a `persistAll` of
+  more than one event is refused with `NonAtomicBatchAppendError` before
+  anything is written, unless
+  `actor-ts.persistence.allow-non-atomic-batch-append = on` accepts the
+  prefix risk — see [pluggable backends](/persistence/overview/#pluggable-backends).
 </Aside>
 
 ## What is and is not verified

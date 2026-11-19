@@ -2,13 +2,13 @@ import type { Envelope } from '../internal/Mailbox.js';
 import { ConsoleLogger, LogLevel } from '../Logger.js';
 import { classNameOf } from '../util/ClassName.js';
 import { RingBuffer } from '../util/RingBuffer.js';
-import type { BoundedMailboxOverflow } from './BoundedMailboxOptions.js';
+import { DEFAULT_MAILBOX_OVERFLOW, type BoundedMailboxOverflow } from './BoundedMailboxOptions.js';
 import {
   ControlAwareMailboxOptionsValidator,
   type ControlAwareMailboxOptions,
   type ControlAwareMailboxOptionsType,
 } from './ControlAwareMailboxOptions.js';
-import { DroppingMailbox, MailboxFullError } from './DroppingMailbox.js';
+import { DroppingMailbox, MailboxFullError, deadLetterDropsFor } from './DroppingMailbox.js';
 
 /**
  * A mailbox that lets **control** messages overtake queued bulk traffic: two
@@ -77,12 +77,12 @@ export class ControlAwareMailbox<T = unknown> extends DroppingMailbox<T> {
   constructor(options: ControlAwareMailboxOptions<T>) {
     // Read straight off the argument rather than from `settings`: the base
     // owns the field and has to be constructed before `settings` exists.
-    super((options as Partial<ControlAwareMailboxOptionsType<T>>).deadLetterDrops);
+    super(deadLetterDropsFor(options as Partial<ControlAwareMailboxOptionsType<T>>));
     const settings = { ...(options as Partial<ControlAwareMailboxOptionsType<T>>) };
     new ControlAwareMailboxOptionsValidator<T>().validate(settings);
     this.isControl = settings.isControl!;
     this.capacity = settings.capacity;
-    this.overflow = settings.overflow ?? 'reject';
+    this.overflow = settings.overflow ?? DEFAULT_MAILBOX_OVERFLOW;
     this.onControlError = settings.onControlError ?? logFirstControlError<T>();
     // The caller's hook is just the first observer — see `DroppingMailbox`.
     if (settings.onDrop !== undefined) this.observeDrops(settings.onDrop);
@@ -120,7 +120,10 @@ export class ControlAwareMailbox<T = unknown> extends DroppingMailbox<T> {
           this.reportDrop('drop-new', envelope);
           return;
         case 'reject':
-          throw new MailboxFullError(capacity);
+          // Refused, not thrown into the sender — as on `BoundedMailbox`, and
+          // dead-lettered by the `deadLetterDrops` default `reject` gets (#919).
+          this.reportDrop('drop-new', envelope);
+          return;
         default: {
           const _exhaustive: never = this.overflow;
           void _exhaustive;

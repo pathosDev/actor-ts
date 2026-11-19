@@ -116,12 +116,13 @@ export class ParseableSinkOptionsValidator extends OptionsValidator<ParseableSin
 
     // Both credentials go on every request, so half a pair is a request
     // that will be rejected — and worth catching at construction rather
-    // than once per flush.
+    // than once per flush. Neither rule passes the rejected value: it is a
+    // credential, and an OptionsError message lands in startup logs (#1789).
     if ((s.username === undefined) !== (s.password === undefined)) {
-      this.fail('username', 'and password must be set together', s.username ?? s.password);
+      this.fail('username', 'and password must be set together');
     }
     if (s.username !== undefined && s.apiKey !== undefined) {
-      this.fail('apiKey', 'cannot be combined with basic-auth credentials', s.apiKey);
+      this.fail('apiKey', 'cannot be combined with basic-auth credentials');
     }
     validateDeliveryOptions('ParseableSinkOptions', s.delivery);
   }

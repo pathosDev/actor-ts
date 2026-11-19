@@ -4,15 +4,20 @@ description: The full management endpoint surface — `/health`, `/ready`, `/clu
 ---
 
 The management server exposes a small set of operational
-endpoints.  Most are read-only; the admin ones (`/cluster/down`,
-`/cluster/leave`) are opt-in and off by default.
+endpoints.  Out of the box it serves the two probes, `/health` and
+`/ready`, and nothing else: the cluster endpoints and `/metrics` are
+opt-in and off by default.
 
-**Security (security audit #8):** the read-only endpoints still reveal
-internal topology — member addresses (`host:port`), roles, the application
-version each member states, the leader, and the
-shard map.  Treat the management server as sensitive: bind it to an internal
-interface and gate it with the `ipAllowlist` (and/or `auth`) options of
-`managementRoutes(...)` rather than exposing it publicly.
+**Security (security audit #8, #971):** the read-only cluster endpoints
+reveal internal topology — member addresses (`host:port`), roles, the
+application version each member states, the leader, and the shard map.
+That is why `/cluster/members`, `/cluster/leader` and `/cluster/shards`
+are off until you switch them on, like the admin endpoints.  When you do,
+gate them with the `ipAllowlist` (and/or `auth`) options of
+`managementRoutes(...)` and bind the management server to an internal
+interface rather than exposing it publicly.  A route tree that serves a
+cluster endpoint with neither option set logs one warning naming each
+exposed endpoint when it is built.
 
 ## Health probes
 
@@ -84,7 +89,26 @@ them; nothing cross-checks a manifest.
 
 ## Cluster info
 
-Available when a `cluster` is passed to `managementRoutes`.
+Available when a `cluster` is passed to `managementRoutes` **and** the
+endpoint is switched on: `enableMembersEndpoint`, `enableLeaderEndpoint`
+and `enableShardsEndpoint` (builder `withMembersEndpoint()`,
+`withLeaderEndpoint()`, `withShardsEndpoint()`; HOCON
+`actor-ts.management.enable-members-endpoint` and its two siblings).
+Each is `false` by default, and a disabled endpoint answers
+`404` with `<name> endpoint disabled`.  Without a cluster an enabled one
+answers `503 no cluster`.
+
+```ts
+import { IpAllowlist } from 'actor-ts/http';
+import { managementRoutes, ManagementRoutesOptions } from 'actor-ts/management';
+
+const managementOptions = ManagementRoutesOptions.create()
+  .withMembersEndpoint()
+  .withLeaderEndpoint()
+  .withShardsEndpoint()
+  .withIpAllowlist(IpAllowlist({ allow: ['10.0.0.0/8'] }));
+const routes = managementRoutes(system, cluster, managementOptions);
+```
 
 ### `GET /cluster/members`
 
@@ -220,9 +244,9 @@ GET /metrics
 → 200 OK
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 
-# HELP actor_messages_processed_total ...
-# TYPE actor_messages_processed_total counter
-actor_messages_processed_total{class="Worker",path="..."} 12345
+# HELP actor_messages_delivered_total Cumulative count of user messages delivered to actor onReceive.
+# TYPE actor_messages_delivered_total counter
+actor_messages_delivered_total 12345
 ...
 ```
 
@@ -303,12 +327,9 @@ sure it is gone, before you down it.
 
 **This is the way out of the opt-out.**  Under the default — no
 downing strategy, `actor-ts.cluster.failure-detector.auto-down = on`
-— the failure detector deletes a silent member itself once it
-declares it `down`, and the endpoint usually answers `404` for it
-afterwards.  With two or more survivors, though, another survivor's
-gossip can bring the deleted member back as `unreachable` until the
-detector removes it again, and a call in that window finds it and
-answers `202`.  Under `auto-down = off` the failure detector parks a
+— the failure detector removes a silent member itself once it
+declares it `down`, and the endpoint answers `404` for it afterwards:
+the member is already terminal.  Under `auto-down = off` the failure detector parks a
 silent member at `unreachable`, and the node logs one warning that
 names the member and this endpoint; only an operator, a strategy or
 the node's own restart on the same address removes it.
@@ -405,12 +426,15 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Authentication & IP allowlisting (#312)
 
-The privileged endpoints (`/cluster/down`, `/cluster/leave`,
-`/cluster/members`, `/cluster/shards`, `/metrics`) accept anonymous
-requests **by default**.  That's only safe when the management port
-is on a network-isolated bind (a separate Service, a different
-port, `127.0.0.1`-only) or behind a reverse-proxy that does
-authentication for you.
+Every endpoint beyond the two probes is off by default.  Once you
+switch one on (`/cluster/members`, `/cluster/leader`,
+`/cluster/shards`, `/cluster/down`, `/cluster/leave`, `/metrics`) it
+accepts anonymous requests unless `auth` or `ipAllowlist` is set.
+That's only safe when the management port is on a network-isolated
+bind (a separate Service, a different port, `127.0.0.1`-only) or
+behind a reverse-proxy that does authentication for you, and a
+route tree that serves a cluster endpoint with neither option logs a
+warning saying so.
 
 For production deployments that expose management endpoints to a
 broader network, attach the built-in middlewares via
@@ -426,6 +450,7 @@ import {
 } from 'actor-ts/management';
 
 const routes = managementRoutes(system, cluster, {
+  enableMembersEndpoint: true,
   enableLeaveEndpoint: true,
   enableDownEndpoint: true,
   enableMetricsEndpoint: true,

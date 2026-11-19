@@ -7,6 +7,7 @@ export {
   isCollectable,
 } from './Metrics.js';
 export {
+  DEFAULT_MAX_FAMILIES,
   DEFAULT_MAX_SERIES_PER_FAMILY,
   MetricsRegistryOptions,
   MetricsRegistryOptionsBuilder,

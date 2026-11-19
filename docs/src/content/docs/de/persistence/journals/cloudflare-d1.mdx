@@ -236,6 +236,12 @@ import { Aside } from '@astrojs/starlight/components';
   „nichts wurde geschrieben". Einzel-Event-Appends sind nicht betroffen. MongoDB
   trägt denselben Vorbehalt aus demselben Grund; libSQL nicht, weil es
   interaktive Transaktionen hat.
+
+  Deshalb erklärt das Journal `atomicBatchAppend: false`, und ein `persistAll`
+  mit mehr als einem Event wird mit `NonAtomicBatchAppendError` abgelehnt,
+  bevor etwas geschrieben ist — es sei denn,
+  `actor-ts.persistence.allow-non-atomic-batch-append = on` nimmt das
+  Präfix-Risiko in Kauf; siehe [austauschbare Backends](/de/persistence/overview/#austauschbare-backends).
 </Aside>
 
 ## Was verifiziert ist und was nicht

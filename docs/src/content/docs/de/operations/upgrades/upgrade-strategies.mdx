@@ -18,21 +18,31 @@ Wähle die Art, folge dem Muster. Naiv zu mischen bricht Produktion
 Ein Rolling Deployment setzt voraus, dass das Mixed-Version-Fenster
 überlebbar ist — für ein paar Minuten reden alte und neue Nodes
 miteinander. Diese Annahme ist eine Eigenschaft des **Releases**, nicht
-deines Codes, und **zwei aufeinanderfolgende Releases brechen sie**. Keiner
-der beiden Brüche ist eine Schema-Änderung in dem Sinn, in dem diese Seite
-das Wort benutzt — Events, State und Konfiguration bleiben unangetastet —,
-also greift auch keines der additiven Muster weiter unten.
+deines Codes, und **jedes Release in der Tabelle unten bricht sie** — vier
+in Folge, v0.16.0 bis v0.19.0. Keiner dieser Brüche ist eine
+Schema-Änderung in dem Sinn, in dem diese Seite das Wort benutzt — Events,
+State und Konfiguration bleiben unangetastet —, also greift auch keines der
+additiven Muster weiter unten.
 
 | Upgrade | Mixed-Version-Fenster | Wie das Scheitern aussieht |
 | --- | --- | --- |
 | **v0.15.x → v0.16.0** | **Nicht sicher** (#112) | Jeder Gossip-Frame trägt eine `sequence`, und `GossipMessage` bekommt ein Pflichtfeld. Ein aktualisierter Peer weist die Frames eines alten Nodes zurück; ein alter Node ignoriert die eines aktualisierten. Nichts wirft einen Fehler — **die Membership konvergiert still nie**, solange beide Versionen laufen, der Cluster einigt sich also nie darauf, wer dazugehört. |
 | **v0.16.0 → v0.17.0** | **Nicht sicher** (#450) | Frames sind ein getaggter JSON-Baum statt blanker `JSON.stringify`-Ausgabe. Der meiste Alt-Verkehr dekodiert unverändert; ein Legacy-Body, der bereits die Gestalt eines reservierten Tags hatte, nicht. `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`, `__number__` und `__error__` **werfen in beliebiger Tiefe**, und ein Decoder-Throw kostet die **ganze Verbindung** mitsamt jedem Frame, der in denselben Chunk gebatcht wurde. Zwei scheitern stattdessen still: `__bytes__` dekodiert zu einem `Uint8Array`, `__date__` zu einer Invalid Date. Die Gegenrichtung ist schlicht verlustbehaftet — ein älterer Node liest den Tag-Wrapper als gewöhnliche Daten. |
 | **v0.17.x → v0.18.0** | **Nicht sicher** (#823) | Das Cluster-Wire erhält eine Version, die jeder Handshake ankündigt, und Version 2 verlangt, dass jede Node-Adresse auf einem Frame ihre Inkarnation nennt.  Anders als die beiden Zeilen darüber **scheitert diese laut**: Ein v0.18.0-Node weist das `hello` eines älteren Nodes mit einem `hello-refused` ab und schreibt auf seiner Seite eine WARN mit beiden Versionen, und ein älterer Node loggt diesen Frame als nicht zugeordnet, mit dem Grund darin.  Die beiden bilden nie einen Cluster. |
+| **v0.18.x → v0.19.0** | **Nicht sicher** (#1303) | Der Empfänger entscheidet, welche `JsonTree`-Tags er baut, und v0.19.0 baut standardmäßig nur die Daten-Tags (`actor-ts.serialization.wire.admitted-tags`), während ein v0.18-Node `RegExp`-, `URL`-, `Error`- und `undefined`-Tags an Wertpositionen ungefragt schreibt.  Deshalb geht das Cluster-Wire auf **Version 3**, und wie die Zeile darüber **scheitert diese laut**: Ein v0.19.0-Node weist das `hello` eines v0.18-Nodes mit einem `hello-refused` ab, das beide Versionen nennt (`v2..v2` und `v3..v3`), schreibt auf seiner Seite eine WARN, und die beiden bilden nie einen Cluster.  `admitted-tags` zu erweitern ändert daran nichts — die Version gehört dem Release, nicht der Liste. |
 
 **Aktualisiere den Cluster in einem Schritt.** Alle Nodes stoppen, dann alle
 Nodes auf der neuen Version starten. Keine Zwischenversion macht eine dieser
 Etappen rollbar, ein Sprung über mehrere davon braucht also dieselbe
 Behandlung — einmal statt einmal pro Etappe.
+
+**Eine `ClusterClient`-Anwendung zieht im selben Fenster mit.** Eine separat
+deployte Anwendung, die den Cluster über
+[`ClusterClient`](/de/cluster/cluster-client/) erreicht, kündigt die
+Cluster-Wire-Version in ihrem eigenen `hello` an, und der Cluster prüft sie
+genau wie die eines Nodes: Ein v0.19.0-Cluster weist einen v0.18-Client ab,
+und ein v0.18-Cluster einen v0.19.0-Client.  Aktualisiere diese Anwendungen
+im selben Stopp-und-Start-Fenster wie die Nodes.
 
 **Ab v0.18.0 sagt es der Handshake.** Jedes `hello` und `hello-ack` trägt die
 Cluster-Wire-Versionen, die der Node spricht
@@ -42,7 +52,8 @@ ohne gemeinsame Version weisen einander beim Handshake ab — ein
 funktionieren.  Ein künftiges Release, das das Wire ändert, kann dann einen
 Bereich von Versionen sprechen und ein Rolling Upgrade möglich halten; eines,
 das das Minimum anhebt, ist wieder ein Upgrade mit Stopp und Start, und diese
-Tabelle sagt, welches.
+Tabelle sagt, welches.  v0.19.0 ist das erste, das es tut: Es spricht nur
+Version 3.
 
 ## Code-only-Upgrades
 

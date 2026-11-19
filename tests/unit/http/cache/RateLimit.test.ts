@@ -4,6 +4,7 @@ import { rateLimit } from '../../../../src/http/cache/RateLimit.js';
 import { complete } from '../../../../src/http/Route.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 import { sleep } from '../../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 function makeRequest(path: string, headers: Record<string, string> = {}): HttpRequest {
   return {
@@ -77,7 +78,7 @@ describe('rateLimit — fixed-window counter', () => {
     // Override incr to throw — simulates a Redis outage.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (broken as any).incr = async () => { throw new Error('redis down'); };
-    const limited = rateLimit({ cache: broken, windowMs: 60_000, max: 1, key: () => 'k' });
+    const limited = rateLimit({ cache: broken, windowMs: 60_000, max: 1, key: () => 'k', logger: new RecordingLogger() });
     const handler = limited(okHandler);
     // Even though max=1, 5 requests should all succeed because the
     // counter cannot be incremented — fail open is the intended path.

@@ -21,13 +21,14 @@ them out of the box lets you wire a dashboard immediately.
 ## Actor metrics
 
 Actor-lifecycle and message-handling metrics, recorded across the
-whole system — each is a single unlabeled series:
+whole system — each a single unlabeled series, except the restart
+counter, which carries the actor class:
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `actor_created_total` | counter | — | Actors successfully started. |
 | `actor_terminated_total` | counter | — | Actors stopped (clean stop or post-failure). |
-| `actor_restarted_total` | counter | — | Supervisor-driven restarts. |
+| `actor_restarted_total` | counter | `class` | Supervisor-driven restarts, by actor class. |
 | `actor_messages_delivered_total` | counter | — | User messages delivered to `onReceive`. |
 | `actor_message_handler_seconds` | histogram | — | Time spent inside `onReceive` handlers, in seconds. |
 
@@ -305,6 +306,7 @@ rate on those classes is drift rather than load.
 | `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes whose payload named a sender other than the connection they arrived on. |
 | `cluster_envelope_refusals_total` | counter | `reason`, `frame` | Inbound envelopes refused because their target path is outside what this node accepts by name. |
 | `cluster_outbound_refusals_total` | counter | `frame` | Frames this node refused to send because the destination was neither a member nor a node it already holds a connection to. |
+| `cluster_sharding_registrations_refused_total` | counter | `reason`, `type` | Shard-region registrations a coordinator refused. |
 
 For monitoring cluster health:
 
@@ -324,10 +326,15 @@ For monitoring cluster health:
   not a plausible instant. `reason="replayed-frame"` is a whole gossip
   frame whose `sequence` did not out-number the last one accepted from
   that peer, or was not a finite number within `maxVersionSkewMs` of
-  this node's clock — a duplicate, someone re-sending a frame captured
+  this node's clock, or ran more than ten seconds past the clock that
+  peer has shown — a duplicate, someone re-sending a frame captured
   off the wire, or someone re-sending one with its `sequence` rewritten
-  to clear the mark. The counter is incremented once per frame with
-  that frame's count, and the label set is closed at those four values.
+  to clear the mark. `reason="rate-limit"` is the records of whole
+  frames a sender sent past `gossip-frames-per-second-per-sender`
+  (#1105) — a peer louder than its gossip interval explains, or a
+  budget set below the cluster's interval. The counter is incremented
+  once per frame with that frame's count, and the label set is closed
+  in code.
 - `cluster_envelope_from_mismatch_total` should sit at zero too. It
   moves when an envelope's payload names a sender other than the
   connection it arrived on — a client old enough to still send that
@@ -347,14 +354,17 @@ For monitoring cluster health:
   rather than through the handler that actor registered.  A rolling
   upgrade past the release that closed that route is the one benign
   cause; anything else is worth looking at.
+  `reason="guardian-path"` is the same signal one level up: a peer
+  named the bare `/user` guardian, which no application addresses.
   `reason="not-allow-listed"` only ever moves with
   `actor-ts.remote.untrusted-mode` on, and on the day you turn it on
   it is the metric to watch — every entry your
   `trusted-selection-paths` is missing shows up here as refused
   traffic.  Both labels are closed sets drawn from code: `reason` has
-  those two values, `frame` is `envelope` or
-  `cluster-client-envelope`, so the family is four series whatever
-  arrives.  The requested path is deliberately *not* a label, for the
+  those three values, `frame` is `envelope`,
+  `cluster-client-envelope`, `watch` or `ref` — the last an actor-ref
+  marker inside an envelope's body that names this node — so the
+  family is twelve series whatever arrives.  The requested path is deliberately *not* a label, for the
   same reason the claimed address above is not one — and it is not in
   the log line either, since it is an unvalidated string from the
   payload.
@@ -367,6 +377,14 @@ For monitoring cluster health:
   cluster.  `frame` is `envelope` or `wire`, so the family is two
   series; the destination is not a label, and the log line that
   accompanies it at most every 30 seconds names it escaped.
+- `cluster_sharding_registrations_refused_total` counts a shard region
+  whose registration the coordinator refused.  `reason` has one value
+  today, `num-shards-mismatch`: the region was started with a different
+  number of shards than the coordinator governs.  `type` is the sharded
+  type's name, taken from this node's own sharding settings and never
+  off the wire.  Any non-zero value is worth paging on — a refusal is
+  never transient — see
+  [when the coordinator refuses a region](/cluster/sharding/introspection/#when-the-coordinator-refuses-a-region).
 
 ## DistributedData metrics
 
@@ -529,6 +547,68 @@ stays; see the stock-label rule at the end of this page.
 
 See [Projections](/persistence/projections/) for the strategies
 these describe.
+
+## Offload metrics
+
+The [offload pool](/fundamentals/blocking-and-cpu-bound-work/#offloadpool-pure-functions-on-worker-threads)
+records every task it settles, and how many are waiting for a worker:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `offload_tasks_total` | counter | `task`, `outcome` | Offloaded task runs, by how they settled. |
+| `offload_task_seconds` | histogram | `task` | Wall time of an offloaded task, from `run()` to its settlement, in seconds. |
+| `offload_queue_depth` | gauge | — | Offloaded tasks waiting for a worker. |
+
+`task` is the export name and module file of the task, `name (file.ts)`
+— bounded by the tasks the application defines with
+`defineOffloadTask`, never off the wire.  `outcome` is `ok`, `threw`,
+`timeout`, `aborted`, `lost` (the worker died under the task),
+`invalid-arguments` (the arguments could not be sent to a worker) or
+`unavailable`.  A `timeout` or `threw` rate on one `task` is the alert;
+an `offload_queue_depth` that keeps climbing means the pool is too small
+for the load.
+
+## Router metrics
+
+A [scatter/gather router](/routing/scatter-gather/#metrics) records how
+each fan-out ended and how long the caller waited:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `router_scatter_gather_resolved_total` | counter | `outcome` | Scatter/gather fan-outs, by how they ended. |
+| `router_scatter_gather_latency_seconds` | histogram | — | Time from scattering a message to answering the caller, in seconds. |
+
+`outcome` is `first`, `timeout`, `all-failed`, `stopped` or
+`no-reply-target`; no latency is observed for `no-reply-target`, where
+no scatter ran.  Neither family carries a router path, so several
+routers in one system aggregate.
+
+## HTTP middleware metrics
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `http_rate_limit_backend_errors_total` | counter | `prefix` | Requests a rate limiter could not count because its cache failed. |
+
+Present only when a `rateLimit` is handed a registry through `metrics` —
+the middleware runs outside any actor and has none otherwise.  `prefix`
+is the limiter's `keyPrefix`, so several limiters stay apart.  Any
+non-zero rate means the limiter is not counting right now: under
+`failureMode: 'open'` those requests pass unlimited, under `'closed'`
+they are answered 503.  See
+[when the cache fails](/http/middleware/rate-limit/#when-the-cache-fails).
+
+## WebSocket client metrics
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `websocket_client_inbound_paused_seconds_total` | counter | — | Seconds WebSocket client sockets spent paused by their inbound high-water mark. |
+
+Only moves when `inboundHighWaterMark` is set and the runtime can pause
+a client socket — Bun, in practice; see
+[inbound flow control](/io/websocket/#inbound-flow-control).  A pause is
+booked when it ends, on resume or when the connection goes, so a socket
+that is paused right now has not been counted yet.  A rising rate means
+`onMessage` is not keeping up with what the peer publishes.
 
 ## Worker-mesh metrics
 

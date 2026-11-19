@@ -306,10 +306,16 @@ export class FakePort implements PortLike {
  * except that `worker-ready` is sent by the bootstrap itself once its node is
  * up, carrying the registry, and `terminate()` also takes the hosted system
  * down so the test process exits.
+ *
+ * `hardStop` makes `terminate()` what it is on a real thread instead: the
+ * channel goes and the hosted system is left exactly as it was — no leave, no
+ * `terminate()`, so no `postStop` (#1754).  The test then owns the hosted
+ * system and terminates it itself, after its assertions.
  */
 export function hostMeshNode(
   worker: FakeWorker,
   importModule: ModuleImporter,
+  options: { readonly hardStop?: boolean } = {},
 ): { readonly node: Promise<{ readonly system: ActorSystem; readonly cluster: Cluster }> } {
   const origPost = worker.postMessage.bind(worker);
   const origAdd = worker.addEventListener.bind(worker);
@@ -370,6 +376,10 @@ export function hostMeshNode(
 
   worker.terminate = async (): Promise<void> => {
     await origTerminate();
+    if (options.hardStop === true) {
+      inbound = null;
+      return;
+    }
     const hosted = await node.catch(() => null);
     if (hosted !== null) {
       await hosted.cluster.leave();

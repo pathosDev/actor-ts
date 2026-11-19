@@ -97,7 +97,7 @@ describe('mailbox-depth agent — over the wire (#69)', () => {
     let probe: MailboxDepthProbe | null = null;
     try {
       const routee = b.sys.spawn(ParkingWorker, 'worker');
-      const stopServing = ClusterMailboxDepthAgent.serve(b.cluster);
+      const stopServing = ClusterMailboxDepthAgent.serve(b.cluster, ROUTEE_PATH);
       await awaitMembers(a, 2, 'depth query');
 
       // One message in flight (the worker is parked on it), four queued.
@@ -135,7 +135,7 @@ describe('mailbox-depth agent — over the wire (#69)', () => {
     const b = await startNode('depth-silent', 89_104, ['depth-silent@h:89103']);
     let probe: MailboxDepthProbe | null = null;
     try {
-      const stopServing = ClusterMailboxDepthAgent.serve(b.cluster);
+      const stopServing = ClusterMailboxDepthAgent.serve(b.cluster, ROUTEE_PATH);
       await awaitMembers(a, 2, 'silent node');
 
       const sink = a.sys.spawn(ReportSink, 'depth-sink');
@@ -163,6 +163,51 @@ describe('mailbox-depth agent — over the wire (#69)', () => {
   }, 10_000);
 });
 
+describe('mailbox-depth agent — answers only for the paths it serves (#1042)', () => {
+  test('a query for an actor nobody routes to gets no answer', async () => {
+    // Node B serves `/user/worker` and also hosts `/user/payments`, which no
+    // router names.  Answering for it would hand every peer the queue depth of
+    // an actor the operator never put behind a router.
+    const a = await startNode('depth-scope', 89_111);
+    const b = await startNode('depth-scope', 89_112, ['depth-scope@h:89111']);
+    let workerProbe: MailboxDepthProbe | null = null;
+    let paymentsProbe: MailboxDepthProbe | null = null;
+    try {
+      b.sys.spawn(class extends Actor<WorkMessage> {
+        override onReceive(): void {}
+      }, 'worker');
+      b.sys.spawn(class extends Actor<WorkMessage> {
+        override onReceive(): void {}
+      }, 'payments');
+      const stopServing = ClusterMailboxDepthAgent.serve(b.cluster, ROUTEE_PATH);
+      await awaitMembers(a, 2, 'path scope');
+
+      const paymentsSink = a.sys.spawn(ReportSink, 'payments-sink');
+      const workerSink = a.sys.spawn(ReportSink, 'worker-sink');
+      paymentsProbe = new MailboxDepthProbe(a.cluster, paymentsSink.path.toString(), '/user/payments', 0);
+      workerProbe = new MailboxDepthProbe(a.cluster, workerSink.path.toString(), ROUTEE_PATH, 0);
+      onReport = (report) => { paymentsProbe?.record(report); workerProbe?.record(report); };
+      const addressB = b.cluster.selfAddress.toString();
+      // The payments query goes out first, over the same ordered transport, so
+      // by the time the worker's answer is in, any payments answer would be too.
+      paymentsProbe.start(60_000, () => [b.cluster.selfAddress]);
+      workerProbe.start(60_000, () => [b.cluster.selfAddress]);
+      await awaitCondition(() => workerProbe?._depthOf(addressB) !== null, {
+        timeoutMs: 4_000, label: 'node B answered for the routee path it serves',
+      });
+
+      expect(paymentsProbe._depthOf(addressB)).toBeNull();
+      stopServing();
+    } finally {
+      workerProbe?.stop();
+      paymentsProbe?.stop();
+      onReport = () => {};
+      await stopNode(a);
+      await stopNode(b);
+    }
+  }, 10_000);
+});
+
 describe('ClusterRouter — smallest-mailbox (#69)', () => {
   test('routes to the node that answers, not to the one that cannot', async () => {
     // Only node A hosts the routee.  Both nodes serve depths, so node B's
@@ -178,7 +223,7 @@ describe('ClusterRouter — smallest-mailbox (#69)', () => {
     let probe: MailboxDepthProbe | null = null;
     try {
       a.sys.spawn(Worker, 'worker');
-      const stopServingB = ClusterMailboxDepthAgent.serve(b.cluster);
+      const stopServingB = ClusterMailboxDepthAgent.serve(b.cluster, ROUTEE_PATH);
       await awaitMembers(a, 2, 'smallest-mailbox routing');
 
       const routerOptions = ClusterRouterOptions.create<WorkMessage>()

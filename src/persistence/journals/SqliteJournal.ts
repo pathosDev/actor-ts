@@ -77,6 +77,8 @@ export class SqliteJournal implements Journal {
   readonly events: JournalEventBus = new InProcessJournalEventBus();
   /** A local file (or `:memory:`) no other node can reach (#1356). */
   readonly storageLocality: StorageLocality = 'node-local';
+  /** One SQLite transaction per append (#959). */
+  readonly atomicBatchAppend: boolean = true;
   private cachedStorageIdentity: string | null = null;
 
   /** Identity of the database file — see `STORAGE_IDENTITY_TABLE` for why it is unprefixed (#1358). */

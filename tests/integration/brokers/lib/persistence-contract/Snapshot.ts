@@ -3,7 +3,11 @@
  * the live Docker suites (#390).
  */
 import type { PersistenceOptions } from '../../../../../src/persistence/PersistenceOptions.js';
-import { assert, assertEqual } from './Assert.js';
+import {
+  FaultInjectingSnapshotStore,
+  FaultInjectingSnapshotStoreOptions,
+} from '../../../../../src/testkit/index.js';
+import { assert, assertEqual, expectThrows } from './Assert.js';
 import { closeQuietly, type ContractScenario, type SnapshotHarness } from './Types.js';
 
 function keepNSkip(harness: SnapshotHarness): string | null {
@@ -287,6 +291,34 @@ export function snapshotContractScenarios(): ContractScenario<SnapshotHarness>[]
           }
         } finally {
           await closeQuietly(store);
+        }
+      },
+    },
+    {
+      name: 'a save whose acknowledgement was lost is readable, and retrying it at the same sequence number succeeds',
+      async run(harness) {
+        // A snapshot write that landed while the caller was told it failed
+        // (#1024).  The caller cannot tell that from a write that never
+        // happened, so its only safe move is to save again at the same
+        // sequence number — which must succeed and leave one snapshot there,
+        // not fail on a duplicate key or keep two.
+        const inner = await harness.make();
+        const snapshotFaults = FaultInjectingSnapshotStoreOptions.create()
+          .withFailOn('save')
+          .withFailOnce()
+          .withFailurePoint('after-operation');
+        const store = new FaultInjectingSnapshotStore(inner, snapshotFaults);
+        const persistenceId = harness.pid('lost-acknowledgement');
+        try {
+          await expectThrows(() => store.save(persistenceId, 4, { v: 'first' }), 'InjectedFaultError', 'the scripted save');
+          const landed = (await store.loadLatest<{ v: string }>(persistenceId)).toNullable();
+          assertEqual(landed?.sequenceNr, 4, 'the save that reported a failure is readable');
+          await store.save(persistenceId, 4, { v: 'retried' });
+          const latest = (await store.loadLatest<{ v: string }>(persistenceId)).toNullable();
+          assertEqual(latest?.state.v, 'retried', 'the retry wins');
+          assertEqual((await store.loadBefore(persistenceId, 4)).toNullable(), null, 'no second snapshot below it');
+        } finally {
+          await closeQuietly(inner);
         }
       },
     },

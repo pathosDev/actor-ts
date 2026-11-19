@@ -18,6 +18,7 @@ import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
 import type { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { OptionsValidator } from '../../util/OptionsValidator.js';
 import {
+  BrokerAcknowledgmentFailed,
   BrokerBufferOverflow,
   BrokerCircuitBreakerStateChanged,
   BrokerConnected,
@@ -153,8 +154,10 @@ export abstract class BrokerActor<
   private _shutdownTaskName: string | null = null;
 
   /**
-   * Whether `postStop` has begun — i.e. whether this instance is still
-   * allowed to hold a connection.
+   * Whether this instance has lost the right to hold a connection — set by
+   * whichever comes first of `postStop` and the CoordinatedShutdown
+   * `service-stop` task (#1223).  Never cleared: after either, the actor is on
+   * its way out and no path may connect it again.
    *
    * A reconnect attempt runs on the *system* scheduler, detached from the
    * mailbox (see {@link _scheduleReconnect}), so it can resume from its own
@@ -250,6 +253,41 @@ export abstract class BrokerActor<
    */
   protected retiredLeaves(): RetiredLeaves {
     return {};
+  }
+
+  /**
+   * Subclass: the option fields that are **groups** of leaves and are layered
+   * leaf by leaf across the three sources instead of replaced whole.
+   * Default: none.
+   *
+   * `mergeOptions` is a shallow spread — the right rule for the framework at
+   * large, where a nested field is usually one value (a TLS bundle, a
+   * credentials pair, a reconnect policy `false` can stand in for) — so a group
+   * set in code replaced the configured one outright.  For a group whose leaves
+   * are independent settings that loses the operator's file without a word:
+   * `withConsumer({ groupId: 'orders' })` erased a HOCON
+   * `consumer.commit-mode = manual` beneath it (#975).  Naming the field here
+   * merges it per leaf, under the same precedence and with the same rule that
+   * an `undefined` leaf means "not set".  Kept per broker rather than changing
+   * `mergeOptions` for every subsystem that relies on its shallowness.
+   */
+  protected leafMergedOptionGroups(): ReadonlyArray<keyof S> {
+    return [];
+  }
+
+  /**
+   * Report a broker that refused an acknowledgment: a warn line naming the
+   * source, and a {@link BrokerAcknowledgmentFailed} event so it can be
+   * counted (#976).  The delivery stays unacknowledged, so it is coming back.
+   */
+  protected reportAcknowledgmentFailure(source: string, cause: Error): void {
+    this.log.warn(
+      `${this.constructor.name}: acknowledging a delivery from '${source}' failed — `
+      + `the broker will redeliver it: ${redactErrorCredentials(cause).message}`,
+    );
+    this.system.eventStream.publish(new BrokerAcknowledgmentFailed(
+      this.self.path.toString(), this.redactedEndpointLabel(), source, redactErrorCredentials(cause),
+    ));
   }
 
   /** Subclass: list of fields that MUST be present in the resolved options. */
@@ -834,8 +872,15 @@ export abstract class BrokerActor<
       Phases.ServiceStop,
       name,
       async () => {
-        // Stop the reconnect loop first: reconnecting mid-shutdown would
-        // re-open the very transport this task exists to close.
+        // First, for the reason `postStop` sets it first: a reconnect attempt
+        // already past its entry check is parked in the subclass's connect,
+        // and when it resumes it must abandon what it opened.  Without the
+        // flag it adopted the connection after the teardown below had cleared
+        // the transport gate, so `postStop`'s own `_closeTransport()` later
+        // returned at its first line and the handle was never closed (#1223).
+        this._stopped = true;
+        // Stop the reconnect loop: reconnecting mid-shutdown would re-open the
+        // very transport this task exists to close.
         this._scheduledReconnectCancel?.();
         this._scheduledReconnectCancel = null;
         if (this._transportOpened) this._state = 'disconnecting';
@@ -865,7 +910,7 @@ export abstract class BrokerActor<
     const defaults = this.builtInDefaultOptions();
     const root = this.configKey();
     const config = this.system.config;
-    if (!config.hasPath(root)) return mergeOptions<S>(defaults, {}, this._ctorOptions);
+    if (!config.hasPath(root)) return this._mergeLayers(defaults, {});
 
     rejectRetiredBrokerCommonLeaves(config, root);
     rejectRetiredLeaves(config, root, this.retiredLeaves());
@@ -873,7 +918,26 @@ export abstract class BrokerActor<
       ...readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(root)),
       ...this.readOptionsFromConfig(systemConfigUnder(config, root, this.constructor.name)),
     } as Partial<S>;
-    return mergeOptions<S>(defaults, fromConfig, this._ctorOptions);
+    return this._mergeLayers(defaults, fromConfig);
+  }
+
+  /**
+   * `mergeOptions` over the three layers, then each group
+   * {@link leafMergedOptionGroups} names merged again leaf by leaf — with the
+   * same precedence and the same "`undefined` is not set" rule — so a group set
+   * in code keeps the leaves it did not name from HOCON and the defaults.
+   */
+  private _mergeLayers(defaults: Partial<S>, fromConfig: Partial<S>): S {
+    const merged = mergeOptions<S>(defaults, fromConfig, this._ctorOptions);
+    for (const group of this.leafMergedOptionGroups()) {
+      const layers = [defaults[group], fromConfig[group], this._ctorOptions[group]]
+        .filter((layer): layer is NonNullable<typeof layer> => typeof layer === 'object' && layer !== null);
+      if (layers.length < 2) continue;
+      (merged as Record<keyof S, unknown>)[group] = mergeOptions<object>(
+        layers[0] as object, layers[1] as object, (layers[2] ?? {}) as object,
+      );
+    }
+    return merged;
   }
 
   private async _validateRequired(): Promise<void> {

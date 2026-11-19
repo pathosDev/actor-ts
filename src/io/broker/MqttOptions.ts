@@ -24,8 +24,8 @@
  * The common broker fields (`withReconnect` / `withCircuitBreaker` /
  * `withOutboundBuffer`) come from {@link BrokerOptionsBuilder}.
  */
-import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { AcknowledgingBrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
+import type { BrokerAcknowledgmentOptionsType, BrokerCommonOptionsType } from './BrokerOptions.js';
 import { findBrokerTlsProblem } from './BrokerTls.js';
 import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { MqttCodec } from './MqttCodec.js';
@@ -38,7 +38,7 @@ export type MqttCredentials = {
 };
 
 /** Plain options-object shape accepted by an {@link MqttActor}. */
-export interface MqttOptionsType extends BrokerCommonOptionsType {
+export interface MqttOptionsType extends BrokerCommonOptionsType, BrokerAcknowledgmentOptionsType {
   /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
   readonly brokerUrl?: string;
   /** Stable client id.  When omitted the broker assigns one. */
@@ -90,7 +90,7 @@ export interface MqttOptionsType extends BrokerCommonOptionsType {
 }
 
 /** Fluent builder for {@link MqttOptionsType}. */
-export class MqttOptionsBuilder extends BrokerOptionsBuilder<MqttOptionsType> {
+export class MqttOptionsBuilder extends AcknowledgingBrokerOptionsBuilder<MqttOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MqttOptionsBuilder()`. */
   static create(): MqttOptionsBuilder {
     return new MqttOptionsBuilder();
@@ -158,6 +158,7 @@ export class MqttOptionsValidator extends BrokerOptionsValidator<MqttOptionsType
   }
   protected rules(_s: Partial<MqttOptionsType>): void {
     this.commonRules(_s);
+    this.acknowledgmentRules(_s);
     this.url('brokerUrl', ['mqtt', 'mqtts', 'ws', 'wss']);
     this.oneOf('qos', [0, 1, 2]);
     this.oneOf('protocolVersion', [4, 5]);

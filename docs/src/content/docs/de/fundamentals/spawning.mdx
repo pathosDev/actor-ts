@@ -266,8 +266,9 @@ also der, der Nachrichtenverlust einführt.  `drop-head` gilt, solange du
 nichts anderes sagst: eine volle Mailbox verwirft die **älteste**
 wartende Nachricht, um Platz zu schaffen, ohne zu werfen.  Ergänze
 `withMailboxOverflow('drop-new')`, um stattdessen die ankommende zu
-verwerfen, oder `'reject'`, um an der `tell`-Stelle `MailboxFullError`
-zu werfen, damit der Sender den Druck spürt.
+verwerfen, oder `'reject'`, um sie abzulehnen und an
+`system.deadLetters` zu leiten — nie durch einen Throw an der
+`tell`-Stelle.
 
 ### `withMailbox`
 

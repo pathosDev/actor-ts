@@ -9,6 +9,17 @@ downtime** and **without coordinated stops**.  Every node continues
 serving traffic while the new version rolls out instance-by-
 instance.
 
+> **Within a release line only.**  A rolling deploy assumes old and
+> new nodes can talk to each other for a few minutes.  A release
+> that changes the cluster wire version — every release from v0.16.0
+> through v0.19.0 did — breaks that assumption: upgrade the cluster
+> in one step instead (stop every node, then start every node on the
+> new version), together with any application that connects through
+> `ClusterClient`.  The pattern below applies to the schema and key
+> changes you ship between such releases.  See
+> [Upgrade strategies](/operations/upgrades/upgrade-strategies/#cluster-wire-compatibility-per-release)
+> for the per-release table.
+
 The framework's rolling-deploy story is built on four shipped
 features:
 
@@ -105,9 +116,10 @@ checkpoint, not a deployment step.
 
 - All instances report the same build version (`/health`,
   cluster-management endpoints, or your own deploy-tracker).
-- v1 events are being read by the new code path
-  (`migration_chain_upcast_total{from="1",to="2"}` metric, or a
-  log-line spot-check on `chain.read`).
+- v1 events are being read by the new code path.  The framework
+  neither counts nor logs an upcast, so this check is yours: a log
+  line or a counter of your own around `chain.read`, or a replay of a
+  recorded v1 event through the new build's chain.
 - Writers are still emitting v1 (peek the journal — the most-
   recent record's manifest version should be `1`).
 

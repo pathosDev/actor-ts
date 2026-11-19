@@ -62,6 +62,19 @@ export type JournalCapabilities = {
    * runs *before* `make()` — the scenario has no journal to inspect yet.
    */
   readonly compactionMark?: boolean;
+  /**
+   * The store behind this harness undoes a transaction that fails.  Default
+   * `true`.
+   *
+   * A property of the *harness*, not of the journal: the in-process fakes of
+   * the Postgres, MariaDB, SQL Server and libSQL pools accept `BEGIN` /
+   * `ROLLBACK` and model neither, so a rolled-back append leaves its rows in
+   * the fake.  Those harnesses set `false` and skip the one scenario that
+   * observes a rollback (#959); the live Docker suites, against the real
+   * databases, keep the default and run it.  Never set it to hide a journal
+   * that declares `atomicBatchAppend: true` and leaves a prefix.
+   */
+  readonly transactionRollback?: boolean;
 };
 
 export interface JournalHarness extends HarnessBase {

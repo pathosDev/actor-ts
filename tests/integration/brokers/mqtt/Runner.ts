@@ -9,6 +9,7 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
+import { acknowledgeDelivery } from '../../../../src/io/broker/BrokerAcknowledgment.js';
 import { MqttActor, type MqttMessage } from '../../../../src/io/broker/MqttActor.js';
 import { MqttOptions } from '../../../../src/io/broker/MqttOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
@@ -45,11 +46,16 @@ class RouterMqttActor extends MqttActor {
 
 /**
  * Inbox actor — drains MqttMessages into an in-memory array so a
- * scenario can `await waitFor(() => box.received.some(...))`.
+ * scenario can `await waitFor(() => box.received.some(...))`.  Each message
+ * is acknowledged: under the default `acknowledgment: 'on-reply'` the
+ * PUBACK — and the next inbound packet — waits for this reply (#977).
  */
 export class InboxActor extends Actor<MqttMessage> {
   readonly received: MqttMessage[] = [];
-  override onReceive(m: MqttMessage): void { this.received.push(m); }
+  override onReceive(m: MqttMessage): void {
+    this.received.push(m);
+    acknowledgeDelivery(m);
+  }
 }
 
 async function main(): Promise<void> {

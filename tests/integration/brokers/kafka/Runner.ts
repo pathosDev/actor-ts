@@ -5,6 +5,7 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
+import { acknowledgeDelivery } from '../../../../src/io/broker/BrokerAcknowledgment.js';
 import { KafkaActor, type KafkaRecord } from '../../../../src/io/broker/KafkaActor.js';
 import { KafkaOptions, KafkaOptionsBuilder } from '../../../../src/io/broker/KafkaOptions.js';
 import { waitForPort } from '../lib/WaitForPort.js';
@@ -25,10 +26,17 @@ function requireEnv(name: string): string {
   return value;
 }
 
-/** Inbox actor — drains KafkaRecords for assertion. */
+/**
+ * Inbox actor — drains KafkaRecords for assertion, acknowledging each one
+ * so the default `acknowledgment: 'on-reply'` commits it (#975).  The reply
+ * is a no-op for a record that carries no `replyTo` (manual commit).
+ */
 export class InboxActor extends Actor<KafkaRecord> {
   readonly received: KafkaRecord[] = [];
-  override onReceive(m: KafkaRecord): void { this.received.push(m); }
+  override onReceive(m: KafkaRecord): void {
+    this.received.push(m);
+    acknowledgeDelivery(m);
+  }
 }
 
 async function main(): Promise<void> {

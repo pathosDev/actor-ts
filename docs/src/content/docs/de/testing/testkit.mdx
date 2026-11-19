@@ -191,6 +191,64 @@ describe('PureBehaviorTests', () => {
 Schneller als Per-Test-Setup; nur sicher, wenn Tests keine
 geteilten Actor mutieren.
 
+## Fehlschlagende Persistence-Stores
+
+`FaultInjectingJournal` und `FaultInjectingSnapshotStore` umhüllen
+jedes `Journal` bzw. jeden `SnapshotStore` und lassen ausgewählte
+Operationen nach Skript fehlschlagen.  Sie sitzen an der
+Schnittstelle, die `PersistentActor` aufruft, also deckt ein Double
+jedes Backend ab: Für einen Actor-Test umhüllst du ein
+`InMemoryJournal`, und um zu prüfen, was ein echtes Backend nach
+einem Fehler tut, umhüllst du dieses.
+
+```ts no-compile — Account stands for the PersistentActor under test
+import { InMemoryJournal, PersistenceExtensionId } from 'actor-ts/persistence';
+import { FaultInjectingJournal, FaultInjectingJournalOptions, TestKit } from 'actor-ts/testkit';
+
+const tk = TestKit.create('append-fails');
+const journalFaults = FaultInjectingJournalOptions.create()
+  .withFailOn('append')
+  .withFailOnce();
+const journal = new FaultInjectingJournal(new InMemoryJournal(), journalFaults);
+tk.system.extension(PersistenceExtensionId).setJournal(journal);
+
+// Der erste Append des Actors schlägt mit einem InjectedFaultError fehl;
+// die Supervision startet ihn neu, und der Neustart stellt aus dem Journal wieder her.
+const account = tk.system.spawn(Account, 'account');
+account.tell({ kind: 'deposit', amount: 5 });
+```
+
+Das Skript ist deterministisch.  Es gibt nirgends eine
+Wahrscheinlichkeit, denn ein Persistence-Fehlertest, der bei jedem
+Lauf anders fehlschlägt, kann einen behobenen Fehler nicht von einem
+glücklichen Lauf unterscheiden:
+
+| Builder-Methode | Feld | Bedeutung |
+|---|---|---|
+| `withFailOn(...operations)` | `failOn` | Die Operationen, die fehlschlagen dürfen: `'append'`, `'read'`, `'highestSeq'`, `'delete'` beim Journal; `'save'`, `'loadLatest'`, `'loadBefore'`, `'delete'` beim Snapshot-Store. Default: keine. |
+| `withFailAfterCalls(n)` | `failAfterCalls` | Die ersten `n` Aufrufe dieser Operationen durchlassen, gemeinsam gezählt. Default 0. |
+| `withFailOnce()` | `failOnce` | Einen Aufruf fehlschlagen lassen, danach jeden weiteren durchlassen — der vorübergehende Fehler. |
+| `withError(factory)` | `error` | Den Fehler bauen, mit dem abgelehnt wird. Default: ein `InjectedFaultError`, der Operation und Aufrufnummer nennt. |
+| `withFailurePoint(point)` | `failurePoint` | `'before-operation'` (Default): Der Store wird nie erreicht. `'after-operation'`: Der Aufruf wird ausgeführt und lehnt danach ab — ein Schreibvorgang, der angekommen ist und dessen Bestätigung verloren ging. |
+| `withGapAfterSeq(n)` | `gapAfterSeq` | Nur Journal: Das Event bei `n + 1` fehlt in jedem `read`, sodass 1, 2, 3, 4 als 1, 2, 4 zurückkommt. `highestSeq` meldet weiter den wahren Kopf. |
+
+Mit `failuresInjected` und `callsTo(operation)` prüft ein Test, dass
+der geskriptete Fehler wirklich passiert ist, statt gegen einen Store
+grün zu werden, der nie fehlschlug.  Optionale Member des umhüllten
+Stores werden unverändert durchgereicht, und ein Member, das der
+umhüllte Store weglässt, bleibt weg — das Umhüllen ändert also nie,
+was das Framework dem Store zutraut.
+
+Was `PersistentActor` heute mit jedem dieser Fehler macht: Ein
+fehlgeschlagener Append erreicht die Supervision als gewöhnlicher
+Actor-Fehler, der `persist`-Callback des Commands läuft nicht, und
+der neu gestartete Actor stellt wieder her, was das Journal
+tatsächlich enthält — auch die Events eines Appends, dessen
+Bestätigung verloren ging.  Ein Read, der während der
+Wiederherstellung fehlschlägt, geht an `onRecoveryFailure`, ebenso
+eine Historie mit Lücke, als `JournalIntegrityError`.  `persist`
+selbst hat keinen eigenen Fehler-Hook.
+
 ## Was TestKit nicht macht
 
 import { Aside } from '@astrojs/starlight/components';

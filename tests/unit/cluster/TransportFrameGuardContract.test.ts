@@ -43,6 +43,7 @@ import { awaitCondition } from '../../util/AwaitCondition.js';
 import { hostileEnvelopes, hostileWirePayloads } from '../../util/HostileFrames.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
 import { FakePort } from '../worker/__fixtures__/InMemoryWorkerThread.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 const SYSTEM = 'frame-guard';
 
@@ -116,7 +117,7 @@ const tcpArm: TransportArm = {
     // The handshake matters: below it every frame is refused for being
     // pre-`hello`, so without it the corpus would pass against a transport
     // with no guard at all.
-    internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: freshAddress().toJSON() }));
+    internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: freshAddress().toJSON() }));
     return {
       deliver: (payload) => internals.onData(socket, encodeFrame(payload as WireMessage)),
       settle: async () => { /* `onData` dispatches inline */ },
@@ -300,11 +301,11 @@ function warningsNaming(log: RecordingLogger, address: NodeAddress): string[] {
 }
 
 /** A socket that records what was written to it and whether it was closed, either way. */
-function closableSocket(): { writes: Uint8Array[]; closed: boolean; write(data: Uint8Array): void; end(): void; destroy(): void } {
+function closableSocket(): { writes: Uint8Array[]; closed: boolean; write(data: Uint8Array): boolean; end(): void; destroy(): void } {
   return {
     writes: [],
     closed: false,
-    write(data: Uint8Array): void { this.writes.push(data); },
+    write(data: Uint8Array): boolean { this.writes.push(data); return true; },
     end(): void { this.closed = true; },
     destroy(): void { this.closed = true; },
   };
@@ -321,7 +322,7 @@ describe('TcpTransport — a handshake naming the receiving node itself is refus
     const internals = transport as unknown as TcpTransportInternals;
     internals.attachInbound(socket);
 
-    internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: self.toJSON() }));
+    internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: self.toJSON() }));
     // A frame that would reach the handler on a connection that had an identity.
     internals.onData(socket, encodeFrame(wellFormedFrame(self)));
 
@@ -356,7 +357,7 @@ describe('TcpTransport — a handshake naming the receiving node itself is refus
       const internals = transport as unknown as TcpTransportInternals;
       internals.attachInbound(socket);
 
-      internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: claim.toJSON() }));
+      internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: claim.toJSON() }));
       internals.onData(socket, encodeFrame(wellFormedFrame(claim)));
 
       expect({ received, peers: transport.peers(), writes: socket.writes.length, closed: socket.closed })
@@ -392,7 +393,7 @@ describe('TcpTransport — a handshake naming the receiving node itself is refus
     await awaitCondition(() => internals.bySocket.has(socket), { label: 'the dial installed its socket' });
     const handlers = dial as TcpSocketHandlers | null;
     if (handlers === null) throw new Error('the transport never dialled');
-    handlers.onData(socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: self.toJSON() }));
+    handlers.onData(socket, encodeFrame({ kind: 'hello-ack', wireVersion: CLUSTER_WIRE_VERSION, self: self.toJSON() }));
     handlers.onData(socket, encodeFrame(wellFormedFrame(self)));
 
     expect(received).toEqual([]);

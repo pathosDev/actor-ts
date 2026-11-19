@@ -93,7 +93,18 @@ export class DevToolsExtension implements Extension {
       throw new Error('DevTools is already attached on this ActorSystem');
     }
     const server = this.createServer(options, 'mount');
-    return server.mount();
+    try {
+      return server.mount();
+    } catch (cause) {
+      // Same rule as a failed bind in `attach`: leave the system as it was.
+      // Keeping the server made `isAttached()` report an attachment that
+      // never happened and refused every later mount or attach as a
+      // duplicate (#714).  `stop()` uninstalls whatever taps did install;
+      // with no binding its only asynchronous step is skipped.
+      this.server = null;
+      void server.stop().catch(() => undefined);
+      throw cause;
+    }
   }
 
   /** Unbind and uninstall everything.  Safe to call when not attached. */

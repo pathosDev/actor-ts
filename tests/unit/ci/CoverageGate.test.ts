@@ -5,8 +5,10 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, test } from 'bun:test';
 
 import {
+  AGGREGATE_PREFIX,
   DEFAULT_LINE_FLOOR,
   MODULE_LINE_FLOORS,
+  aggregateLineCoverage,
   badgeLineCoverage,
   describeModuleVerdict,
   evaluateModuleFloors,
@@ -180,6 +182,18 @@ const HEALTHY_TABLE = coverageTable(89.85, 95.88);
 
 const CLUSTER_PREFIX = 'src/cluster/';
 
+/** One healthy record per floored module, 99/100 each — 198 of 200 lines between them. */
+function healthyModuleRecords(): readonly string[] {
+  return Object.keys(MODULE_LINE_FLOORS).map((prefix) => lcovRecord(`${prefix}Healthy.ts`, 100, 99));
+}
+
+/**
+ * Every module floor met, and the aggregate under `src/` pulled to exactly
+ * 61.50 % by one file outside the floored modules: (198 + 48) / (200 + 200).
+ * The module floors pass, so a non-zero exit can only be the aggregate's.
+ */
+const LOW_AGGREGATE_LCOV = [...healthyModuleRecords(), lcovRecord('src/Weak.ts', 200, 48)].join('\n');
+
 describe('lcov path normalisation', () => {
   test('a Windows SF: path becomes a repository-relative POSIX path', () => {
     expect(normaliseCoveragePath('src\\cluster\\sharding\\ShardRegion.ts'))
@@ -340,38 +354,32 @@ describe('--log / --lcov gate captured artifacts', () => {
   });
 
   test('the aggregate floor still fails on its own', () => {
-    const lcov = Object.keys(MODULE_LINE_FLOORS)
-      .map((prefix) => lcovRecord(`${prefix}Healthy.ts`, 100, 99))
-      .join('\n');
-    const run = runGate({ log: coverageTable(60, 61.5), lcov });
+    const run = runGate({ log: HEALTHY_TABLE, lcov: LOW_AGGREGATE_LCOV });
     expect(run.status).not.toBe(0);
     expect(run.output).toContain('61.50%');
     expect(run.output).toContain(`floor ${DEFAULT_LINE_FLOOR}%`);
   });
 
   test('COVERAGE_LINE_FLOOR still overrides the aggregate floor', () => {
-    const lcov = Object.keys(MODULE_LINE_FLOORS)
-      .map((prefix) => lcovRecord(`${prefix}Healthy.ts`, 100, 99))
-      .join('\n');
-    const run = runGate({ log: coverageTable(60, 61.5), lcov }, { COVERAGE_LINE_FLOOR: '60' });
+    const run = runGate({ log: HEALTHY_TABLE, lcov: LOW_AGGREGATE_LCOV }, { COVERAGE_LINE_FLOOR: '60' });
     expect(run.status).toBe(0);
   });
 
   /**
-   * Half the artifacts would gate half the floors.  Refusing is the difference
-   * between "the module floors passed" and "the module floors did not run",
-   * which a PASS line cannot distinguish after the fact.
+   * A log alone gates nothing, since every floor is read from lcov.  Refusing
+   * is the difference between "the floors passed" and "the floors did not
+   * run", which a PASS line cannot distinguish after the fact.
    */
   test('--log without --lcov is refused rather than half-run', () => {
     const run = runGate({ log: HEALTHY_TABLE });
     expect(run.status).toBe(2);
-    expect(run.output).toContain('go together');
+    expect(run.output).toContain('--log needs --lcov');
   });
 
-  test('--lcov without --log is refused too', () => {
-    const run = runGate({ lcov: lcovRecord(`${CLUSTER_PREFIX}Healthy.ts`, 100, 99) });
-    expect(run.status).toBe(2);
-    expect(run.output).toContain('go together');
+  test('--lcov alone is a complete gate, since every number it decides on is in it', () => {
+    const run = runGate({ lcov: healthyModuleRecords().join('\n') });
+    expect(run.output).toContain('PASS');
+    expect(run.status).toBe(0);
   });
 
   test('parseArguments reads both flags and defaults them to unset', () => {
@@ -405,22 +413,33 @@ describe('the gate publishes the badge figure', () => {
     expect(badgeLineCoverage(100)).toBe('100');
   });
 
-  test('a passing run writes lines= to GITHUB_OUTPUT', () => {
+  /**
+   * The badge carries the weighted aggregate, not the table's row: the log
+   * here says 95.88 % and the lcov says 99 %, and 99 is what is published.
+   */
+  test('a passing run writes the weighted aggregate to GITHUB_OUTPUT', () => {
     const run = runGate({ log: coverageTable(89.85, 95.88), lcov: healthyLcov });
     expect(run.status).toBe(0);
-    expect(run.githubOutput.trim()).toBe('lines=95');
+    expect(run.githubOutput.trim()).toBe('lines=99');
   });
 
   test('a run that fails the floor still publishes its real figure', () => {
-    const run = runGate({ log: coverageTable(60, 61.5), lcov: healthyLcov });
+    const run = runGate({ log: HEALTHY_TABLE, lcov: LOW_AGGREGATE_LCOV });
     expect(run.status).not.toBe(0);
     expect(run.githubOutput.trim()).toBe('lines=61');
   });
 
-  test('an unreadable table publishes nothing rather than a plausible zero', () => {
-    const run = runGate({ log: '7657 pass\n0 fail\n', lcov: healthyLcov });
+  test('a report with nothing under src/ publishes nothing rather than a plausible zero', () => {
+    const run = runGate({ log: HEALTHY_TABLE, lcov: lcovRecord('tests/unit/Foo.test.ts', 100, 100) });
     expect(run.status).toBe(2);
+    expect(run.output).toContain(`no lcov record under ${AGGREGATE_PREFIX}`);
     expect(run.githubOutput).toBe('');
+  });
+
+  test('an unreadable table no longer decides anything — the lcov does', () => {
+    const run = runGate({ log: '7657 pass\n0 fail\n', lcov: healthyLcov });
+    expect(run.status).toBe(0);
+    expect(run.githubOutput.trim()).toBe('lines=99');
   });
 
   test('nothing is written when the environment has no GITHUB_OUTPUT', () => {
@@ -455,19 +474,60 @@ describe('the gate publishes the badge figure', () => {
  * constant to itself.  A floor is only a floor if a run just under it is red.
  */
 describe('the aggregate floor bites at its configured value', () => {
-  const healthyLcov = Object.keys(MODULE_LINE_FLOORS)
-    .map((prefix) => lcovRecord(`${prefix}Healthy.ts`, 100, 99))
-    .join('\n');
+  /**
+   * The floored modules at 198/200, plus one file outside them sized so the
+   * whole of `src/` is 10 000 lines with `hitLines` of them hit — `hitLines / 100` percent.
+   * The module floors pass in both cases, so the verdict is the aggregate's.
+   */
+  function lcovAtAggregate(hitLines: number): string {
+    return [...healthyModuleRecords(), lcovRecord('src/Rest.ts', 9800, hitLines - 198)].join('\n');
+  }
 
   test('a hundredth of a point below the floor fails', () => {
-    const run = runGate({ log: coverageTable(80, DEFAULT_LINE_FLOOR - 0.01), lcov: healthyLcov });
+    const run = runGate({ lcov: lcovAtAggregate(DEFAULT_LINE_FLOOR * 100 - 1) });
     expect(run.status).not.toBe(0);
     expect(run.output).toContain('aggregate line coverage');
   });
 
   test('exactly on the floor passes', () => {
-    const run = runGate({ log: coverageTable(80, DEFAULT_LINE_FLOOR), lcov: healthyLcov });
+    const run = runGate({ lcov: lcovAtAggregate(DEFAULT_LINE_FLOOR * 100) });
     expect(run.status).toBe(0);
+  });
+});
+
+/**
+ * What #1016 changed, bound from both sides.  Each case is built so the old
+ * statistic — bun's unweighted per-file mean, or a denominator that admits
+ * files outside `src/` — would give the opposite verdict.
+ */
+describe('the aggregate is weighted by lines and confined to src/', () => {
+  test('a large under-covered file is not cancelled out by small covered ones', () => {
+    // Per-file mean: (40 + 100 × 10) / 11 ≈ 94.5 %.  Weighted: 520 / 1120 ≈ 46.4 %.
+    const records = parseLcovRecords([
+      lcovRecord('src/cluster/Coordinator.ts', 1000, 400),
+      ...Array.from({ length: 10 }, (_unused, index) => lcovRecord(`src/util/Barrel${index}.ts`, 12, 12)),
+    ].join('\n'));
+    const rollup = aggregateLineCoverage(records);
+    expect(rollup.files).toBe(11);
+    expect(rollup.percentage).toBeCloseTo((520 * 100) / 1120, 10);
+  });
+
+  test('a record outside src/ never enters the denominator', () => {
+    const records = parseLcovRecords([
+      lcovRecord('src/Product.ts', 100, 95),
+      lcovRecord('tests/unit/Product.test.ts', 100, 100),
+      lcovRecord('scripts/tool.mjs', 100, 0),
+    ].join('\n'));
+    const rollup = aggregateLineCoverage(records);
+    expect(rollup.files).toBe(1);
+    expect(rollup.percentage).toBe(95);
+  });
+
+  test('the gate fails a weighted aggregate below the floor even when the table row reads above it', () => {
+    const run = runGate({ log: coverageTable(99, 99), lcov: LOW_AGGREGATE_LCOV });
+    expect(run.status).not.toBe(0);
+    expect(run.output).toContain('61.50%');
+    expect(run.output).toContain('per-file mean, not gated: 99.00%');
   });
 });
 

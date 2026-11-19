@@ -1,11 +1,14 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { requestIdHeadersOfError } from '../middleware/RequestId.js';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   applyServerOptions,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
+  drainWindowOf,
   headerCapReachesHttp2Streams,
+  NOT_FOUND_RESPONSE,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -20,9 +23,10 @@ import type {
 import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } from '../HttpServerOptions.js';
 import { detectRuntime } from '../../runtime/Detect.js';
 import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
-import { nodeTlsServerOptions, type NodeTlsServerFields } from '../../runtime/http/NodeHonoRunner.js';
+import { closeIdleConnectionsWhileDraining, nodeTlsServerOptions, type NodeTlsServerFields } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
+import { reportingSourceFailure } from './StreamBodyFailure.js';
 
 // `@fastify/websocket` is an optional peer dep — lazy-import it (cached),
 // so projects that never use websocket() routes don't pull it in.
@@ -201,6 +205,9 @@ export class FastifyBackend implements HttpServerBackend {
   private userErrorHandler:
     | ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse)
     | null = null;
+  private streamFailureHandler: ((err: unknown, request: HttpRequest | undefined) => void) | null = null;
+  /** Whether a not-found handler reached Fastify; `listen` installs the default otherwise. */
+  private notFoundSet = false;
   private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
 
   constructor(options: object = {}) {
@@ -273,7 +280,7 @@ export class FastifyBackend implements HttpServerBackend {
         const adapted = this.adaptRequest(req);
         try {
           const out = await route.handler(adapted);
-          this.writeResponse(reply, out);
+          this.writeResponse(reply, out, adapted);
         } catch (err) {
           await this.emitError(reply, adapted, err);
         }
@@ -292,10 +299,11 @@ export class FastifyBackend implements HttpServerBackend {
   /** `return reply` for the reason spelled out on {@link registerRoute} — a
    *  not-found handler serving an SPA fallback is a streaming body too. */
   setNotFound(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+    this.notFoundSet = true;
     this.app.setNotFoundHandler(async (req: FastifyRequest, reply: FastifyReply) => {
       const adapted = this.adaptRequest(req);
       const response = await handler(adapted);
-      this.writeResponse(reply, response);
+      this.writeResponse(reply, response, adapted);
       return reply;
     });
   }
@@ -311,6 +319,10 @@ export class FastifyBackend implements HttpServerBackend {
     // route handlers — caught in registerRoute's try/catch, which never
     // reaches Fastify core — route through it too.
     this.userErrorHandler = handler;
+  }
+
+  setStreamFailureHandler(handler: (err: unknown, request: HttpRequest | undefined) => void): void {
+    this.streamFailureHandler = handler;
   }
 
   async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
@@ -405,6 +417,10 @@ export class FastifyBackend implements HttpServerBackend {
         .register(plugin, { options: { maxPayload: transportFrameCapOf(this.wsRegistered) } });
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(reg);
     }
+    // No not-found hook set: the framework's own 404 goes through the same
+    // writer, so it carries the default headers — Fastify's would carry none
+    // and echo the request path into its body (#1059).
+    if (!this.notFoundSet) this.setNotFound(() => NOT_FOUND_RESPONSE);
     const address = await this.app.listen({ host, port });
     // Fastify overrides two of the four on its own — `keepAliveTimeout` to
     // 72 s and `requestTimeout` to 0 (no bound) — so this is the write that
@@ -453,12 +469,13 @@ export class FastifyBackend implements HttpServerBackend {
         // `websocketServer` is undefined, and on Bun
         // `closeAllConnections` may also be unavailable.  After
         // forcing, `app.close()` resolves quickly and we return.
-        const grace = gracePeriodMs && gracePeriodMs > 0 ? gracePeriodMs : 0;
-        const server = (this.app as { server?: { closeAllConnections?: () => void } }).server;
+        const grace = drainWindowOf(gracePeriodMs);
+        const server = (this.app as { server?: { closeAllConnections?: () => void; closeIdleConnections?: () => void } }).server;
         const wss = (this.app as { websocketServer?: { clients?: Iterable<{ terminate?: () => void }> } }).websocketServer;
         const closing = this.app.close();
         if (grace > 0) {
           let timer: ReturnType<typeof setTimeout> | null = null;
+          const stopSweep = server ? closeIdleConnectionsWhileDraining(server) : () => { /* no server to sweep */ };
           await Promise.race([
             closing,
             new Promise<void>((resolve) => {
@@ -466,6 +483,7 @@ export class FastifyBackend implements HttpServerBackend {
               (timer as { unref?: () => void }).unref?.();
             }),
           ]);
+          stopSweep();
           if (timer) clearTimeout(timer);
         }
         try { server?.closeAllConnections?.(); } catch { /* best-effort */ }
@@ -611,7 +629,7 @@ export class FastifyBackend implements HttpServerBackend {
     for (const [key, value] of Object.entries(this.defaultResponseHeaders)) reply.header(key, value);
   }
 
-  private writeResponse(reply: FastifyReply, response: HttpResponse): void {
+  private writeResponse(reply: FastifyReply, response: HttpResponse, request?: HttpRequest): void {
     reply.status(response.status);
     this.applyDefaultResponseHeaders(reply);
     if (response.headers) for (const [key, value] of Object.entries(response.headers)) reply.header(key, value);
@@ -632,12 +650,34 @@ export class FastifyBackend implements HttpServerBackend {
     }
     if (typeof ReadableStream !== 'undefined' && response.body instanceof ReadableStream) {
       if (!response.contentType && !response.headers?.['content-type']) reply.header('content-type', 'application/octet-stream');
-      reply.send(response.body);
+      reply.send(this.reportingCommittedFailure(reply, response.body, request));
       return;
     }
     // Plain object → JSON.
     if (!response.contentType) reply.header('content-type', 'application/json; charset=utf-8');
     reply.send(JSON.stringify(response.body));
+  }
+
+  /**
+   * The stream body Fastify is handed, observed for a source failure after
+   * the response was committed (#1829).
+   *
+   * Fastify decides on `res.headersSent` itself (`sendWebStream`'s
+   * `onReadError`): before the first chunk is written a failure goes to the
+   * app-level error hook, and so to `withErrorHandler`, like any other; after
+   * it Fastify destroys the socket and logs through its own logger, which an
+   * application usually has off.  Reporting on the same test keeps the two
+   * paths disjoint — a failure reaches the error handler or the
+   * stream-failure handler, never both.
+   */
+  private reportingCommittedFailure(
+    reply: FastifyReply,
+    body: ReadableStream<Uint8Array>,
+    request: HttpRequest | undefined,
+  ): ReadableStream<Uint8Array> {
+    return reportingSourceFailure(body.getReader(), (err) => {
+      if (reply.raw.headersSent) this.streamFailureHandler?.(err, request);
+    });
   }
 
   /**
@@ -650,7 +690,7 @@ export class FastifyBackend implements HttpServerBackend {
   private async emitError(reply: FastifyReply, request: HttpRequest, err: unknown): Promise<void> {
     if (this.userErrorHandler) {
       try {
-        this.writeResponse(reply, await this.userErrorHandler(err, request));
+        this.writeResponse(reply, await this.userErrorHandler(err, request), request);
         return;
       } catch (inner) {
         this.writeError(reply, inner);
@@ -672,7 +712,9 @@ export class FastifyBackend implements HttpServerBackend {
     // its text routinely carries file paths, SQL fragments or driver internals.
     // Matches `defaultErrorResponse` in Route.ts, which the WebSocket-reject
     // and `fallback()` paths already use.  To surface or log the detail,
-    // install `withErrorHandler` on the server builder.
+    // install `withErrorHandler` on the server builder.  The request id the
+    // error log line names goes out with it (#1064).
+    for (const [k, v] of Object.entries(requestIdHeadersOfError(err))) reply.header(k, v);
     reply.status(500).send({ error: 'Internal Server Error' });
   }
 }

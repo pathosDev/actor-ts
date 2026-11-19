@@ -11,7 +11,12 @@
 import type { Journal } from '../../../../../src/persistence/Journal.js';
 import { JournalConcurrencyError } from '../../../../../src/persistence/JournalTypes.js';
 import { offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
+import {
+  FaultInjectingJournal,
+  FaultInjectingJournalOptions,
+} from '../../../../../src/testkit/index.js';
 import { assert, assertEqual, expectThrows } from './Assert.js';
+import { lateCommitContractScenarios } from './LateCommit.js';
 import { closeQuietly, type ContractScenario, type JournalHarness } from './Types.js';
 
 /**
@@ -241,6 +246,42 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         try {
           assertEqual(await journal.highestSeq(harness.pid('never-written')), 0, 'highestSeq of an unknown id');
           assertEqual(await journal.read(harness.pid('never-written'), 1), [], 'read of an unknown id');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
+      // The claim behind `atomicBatchAppend` (#959), checked where it is
+      // made.  The batch fails on its *second* event — a circular reference
+      // the payload codec refuses — so a backend that writes event by event
+      // has already sent the first one when the failure arrives, and only a
+      // real transaction (or an encode-everything-first append) leaves no
+      // prefix behind.  A journal that declares `false` makes no such claim,
+      // so the scenario asserts only that the batch was rejected; the prefix
+      // it may leave is what `PersistentActor.persistAll` refuses to risk.
+      name: 'a journal declaring atomicBatchAppend leaves no prefix of a batch that fails partway',
+      skip: (harness) => (harness.capabilities?.transactionRollback === false
+        ? 'the harness store does not model a transaction rollback'
+        : null),
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('atomic-batch');
+        const circular: Record<string, unknown> = { kind: 'circular' };
+        circular.self = circular;
+        try {
+          let rejected = false;
+          try {
+            await journal.append<unknown>(persistenceId, [{ event: 'first' }, { event: circular }, { event: 'third' }], 0);
+          } catch {
+            rejected = true;
+          }
+          assert(rejected, 'an append whose second event cannot be encoded must reject');
+          if (journal.atomicBatchAppend === false) return;
+          assertEqual(await journal.highestSeq(persistenceId), 0, 'no event of the failed batch is committed');
+          assertEqual(await journal.read(persistenceId, 1), [], 'no event of the failed batch is readable');
+          const retried = await journal.append(persistenceId, [{ event: 'first' }, { event: 'third' }], 0);
+          assertEqual(retried.map((event) => event.sequenceNr), [1, 2], 'the batch retried at 0 lands at 1..2');
         } finally {
           await closeQuietly(journal);
         }
@@ -539,6 +580,43 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
       },
     },
     {
+      name: 'an append whose acknowledgement was lost is committed once, and its retry is refused as a conflict',
+      async run(harness) {
+        // The write lands and the caller is told it failed — a timeout after
+        // the commit (#1024).  A caller that retries at the same expected
+        // sequence must be refused by the conditional write, not handed a
+        // second copy of the batch: that is the property every recovery and
+        // every `PersistentActor` restart leans on, and only the backend can
+        // provide it.
+        const inner = await harness.make();
+        const journalFaults = FaultInjectingJournalOptions.create()
+          .withFailOn('append')
+          .withFailOnce()
+          .withFailurePoint('after-operation');
+        const journal = new FaultInjectingJournal(inner, journalFaults);
+        const persistenceId = harness.pid('lost-acknowledgement');
+        try {
+          await expectThrows(
+            () => journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }], 0),
+            'InjectedFaultError',
+            'the scripted append',
+          );
+          await expectThrows(
+            () => journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }], 0),
+            'JournalConcurrencyError',
+            'retrying the committed append at the old head',
+          );
+          assertEqual(await journal.highestSeq(persistenceId), 2, 'highestSeq counts the committed batch once');
+          const stored = await journal.read<string>(persistenceId, 1);
+          assertEqual(stored.map((e) => e.event), ['e1', 'e2'], 'the batch is stored exactly once');
+          const next = await journal.append(persistenceId, [{ event: 'e3' }], 2);
+          assertEqual(next.map((e) => e.sequenceNr), [3], 'an append at the re-read head continues the stream');
+        } finally {
+          await closeQuietly(inner);
+        }
+      },
+    },
+    {
       name: 'close is idempotent',
       async run(harness) {
         const journal = await harness.make();
@@ -549,5 +627,8 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         await closeQuietly(journal);
       },
     },
+    // The by-tag read side under a late commit (#957): a slow writer's event
+    // stamped behind a consumer's position still has to reach it, once.
+    ...lateCommitContractScenarios(),
   ];
 }

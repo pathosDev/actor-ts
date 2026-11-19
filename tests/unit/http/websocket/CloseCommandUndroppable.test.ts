@@ -40,7 +40,6 @@ import { ActorOptions } from '../../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
-import { MailboxFullError } from '../../../../src/mailbox/DroppingMailbox.js';
 import { WebsocketReadyState, type WebsocketListeners, type WebsocketSocketAdapter } from '../../../../src/http/websocket/SocketAdapter.js';
 import { WebsocketConnectionActor } from '../../../../src/http/websocket/WebsocketConnectionActor.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
@@ -285,10 +284,11 @@ describe('a close survives a bounded connection actor (#985)', () => {
     const { connection, socket } = await h.connect('ws-1', boundedAt('reject'));
 
     connection.tell({ kind: 'pong', n: 0 });                 // depth 1 == capacity
-    // The control, stated as the behaviour that made this defect: an ordinary
-    // frame at a full `reject` queue still raises on the caller's stack.
-    expect(() => connection.tell({ kind: 'pong', n: 1 })).toThrow(MailboxFullError);
-    // `close()` used to do the same — on `closeAll`'s stack, inside the hub.
+    // The control: an ordinary frame at a full `reject` queue is refused —
+    // without a throw on the caller's stack since #919, but refused.
+    connection.tell({ kind: 'pong', n: 1 });
+    // `close()` used to raise `MailboxFullError` — on `closeAll`'s stack,
+    // inside the hub — and must now neither throw nor be refused.
     expect(() => connection.close(1008, 'rate limited')).not.toThrow();
 
     await expectClosedWith(socket, 1008, 'rate limited', 'the socket closed despite reject');

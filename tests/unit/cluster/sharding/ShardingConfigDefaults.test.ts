@@ -550,6 +550,8 @@ describe('ShardRegion.settingsToConfig — the two passivation windows', () => {
       entityRestartBackoffMaxMs: DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS,
       entityRestartBackoffRandomFactor: DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR,
       entityRestartBackoffResetAfterMs: DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS,
+      // Off unless the type remembers its entities (#954).
+      rememberEntities: false,
     });
   });
 

@@ -1,10 +1,16 @@
-import { decodeJsonTree, encodeJsonTree } from '../serialization/JsonTree.js';
+import { decodeJsonTree, encodeJsonTree, RefusedTagError } from '../serialization/JsonTree.js';
 import {
   defaultReadConstraintsOptions,
   ReadConstraintsOptionsValidator,
   type ReadConstraintsOptions,
   type ReadConstraintsOptionsType,
 } from '../serialization/ReadConstraintsOptions.js';
+import {
+  defaultWireDecodeOptions,
+  WireDecodeOptionsValidator,
+  type WireDecodeOptions,
+  type WireDecodeOptionsType,
+} from '../serialization/WireDecodeOptions.js';
 import { INITIAL_FRAME_BUFFER_BYTES, RETAINED_FRAME_BUFFER_BYTES } from './Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
@@ -25,12 +31,9 @@ import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
  *     gossip can't resurrect the address; the tombstone is reclaimed
  *     once `tombstoneTtlMs` (default 24 h) elapses.  The
  *     **FD-driven** path — no downing provider configured and
- *     `failure-detector.auto-down = on`, the default (#1426) — deletes
- *     the entry outright instead.  That buys no recovery: gossip and heartbeats
- *     target only reachable members, so after a symmetric partition
- *     neither side hears the other again (#930), and with no
- *     tombstone left to refuse it, a peer still carrying the address
- *     re-introduces it.  Public APIs (`getMembers`, `upMembers`,
+ *     `failure-detector.auto-down = on`, the default (#1426) — tombstones
+ *     the entry the same way, so a peer still carrying the address cannot
+ *     re-introduce it (#1834).  Public APIs (`getMembers`, `upMembers`,
  *     `reachableMembers`) and `Member.isReachable()` all filter
  *     `removed` out — only direct iteration of the raw map needs
  *     to check the status explicitly.  See #75 + the
@@ -315,8 +318,8 @@ export type GossipMessage = {
   kind: 'gossip';
   from: NodeAddressData;
   /**
-   * Strictly-increasing counter stamped by the node that composed the frame,
-   * seeded from its wall-clock at startup and bumped by one per frame (#112).
+   * Strictly-increasing stamp from the wall clock of the node that composed
+   * the frame — `max(previous + 1, Date.now())` — (#112, #1262).
    *
    * It exists so a receiver can tell a *new* frame from a **recording of an
    * old one**.  Nothing else on a gossip frame can: `members` is a snapshot
@@ -331,11 +334,13 @@ export type GossipMessage = {
    *
    * A receiver holds it to two bounds, both in `Cluster.admitsGossipSequence`:
    * it must out-number the highest one that receiver has accepted from the same
-   * connection peer, **and** it must be a finite number no further ahead of the
-   * receiver's clock than `maxVersionSkewMs`.  The second is what stops a
-   * captured frame being restamped past every mark and replayed without limit —
-   * only this field is fabricated in that attack, the `members` array is still
-   * the recording (#940).
+   * connection peer, **and** it must be a finite number no further ahead than
+   * that peer has shown it runs — its learned clock offset plus a short lead —
+   * or, for a first frame, than `maxVersionSkewMs` past the receiver's clock.
+   * The second is what stops a captured frame being restamped past every mark
+   * and replayed without limit — only this field is fabricated in that attack,
+   * the `members` array is still the recording (#940) — and what keeps such a
+   * frame from pinning the mark against the real sender for long (#1262).
    */
   sequence: number;
   members: MemberData[];
@@ -462,21 +467,28 @@ const HEADER_SIZE = 4;
  * output; `undefined` in a value position (array slot, `Set` member, `Map` key
  * or value) is now preserved instead of becoming `null`.
  *
- * **Rolling upgrade — neither direction is safe, and the one that looks safe
- * is worth spelling out.**  A frame from an older node is untagged JSON, and
- * `decodeJsonTree` interprets a tag only when it is an object's sole own key,
- * so nearly all legacy traffic is carried through unchanged.  The exception is
- * a legacy value that already had that shape: `{__bytes__: 'not base64!!!'}`
- * decodes to a `Uint8Array` and `{__date__: 'whenever'}` to an Invalid Date,
- * silently, while `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`,
- * `__number__` and `__error__` throw at any depth — and a decoder throw costs
+ * **What the receiver builds is its own decision, not the sender's** (#1303).
+ * The encoder writes every tag it knows; {@link FrameDecoder} constructs only
+ * the ones in `actor-ts.serialization.wire.admitted-tags` — the data tags by
+ * default — and refuses a frame that uses any other, so a `RegExp`, `URL`,
+ * `Error` or value-position `undefined` sent to a node on the default list
+ * never arrives.  An older node writes those tags unasked, which is why the
+ * allow-list came with cluster wire version 3: a v0.18 node is refused at the
+ * handshake by version instead of losing those frames one at a time.
+ *
+ * **Rolling upgrade from a pre-tag node is not safe either.**  A frame from a
+ * node older than #450 is untagged JSON, and `decodeJsonTree` interprets a tag
+ * only when it is an object's sole own key, so nearly all legacy traffic is
+ * carried through unchanged.  The exception is a legacy value that already had
+ * that shape: `{__bytes__: 'not base64!!!'}` decodes to a `Uint8Array` and
+ * `{__date__: 'whenever'}` to an Invalid Date, silently, while a malformed
+ * admitted tag throws at any depth — and a decoder throw costs
  * {@link Transport} the whole connection, along with every frame batched into
  * the same chunk.  The `__literal__` escape only protects data *this* encoder
- * produced, so it does nothing here.  The other direction is plainly lossy: an
- * older node reading a newer node's frame sees the tag wrapper as plain data.
- * Since v0.18.0 the handshake negotiates a wire version (#823), so nodes on
- * either side of a break refuse each other instead of exchanging frames like
- * these; the encoding itself is not versioned.
+ * produced, so it does nothing here.  Since v0.18.0 the handshake negotiates a
+ * wire version (#823), so nodes on either side of such a break refuse each
+ * other instead of exchanging frames like these; the encoding itself is not
+ * versioned.
  */
 export function encodeFrame(message: WireMessage): Uint8Array {
   const json = JSON.stringify(encodeJsonTree(message, { undefinedValues: 'omit' }));
@@ -502,6 +514,26 @@ export function encodeFrame(message: WireMessage): Uint8Array {
  * `TcpTransport`'s options.
  */
 export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Why {@link FrameDecoder.push} refused a peer's bytes: a length prefix past a
+ * cap, a payload that is not JSON, or a JSON-tree payload the walker refused
+ * as malformed or too deep.  `Transport` answers it by dropping the connection.
+ *
+ * A class of its own rather than a bare `Error` so that "the decoder refused
+ * this input" can be told apart from a defect *inside* the decoder — a
+ * `RangeError` out of a `DataView`, a stack overflow — by type rather than by
+ * reading the message (#1369).  The generative properties in
+ * `tests/unit/cluster/FrameDecoderFuzz.test.ts` assert exactly that over
+ * arbitrary bytes, which a plain `Error` made impossible to state.  Where the
+ * refusal came from the walker, its `SerializationError` is the `cause`.
+ */
+export class FrameDecodeError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'FrameDecodeError';
+  }
+}
 
 /**
  * Incremental decoder that buffers bytes across multiple chunks and yields
@@ -549,10 +581,21 @@ export class FrameDecoder {
    * overflows the walker's stack without them (#880).
    */
   private readonly readConstraints: Required<ReadConstraintsOptionsType>;
+  /** Which tags a frame may use — see `WireDecodeOptionsType` (#1303). */
+  private readonly wireDecode: Required<WireDecodeOptionsType>;
+  /** Refusals from the most recent {@link push}, cleared when the next one starts. */
+  private refusals: RefusedTagError[] = [];
+  /**
+   * Frames this decoder refused for using a tag outside the allow-list, over
+   * its whole life — the count beside the log line, for a test or a probe that
+   * wants the number rather than the text.
+   */
+  refusedFrames = 0;
 
   constructor(
     maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
     readConstraints: ReadConstraintsOptions = {},
+    wireDecode: WireDecodeOptions = {},
   ) {
     if (!Number.isFinite(maxFrameBytes) || maxFrameBytes < 1) {
       throw new Error(`FrameDecoder: maxFrameBytes must be a positive integer, got ${maxFrameBytes}`);
@@ -563,6 +606,24 @@ export class FrameDecoder {
       ...(readConstraints as Partial<ReadConstraintsOptionsType>),
     };
     new ReadConstraintsOptionsValidator().validate(this.readConstraints);
+    this.wireDecode = {
+      ...defaultWireDecodeOptions,
+      ...(wireDecode as Partial<WireDecodeOptionsType>),
+    };
+    new WireDecodeOptionsValidator().validate(this.wireDecode);
+  }
+
+  /**
+   * The frames the most recent {@link push} refused for using a tag outside the
+   * allow-list, one error each, naming the tag.
+   *
+   * A pull rather than a callback so the decoder needs no logger and no idea
+   * whose connection it serves: the transport, which knows the peer, reads this
+   * right after `push` and logs it.  Cleared at the start of every `push`, so a
+   * caller that never reads it holds no more than one chunk's worth.
+   */
+  lastRefusals(): readonly RefusedTagError[] {
+    return this.refusals;
   }
 
   /**
@@ -579,6 +640,7 @@ export class FrameDecoder {
   }
 
   push(chunk: Uint8Array): WireMessage[] {
+    if (this.refusals.length > 0) this.refusals = [];
     this.append(chunk);
     const out: WireMessage[] = [];
     const decoder = new TextDecoder();
@@ -590,7 +652,7 @@ export class FrameDecoder {
         // Reject BEFORE buffering — the attacker can't force an OOM
         // by claiming a 4 GiB frame.  Throwing here triggers
         // connection-shutdown in the transport layer.
-        throw new Error(
+        throw new FrameDecodeError(
           `wire frame claims length ${length} > maxFrameBytes ${this.maxFrameBytes} — `
           + `connection terminated to prevent OOM/DoS`,
         );
@@ -609,7 +671,7 @@ export class FrameDecoder {
       // peer actually chooses (#880).
       const documentCeiling = this.readConstraints.maxDocumentBytes;
       if (documentCeiling > 0 && length > documentCeiling) {
-        throw new Error(
+        throw new FrameDecodeError(
           `wire frame of ${length} bytes exceeds maxDocumentBytes ${documentCeiling} — `
           + `connection terminated before the document is buffered`,
         );
@@ -622,20 +684,34 @@ export class FrameDecoder {
       try {
         parsed = JSON.parse(json);
       } catch (e) {
-        throw new Error(`Invalid wire frame JSON: ${(e as Error).message}`);
+        throw new FrameDecodeError(`Invalid wire frame JSON: ${(e as Error).message}`, { cause: e });
       }
       // Reported separately from the parse failure: "the bytes were not JSON"
       // and "a tag in well-formed JSON was malformed" are different peers doing
       // different things, and the transport logs this reason to an operator.
-      // A hostile peer can reach it — a forged `__regexp__` or `__bytes__` is
-      // the cheapest way to try — and it lands in the same `push` throw the
-      // transport already answers by closing the connection.
+      // A hostile peer can reach it — a malformed `__bytes__` is the cheapest
+      // way to try — and it lands in the same `push` throw the transport
+      // already answers by closing the connection.
+      //
+      // A tag outside the allow-list is the one decode failure that is NOT
+      // that (#1303).  The frame was whole and well-formed and only asked for
+      // a class this node will not build, so it is refused alone: its bytes are
+      // already consumed, the frames after it in the chunk still decode, and
+      // the connection stays.  An old node and a hostile one write the same
+      // bytes here, and closing the link would hand either a cheap way to cost
+      // a healthy peer every frame batched beside the one it sent.
       try {
         out.push(decodeJsonTree(parsed, {
           maxNestingDepth: this.readConstraints.maxNestingDepth,
+          tags: this.wireDecode.admittedTags,
         }) as WireMessage);
       } catch (e) {
-        throw new Error(`Invalid wire frame payload: ${(e as Error).message}`);
+        if (e instanceof RefusedTagError) {
+          this.refusals.push(e);
+          this.refusedFrames += 1;
+          continue;
+        }
+        throw new FrameDecodeError(`Invalid wire frame payload: ${(e as Error).message}`, { cause: e });
       }
     }
     this.reclaim();

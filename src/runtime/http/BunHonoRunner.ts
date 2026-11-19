@@ -11,8 +11,10 @@ import type {
 /**
  * Bun implementation — `Bun.serve({ hostname, port, fetch })`.
  *
- * Graceful stop calls `server.stop(false)` which lets in-flight requests
- * finish.  Non-graceful calls `server.stop(true)` which kicks active
+ * Graceful stop awaits `server.stop(false)`, whose promise settles once the
+ * requests in flight have finished — not awaiting it, as this runner once
+ * did, made every grace window on this pair zero (#997).
+ * Non-graceful calls `server.stop(true)`, which kicks active
  * connections immediately.
  *
  * WebSocket support uses `createBunWebSocket()` from `hono/bun`, whose
@@ -26,6 +28,8 @@ import type {
 export class BunHonoRunner implements HonoServerRunner {
   /** `Bun.serve` refuses an `idleTimeout` past {@link BUN_MAX_IDLE_TIMEOUT_SECONDS}; the backend refuses first, naming the key. */
   readonly idleTimeoutCeilingMs = BUN_MAX_IDLE_TIMEOUT_SECONDS * 1_000;
+  /** `Bun.serve` exposes no header, receive or connection bound, so its `idleTimeout` is the only one (#1767). */
+  readonly idleTimeoutIsOnlyBound = true;
 
   /**
    * The `Bun` global, injectable because `globalThis.Bun` is not
@@ -79,7 +83,7 @@ export class BunHonoRunner implements HonoServerRunner {
         ...(idle.heldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: idle.heldAtCeilingMs } : {}),
         ...(idle.earliestCutMs !== undefined ? { idleTimeoutEarliestCutMs: idle.earliestCutMs } : {}),
       },
-      async stop(graceful: boolean): Promise<void> { server.stop(!graceful); },
+      async stop(graceful: boolean): Promise<void> { await server.stop(!graceful); },
     };
   }
 
@@ -104,10 +108,28 @@ export class BunHonoRunner implements HonoServerRunner {
       // application-level `maxFrameBytes` check ever sees the frame (#586).
       // Past the cap Bun drops the connection rather than sending a policy
       // close, so the peer observes 1006 and not the app layer's clean 1009.
-      serveOptions: { websocket: { ...websocket, maxPayloadLength: maxFrameBytes } },
+      //
+      // `pong` is added beside Hono's handlers: Bun reports a pong only to the
+      // server-level handler, and Hono's bag has none, so without it the
+      // server heartbeat could ping a Bun socket but never hear it answer
+      // (#651).  Hono keeps the events its `upgradeWebSocket` built on
+      // `ws.data.events`, which is where the backend's `onPong` lives.
+      serveOptions: {
+        websocket: { ...websocket, maxPayloadLength: maxFrameBytes, pong: deliverBunPong },
+      },
       transportFrameCapBytes: maxFrameBytes,
     };
   }
+}
+
+/**
+ * `Bun.serve`'s `websocket.pong` handler: hand the pong to the events Hono's
+ * `upgradeWebSocket` stored on the socket (#651).  Defensive about the shape,
+ * since `ws.data` is Hono's and nothing here owns it.
+ */
+function deliverBunPong(ws: unknown): void {
+  const events = (ws as { data?: { events?: { onPong?: unknown } } } | null)?.data?.events;
+  if (typeof events?.onPong === 'function') (events.onPong as () => void).call(events);
 }
 
 /** The release that added `http2` to `Bun.serve`. */
@@ -163,9 +185,11 @@ function earliestCutMsOf(seconds: number): number {
  * The `idleTimeout` this runner writes into `Bun.serve` (#1487).
  *
  * **Set**, `idleTimeoutMs` is converted to whole seconds by rounding *up*:
- * `0` stays `0` — off — and any other value becomes `Math.ceil(ms / 1000)`.
- * Never a floor and never a plain division, because `Bun.serve` reads `0` as
- * "never close" and throws on a fraction: 1–999 ms has to become 1 s.  A value
+ * `Math.ceil(ms / 1000)`.  Never a floor and never a plain division, because
+ * `Bun.serve` reads `0` as "never close" and throws on a fraction: 1–999 ms has
+ * to become 1 s.  `0` itself is refused: it is the only bound `Bun.serve` has
+ * on a stalled request, so "off" would leave one open until the client closes
+ * it — the backend refuses it first, by the key's name (#1767).  A value
  * that rounds past {@link BUN_MAX_IDLE_TIMEOUT_SECONDS} is refused here, before
  * `Bun.serve` is called — the backend refuses it first, by the key's name, so
  * this is the guard for a caller that reaches the runner directly.  A set value
@@ -173,7 +197,7 @@ function earliestCutMsOf(seconds: number): number {
  * `requestDeadlineMs` is known and the value's earliest cut lands less than
  * {@link IDLE_CUT_MARGIN_SECONDS} past it, a handler that writes nothing loses
  * its `503` — `32` under the built-in 30 s deadline cuts from 28 s on — so the
- * earliest cut is returned for the backend to report.  `0` never cuts.
+ * earliest cut is returned for the backend to report.
  *
  * **Unset**, it is derived from `requestDeadlineMs`.  Bun's bound is the whole
  * connection, and a request whose handler has written nothing counts as idle,
@@ -194,24 +218,36 @@ function earliestCutMsOf(seconds: number): number {
  * **Neither**, nothing is written and Bun keeps its own default: a runner
  * called directly, without the policy `HttpExtension.bind` resolves, behaves
  * exactly as it did before either member existed.
+ *
+ * A `requestDeadlineMs` of `0` is no deadline — `0` turns a bound off
+ * throughout the project — so it derives nothing, and a set value is never
+ * reported as falling short of it.  Read as a deadline, it made a set value
+ * report an earliest cut "before" a deadline that does not exist, and an
+ * unset one derive 8 s in place of Bun's own default.
  */
 export function bunIdleTimeoutOf(options: Pick<HonoServeOptions, 'idleTimeoutMs' | 'requestDeadlineMs'>): BunIdleTimeout {
   const { idleTimeoutMs, requestDeadlineMs } = options;
   if (idleTimeoutMs !== undefined) {
-    const seconds = idleTimeoutMs === 0 ? 0 : Math.ceil(idleTimeoutMs / 1_000);
+    if (idleTimeoutMs === 0) {
+      throw new RangeError(
+        'idleTimeoutMs = 0 would be Bun.serve\'s idleTimeout 0, which never closes a connection, and it is the only bound '
+          + 'Bun.serve has on a request whose body stops arriving and on a connection left idle — set a positive value.',
+      );
+    }
+    const seconds = Math.ceil(idleTimeoutMs / 1_000);
     if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 0 || seconds > BUN_MAX_IDLE_TIMEOUT_SECONDS) {
       throw new RangeError(
         `idleTimeoutMs = ${idleTimeoutMs} cannot be held by Bun.serve, whose idleTimeout is whole seconds from 0 to `
           + `${BUN_MAX_IDLE_TIMEOUT_SECONDS} — at most ${BUN_MAX_IDLE_TIMEOUT_SECONDS * 1_000} ms.`,
       );
     }
-    if (seconds === 0 || requestDeadlineMs === undefined || !Number.isFinite(requestDeadlineMs) || requestDeadlineMs < 0) {
+    if (requestDeadlineMs === undefined || !Number.isFinite(requestDeadlineMs) || requestDeadlineMs <= 0) {
       return { seconds };
     }
     const earliestCutMs = earliestCutMsOf(seconds);
     return earliestCutMs >= requestDeadlineMs + IDLE_CUT_MARGIN_SECONDS * 1_000 ? { seconds } : { seconds, earliestCutMs };
   }
-  if (requestDeadlineMs === undefined) return {};
+  if (requestDeadlineMs === undefined || requestDeadlineMs === 0) return {};
   if (!Number.isFinite(requestDeadlineMs) || requestDeadlineMs < 0) {
     throw new RangeError(`requestDeadlineMs = ${requestDeadlineMs} is no deadline to derive an idle timeout from.`);
   }
@@ -235,7 +271,8 @@ export function bunSupportsHttp2(version: string): boolean {
 interface BunServer {
   readonly port: number;
   readonly hostname: string;
-  stop(forceCloseConnections?: boolean): void;
+  /** Resolves once every connection has closed — after the requests in flight, unless forced (bun >= 1.1). */
+  stop(forceCloseConnections?: boolean): void | Promise<void>;
 }
 
 /**

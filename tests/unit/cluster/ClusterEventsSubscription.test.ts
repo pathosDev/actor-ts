@@ -329,8 +329,9 @@ describe('ReachabilityChanged — this node\'s own detector (#161)', () => {
     // answers `'healthy'` for an address it has no sample for.  A verdict left
     // behind would turn the next node on that address into a peer that came
     // back — and it would be an entry the member-map caps never counted.
-    // Eviction is auto-down's route (#1426); `auto-down = off` parks the peer
-    // and keeps its verdict, which is right for a peer that is still a member.
+    // Eviction is auto-down's route (#1426), and it leaves a tombstone (#1834);
+    // `auto-down = off` parks the peer and keeps its verdict, which is right
+    // for a peer that is still a member.
     const node = await startNode('reachability-reincarnation', 9_314, true);
     nodes.push(node);
     const peer = peerAddress('reachability-reincarnation', 9_394);
@@ -341,7 +342,7 @@ describe('ReachabilityChanged — this node\'s own detector (#161)', () => {
     lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
     internals(node.cluster).failureDetectionTick();
     expect(reachabilityIn(seen)).toEqual([`${peer}:false`]);
-    expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
+    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
     expect(internals(node.cluster).reachability.has(peer.toString())).toBe(false);
 
     seen.length = 0;

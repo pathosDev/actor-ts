@@ -224,17 +224,21 @@ filename failing a length check inside the framework.
 
 What neither the split nor the filter gives is a check on
 *which* entity a body belongs to once it sits at a well-formed
-key of this store's own — and there the two stores differ.
-`ObjectStorageSnapshotStore` compares the `persistenceId` its
-body carries against the one asked for, which is the "a body
-that names a *different* `persistenceId`" sentence above.
-`ObjectStorageDurableStateStore` has no such field to compare:
-its body is `{ revision, state, timestamp }`, so a record that
-ends up under another entity's key loads as that entity's
-state.  Move detection on that side comes from binding the body
-to its storage key, which is what configuring
-`client-aes256-gcm` or `hmac-sha256` buys; a store with neither
-authenticator has none.  See
+key of this store's own.  For that, both stores compare the
+`persistenceId` their body carries against the one asked for.
+`ObjectStorageSnapshotStore` answers `none` for a body naming
+another entity, which is the "a body that names a *different*
+`persistenceId`" sentence above.
+`ObjectStorageDurableStateStore` refuses it with a
+`JournalError`, because durable state is the source of truth and
+`none` would let the next write start the entity over
+([#1417](https://github.com/pathosDev/actor-ts/issues/1417)).
+That holds on a store with neither authenticator, and it catches
+a copied or restored record — not a deliberate writer, who can
+put any name into a plaintext body.  Against a writer, move
+detection comes from binding the body to its storage key, which
+is what configuring `client-aes256-gcm` or `hmac-sha256` buys.
+See
 [What encryption does not cover](/persistence/object-storage/encryption/#what-encryption-does-not-cover).
 
 <Aside type="caution" title="Upgrading an existing bucket">
@@ -248,47 +252,13 @@ authenticator has none.  See
   save writes at the new key.  Delete the old objects when you
   are ready.
 
-  **Durable state does** — it *is* the source of truth — and
-  `migrateObjectStorageDurableStateLayout` is the procedure.  Run
-  it once with the application stopped, against the same backend
-  and the same `prefix` the store is configured with: a live
-  writer at the old keys writes records the pass has already
-  moved, and the pass has no way to notice.
-
-  ```ts
-  import { migrateObjectStorageDurableStateLayout } from 'actor-ts/persistence';
-
-  const result = await migrateObjectStorageDurableStateLayout(backend, {
-    prefix: 'acme/',                 // the prefix the two stores share
-    encryption,                      // only for a sealed corpus — the store's own config
-    integrity,                       // likewise
-  });
-  console.log(`migrated ${result.migrated} of ${result.scanned}`);
-  ```
-
-  It moves each **body** rather than replaying the record through
-  a store, and that is what keeps `revision` and `timestamp` the
-  bytes that were already there.  Re-`upsert`ing the records
-  cannot: at a record's own revision the compare-and-swap finds
-  no entry at the empty destination and raises
-  `DurableStateConcurrencyError`, and `upsert(id, 0, state)` —
-  the only form that lands — writes revision 1 over a record that
-  was at 7.
-
-  A body written with neither client-side encryption nor an
-  integrity HMAC carries no key binding and is copied verbatim,
-  so that corpus needs no keys here at all.  A context-bound body
-  (#612) is sealed against its old key, so it is decoded there
-  and re-sealed against the new one — which is what the pass
-  wants the store's own `encryption` and `integrity` for, and
-  which also re-encrypts it under the keyring's active master
-  key.
-
-  A destination that already holds an object is never
-  overwritten, and sources stay in place, so the pass is
-  repeatable after an interruption and the old corpus is still
-  there to roll back to.  Re-run it with `deleteSource: true` to
-  retire the sources once the upgrade is verified.
+  **Durable state has no migration path.**  It *is* the source of
+  truth, and this version reads neither the old keys nor a body
+  that does not carry its `persistenceId`, which no earlier version
+  wrote ([#1417](https://github.com/pathosDev/actor-ts/issues/1417)) —
+  so every durable-state record written before must be rewritten by the application through this version's store.  A
+  record written with `upsert(id, 0, state)` starts again at
+  revision 1.
 </Aside>
 
 ## Performance

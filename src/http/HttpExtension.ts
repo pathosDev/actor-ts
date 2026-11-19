@@ -8,7 +8,9 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
+import { randomUuid } from '../util/RandomString.js';
 import type { HttpServerBackend, ListenerProtocol, ServerBinding, ServerOptionsReport } from './backend/HttpServerBackend.js';
+import { DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS } from './Constants.js';
 import { HttpClient } from './HttpClient.js';
 import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
 import {
@@ -18,12 +20,25 @@ import {
   HttpServerOptionsValidator,
 } from './HttpServerOptions.js';
 import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } from './HttpServerOptions.js';
-import { requestIdOf } from './middleware/RequestId.js';
+import {
+  rememberRequestIdOfError,
+  requestIdOf,
+  requestIdOfError,
+  type RequestIdCorrelation,
+} from './middleware/RequestId.js';
+import { DEFAULT_REQUEST_ID_HEADER } from './middleware/RequestIdOptions.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
 import { configuredRequestDeadlineMs } from './middleware/Timeout.js';
-import { compileServerRoutes, defaultErrorResponse, type Route } from './Route.js';
-import { HttpError, type HttpRequest, type HttpResponse } from './Types.js';
+import {
+  compileServerRoutes,
+  defaultErrorResponse,
+  isExplicitExternalRedirect,
+  redirectLocationOf,
+  redirectTargetOrigin,
+  type Route,
+} from './Route.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from './Types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {
@@ -57,6 +72,20 @@ export interface ServerBuilder {
    * that supports `setErrorHandler` (all shipped backends do).
    */
   withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
+  /**
+   * Origins a redirect from **this whole server** may send the browser to
+   * (#1056).  A 301/302/303/307/308 whose `location` resolves to another
+   * origin than the request's is refused with the generic 500 — whether
+   * `redirect()` built it, a handler wrote the header itself, or an
+   * `HttpError` carries it — unless `redirectExternal()` built that response
+   * (the per-route opt-in) or its origin is named here.
+   *
+   * Each entry is an origin, `scheme://host[:port]` with no path, compared
+   * exactly: `https://pay.example` does not admit `http://pay.example`.
+   * `['*']` is the explicit opt-out and admits every target.  Throws an
+   * `Error` on an entry that is not an http(s) origin.
+   */
+  withAllowedRedirectOrigins(origins: ReadonlyArray<string>): ServerBuilder;
   /**
    * Connection-level bounds for **this whole server** — the idle window of a
    * keep-alive connection and of an HTTP/2 session, the header and request
@@ -158,6 +187,7 @@ export class HttpExtension implements Extension {
     // untouched builder has to leave it alone rather than overwrite it.
     let securityHeadersOptions: SecurityHeadersOptions | false | undefined;
     let serverOptions: HttpServerOptions | undefined;
+    let redirectPolicy: RedirectPolicy = SAME_ORIGIN_ONLY;
     const system = this.system;
     return {
       useBackend(b: HttpServerBackend): ServerBuilder {
@@ -174,6 +204,10 @@ export class HttpExtension implements Extension {
       },
       withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
         errorHandler = handler;
+        return this;
+      },
+      withAllowedRedirectOrigins(origins: ReadonlyArray<string>): ServerBuilder {
+        redirectPolicy = redirectPolicyOf(origins);
         return this;
       },
       async bind(routes: Route): Promise<ServerBinding> {
@@ -270,11 +304,18 @@ export class HttpExtension implements Extension {
               system.log.debug(`[http] ${request.method} ${request.path}`);
               try {
                 const out = await route.handler(request);
+                if (refusesRedirect(system.log, request, out, redirectPolicy)) return redirectRefusedResponse();
                 system.log.debug(
                   `[http] ${request.method} ${request.path} → ${out.status} (${Date.now() - start} ms)`,
                 );
                 return out;
               } catch (err) {
+                if (err instanceof HttpError && refusesRedirect(system.log, request, err, redirectPolicy)) {
+                  return redirectRefusedResponse();
+                }
+                // Records the id against `err` too: rethrown untouched, so an
+                // error handler gets the value the handler threw, and the
+                // backend's generic 500 writes the id its line names (#1064).
                 logRouteFailure(system.log, request, err, Date.now() - start);
                 throw err;
               }
@@ -332,13 +373,17 @@ export class HttpExtension implements Extension {
             const start = Date.now();
             system.log.debug(`[http] (fallback) ${request.method} ${request.path}`);
             try {
-              return await fb.handler(request);
+              const out = await fb.handler(request);
+              return refusesRedirect(system.log, request, out, redirectPolicy) ? redirectRefusedResponse() : out;
             } catch (err) {
+              if (err instanceof HttpError && refusesRedirect(system.log, request, err, redirectPolicy)) {
+                return redirectRefusedResponse();
+              }
               // This branch answers with `defaultErrorResponse` instead of
               // re-throwing, so nothing downstream ever sees the error — the
               // log below is the only place it can survive at all.
-              logRouteFailure(system.log, request, err, Date.now() - start);
-              return defaultErrorResponse(err);
+              const correlation = logRouteFailure(system.log, request, err, Date.now() - start);
+              return correlation === undefined ? defaultErrorResponse(err) : internalServerErrorWith(correlation);
             }
           });
         }
@@ -366,6 +411,12 @@ export class HttpExtension implements Extension {
           }
           active.setErrorHandler(errorHandler);
         }
+        // A stream body that fails once its response is committed can no
+        // longer be answered by anyone; the log line is all that is left of it.
+        active.setStreamFailureHandler?.((err, request) => {
+          const where = request ? `${request.method} ${request.path}` : 'a response';
+          system.log.error(`[http] ${where}: the response body stream failed after the response was committed; the connection was closed`, err);
+        });
 
         // The longest a handler on this server may take before the framework
         // answers it 503: the configured deadline, raised to the longest
@@ -389,7 +440,11 @@ export class HttpExtension implements Extension {
         // Read once at bind time, not per unbind: the shutdown path is the
         // caller that never passes one, and it must not depend on config
         // being reachable while the system is already tearing down.
-        const configuredGracePeriodMs = readHttpShutdownGracePeriodFromConfig(system.config);
+        // An unset key — a config built without the reference layer — drains
+        // for the built-in window, never for none (#997).
+        const configuredGracePeriodMs = readHttpShutdownGracePeriodFromConfig(system.config)
+          ?? DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS;
+        const drainTaskName = `http-drain-${raw.host}:${raw.port}`;
         const binding: ServerBinding = {
           host: raw.host,
           port: raw.port,
@@ -401,26 +456,34 @@ export class HttpExtension implements Extension {
                 tracker.closeAll(1001, 'server shutting down');
                 tracker.terminateAll();
                 await backendUnbind;
-                // The task is named after the address, so leaving it
+                // The tasks are named after the address, so leaving them
                 // behind made re-binding that address impossible: the
                 // next `bind()` collided with a task for a server that
                 // no longer exists.
-                system.extension(CoordinatedShutdownId)
-                  .removeTask(Phases.ServiceUnbind, shutdownTaskName);
+                const shutdown = system.extension(CoordinatedShutdownId);
+                shutdown.removeTask(Phases.ServiceUnbind, shutdownTaskName);
+                shutdown.removeTask(Phases.ServiceRequestsDone, drainTaskName);
               })();
             }
             return unbindOnce;
           },
         };
-        // Auto-register with CoordinatedShutdown's ServiceUnbind phase so
-        // operator-triggered shutdown (SIGTERM, cluster-leave, etc.) closes
-        // the server before the rest of the pipeline tears down the system.
-        // Opt out with `actor-ts.coordinated-shutdown.auto-register-tasks`.
-        system.extension(CoordinatedShutdownId).addFrameworkTask(
-          Phases.ServiceUnbind,
-          shutdownTaskName,
-          () => binding.unbind(),
-        );
+        // Auto-register with CoordinatedShutdown so an operator-triggered
+        // shutdown (SIGTERM, cluster-leave, etc.) closes the server before the
+        // rest of the pipeline tears down the system, in the two phases that
+        // exist for it (#997): `service-unbind` stops accepting — the task
+        // starts the unbind and returns, so the phase does not hold the
+        // pipeline for the drain — and `service-requests-done` waits for the
+        // requests in flight, up to the grace period.  Readiness has gone
+        // 503 a phase earlier (see HealthCheckExtension).  Opt out with
+        // `actor-ts.coordinated-shutdown.auto-register-tasks`.
+        const shutdown = system.extension(CoordinatedShutdownId);
+        shutdown.addFrameworkTask(Phases.ServiceUnbind, shutdownTaskName, () => {
+          // The rejection is reported by the drain task, which awaits the
+          // same promise.
+          binding.unbind().catch(() => { /* reported in service-requests-done */ });
+        });
+        shutdown.addFrameworkTask(Phases.ServiceRequestsDone, drainTaskName, () => binding.unbind());
         system.log.info(`HTTP server bound on ${binding.host}:${binding.port} (${active.name})`);
         system.log.debug(
           `[http] ${httpRoutes.length} route(s) + ${wsRoutes.length} websocket route(s) registered`,
@@ -472,29 +535,131 @@ export class HttpExtension implements Extension {
  * anywhere.  Hence `error`, and the error value itself — the `Logger`
  * contract passes it through to the sink, which is what preserves a stack.
  *
- * The id is reported as the header it came from rather than as "the" request
- * id: it is whatever the caller sent, and `requestId({ trustIncoming: false })`
- * would have replaced it downstream.  `requestIdOf` bounds it to a
- * well-formed id first — a raw client string on a log line can forge records
- * with an embedded newline.  Only the default header is consulted; a server
- * that renames it should log its own id from `withErrorHandler`.
+ * Every such line names a request id, and the generic 500 carries the same
+ * one, so the caller holds the key to the log line (#1064).  It is the id
+ * the innermost `requestId()` middleware assigned, when one ran — that is
+ * the id the failing handler saw, and with `trustIncoming: false` not the
+ * one the caller sent.  Failing that, the caller's own `x-request-id`, which
+ * `requestIdOf` bounds to a well-formed id first: a raw client string on a
+ * log line can forge records with an embedded newline.  Failing that, a
+ * fresh one.  The id is recorded against the thrown value, so an error
+ * handler further out reads the same one with `requestIdOfError`.
+ *
+ * Returns that id for a non-`HttpError` throw, and `undefined` for an
+ * `HttpError`, whose response is the handler's own.
  */
 function logRouteFailure(
   log: Logger,
   request: HttpRequest,
   err: unknown,
   elapsedMs: number,
-): void {
+): RequestIdCorrelation | undefined {
   if (err instanceof HttpError) {
     log.debug(`[http] ${request.method} ${request.path} → ${err.status} (${elapsedMs} ms)`);
-    return;
+    return undefined;
   }
-  const correlation = requestIdOf(request);
+  const correlation = requestIdOfError(err) ?? {
+    headerName: DEFAULT_REQUEST_ID_HEADER,
+    id: requestIdOf(request) ?? randomUuid(),
+  };
+  rememberRequestIdOfError(err, correlation);
   log.error(
-    `[http] ${request.method} ${request.path} → 500 after ${elapsedMs} ms`
-    + `${correlation ? ` [x-request-id=${correlation}]` : ''}`,
+    `[http] ${request.method} ${request.path} → 500 after ${elapsedMs} ms [${correlation.headerName}=${correlation.id}]`,
     err,
   );
+  return correlation;
+}
+
+/** Which off-origin redirect targets a server admits (#1056). */
+type RedirectPolicy = {
+  /** `withAllowedRedirectOrigins(['*'])` — the explicit opt-out. */
+  readonly allowAny: boolean;
+  /** Exact `URL.origin` strings a redirect may leave for. */
+  readonly origins: ReadonlySet<string>;
+};
+
+/** The default: a redirect stays on the request's origin unless `redirectExternal()` built it. */
+const SAME_ORIGIN_ONLY: RedirectPolicy = { allowAny: false, origins: new Set() };
+
+/**
+ * Validate and normalise `withAllowedRedirectOrigins` input.  An entry has to
+ * be an http(s) origin and nothing more: a path in it would suggest a prefix
+ * rule the exact origin comparison does not implement.
+ */
+function redirectPolicyOf(origins: ReadonlyArray<string>): RedirectPolicy {
+  if (origins.includes('*')) return { allowAny: true, origins: new Set() };
+  const normalised = new Set<string>();
+  for (const entry of origins) {
+    let parsed: URL | null = null;
+    try { parsed = new URL(entry); } catch { /* reported below */ }
+    if (
+      parsed === null
+      || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      || parsed.origin !== entry.replace(/\/$/, '').toLowerCase()
+    ) {
+      throw new Error(
+        `withAllowedRedirectOrigins: "${entry}" is not an origin — give scheme://host[:port] with no path, `
+        + 'for example "https://payments.example", or "*" to admit every target.',
+      );
+    }
+    normalised.add(parsed.origin);
+  }
+  return { allowAny: false, origins: normalised };
+}
+
+/**
+ * Whether the server refuses `response` as an off-origin redirect (#1056),
+ * logging the refusal if so.
+ *
+ * Runs on what the route tree produced, so a `location` written by hand
+ * (`complete(Status.Found, null, { location })`), one a thrown `HttpError`
+ * carries, and a `fallback()` answer are checked alike — `redirect()` alone
+ * guarded only the targets it built.  A target leaves the origin when the
+ * browser would resolve it to another host than the request's; a scheme
+ * change on the same host is not an open redirect and passes.  A target no
+ * browser could land on this origin with (`javascript:`, a control
+ * character, an unparsable value) counts as leaving it.
+ *
+ * The line names the request and the status, never the target: the target
+ * is very often attacker-supplied, and a log line is no place to paste it.
+ */
+function refusesRedirect(
+  log: Logger,
+  request: HttpRequest,
+  response: Pick<HttpResponse, 'status' | 'headers'>,
+  policy: RedirectPolicy,
+): boolean {
+  const location = redirectLocationOf(response.status, response.headers);
+  if (location === undefined || policy.allowAny) return false;
+  if (isExplicitExternalRedirect(response as HttpResponse)) return false;
+  const requestHost = (request.headers['host'] ?? request.headers[':authority'] ?? UNKNOWN_REQUEST_HOST).toLowerCase();
+  const target = redirectTargetOrigin(location, requestHost);
+  if (target !== null && (target.host === requestHost || policy.origins.has(target.origin))) return false;
+  log.error(
+    `[http] ${request.method} ${request.path} → 500: refused a ${response.status} off-origin redirect `
+    + '— build it with redirectExternal() or name its origin in withAllowedRedirectOrigins(...) if it is intended',
+  );
+  return true;
+}
+
+/**
+ * Stands in for a request that names no host (HTTP/1.0).  A relative target
+ * still resolves against it and passes; an absolute one can never match it.
+ */
+const UNKNOWN_REQUEST_HOST = 'request-host.invalid';
+
+/** The generic 500 a refused redirect turns into — it carries no `location`. */
+function redirectRefusedResponse(): HttpResponse {
+  return { status: Status.InternalServerError, body: { error: 'Internal Server Error' } };
+}
+
+/** The generic 500 of {@link defaultErrorResponse}, carrying the id its log line names. */
+function internalServerErrorWith(correlation: RequestIdCorrelation): HttpResponse {
+  return {
+    status: Status.InternalServerError,
+    headers: { [correlation.headerName]: correlation.id },
+    body: { error: 'Internal Server Error' },
+  };
 }
 
 /** A field of a {@link ServerOptionsReport} that is also a field of the policy — one an operator can set. */

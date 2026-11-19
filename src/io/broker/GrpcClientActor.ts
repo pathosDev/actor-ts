@@ -4,11 +4,12 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
+import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import { DeadLetter } from '../../SystemMessages.js';
 import { Lazy } from '../../util/Lazy.js';
 import { randomId } from '../../util/RandomString.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import { GrpcClientOptionsValidator } from './GrpcClientOptions.js';
+import { DEFAULT_GRPC_STREAM_IDLE_TIMEOUT_MS, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 import type { GrpcChannelOptions, GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
 
 /**
@@ -203,14 +204,29 @@ export class GrpcClientActor
    * the documented answer to a reconnect is to re-issue the call on
    * `BrokerConnected` rather than to wait for one (#1510).
    */
-  private readonly bidiStreams = new Map<string, { call: GrpcDuplexCall }>();
-  private readonly clientStreams = new Map<string, { call: GrpcWritableCall }>();
+  /*
+   * `idle` is the stream's silence deadline (#1222), read by the send paths:
+   * a caller's own write is activity, so `onBidiSend` / `onClientStreamSend`
+   * push it back.  `null` when the timeout is off.
+   */
+  private readonly bidiStreams = new Map<string, { call: GrpcDuplexCall; idle: StreamIdleWatch | null }>();
+  private readonly clientStreams = new Map<string, { call: GrpcWritableCall; idle: StreamIdleWatch | null }>();
+  /**
+   * Every armed silence deadline, server streams and half-closed client
+   * streams included — neither has a registry entry, so this is the only
+   * handle {@link disconnectImplementation} has on their timers.
+   */
+  private readonly idleWatches = new Set<StreamIdleWatch>();
 
   constructor(options: GrpcClientOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.grpc.client.root; }
   protected builtInDefaultOptions(): Partial<GrpcClientOptionsType> {
-    return { credentials: { kind: 'insecure' }, deadlineMs: 30_000 };
+    return {
+      credentials: { kind: 'insecure' },
+      deadlineMs: 30_000,
+      streamIdleTimeoutMs: DEFAULT_GRPC_STREAM_IDLE_TIMEOUT_MS,
+    };
   }
   protected readOptionsFromConfig(config: Config): Partial<GrpcClientOptionsType> {
     return readGrpcClientOptionsFromConfig(config);
@@ -291,6 +307,8 @@ export class GrpcClientActor
   }
 
   protected async disconnectImplementation(): Promise<void> {
+    for (const watch of this.idleWatches) watch.stop();
+    this.idleWatches.clear();
     for (const [, stream] of this.bidiStreams) {
       try { stream.call.end(); } catch { /* ignore */ }
     }
@@ -381,7 +399,9 @@ export class GrpcClientActor
     const token = this.resolveStreamToken(command);
     if (token === null) return;
     const stream = this.bidiStreams.get(token);
-    if (stream) stream.call.write(command.chunk);
+    if (!stream) return;
+    stream.idle?.touch();
+    stream.call.write(command.chunk);
   }
 
   private onBidiClose(command: BidiCloseCommand): void {
@@ -398,7 +418,9 @@ export class GrpcClientActor
     const token = this.resolveStreamToken(command);
     if (token === null) return;
     const stream = this.clientStreams.get(token);
-    if (stream) stream.call.write(command.chunk);
+    if (!stream) return;
+    stream.idle?.touch();
+    stream.call.write(command.chunk);
   }
 
   /**
@@ -407,13 +429,15 @@ export class GrpcClientActor
    * a `clientStreamSend` that races the close cannot turn into a
    * write-after-end (which grpc-js throws on).  The reply still reaches
    * the caller — the response callback closes over its `target`, it
-   * does not look the stream back up.
+   * does not look the stream back up.  The silence deadline stays armed
+   * until that reply, so a server that never answers is still reaped.
    */
   private onClientStreamClose(command: ClientStreamCloseCommand): void {
     const token = this.resolveStreamToken(command);
     if (token === null) return;
     const stream = this.clientStreams.get(token);
     if (stream) {
+      stream.idle?.touch();
       try { stream.call.end(); } catch { /* ignore */ }
       this.clientStreams.delete(token);
     }
@@ -439,9 +463,10 @@ export class GrpcClientActor
    * and a long-lived stream is a documented, supported pattern here.
    * `deadlineMs` is one knob: a value generous enough for an hour-long
    * bidi stream is useless on a unary call, and a value right for a
-   * unary call kills the stream.  Bounding a stream whose peer has gone
-   * quiet is a channel-level concern (HTTP/2 keepalive) and belongs in
-   * `channelOptions` — see {@link GrpcChannelOptions}.
+   * unary call kills the stream.  A stream whose peer has gone quiet is
+   * bounded by silence instead — `streamIdleTimeoutMs`, see
+   * {@link watchStreamIdle} — and a peer that has died outright by the
+   * HTTP/2 keepalive in `channelOptions` (see {@link GrpcChannelOptions}).
    */
   private buildCallOptions(): GrpcCallOptions {
     const deadlineMs = this.options.deadlineMs;
@@ -473,13 +498,30 @@ export class GrpcClientActor
     }
     const streamId = this.nextStreamId++;
     const call = invoke.call(client, op.request);
+    // `finished` makes the idle reap the stream's one terminal frame: grpc-js
+    // answers the cancel with an error of its own, and the target has already
+    // been told why.
+    let finished = false;
+    const idle = this.watchStreamIdle((error) => {
+      finished = true;
+      try { call.cancel(); } catch { /* ignore */ }
+      op.target.tell({ kind: 'stream-error', target: op.target, streamId, error } as never);
+    });
     call.on('data', (chunk: unknown) => {
+      if (finished) return;
+      idle?.touch();
       op.target.tell({ kind: 'stream-data', target: op.target, streamId, chunk } as never);
     });
     call.on('end', () => {
+      if (finished) return;
+      finished = true;
+      this.stopStreamIdle(idle);
       op.target.tell({ kind: 'stream-end', target: op.target, streamId } as never);
     });
     call.on('error', (err: Error) => {
+      if (finished) return;
+      finished = true;
+      this.stopStreamIdle(idle);
       op.target.tell({ kind: 'stream-error', target: op.target, streamId, error: err } as never);
     });
   }
@@ -503,15 +545,28 @@ export class GrpcClientActor
     const handle = createGrpcStreamHandle(this.nextStreamId++);
     // `settled` guards the one ordering the map cannot express: a call
     // that answers synchronously would be deleted before it is added,
-    // leaving a finished stream registered forever.
+    // leaving a finished stream registered forever.  It also makes the
+    // idle reap the call's one answer — grpc-js reports its own cancel
+    // through this same callback.
     let settled = false;
+    let idle: StreamIdleWatch | null = null;
     const call = invoke.call(client, (err, response) => {
+      if (settled) return;
       settled = true;
+      this.stopStreamIdle(idle);
       this.clientStreams.delete(handle.token);
       if (err) op.target.tell({ kind: 'rpc-error', target: op.target, error: err } as never);
       else op.target.tell({ kind: 'reply', target: op.target, response } as never);
     });
-    if (!settled) this.clientStreams.set(handle.token, { call });
+    if (!settled) {
+      idle = this.watchStreamIdle((error) => {
+        settled = true;
+        this.clientStreams.delete(handle.token);
+        try { call.cancel(); } catch { /* ignore */ }
+        op.target.tell({ kind: 'rpc-error', target: op.target, error } as never);
+      });
+      this.clientStreams.set(handle.token, { call, idle });
+    }
     op.target.tell({ kind: 'stream-started', target: op.target, handle } as never);
   }
 
@@ -544,19 +599,60 @@ export class GrpcClientActor
     const handle = createGrpcStreamHandle(this.nextStreamId++);
     const streamId = handle.streamId;
     const call = invoke.call(client);
-    this.bidiStreams.set(handle.token, { call });
+    let finished = false;
+    const idle = this.watchStreamIdle((error) => {
+      finished = true;
+      this.bidiStreams.delete(handle.token);
+      try { call.cancel(); } catch { /* ignore */ }
+      op.target.tell({ kind: 'stream-error', target: op.target, streamId, error } as never);
+    });
+    this.bidiStreams.set(handle.token, { call, idle });
     call.on('data', (chunk: unknown) => {
+      if (finished) return;
+      idle?.touch();
       op.target.tell({ kind: 'stream-data', target: op.target, streamId, chunk } as never);
     });
     call.on('end', () => {
+      if (finished) return;
+      finished = true;
+      this.stopStreamIdle(idle);
       op.target.tell({ kind: 'stream-end', target: op.target, streamId } as never);
       this.bidiStreams.delete(handle.token);
     });
     call.on('error', (err: Error) => {
+      if (finished) return;
+      finished = true;
+      this.stopStreamIdle(idle);
       op.target.tell({ kind: 'stream-error', target: op.target, streamId, error: err } as never);
       this.bidiStreams.delete(handle.token);
     });
     op.target.tell({ kind: 'stream-started', target: op.target, handle } as never);
+  }
+
+  /**
+   * Arm a stream's silence deadline, or return `null` when
+   * `streamIdleTimeoutMs` is `0`.  `onIdle` runs once, with the error the
+   * target is told, after the watch has already taken itself out of
+   * {@link idleWatches}.
+   */
+  private watchStreamIdle(onIdle: (error: Error) => void): StreamIdleWatch | null {
+    const timeoutMs = this.options.streamIdleTimeoutMs ?? 0;
+    if (timeoutMs <= 0) return null;
+    const watch: StreamIdleWatch = new StreamIdleWatch(this.system.scheduler, timeoutMs, () => {
+      this.idleWatches.delete(watch);
+      onIdle(new Error(
+        `grpc stream to ${this.redactedEndpointLabel()} carried nothing for ${timeoutMs} ms `
+        + '(stream idle timeout); cancelled',
+      ));
+    });
+    this.idleWatches.add(watch);
+    return watch;
+  }
+
+  private stopStreamIdle(watch: StreamIdleWatch | null): void {
+    if (watch === null) return;
+    watch.stop();
+    this.idleWatches.delete(watch);
   }
 
   private buildCredentials(grpc: GrpcModule): GrpcCredentialsLike {
@@ -567,6 +663,54 @@ export class GrpcClientActor
       credentials.key ? Buffer.from(credentials.key) : null,
       credentials.cert ? Buffer.from(credentials.cert) : null,
     );
+  }
+}
+
+/* -------------------------- stream idle deadline ------------------------ */
+
+/**
+ * One stream's silence deadline (#1222).
+ *
+ * The same shape as `BrokerActor`'s read-idle deadline: {@link touch} is a
+ * field write and nothing else, because it runs once per frame, and the timer
+ * reads the timestamp when it fires and re-arms for the remainder if the
+ * stream turned out to be busy — so a talking stream costs one wake-up per
+ * timeout, whatever its throughput.  Time comes from the scheduler that arms
+ * the timer, so a `ManualScheduler` drives both halves.
+ */
+class StreamIdleWatch {
+  private lastActivityAt: number;
+  private handle: Cancellable | null = null;
+
+  constructor(
+    private readonly scheduler: Scheduler,
+    private readonly timeoutMs: number,
+    private readonly onIdle: () => void,
+  ) {
+    this.lastActivityAt = scheduler.now();
+    this.arm(timeoutMs);
+  }
+
+  touch(): void { this.lastActivityAt = this.scheduler.now(); }
+
+  /** Disarm.  A cancelled one-shot never runs, so nothing past this fires. */
+  stop(): void {
+    this.handle?.cancel();
+    this.handle = null;
+  }
+
+  private arm(delayMs: number): void {
+    this.handle = this.scheduler.scheduleOnceFunction(delayMs, () => this.onDeadline());
+  }
+
+  private onDeadline(): void {
+    this.handle = null;
+    const quietForMs = this.scheduler.now() - this.lastActivityAt;
+    if (quietForMs < this.timeoutMs) {
+      this.arm(this.timeoutMs - quietForMs);
+      return;
+    }
+    this.onIdle();
   }
 }
 
@@ -586,8 +730,9 @@ const RETIRED_GRPC_CLIENT_LEAVES: RetiredLeaves = {
 /**
  * Read the `actor-ts.io.broker.grpc.client` block's own leaves off the system
  * config, at the full paths `keys` holds; the reconnect / breaker / buffer
- * leaves are `BrokerActor`'s.  An unset leaf is omitted.  `deadline` is a
- * duration, so `2s` and a bare millisecond count read alike.  `credentials`
+ * leaves are `BrokerActor`'s.  An unset leaf is omitted.  `deadline` and
+ * `stream-idle-timeout` are durations, so `2s` and a bare millisecond count
+ * read alike, and `stream-idle-timeout = 0` turns the timeout off.  `credentials`
  * is certificate material and `channelOptions` grpc-js's own keys, so
  * neither has a leaf.
  */
@@ -601,6 +746,7 @@ export function readGrpcClientOptionsFromConfig(
   if (config.hasPath(keys.serviceName)) out.serviceName = config.getString(keys.serviceName);
   if (config.hasPath(keys.endpoint)) out.endpoint = config.getString(keys.endpoint);
   if (config.hasPath(keys.deadline)) out.deadlineMs = config.getDuration(keys.deadline);
+  if (config.hasPath(keys.streamIdleTimeout)) out.streamIdleTimeoutMs = config.getDuration(keys.streamIdleTimeout);
   return out;
 }
 
@@ -673,6 +819,12 @@ export interface GrpcReadableCall {
   on(event: 'data', listener: (chunk: unknown) => void): void;
   on(event: 'end', listener: () => void): void;
   on(event: 'error', listener: (err: Error) => void): void;
+  /**
+   * Abandon the call — grpc-js's `call.cancel()`.  The silence deadline
+   * (`streamIdleTimeoutMs`) is what calls it, on all three stream shims
+   * (#1222).
+   */
+  cancel(): void;
 }
 
 export interface GrpcServerStreamFunction {
@@ -683,6 +835,8 @@ export interface GrpcServerStreamFunction {
 export interface GrpcWritableCall {
   write(chunk: unknown): void;
   end(): void;
+  /** Abandon the call — see {@link GrpcReadableCall.cancel}. */
+  cancel(): void;
 }
 
 export interface GrpcClientStreamFunction {
@@ -696,6 +850,8 @@ export interface GrpcDuplexCall {
   on(event: 'error', listener: (err: Error) => void): void;
   write(chunk: unknown): void;
   end(): void;
+  /** Abandon the call — see {@link GrpcReadableCall.cancel}. */
+  cancel(): void;
 }
 
 export interface GrpcBidiFunction {

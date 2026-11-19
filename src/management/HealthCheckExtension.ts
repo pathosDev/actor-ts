@@ -1,4 +1,5 @@
 import type { ActorSystem } from '../ActorSystem.js';
+import { CoordinatedShutdownId, Phases, type CoordinatedShutdown } from '../CoordinatedShutdown.js';
 import { CoordinatedStartupId, type CoordinatedStartup } from '../CoordinatedStartup.js';
 import { extensionId, type ExtensionId } from '../Extension.js';
 import { HealthCheckRegistry, type HealthCheckResult } from './HealthCheck.js';
@@ -19,6 +20,15 @@ export const ACTOR_SYSTEM_LIVENESS_CHECK_NAME = 'actor-system';
  * `/ready` response body.
  */
 export const STARTUP_READINESS_CHECK_NAME = 'startup';
+
+/**
+ * The `name` the shutdown readiness check reports under, once a shutdown has
+ * begun (#997) — the check's identity in the `/ready` response body.
+ */
+export const SHUTDOWN_READINESS_CHECK_NAME = 'shutdown';
+
+/** The `before-service-unbind` task that adds the shutdown readiness check. */
+const SHUTDOWN_READINESS_TASK_NAME = 'health-checks-draining';
 
 /**
  * The framework's liveness check: has this actor system shut down?
@@ -65,6 +75,36 @@ function startupNotReadyDetail(startup: CoordinatedStartup): string {
   return startup.isRunning
     ? 'startup has not begun its first phase yet'
     : 'startup did not complete: the system was terminated while it ran';
+}
+
+/**
+ * Turn readiness red as the shutdown pipeline starts (#997): a failing
+ * {@link SHUTDOWN_READINESS_CHECK_NAME} check is added in
+ * `before-service-unbind`, the phase ahead of the one that stops the servers
+ * accepting, so a load balancer polling `/ready` — or the gRPC health service
+ * reading the same registry — is told "draining" before any listener goes
+ * away, and keeps being told so until it does.
+ *
+ * Added at shutdown rather than registered from the start reporting `true`,
+ * so a system that never shuts down keeps the readiness set it has always
+ * had — empty, for a plain one.  The task returns at once, so it adds nothing
+ * to a run's worst case.  Like the HTTP unbind, it is a framework task and
+ * goes with `auto-register-tasks = false`; a registry built while a run is
+ * already under way starts out red.
+ */
+function drainReadinessOnShutdown(shutdown: CoordinatedShutdown, registry: HealthCheckRegistry): void {
+  const draining = (): void => {
+    registry.addReadiness(() => ({
+      name: SHUTDOWN_READINESS_CHECK_NAME,
+      status: false,
+      detail: 'the system is shutting down: draining requests in flight',
+    }));
+  };
+  if (shutdown.isRunning) {
+    draining();
+    return;
+  }
+  shutdown.addFrameworkTask(Phases.BeforeServiceUnbind, SHUTDOWN_READINESS_TASK_NAME, draining);
 }
 
 /**
@@ -118,6 +158,7 @@ export const HealthCheckExtensionId: ExtensionId<HealthCheckRegistry> =
       registry.addLiveness(() => actorSystemLiveness(system));
       const startup = system.extension(CoordinatedStartupId);
       if (startup.hasTasks) registry.addReadiness(() => startupReadiness(startup));
+      drainReadinessOnShutdown(system.extension(CoordinatedShutdownId), registry);
       return registry;
     },
   );

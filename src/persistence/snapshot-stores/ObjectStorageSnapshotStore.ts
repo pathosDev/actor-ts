@@ -32,6 +32,7 @@ import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
 import type { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsType } from './ObjectStorageSnapshotStoreOptions.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 
 const utf8 = new TextEncoder();
@@ -149,6 +150,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     state: S,
     options?: PersistenceOptions,
   ): Promise<Snapshot<S>> {
+    assertValidPersistenceId(persistenceId, 'ObjectStorageSnapshotStore.save');
     // `isSafeInteger`, not `isFinite`, and that is the reader's rule rather
     // than a new one (#716): {@link snapshotSequenceOf} accepts a leaf only
     // when it is exactly {@link SEQ_PADDING} digits and parses back to a

@@ -11,9 +11,10 @@
  * queued and no rejection, and a throughput of 16.
  *
  * The bound is asserted where it can be told apart from its neighbours: under
- * `reject`, `n` messages fit and the next one throws `MailboxFullError` at the
- * sender, naming the capacity — so a bound of 2 cannot pass for one of 4, and
- * a policy that did not travel cannot pass for `reject`.  How the record is
+ * `reject`, `n` messages fit and the next one is refused — counted, and
+ * dead-lettered by the default `reject` gives its queue (#919) — so a bound of
+ * 2 cannot pass for one of 4, and a policy that did not travel cannot pass for
+ * `reject`.  How the record is
  * read and ranked is `tests/unit/config/DeploymentConfigDefaults.test.ts`'s
  * business; this file is about the cell.
  */
@@ -30,7 +31,7 @@ import { type Dispatcher, type DispatcherErrorSink, Dispatchers } from '../../..
 import type { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { SystemGroups } from '../../../src/internal/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { BoundedMailbox, ControlAwareMailbox, Mailbox, MailboxFullError } from '../../../src/mailbox/index.js';
+import { BoundedMailbox, ControlAwareMailbox, type DroppingMailbox, Mailbox } from '../../../src/mailbox/index.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const systems: ActorSystem[] = [];
@@ -80,17 +81,20 @@ function cellOf(ref: object): ReturnType<LocalActorRef<unknown>['getCell']> {
 }
 
 /**
- * Under `reject`: `capacity` messages fit, and the next is refused at the
- * sender with a `MailboxFullError` naming that capacity.  The actor must not
- * drain in between — it is either not started yet (every `tell` here is
- * synchronous) or parked in its handler.
+ * Under `reject`: `capacity` messages fit, and the next is refused — counted
+ * once, without a throw into the sender (#919) — on a queue that dead-letters
+ * its refusals, which is what tells `reject` apart from `drop-new`.  The actor
+ * must not drain in between — it is either not started yet (every `tell` here
+ * is synchronous) or parked in its handler.
  */
 function expectRejectingBoundOf<T>(ref: ActorRef<T>, capacity: number, message: (index: number) => T): void {
+  const mailbox = mailboxOf(ref) as DroppingMailbox<T>;
+  const droppedBefore = mailbox.droppedCount;
   for (let index = 0; index < capacity; index++) ref.tell(message(index));
-  let refusal: unknown = null;
-  try { ref.tell(message(capacity)); } catch (error) { refusal = error; }
-  expect(refusal).toBeInstanceOf(MailboxFullError);
-  expect((refusal as Error).message).toContain(`(capacity=${capacity})`);
+  expect(mailbox.droppedCount).toBe(droppedBefore);
+  expect(() => ref.tell(message(capacity))).not.toThrow();
+  expect(mailbox.droppedCount).toBe(droppedBefore + 1);
+  expect(mailbox.deadLetterDrops).toBe(true);
 }
 
 const aNumber = (index: number): number => index + 1;

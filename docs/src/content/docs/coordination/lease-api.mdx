@@ -121,6 +121,16 @@ an `acquire()` is still in flight, because ownership only begins
 when that acquire resolves.  Undoing an acquire you stopped
 waiting for means waiting for it to report back first.
 
+**A release only ever gives back the holder's own record.**  A
+holder that stalled past its TTL may still believe it holds the
+lease while another node has taken it legitimately; its release
+must not delete the successor's record.  Both built-in backends
+hold to that: `InMemoryLease` removes a record only while it names
+this owner, and `KubernetesLease` sends nothing past the TTL and
+otherwise makes the DELETE conditional on the record it last wrote
+(#1659).  Finding the record no longer ours is a clean release, not
+a rejection.  A custom backend has to give the same guarantee.
+
 ## `checkAlive(): boolean`
 
 ```ts

@@ -373,7 +373,7 @@ describe('what the detector announces while a downing provider holds a peer (#92
     // every downing path (#1428).
     expect(addressesOf(recorder.down)).toEqual([peer.toString()]);
     expect(addressesOf(recorder.removed)).toEqual([peer.toString()]);
-    expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
+    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
   });
 
   test('with no provider and auto-down off — the opt-out — the same silence is held the same way', async () => {

@@ -279,18 +279,21 @@ a producer tells with one argument, and so does the cluster's envelope dispatch
 — so there is no authenticated identity to hold `replyTo` up against, and every
 other field on the envelope was written by whoever sent it.
 
-How much rides on that is not settled here.  An `ActorRef` does cross the
-cluster wire: a `replyTo` in a delivery travels as an address marker, and the
-receiving node decodes it back into a live ref — a local actor when the marker
-names that node, a remote one otherwise.  So a peer able to send to a consumer
-under `/user` can point the Ack at an actor of its own choosing, one on the
-consumer's node included, and resolving a marker that names that node consults
-none of the trust checks an envelope's own target goes through.  What arrives
-there is one `Acknowledgment` per delivery, carrying four fields the peer wrote
-itself, and a real producer at that address discards it, because the
-incarnation does not match.  Whether a ref from the wire should resolve to any
-actor at all is a question for the ref decoder rather than for this protocol;
-[#1572](https://github.com/pathosDev/actor-ts/issues/1572) tracks it.
+How far that reaches is bounded by the ref decoder, not by this protocol.  An
+`ActorRef` does cross the cluster wire: a `replyTo` in a delivery travels as an
+address marker, and the receiving node decodes it back into a live ref — a
+local actor when the marker names that node, a remote one otherwise.  A marker
+that names the consumer's node goes through the same trust checks an
+envelope's own target does
+([#1572](https://github.com/pathosDev/actor-ts/issues/1572)): a `/system`
+actor, or a `/user` actor off the allow-list while
+[`untrusted-mode`](/reference/configuration/#actor-tsremote) is on, decodes to
+`Nobody`, and the Ack goes nowhere.  Within those checks a peer able to send to
+a consumer under `/user` can still point the Ack at an actor of its own
+choosing, one on the consumer's node included.  What arrives there is one
+`Acknowledgment` per delivery, carrying four fields the peer wrote itself, and
+a real producer at that address discards it, because the incarnation does not
+match.
 
 ## When NOT to use the controllers
 

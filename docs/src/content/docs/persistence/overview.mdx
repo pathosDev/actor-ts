@@ -370,6 +370,26 @@ a store someone else can write.  Replay raises
 refuses to
 fold](/persistence/persistent-actor/#what-replay-refuses-to-fold).
 
+A journal also declares whether a multi-event `append` is
+all-or-nothing, as `atomicBatchAppend`.  A single event is atomic
+everywhere; a batch is atomic only where the backend commits it as
+one unit:
+
+| Atomic batch appends | Journals |
+| --- | --- |
+| yes (`atomicBatchAppend: true`) | in-memory, SQLite, PostgreSQL, MariaDB, SQL Server, libSQL, DynamoDB |
+| no (`atomicBatchAppend: false`) | D1 (no transaction), MongoDB (none, so a standalone `mongod` works), Cassandra (one unlogged batch per partition) |
+
+On a `false` journal a failure partway through a batch can leave a
+committed prefix while the caller is told the batch failed, so
+`persistAll` with more than one event is refused there with
+`NonAtomicBatchAppendError` before anything is written.
+`actor-ts.persistence.allow-non-atomic-batch-append = on` accepts the
+risk instead: a rejected batch may then have committed a prefix, its
+callback does not run, the actor's state stays behind the journal, and
+the next recovery adopts the prefix.  A journal of your own that
+declares nothing is treated as unknown and never refused.
+
 A store that connects to something should also implement the
 optional `start?()`: open now instead of on the first operation, so
 the system's warm-up at boot — see [opening the stores at

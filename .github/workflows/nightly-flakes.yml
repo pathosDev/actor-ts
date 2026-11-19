@@ -215,16 +215,36 @@ jobs:
       # which is what lets the cap rise with the budgets inside it — a literal
       # cap would be crossed by the runner before any scaled budget could
       # report.  `AwaitConditionBudgets` enforces that pairing.
+      #
+      # Through the stress harness, once, rather than a bare `bun test`: the
+      # harness writes the `summary.json` the `report` job reads, so a red
+      # night here files the issue like the other jobs do instead of showing
+      # only as a red scheduled check (#1823).  It passes the environment on to
+      # the `bun test` it spawns, factor included.
       - name: Run the worker suites with tripled deadlines
         id: factored
         continue-on-error: true
         env:
           ACTOR_TS_TEST_TIME_FACTOR: '3'
         run: |
-          bun test \
+          bun run test:stress -- \
+            --runs=1 \
+            --run-timeout=1200000 \
+            --report-dir=.stress \
             tests/multi-node/LeaseMajority.test.ts \
             tests/multi-node/ParallelPubSub.test.ts \
             tests/unit/testkit/ParallelMultiNodeSpec.test.ts
+
+      - name: Upload reports
+        # See the worker-suites job's upload step for why both flags are here.
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: time-factor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .stress/
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Record the result
         if: always()
@@ -239,6 +259,108 @@ jobs:
             echo "A measurement, not a gate. Compare against the same three"
             echo "suites in the job above, which run them at factor 1."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The deep half of the scheduled-delivery property (#1370).  Per commit,
+  # `tests/unit/delivery/DeliveryOrderingProperties.test.ts` explores 40
+  # message orderings, bounded to stay inside bun's 5 s cap; this explores
+  # thousands, with wider workloads.  The file is named `.nightly.ts` so
+  # `bun test` never collects it — a name, not an environment variable, keeps
+  # it out of the per-commit run (`NoEnvironmentGatedSkips.test.ts`).
+  #
+  # Repetition is not what this measures: the seed is pinned, so every night
+  # explores the same orderings and a red night replays exactly from the
+  # `path` it prints.  It is a regression guard over a wider space than the
+  # per-commit file can afford.
+  #
+  # The sharding coordinator handshake runs here too (#1823): the same
+  # scheduler over the frames between two cluster nodes, a restart of the
+  # leader between two phases, and hand-offs while asks are in flight.
+  #
+  # Both files go through the stress harness, once, so the night's result is a
+  # `summary.json` the `report` job reads; before #1823 a red night here was a
+  # red scheduled check and nothing else.  A run of the harness is one
+  # `bun test` over both files, so `--run-timeout` covers the two together.
+  scheduled-orderings:
+    name: delivery and sharding under scheduled orderings, deep
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Explore delivery and sharding orderings
+        run: |
+          bun run test:stress -- \
+            --runs=1 \
+            --run-timeout=2100000 \
+            --report-dir=.stress \
+            ./tests/nightly/DeliveryOrderingDeep.nightly.ts \
+            ./tests/nightly/ShardingHandshakeDeep.nightly.ts
+
+      - name: Upload reports
+        # See the worker-suites job's upload step for why both flags are here.
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scheduled-orderings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .stress/
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+  # The deep half of the byte-level decoder properties (#1369): the CBOR,
+  # cluster-frame, WebSocket, HOCON and JSON-tree fuzz files and the codec
+  # differential, imported unchanged and run with 10 000 cases each instead of
+  # 120.  Same shape as the job above — a `.nightly.ts` name keeps it out of
+  # the per-commit run, and the pinned seed makes a red night replay exactly.
+  # The file raises its own per-test cap for the tests it imports, since at
+  # this count the slowest property runs well past bun's 5 s default.
+  decoder-inputs:
+    name: decoder inputs nobody chose, deep
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # Through the stress harness, once, for the same reason as the job above:
+      # the `summary.json` it writes is what the `report` job reads (#1823).
+      - name: Fuzz the decoders
+        run: |
+          bun run test:stress -- \
+            --runs=1 \
+            --run-timeout=1500000 \
+            --report-dir=.stress \
+            ./tests/nightly/DecoderFuzzDeep.nightly.ts
+
+      - name: Upload reports
+        # See the worker-suites job's upload step for why both flags are here.
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: decoder-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .stress/
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
 
   stress:
     name: whole suite, repeated
@@ -288,8 +410,10 @@ jobs:
             echo "::warning title=At least one test failed in some repeats::Add the named tests to the catalog in docs/src/content/docs/testing/diagnosing-flakes.mdx, or fix them. A test that failed in EVERY repeat is broken rather than flaky and belongs in an issue, not the catalog."
           fi
 
-  # The half that makes the measurement land.  Reads both jobs' summaries and
-  # turns them into one issue — or closes it when the night is clean.
+  # The half that makes the measurement land.  Reads every job's summary and
+  # turns them into one issue — or closes it when the night is clean.  All five
+  # jobs feed it: until #1823 only `worker-suites` and `stress` did, so a red
+  # `time-factor`, `scheduled-orderings` or `decoder-inputs` night filed nothing.
   #
   # **Installs nothing, deliberately.**  It is the only job here holding
   # `issues: write`, and the house rule (#622, asserted by
@@ -302,7 +426,7 @@ jobs:
     name: report the night
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [worker-suites, stress]
+    needs: [worker-suites, time-factor, scheduled-orderings, decoder-inputs, stress]
     # `always()`: a job that died before writing a summary is exactly the night
     # most worth reporting, and the report says so rather than staying silent.
     if: always()
@@ -328,6 +452,27 @@ jobs:
           name: worker-suites-${{ github.run_id }}-${{ github.run_attempt }}
           path: .reports/worker-suites
 
+      - name: Download the time-factor report
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: time-factor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .reports/time-factor
+
+      - name: Download the scheduled-orderings report
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scheduled-orderings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .reports/scheduled-orderings
+
+      - name: Download the decoder-inputs report
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: decoder-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .reports/decoder-inputs
+
       - name: Build the report
         id: report
         env:
@@ -336,6 +481,9 @@ jobs:
           node scripts/nightly-flake-report.mjs \
             --summary="whole suite:.reports/whole-suite/summary.json" \
             --summary="worker suites:.reports/worker-suites/summary.json" \
+            --summary="worker suites at time factor 3:.reports/time-factor/summary.json" \
+            --summary="scheduled orderings:.reports/scheduled-orderings/summary.json" \
+            --summary="decoder inputs:.reports/decoder-inputs/summary.json" \
             --run-url="$RUN_URL" \
             --out=nightly-report.md >> "$GITHUB_OUTPUT"
           cat nightly-report.md >> "$GITHUB_STEP_SUMMARY"

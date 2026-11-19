@@ -98,6 +98,15 @@ reply of type `ActorRef<number>`); using `this.sender` is more
 implicit but works for actors that handle both `ask`-style and
 fire-and-forget messages.
 
+**`message.replyTo` is attached to plain objects only.**  A message
+written as an object literal is copied with `replyTo` beside its
+fields, so the object you passed is never modified.  Anything else — a
+`Map`, a `Set`, a `Date`, a typed array, an array, an instance of your
+own class — is delivered as the very object you passed, with its
+prototype and contents intact, so `instanceof` and `P.instanceOf(...)`
+match on the receiving side.  Such a message carries no `replyTo`
+field; reply through `this.sender`, which holds the same temporary ref.
+
 ## Timeouts + the AskTimeoutError
 
 ```ts

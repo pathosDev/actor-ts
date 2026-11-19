@@ -29,8 +29,13 @@
  * about a *deterministic* ordering bug: #1145 was 0/200 even at a 1 ms poll,
  * because `src/Dispatcher.ts` schedules via `setImmediate` and the actor's
  * turn was already ahead of the poller in the same macrotask queue.  That
- * family is found by reading, not by repeating.  See
- * `docs/src/content/docs/testing/diagnosing-flakes.mdx`.
+ * family is not found by repeating.  It used to be found only by reading; the
+ * third option is to take the order away from the event loop and hand it to
+ * fast-check's scheduler (`fc.scheduler()` / `fc.scheduledModelRun`), which
+ * explores the interleavings, and on failure prints the one it found with a
+ * replay `path` that brings it back exactly (#1370).
+ * `tests/unit/delivery/DeliveryOrderingProperties.test.ts` does that for
+ * reliable delivery.  See `docs/src/content/docs/testing/diagnosing-flakes.mdx`.
  *
  * **A run that hangs is data, not an abort.**  `--run-timeout` (see
  * `DEFAULT_RUN_TIMEOUT_MS`) kills a `bun test` that has stopped making

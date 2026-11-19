@@ -162,7 +162,7 @@ stateDiagram-v2
   up --> leaving: cluster.leave()
   leaving --> removed
   down --> removed
-  removed --> [*]: tombstone TTL, at once under auto-down
+  removed --> [*]: tombstone TTL
   classDef happy   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn    fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef gone    fill:#1e293b,stroke:#475569,color:#94a3b8;
@@ -181,8 +181,8 @@ stateDiagram-v2
 - **`unreachable`** — the failure detector flagged this peer as
   not heartbeating.  Still officially a member, but routing avoids
   it.  Flips back to `up` when it heartbeats this node again — after
-  a pause, though not after a symmetric partition, which leaves
-  neither side heartbeating the other
+  a pause, and after a symmetric partition heals, since both sides
+  keep heartbeating members they hold unreachable
   ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
   If it stays silent, the failure detector removes it at
   `down-after` — the default with no strategy configured — or it
@@ -196,11 +196,9 @@ stateDiagram-v2
   configured, under the default `failure-detector.auto-down = on` —
   the failure detector's own.  Passes straight on to `removed`.
 - **`removed`** — out of the cluster.  A leave, a strategy's
-  decision and an operator's down keep it as a tombstone for a TTL
-  (default 24 h), so stale gossip from a slow peer can't
-  accidentally resurrect it.  The `auto-down` route deletes the
-  entry instead, which is why a peer that still lists the member can
-  bring it back — see
+  decision, an operator's down and the failure detector's `auto-down`
+  all keep it as a tombstone for a TTL (default 24 h), so stale
+  gossip from a slow peer can't accidentally resurrect it — see
   [the failure detector](/cluster/failure-detector/#what-the-detector-decides--and-doesnt).
 
 The cluster's events stream surfaces every transition — subscribe
@@ -353,9 +351,13 @@ The protocol carries:
 - **Reachability observations** — "I haven't heard from X recently."
 
 Two peers exchanging gossip merge their tables by picking the
-**higher version** for each member.  This is what makes convergence
-work without a leader-elected coordinator: every concurrent update
-is eventually seen by every peer.
+**higher version** for each member.  When two records carry the same
+version, the status further along the lifecycle wins — `joining` <
+`weakly-up` < `up` < `unreachable` < `leaving` < `down` < `removed` —
+so the order in which records arrive never decides the outcome.  This
+is what makes convergence work without a leader-elected coordinator:
+every concurrent update is eventually seen by every peer, and two
+peers that have seen the same updates hold the same table.
 
 For the deep dive, see
 [Joining and seeds](/cluster/joining-and-seeds/).
@@ -363,8 +365,8 @@ For the deep dive, see
 ## What the failure detector does
 
 The default failure detector is a simple, deterministic one based
-on **elapsed-time thresholds**.  Every node sends each reachable
-member a heartbeat on a fixed cadence and tracks, per peer, when it
+on **elapsed-time thresholds**.  Every node sends each member —
+unreachable ones included — a heartbeat on a fixed cadence and tracks, per peer, when it
 last heard from it: any frame counts as a sign of life, and a peer
 that stays silent past a threshold is flagged.  (The opt-in
 φ-accrual detector reads the same liveness, but learns its timing
@@ -414,9 +416,8 @@ others at the same moment and both halves run on as two clusters
 that do not merge again when the network heals
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 So for production, configure `lease-majority` or another strategy.
-With two or more survivors, one survivor's gossip can bring a member
-the other has just removed back as `unreachable` until it is removed
-again — see
+The removal leaves a tombstone, so with two or more survivors a
+crashed member is removed once — see
 [the failure detector](/cluster/failure-detector/#what-the-detector-decides--and-doesnt).
 `auto-down = off` is the opt-out: the detector parks the member at
 `unreachable`, its shards stay homed on it and its remote watchers

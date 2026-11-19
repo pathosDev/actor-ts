@@ -259,12 +259,14 @@ den du selbst konstruierst und spawnst, tut das nicht.
 
 **Der Stream eines Producers lässt sich nicht auf mehrere Consumer
 aufteilen** — nicht durch einen Router davor und durch nichts anderes.  Ein
-Consumer schlüsselt sein Fenster auf den Stream und rückt nur über eine
-lückenlose Folge von Sequenznummern vor; einer, der nur jede zweite Sequenz
-bekommt, sieht seine Lücken also nie geschlossen: er behandelt `maxOutOfOrder`
-Sequenzen oberhalb der ersten Lücke, verweigert den Rest ohne ACK, und der
-Producer bleibt auf Retransmits stehen, die ihrerseits verweigert werden.
-Wähle den Stream vor dem Producer, wie oben, nie danach.
+Consumer schlüsselt sein Dedup-Fenster auf den Stream und hält es allein; ein
+Retransmit, den ein Router einem anderen Consumer als dem ursprünglichen
+gibt, lässt Deinen Handler also ein zweites Mal laufen, wo ein einzelner
+Consumer ihn als Duplikat geschluckt hätte.  Und solange eine Sequenz noch
+nicht geACKt ist, kann ein Consumer, der nur jede zweite Sequenz bekommt,
+seine Lücken nicht schließen: er behandelt `maxOutOfOrder` Sequenzen oberhalb
+der ersten und verweigert den Rest, bis der Floor des Producers darüber
+hinausrückt.  Wähle den Stream vor dem Producer, wie oben, nie danach.
 
 Jede Nachricht an den Consumer zu geben, der gerade Kapazität hat —
 Work-Pulling —, braucht ein Demand-Signal der Consumer, das dieses Protokoll

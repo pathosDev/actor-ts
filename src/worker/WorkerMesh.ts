@@ -78,6 +78,11 @@ export class WorkerMesh {
    */
   private readonly metricsRelay: MetricsRelay | null;
   private closed = false;
+  /**
+   * An orderly shutdown an owner has started on this mesh and not finished —
+   * see {@link _awaitOrderlyShutdown}.  `null` while nobody has.
+   */
+  private orderlyShutdown: Promise<void> | null = null;
 
   private constructor(
     system: ActorSystem,
@@ -218,9 +223,16 @@ export class WorkerMesh {
     // frame to a worker actor — frames are ordered on one channel.
     mesh.metricsRelay?.start();
     // The threads must not outlive the system that owns them.  Registered in
-    // the same phase as the cluster's own leave and ahead of it by name order
-    // — the workers go first, then the main thread leaves what is by then a
-    // cluster of one.
+    // `cluster-leave`, beside the main thread's own leave task — and not ahead
+    // of it: a phase starts all of its tasks together and waits for every one
+    // (`CoordinatedShutdown.runPhase`), so the thread stop and the main
+    // thread's leave run concurrently, whatever their names.  This is a hard
+    // stop: no worker system gets its `terminate()`, so no offloaded actor its
+    // `postStop`.  A mesh the parallelism extension owns has already been shut
+    // down in order by then — its own task runs in `before-cluster-shutdown`,
+    // a phase earlier — and this task finds the mesh closed and does nothing
+    // (#1754).  If a budget abandoned that shutdown while it still runs, this
+    // task waits for it first (`_awaitOrderlyShutdown`, #1826).
     system.extension(CoordinatedShutdownId).addFrameworkTask(
       Phases.ClusterLeave,
       MESH_SHUTDOWN_TASK_NAME,
@@ -272,7 +284,25 @@ export class WorkerMesh {
     await this.cluster.leave();
   }
 
+  /**
+   * @internal An owner has started taking this mesh down in order — the
+   * parallelism extension asks every worker system to `terminate()` and ends
+   * with {@link terminate}.  `worker-mesh-terminate` waits for that run before
+   * it stops any thread (#1826): a phase budget that abandoned the run's task
+   * in `before-cluster-shutdown` leaves it waiting for the workers'
+   * acknowledgments, and a hard stop then would cost them their `postStop`
+   * after all.  The wait is bounded by `cluster-leave`'s own budget, which
+   * abandons this task in turn; no timer of its own.
+   */
+  _awaitOrderlyShutdown(run: Promise<void>): void {
+    this.orderlyShutdown = run;
+  }
+
   private async terminateWorkers(): Promise<void> {
+    if (this.orderlyShutdown !== null) {
+      // Its failure is its owner's to report; the threads still have to go.
+      try { await this.orderlyShutdown; } catch { /* reported by the owner */ }
+    }
     if (this.closed) return;
     this.closed = true;
     this.metricsRelay?.stop();

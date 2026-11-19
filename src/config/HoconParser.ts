@@ -29,8 +29,12 @@
  * `include` is a different case from those: it is not merely unimplemented
  * but deliberately refused, and it says so — see `includeNotSupported`.  Compose
  * several sources in code instead, with `Config.parseFile(…).merge(…)`.
+ *
+ * Nesting is bounded by `MAX_HOCON_NESTING_DEPTH` and refused past it with a
+ * parse error, never left to the engine's stack — see `HoconParser.nested`.
  */
 import { match } from 'ts-pattern';
+import { MAX_HOCON_NESTING_DEPTH } from './Constants.js';
 
 export type ConfigPrimitive = string | number | boolean | null;
 export type ConfigValue = ConfigPrimitive | ConfigValue[] | ConfigObject | Substitution | Concatenation;
@@ -121,6 +125,13 @@ export function parseHocon(source: string): ConfigObject {
 class HoconParser {
   private pos = 0;
   private readonly src: string;
+  /**
+   * Levels the value being parsed sits below the root — see {@link nested}.
+   * Held to {@link MAX_HOCON_NESTING_DEPTH}, so that a hostile or broken
+   * document ends in a parse error naming its line rather than in the
+   * engine's `RangeError` (#1369).
+   */
+  private depth = 0;
 
   constructor(src: string) { this.src = src; }
 
@@ -168,10 +179,10 @@ class HoconParser {
           continue;
         }
         this.skipInsignificant();
-        value = this.parseValue();
+        value = this.nested(keyPath.length, () => this.parseValue());
       } else if (char === '{') {
         // Key followed directly by an object literal — HOCON shorthand.
-        value = this.parseValue();
+        value = this.nested(keyPath.length, () => this.parseValue());
       } else if (keyPath.length === 1 && keyPath[0] === 'include') {
         // Reaching here means `include` was followed by neither `=`/`:` nor `{`,
         // which is exactly the directive position — and only that position, so
@@ -311,7 +322,7 @@ class HoconParser {
     while (true) {
       this.skipInsignificant();
       if (this.peekChar() === ']') { this.pos++; return out; }
-      out.push(this.parseValue());
+      out.push(this.nested(1, () => this.parseValue()));
       this.skipSeparator();
       this.skipInsignificant();
       if (this.peekChar() === ']') { this.pos++; return out; }
@@ -460,6 +471,27 @@ class HoconParser {
   }
 
   /* -------------------------------- Helpers ------------------------------- */
+
+  /**
+   * Run `parse` `levels` deeper: one per key of the path a value is assigned
+   * to — `a.b.c = …` puts it three objects down, `a { … }` one — and one for
+   * each list it is an element of.
+   *
+   * Counted at the assignment rather than at the brace, because a path
+   * expression nests as deep as braces do without writing one, and it is the
+   * tree's depth that every later walk recurses over.
+   */
+  private nested<T>(levels: number, parse: () => T): T {
+    if (this.depth + levels > MAX_HOCON_NESTING_DEPTH) {
+      throw this.error(`Nesting deeper than ${MAX_HOCON_NESTING_DEPTH} levels is not supported`);
+    }
+    this.depth += levels;
+    try {
+      return parse();
+    } finally {
+      this.depth -= levels;
+    }
+  }
 
   /**
    * Writes `value` at `path`, creating intermediate objects as it descends.
@@ -768,6 +800,19 @@ type Resolved = {
 
 const NOTHING: Resolved = { value: undefined, provenance: NO_PROVENANCE };
 
+/** A field of the unresolved tree: its path and its unresolved value. */
+type FieldReference = {
+  readonly path: readonly string[];
+  readonly node: ConfigValue | undefined;
+};
+
+/** A field on the resolver's explicit stack, and how far through its dependencies it is. */
+type DependencyFrame = FieldReference & {
+  readonly key: string;
+  readonly dependencies: readonly FieldReference[];
+  next: number;
+};
+
 /**
  * One resolution of one parsed tree.
  *
@@ -778,8 +823,13 @@ const NOTHING: Resolved = { value: undefined, provenance: NO_PROVENANCE };
 class SubstitutionResolver {
   /** Resolved fields by `pathKey`; a stored `undefined` value is a field that resolved to nothing. */
   private readonly resolved = new Map<string, Resolved>();
-  /** The fields whose resolution is under way, outermost first — what names a cycle. */
+  /**
+   * The fields whose resolution is under way, outermost first — what names a
+   * cycle — and each one's position there, so finding an open field is one
+   * lookup rather than a scan of the chain (#1836).
+   */
   private readonly resolving: Array<readonly string[]> = [];
+  private readonly openPositions = new Map<string, number>();
   private readonly environment: ReadonlyArray<EnvironmentSource>;
 
   constructor(
@@ -798,25 +848,131 @@ class SubstitutionResolver {
    * The resolved value of the field at `path`, whose unresolved value is
    * `node` — memoised, so a field a lookup already resolved is not resolved a
    * second time when the walk reaches it.
+   *
+   * The fields this field's value is certain to look up are resolved first,
+   * by an explicit stack rather than by recursion (#1836).  A chain of 20 000
+   * links, each naming the next, otherwise took one set of call frames per
+   * link and overflowed the engine's stack.  By the time `resolveNode` runs
+   * for a field, the lookups it makes are memoised hits, so its own recursion
+   * is bounded by the value's nesting, which the parser caps.  The stack
+   * meets the dependencies in the order `resolveNode` would and finishes each
+   * before the next, so a chain that fails, fails with the error it always did.
    */
   private resolveField(path: readonly string[], node: ConfigValue | undefined): Resolved {
     const key = pathKey(path);
     const known = this.resolved.get(key);
     if (known !== undefined) return known;
-    const open = this.resolving.findIndex((entry) => pathKey(entry) === key);
-    if (open >= 0) {
-      const cycle = [...this.resolving.slice(open), path].map((entry) => entry.join('.'));
+    const depth = this.resolving.length;
+    try {
+      this.open(path, key);
+      const stack: DependencyFrame[] = [{ path, node, key, dependencies: this.dependenciesOf(node, path), next: 0 }];
+      while (stack.length > 0) {
+        const frame = stack[stack.length - 1]!;
+        const dependency = frame.dependencies[frame.next];
+        if (dependency !== undefined) {
+          frame.next++;
+          const dependencyKey = pathKey(dependency.path);
+          if (this.resolved.has(dependencyKey)) continue;
+          this.open(dependency.path, dependencyKey);
+          stack.push({
+            ...dependency,
+            key: dependencyKey,
+            dependencies: this.dependenciesOf(dependency.node, dependency.path),
+            next: 0,
+          });
+          continue;
+        }
+        stack.pop();
+        this.resolved.set(frame.key, this.resolveNode(frame.node, frame.path, true));
+        this.close(frame.key);
+      }
+    } finally {
+      while (this.resolving.length > depth) this.close(pathKey(this.resolving[this.resolving.length - 1]!));
+    }
+    return this.resolved.get(key)!;
+  }
+
+  /** Mark the field at `path` as under way, refusing it when it already is: that is a cycle. */
+  private open(path: readonly string[], key: string): void {
+    const position = this.openPositions.get(key);
+    if (position !== undefined) {
+      const cycle = [...this.resolving.slice(position), path].map((entry) => entry.join('.'));
       throw new Error(`Substitution cycle: ${cycle.join(' -> ')}`);
     }
+    this.openPositions.set(key, this.resolving.length);
     this.resolving.push(path);
-    let result: Resolved;
-    try {
-      result = this.resolveNode(node, path, true);
-    } finally {
-      this.resolving.pop();
+  }
+
+  /** Take the innermost open field, whose key is `key`, off the chain. */
+  private close(key: string): void {
+    this.resolving.pop();
+    this.openPositions.delete(key);
+  }
+
+  /**
+   * The fields `resolveNode(node, path, true)` is certain to resolve, in the
+   * order it meets them.  For an object, which is addressable here, those are
+   * its own fields.  Otherwise they are what it looks up through `lookupTree`:
+   * the target of a lone substitution, of each piece of a concatenation, and
+   * of each such element of a list or of an object inside one.  That
+   * collection stops at the first substitution the tree does not answer,
+   * because the lookup after it may throw first, and that error is the one to
+   * report.  The value an optional substitution replaced is left out, since it
+   * is read only when every lookup misses.
+   */
+  private dependenciesOf(node: ConfigValue | undefined, path: readonly string[]): FieldReference[] {
+    const found: FieldReference[] = [];
+    if (isPlainObject(node)) {
+      for (const [key, child] of Object.entries(node)) {
+        if (!isForbiddenConfigKey(key)) found.push({ path: [...path, key], node: child });
+      }
+      return found;
     }
-    this.resolved.set(key, result);
-    return result;
+    const pending: FieldReference[] = [{ path, node }];
+    while (pending.length > 0) {
+      const { path: at, node: value } = pending.pop()!;
+      if (value === undefined) continue;
+      if (isSubstitution(value)) {
+        if (!this.addTreeField(found, value.path, at)) return found;
+      } else if (isConcatenation(value)) {
+        for (const piece of value.pieces) {
+          if (typeof piece !== 'string' && !this.addTreeField(found, piece.path, at)) return found;
+        }
+      } else if (Array.isArray(value)) {
+        for (let index = value.length - 1; index >= 0; index--) pending.push({ path: at, node: value[index] });
+      } else if (isPlainObject(value)) {
+        const children = Object.entries(value).filter(([key]) => !isForbiddenConfigKey(key));
+        for (let index = children.length - 1; index >= 0; index--) {
+          const [key, child] = children[index]!;
+          pending.push({ path: [...at, key], node: child });
+        }
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Add the field `lookupTree` resolves for `substitutionPath`, read off the
+   * raw tree the way `lookupTree` walks it.  False when the tree does not
+   * answer: no such field, a forbidden segment, or the field naming itself,
+   * which skips the tree.
+   */
+  private addTreeField(found: FieldReference[], substitutionPath: string, path: readonly string[]): boolean {
+    const target = substitutionPath.split('.');
+    if (samePath(target, path)) return false;
+    let node: ConfigValue | undefined = this.root;
+    for (let depth = 0; depth < target.length; depth++) {
+      const segment = target[depth]!;
+      if (isForbiddenConfigKey(segment)) return false;
+      if (isUnresolved(node)) {
+        found.push({ path: target.slice(0, depth), node });
+        return true;
+      }
+      if (!isPlainObject(node) || !Object.hasOwn(node, segment)) return false;
+      node = (node as ConfigObject)[segment];
+    }
+    found.push({ path: target, node });
+    return true;
   }
 
   /**

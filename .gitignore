@@ -13,6 +13,13 @@ bun.lockb
 # local run leaves ~10 copies of the whole suite's report behind.
 .stress/
 
+# Report, coverage scratch and restore journal of `bun run test:mutation`
+# (scripts/mutation-run.mjs).  The nightly `mutation` workflow uploads the
+# report as an artifact.  Never delete a non-empty `journal/` by hand: it holds
+# the original bytes of a file an interrupted run left mutated, and the next
+# run (or `--recover`) puts them back.
+.mutation/
+
 # Astro / Starlight build cache (docs site under docs/).  `dist/` +
 # `node_modules/` are already covered by the top-level patterns; the
 # `.astro/`-cache is a separate folder Astro recreates on each build.

@@ -2,7 +2,13 @@ import type { ActorSystem } from './ActorSystem.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import { Config, ConfigError, isPlainObject } from './config/Config.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
-import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE, MAX_PROCESS_EXIT_CODE } from './Constants.js';
+import {
+  DEFAULT_ACTOR_SYSTEM_TERMINATE_TIMEOUT_MS,
+  DEFAULT_PHASE_TIMEOUT_MS,
+  DEFAULT_SHUTDOWN_EXIT_CODE,
+  DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS,
+  MAX_PROCESS_EXIT_CODE,
+} from './Constants.js';
 import { getProcessSignals } from './runtime/signals/index.js';
 import { armChainedTimeout, unreferencedHostTimers, type Cancellable } from './Scheduler.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
@@ -119,6 +125,31 @@ type RegisteredTask = {
   readonly task: ShutdownTask;
 };
 
+/** A task that has started and not yet settled — see {@link CoordinatedShutdown._pendingTasks}. */
+type PendingTask = {
+  readonly phase: string;
+  readonly name: string;
+  /** Settles, never rejects, once the task itself does — whatever its phase budget did. */
+  readonly settled: Promise<void>;
+};
+
+/**
+ * The run's overall deadline, armed when the run starts.  `expired` resolves
+ * once it passes and never under `overall-timeout = 0`.
+ */
+type RunDeadline = {
+  readonly expired: Promise<'expired'>;
+  readonly cancel: () => void;
+};
+
+/** A phase budget ran out on a task — told apart from the task's own failure. */
+class ShutdownTaskTimeoutError extends Error {
+  constructor(task: string, phase: string, timeoutMs: number) {
+    super(`Shutdown task "${task}" in phase "${phase}" timed out after ${timeoutMs}ms`);
+    this.name = 'ShutdownTaskTimeoutError';
+  }
+}
+
 /**
  * One child of `actor-ts.coordinated-shutdown.phases` or of
  * `actor-ts.coordinated-startup.phases`, already type-checked — both blocks
@@ -187,6 +218,23 @@ export class CoordinatedShutdown implements Extension {
   private _processHooks: { signal: ProcessSignal; handler: () => void }[] = [];
 
   /**
+   * Every task that has started and not yet settled, keyed `phase/name` —
+   * including one its phase budget abandoned, which keeps running after the
+   * pipeline moves on (#920).  What the ERROR lines name as still pending,
+   * and what an exit at the end of a run waits for, up to the deadline.
+   */
+  private readonly _pendingTasks = new Map<string, PendingTask>();
+
+  /** The deadline of the run in flight, or `null` before the first run. */
+  private _deadline: RunDeadline | null = null;
+
+  /**
+   * `overall-timeout`: the bound on a whole run, in ms; `0` sets none.  Read
+   * once, in the constructor — see {@link DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS}.
+   */
+  readonly overallTimeoutMs: number;
+
+  /**
    * Default per-phase timeout in ms.  Can be changed globally or per-phase
    * via `setPhaseTimeout`, or from `actor-ts.coordinated-shutdown.
    * default-phase-timeout`.  5 seconds is a reasonable balance between
@@ -248,6 +296,7 @@ export class CoordinatedShutdown implements Extension {
     this.terminateActorSystem = configured.terminateActorSystem ?? true;
     this.autoRegisterTasks = configured.autoRegisterTasks ?? true;
     this.runByProcessSignals = configured.runByProcessSignals ?? true;
+    this.overallTimeoutMs = configured.overallTimeoutMs ?? DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS;
 
     // Seed the 12 canonical phases linearly — each depends on the previous.
     const order: DefaultPhase[] = [
@@ -272,6 +321,14 @@ export class CoordinatedShutdown implements Extension {
         recover: true,
       });
     }
+    // The terminator's phase drains and tears down the whole system, which is
+    // not comparable to unbinding a listener: it gets a budget of its own, and
+    // never less than the generic one (#920).  A `phases` override below still
+    // sets it outright.
+    this.setPhaseTimeout(
+      Phases.ActorSystemTerminate,
+      Math.max(this.defaultPhaseTimeoutMs, DEFAULT_ACTOR_SYSTEM_TERMINATE_TIMEOUT_MS),
+    );
     this.applyPhaseOverrides(config);
     // Built-in terminator in the final phase.  Opting out leaves the phase
     // in place — user tasks registered there still run — and hands the
@@ -673,6 +730,8 @@ export class CoordinatedShutdown implements Extension {
 
   private async _run(reason: Reason): Promise<void> {
     this._running = true;
+    const deadline = this.armDeadline();
+    this._deadline = deadline;
     // Settled in the `finally` and nowhere earlier: once the exit has happened
     // or, where there is none, once the run has ended (#1455).  The exit
     // flushes the dead-letter queue and the log sinks first, and a
@@ -685,7 +744,14 @@ export class CoordinatedShutdown implements Extension {
       let halt: { readonly phase: string; readonly error: unknown } | undefined;
       for (const phase of this.topologicalOrder()) {
         try {
-          await this.runPhase(phase, reason);
+          // Raced against the run's deadline, so a phase whose budget is
+          // long — or a sum of phases that is — cannot carry the run past the
+          // one number the operator sized the grace period against (#920).
+          const outcome = await Promise.race([this.runPhase(phase, reason), deadline.expired]);
+          if (outcome === 'expired') {
+            halt = { phase, error: this.reportDeadlinePassed(phase, reason) };
+            break;
+          }
         } catch (error) {
           halt = { phase, error };
           break;
@@ -701,7 +767,65 @@ export class CoordinatedShutdown implements Extension {
       // does not return.
       if (this.exitsProcess()) await this.exitWith(this.exitStatus(this._failed));
     } finally {
+      deadline.cancel();
       this._settled = true;
+    }
+  }
+
+  /**
+   * Arm the run's overall deadline — real time and unreferenced, for the reason
+   * {@link runOneTask} arms a phase budget that way.
+   */
+  private armDeadline(): RunDeadline {
+    if (this.overallTimeoutMs <= 0) {
+      return { expired: new Promise<'expired'>(() => {}), cancel: () => {} };
+    }
+    let timer!: Cancellable;
+    const expired = new Promise<'expired'>((resolve) => {
+      timer = armChainedTimeout(() => resolve('expired'), this.overallTimeoutMs, unreferencedHostTimers);
+    });
+    return { expired, cancel: () => timer.cancel() };
+  }
+
+  /**
+   * The run passed its overall deadline in `phase`: say so at ERROR, naming
+   * every task still pending — the phase's own and any an earlier budget
+   * abandoned — and hand back the error the run halts with.
+   */
+  private reportDeadlinePassed(phase: string, reason: Reason): Error {
+    const message = `the coordinated-shutdown pipeline (${reason}) passed its overall deadline of `
+      + `${this.overallTimeoutMs} ms (${ConfigKeys.coordinatedShutdown.overallTimeout}) in phase "${phase}"; `
+      + `still pending: ${this.describePendingTasks()}`;
+    this.system.log.error(`[shutdown] ${message}`);
+    return new Error(message);
+  }
+
+  /** `"phase/name", …` for every task still pending, or `nothing`. */
+  private describePendingTasks(phase?: string): string {
+    const pending = [...this._pendingTasks.values()]
+      .filter((task) => phase === undefined || task.phase === phase)
+      .map((task) => `"${task.phase}/${task.name}"`);
+    return pending.length === 0 ? 'nothing' : pending.join(', ');
+  }
+
+  /**
+   * Before an exit: let the tasks a phase budget abandoned settle, up to the
+   * run's deadline (#920).  Exiting under one cut a journal flush or a shard
+   * handoff off mid-write — the pipeline had moved on, the task had not.  What
+   * the deadline cuts off is named at ERROR, the last word before the exit.
+   */
+  private async awaitAbandonedTasks(): Promise<void> {
+    if (this._pendingTasks.size === 0) return;
+    const deadline = this._deadline;
+    const allSettled = Promise.all([...this._pendingTasks.values()].map((task) => task.settled))
+      .then(() => 'settled' as const);
+    const outcome = deadline === null ? await allSettled : await Promise.race([allSettled, deadline.expired]);
+    if (outcome === 'expired') {
+      this.system.log.error(
+        `[shutdown] the overall deadline of ${this.overallTimeoutMs} ms `
+        + `(${ConfigKeys.coordinatedShutdown.overallTimeout}) passed with abandoned tasks still running; `
+        + `exiting without them: ${this.describePendingTasks()}`,
+      );
     }
   }
 
@@ -758,6 +882,7 @@ export class CoordinatedShutdown implements Extension {
    * ERROR line saying why — when the process goes.
    */
   private async exitWith(status: number): Promise<void> {
+    await this.awaitAbandonedTasks();
     await this.system._flushBeforeExit();
     process.exit(status);
   }
@@ -816,19 +941,39 @@ export class CoordinatedShutdown implements Extension {
     let budget!: Cancellable;
     const timeout = new Promise<never>((_, reject) => {
       budget = armChainedTimeout(
-        () => reject(
-          new Error(`Shutdown task "${t.name}" in phase "${def.name}" timed out after ${def.timeoutMs}ms`),
-        ),
+        () => reject(new ShutdownTaskTimeoutError(t.name, def.name, def.timeoutMs)),
         def.timeoutMs,
         unreferencedHostTimers,
       );
     });
+    // Started outside the race so its settling is tracked whatever the race
+    // does: a budget that runs out abandons the task, it does not stop it, and
+    // the task stays pending until it really settles (#920).
+    let running: Promise<void>;
     try {
-      await Promise.race([Promise.resolve(t.task(reason)), timeout]);
+      running = Promise.resolve(t.task(reason));
     } catch (e) {
-      this.system.log.warn(
-        `[shutdown] task "${t.name}" in phase "${def.name}" failed: ${(e as Error).message}`,
-      );
+      running = Promise.reject(e);
+    }
+    const key = `${def.name}/${t.name}`;
+    const settled = running.then(() => {}, () => {}).finally(() => { this._pendingTasks.delete(key); });
+    this._pendingTasks.set(key, { phase: def.name, name: t.name, settled });
+    try {
+      await Promise.race([running, timeout]);
+    } catch (e) {
+      if (e instanceof ShutdownTaskTimeoutError) {
+        // ERROR, not WARN: the pipeline is moving on past work that has not
+        // finished — a journal flush, a shard handoff — and nothing will wait
+        // for it but an exit, up to the deadline.
+        this.system.log.error(
+          `[shutdown] ${e.message} and is still running; abandoned, the pipeline moves on `
+          + `(still pending in "${def.name}": ${this.describePendingTasks(def.name)})`,
+        );
+      } else {
+        this.system.log.warn(
+          `[shutdown] task "${t.name}" in phase "${def.name}" failed: ${(e as Error).message}`,
+        );
+      }
       if (!def.recover) throw e;
     } finally {
       budget.cancel();
@@ -866,8 +1011,8 @@ export class CoordinatedShutdown implements Extension {
 }
 
 /**
- * What `actor-ts.coordinated-shutdown` says about the pipeline: its seven
- * leaves, each absent when unset — six the extension applies, and
+ * What `actor-ts.coordinated-shutdown` says about the pipeline: its eight
+ * leaves, each absent when unset — seven the extension applies, and
  * `run-by-actor-system-terminate`, which `ActorSystem` reads through the same
  * reader because a bare `terminate()` must not build the extension to ask
  * (#1455).  The `phases` block is not part of it — its children are named
@@ -882,6 +1027,8 @@ export class CoordinatedShutdown implements Extension {
 export type CoordinatedShutdownConfiguration = {
   /** `default-phase-timeout`: the budget each seeded phase starts with. */
   readonly defaultPhaseTimeoutMs?: number;
+  /** `overall-timeout`: the bound on a whole run, `0` for none — already checked non-negative. */
+  readonly overallTimeoutMs?: number;
   /** `exit-process`: call `process.exit` once a run ends, completed or halted. */
   readonly exitProcess?: boolean;
   /** `exit-code`: the status that exit carries, already range-checked. */
@@ -897,7 +1044,7 @@ export type CoordinatedShutdownConfiguration = {
 };
 
 /**
- * Read the seven leaves of `actor-ts.coordinated-shutdown`, leaving an unset one
+ * Read the eight leaves of `actor-ts.coordinated-shutdown`, leaving an unset one
  * absent rather than defaulting it in; the extension's constructor and the
  * system apply the defaults.  Exported so that what is read can be checked
  * without building a system around it (#1425).
@@ -911,6 +1058,13 @@ export function readCoordinatedShutdownOptionsFromConfig(
   } = {};
   if (config.hasPath(keys.defaultPhaseTimeout)) {
     out.defaultPhaseTimeoutMs = config.getDuration(keys.defaultPhaseTimeout);
+  }
+  if (config.hasPath(keys.overallTimeout)) {
+    const overallTimeoutMs = config.getDuration(keys.overallTimeout);
+    if (overallTimeoutMs < 0) {
+      throw new ConfigError(`${keys.overallTimeout} must not be negative (0 sets no deadline), got ${overallTimeoutMs}ms`);
+    }
+    out.overallTimeoutMs = overallTimeoutMs;
   }
   if (config.hasPath(keys.exitProcess)) out.exitProcess = config.getBoolean(keys.exitProcess);
   if (config.hasPath(keys.exitCode)) out.exitCode = readExitCode(config, keys.exitCode);

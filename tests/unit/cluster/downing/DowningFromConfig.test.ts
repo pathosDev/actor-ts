@@ -443,6 +443,36 @@ describe('a lease-majority provider built from configuration gives its lease bac
     expect(handed).toEqual([]);
   });
 
+  test('a self-down binding handed over after the first decision still reaches the strategy', async () => {
+    // `Cluster` binds before it ever asks, but the binding is part of the
+    // provider contract, and this provider only builds its strategy at that
+    // first decision — so a later binding has to be passed on, not just kept.
+    restore();
+    const lostHandlers: Array<(reason: string) => void> = [];
+    restore = _substituteLeaseBackendForTest((options, config) => {
+      const lease: Lease = new InMemoryLease(options, config);
+      return {
+        acquire: () => lease.acquire(),
+        release: () => lease.release(),
+        checkAlive: () => lease.checkAlive(),
+        onLost: (handler) => {
+          lostHandlers.push(handler);
+          return () => { /* the fixture reports a loss by hand */ };
+        },
+      };
+    });
+    const provider = configuredProvider();
+    await wonArbitration(provider);
+    const downs: string[] = [];
+    provider.bindSelfDown?.((reason) => { downs.push(reason); });
+
+    for (const handler of lostHandlers) handler('the record was taken over');
+
+    expect(downs).toHaveLength(1);
+    expect(downs[0]).toContain('the record was taken over');
+    await provider.shutdown?.();
+  });
+
   test('a release that fails still leaves nothing armed', async () => {
     restore();
     const captured: { scheduler: ConfiguredLeaseOptions['scheduler'] | null } = { scheduler: null };

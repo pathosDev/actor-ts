@@ -27,6 +27,7 @@ import {
 import { postToEndpoint, type FetchLike } from './HttpDelivery.js';
 import type { LogRecord } from './LogRecord.js';
 import type { LogSinkContext } from './LogSink.js';
+import { abandonStreamSocket, StreamDrain } from './StreamDrain.js';
 
 const ENCODER = new TextEncoder();
 
@@ -263,19 +264,34 @@ const GELF_TCP_CONNECT_TIMEOUT_MS = 10_000;
 class TcpGelfTransport implements GelfTransport {
   private socket: TcpSocketLike | undefined;
   private connecting: Promise<TcpSocketLike> | undefined;
+  /** Holds the batch while the socket pushes back (#1827). */
+  private readonly drain: StreamDrain;
 
   constructor(
     private readonly host: string,
     private readonly port: number,
     private readonly tls: TlsTransportOptionsType | undefined,
     private readonly backend: () => Promise<TcpBackend>,
-  ) {}
+  ) {
+    this.drain = new StreamDrain(`GELF TCP connection to ${host}:${port}`);
+  }
 
+  /**
+   * Resolves once the socket can take the next message — at once, unless this
+   * write met back-pressure (#1827).  A connection that stalls or goes while
+   * it pushes back is let go here, so the retry dials afresh.
+   */
   async send(message: string): Promise<void> {
     const socket = await this.ensureConnected();
-    // A newline inside a message is fine; a null byte would forge a frame
-    // boundary, so it is the one character that cannot survive.
-    socket.write(ENCODER.encode(`${message.replace(/\0/g, '')}\0`));
+    try {
+      // A newline inside a message is fine; a null byte would forge a frame
+      // boundary, so it is the one character that cannot survive.
+      await this.drain.write(socket, ENCODER.encode(`${message.replace(/\0/g, '')}\0`));
+    } catch (error) {
+      this.forget(socket);
+      abandonStreamSocket(socket);
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
@@ -308,8 +324,9 @@ class TcpGelfTransport implements GelfTransport {
         onOpen: () => {},
         // Graylog says nothing back on a GELF input.
         onData: () => {},
-        onClose: () => { this.forget(socket); },
-        onError: () => { this.forget(socket); },
+        onClose: () => { this.forget(socket); this.drain.lost(socket, 'closed'); },
+        onError: () => { this.forget(socket); this.drain.lost(socket, 'failed'); },
+        onDrain: () => { this.drain.drained(socket); },
       },
     }, GELF_TCP_CONNECT_TIMEOUT_MS);
     this.socket = socket;

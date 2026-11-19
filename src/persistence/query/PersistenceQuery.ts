@@ -19,7 +19,11 @@ import { assertValidFilterTags } from '../storage/TagValidator.js';
  *
  * **Delivery guarantees:** at-least-once.  A projection that fails
  * mid-event must accept that the event will be redelivered after
- * restart.  Handlers therefore have to be idempotent.
+ * restart.  Handlers therefore have to be idempotent.  By-tag consumers
+ * re-read a lookback window behind their position, so an event that
+ * commits up to that window after its stamp is still delivered, and
+ * deduplicate it on `(persistenceId, sequenceNr)`; one that commits later
+ * than the window is missed (#957, `TagLookbackWindow`).
  *
  * **Push where the journal can push (#42).**  A live query subscribes
  * to `journal.events` when the journal exposes one, and polls at
@@ -58,8 +62,13 @@ export interface PersistenceQuery {
   /**
    * Live stream of every event matching `filter` whose offset is
    * `>= fromOffset`.  Yields events ordered by `(timestamp,
-   * persistenceId, sequenceNr)`.  See {@link Offset} for offset
-   * semantics — the stream emits the offset alongside the event so
+   * persistenceId, sequenceNr)` — except an event whose write committed
+   * after the stream had passed its stamp, which arrives when it becomes
+   * visible, behind newer ones.  Each read starts
+   * `options.lookbackWindowMs` behind the newest delivered stamp and drops
+   * what it already delivered, keyed on `(persistenceId, sequenceNr)`, so
+   * such an event is delivered exactly once (#957).  See {@link Offset} for
+   * offset semantics — the stream emits the offset alongside the event so
    * the consumer can persist progress.
    *
    * `filter` accepts either a single tag string (back-compat shortcut
@@ -75,6 +84,11 @@ export interface PersistenceQuery {
   /**
    * One-shot read of every event matching `filter` whose offset is
    * `>= fromOffset`.  See {@link TagFilter} for the operator semantics.
+   *
+   * Stateless, so it cannot see an event that commits later with a stamp
+   * behind `fromOffset`: a consumer that polls this from its own position
+   * has to read from behind it and deduplicate, which is what
+   * `TagLookbackWindow` does for `eventsByTag` and for by-tag projections.
    */
   currentEventsByTag<E>(
     filter: TagFilter,
@@ -147,6 +161,14 @@ export interface PersistenceQuery {
 export type LiveQueryOptions = {
   /** Poll interval in ms.  Default: `1_000` (1 second). */
   readonly pollIntervalMs?: number;
+  /**
+   * `eventsByTag` only: how far behind the newest delivered stamp each read
+   * starts, in ms, so an event whose write committed after the stream had
+   * passed its stamp is still delivered — once (#957).  Default:
+   * `DEFAULT_TAG_LOOKBACK_WINDOW_MS` (30 s); `0` reads forward only.
+   * See `TagLookbackWindow`.
+   */
+  readonly lookbackWindowMs?: number;
 };
 
 /** Tunables for a cursor-paginated one-shot query. */
@@ -198,7 +220,10 @@ export function resolvePageSize(pageSize: number | undefined): number {
  * the tuple structure makes naive `>=` comparison wrong.
  */
 export type Offset = {
-  /** Wall-clock time of the event's persist call. */
+  /**
+   * Wall-clock time of the event's persist call — taken *before* the write
+   * commits, so offset order is not visibility order (#957).
+   */
   readonly timestamp: number;
   /**
    * Tiebreaker when two events share `timestamp`.  Set to the empty

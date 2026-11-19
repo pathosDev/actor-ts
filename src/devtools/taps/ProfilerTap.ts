@@ -15,7 +15,7 @@
  * One session at a time.  Two overlapping profiles would each see part
  * of the picture and neither would be right.
  */
-import { MAXIMUM_DURATION_MS, PROGRESS_INTERVAL_MS } from '../Constants.js';
+import { MAXIMUM_DURATION_MS, MAXIMUM_PROFILER_BUCKETS, PROGRESS_INTERVAL_MS } from '../Constants.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { DispatchObservation, DispatchObserver } from '../../internal/Instrumentation.js';
@@ -51,6 +51,13 @@ type WallclockSession = {
   readonly startedAtMs: number;
   readonly buckets: Map<string, Bucket>;
   sampleCount: number;
+  /**
+   * Observations whose pair arrived after the map held
+   * {@link MAXIMUM_PROFILER_BUCKETS} pairs, and so got no bucket (#973).
+   */
+  droppedSamples: number;
+  /** The DevTools connection that started the session; see {@link CpuSession}. */
+  readonly ownerConnectionId: string | null;
   /** The observer we installed, so `stop` can put back what was there. */
   readonly previousObserver: DispatchObserver | null;
   autoStop: Cancellable | null;
@@ -63,6 +70,12 @@ interface CpuSession {
   readonly startedAtMs: number;
   stop(): Promise<unknown>;
   autoStop: Cancellable | null;
+  /**
+   * The DevTools connection that started the session, or `null` when the
+   * request came from somewhere with no connection (a direct call).  The
+   * session is stopped when that connection closes (#973).
+   */
+  readonly ownerConnectionId: string | null;
 }
 
 type Session = WallclockSession | CpuSession;
@@ -74,6 +87,17 @@ export class ProfilerTap implements DevToolsTap {
   private session: Session | null = null;
   private progressTicker: Cancellable | null = null;
   private sessionCounter = 0;
+  /**
+   * The result of a session that stopped itself and has not been collected
+   * yet, with the connection that started it.  Held so the panel's answer to
+   * `profiler-completed` — a `profiler.stop` — gets the profile rather than
+   * "no session".  One at a time, bounded by the bucket cap, and dropped by
+   * the next start, by the owner's disconnect, or by being collected.
+   */
+  private uncollected: {
+    readonly result: ProfilerStopResult;
+    readonly ownerConnectionId: string | null;
+  } | null = null;
 
   constructor(private readonly system: ActorSystem) {}
 
@@ -85,6 +109,7 @@ export class ProfilerTap implements DevToolsTap {
     // A profiler left running because a browser tab closed would keep
     // an observer on the hot path forever.
     void this.abort();
+    this.uncollected = null;
     this.emit = null;
   }
 
@@ -96,8 +121,20 @@ export class ProfilerTap implements DevToolsTap {
   /** Register the control methods on `server`. */
   installMethods(server: DevToolsServer): void {
     server.registerMethod('profiler.capabilities', () => this.onCapabilities());
-    server.registerMethod('profiler.start', (p) => this.onStart(p));
+    server.registerMethod('profiler.start', (p, connectionId) => this.onStart(p, connectionId));
     server.registerMethod('profiler.stop', () => this.onStop());
+    server.registerConnectionCloseListener((connectionId) => this.onConnectionClosed(connectionId));
+  }
+
+  /**
+   * A DevTools connection went away.  A session it started has nobody left
+   * to stop it or read it, so it ends now rather than at its deadline — the
+   * closed tab is the case the issue walks through (#973).  Discarded, not
+   * kept for collection: the only client that could collect it is gone.
+   */
+  private onConnectionClosed(connectionId: string): void {
+    if (this.uncollected?.ownerConnectionId === connectionId) this.uncollected = null;
+    if (this.session !== null && this.session.ownerConnectionId === connectionId) void this.abort();
   }
 
   /**
@@ -116,42 +153,49 @@ export class ProfilerTap implements DevToolsTap {
     };
   }
 
-  private async onStart(parameters: unknown): Promise<ProfilerStartResult> {
+  private async onStart(parameters: unknown, connectionId?: string): Promise<ProfilerStartResult> {
     if (this.session !== null) {
       throw new Error('a profiling session is already running — stop it first');
     }
     const request = (parameters ?? {}) as ProfilerStartParameters;
     const mode: ProfilerMode = request.mode ?? 'wallclock';
-    const durationMs = request.durationMs;
-    if (durationMs !== undefined
-      && (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > MAXIMUM_DURATION_MS)) {
+    // An omitted duration is the longest one, never an unlimited one (#973):
+    // the panel's Start button sends none, so `undefined` is the common case.
+    const durationMs = request.durationMs ?? MAXIMUM_DURATION_MS;
+    if (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > MAXIMUM_DURATION_MS) {
       throw new Error(`\`durationMs\` must be between 1 and ${MAXIMUM_DURATION_MS}`);
     }
+    const ownerConnectionId = connectionId ?? null;
+    this.uncollected = null;
 
     const sessionId = `profile-${++this.sessionCounter}`;
     const startedAtMs = Date.now();
     this.session = mode === 'cpu'
-      ? await this.startCpu(sessionId, startedAtMs)
-      : this.startWallclock(sessionId, startedAtMs);
+      ? await this.startCpu(sessionId, startedAtMs, ownerConnectionId)
+      : this.startWallclock(sessionId, startedAtMs, ownerConnectionId);
 
-    if (durationMs !== undefined) {
-      this.session.autoStop = this.system.scheduler.scheduleOnceFunction(durationMs, () => {
-        void this.finish().then((result) => {
-          if (result !== null) this.emit?.(profilerCompletedPayload(Date.now(), result.sessionId));
-        });
+    this.session.autoStop = this.system.scheduler.scheduleOnceFunction(durationMs, () => {
+      void this.finish().then((result) => {
+        if (result === null) return;
+        this.uncollected = { result, ownerConnectionId };
+        this.emit?.(profilerCompletedPayload(Date.now(), result.sessionId));
       });
-    }
+    });
     this.startProgress();
     return { sessionId, mode, startedAtMs };
   }
 
-  private startWallclock(sessionId: string, startedAtMs: number): WallclockSession {
+  private startWallclock(
+    sessionId: string, startedAtMs: number, ownerConnectionId: string | null,
+  ): WallclockSession {
     const session: WallclockSession = {
       mode: 'wallclock',
       sessionId,
       startedAtMs,
       buckets: new Map(),
       sampleCount: 0,
+      droppedSamples: 0,
+      ownerConnectionId,
       previousObserver: this.system._dispatchObserver,
       autoStop: null,
     };
@@ -168,7 +212,9 @@ export class ProfilerTap implements DevToolsTap {
    * incomplete on some runtimes, and a profiler that throws on start is
    * worse than one that says it cannot run here.
    */
-  private async startCpu(sessionId: string, startedAtMs: number): Promise<CpuSession> {
+  private async startCpu(
+    sessionId: string, startedAtMs: number, ownerConnectionId: string | null,
+  ): Promise<CpuSession> {
     const inspectorSession = await openInspectorSession();
     try {
       inspectorSession.connect();
@@ -195,13 +241,17 @@ export class ProfilerTap implements DevToolsTap {
         return result.profile ?? null;
       },
       autoStop: null,
+      ownerConnectionId,
     };
   }
 
   private async onStop(): Promise<ProfilerStopResult> {
     const result = await this.finish();
-    if (result === null) throw new Error('no profiling session is running');
-    return result;
+    if (result !== null) return result;
+    const uncollected = this.uncollected;
+    if (uncollected === null) throw new Error('no profiling session is running');
+    this.uncollected = null;
+    return uncollected.result;
   }
 
   /** End the session and build its report, or `null` if none was running. */
@@ -221,6 +271,7 @@ export class ProfilerTap implements DevToolsTap {
         stoppedAtMs,
         format: 'cpuprofile',
         sampleCount: 0,
+        droppedSamples: 0,
         profile: await session.stop(),
       };
     }
@@ -234,6 +285,7 @@ export class ProfilerTap implements DevToolsTap {
       stoppedAtMs,
       format: 'speedscope',
       sampleCount: session.sampleCount,
+      droppedSamples: session.droppedSamples,
       profile: toSpeedscope(session, stoppedAtMs),
     };
   }
@@ -272,11 +324,22 @@ export class ProfilerTap implements DevToolsTap {
   }
 }
 
-/** Fold one observation into its bucket.  Called on the hot path. */
+/**
+ * Fold one observation into its bucket.  Called on the hot path.
+ *
+ * A pair the map does not hold yet gets a bucket only while the map is under
+ * {@link MAXIMUM_PROFILER_BUCKETS}; past it the observation is counted as
+ * dropped instead (#973).  Pairs already held keep counting, so the profile
+ * stays exact for everything it shows and says how much it does not.
+ */
 function record(session: WallclockSession, observation: DispatchObservation): void {
   const key = `${observation.actorPath}\0${observation.messageType}`;
   let bucket = session.buckets.get(key);
   if (bucket === undefined) {
+    if (session.buckets.size >= MAXIMUM_PROFILER_BUCKETS) {
+      session.droppedSamples++;
+      return;
+    }
     bucket = {
       actorPath: observation.actorPath,
       className: observation.className,
@@ -343,6 +406,8 @@ function toSpeedscope(session: WallclockSession, stoppedAtMs: number): unknown {
     actorTs: {
       startedAtMs: session.startedAtMs,
       stoppedAtMs,
+      maximumBuckets: MAXIMUM_PROFILER_BUCKETS,
+      droppedSamples: session.droppedSamples,
       buckets: [...session.buckets.values()].map((bucket) => ({
         actorPath: bucket.actorPath,
         className: bucket.className,

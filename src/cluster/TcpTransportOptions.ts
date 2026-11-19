@@ -1,7 +1,10 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { detectRuntime, type RuntimeKind } from '../runtime/Detect.js';
 import type { TlsTransportOptionsType } from '../runtime/tcp/index.js';
+import { holdsCertificate, requiresClientCertificate } from '../runtime/tcp/TcpBackend.js';
 import type { ReadConstraintsOptions } from '../serialization/ReadConstraintsOptions.js';
+import type { WireDecodeOptions } from '../serialization/WireDecodeOptions.js';
 import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS } from './Constants.js';
 
 /**
@@ -33,6 +36,32 @@ export type TcpTransportOptionsType = {
    */
   readonly tls?: TlsTransportOptionsType | null;
   /**
+   * Refuse a peer whose socket reports no TLS certificate (#1190).  Default:
+   * `false`.
+   *
+   * Every handshake is held to the certificate the peer presented (#912): a
+   * `hello` or `hello-ack` claiming an address the certificate does not name
+   * is refused.  Where the socket reports **no** certificate the check has
+   * nothing to compare and, by default, admits — a plaintext cluster, one-way
+   * TLS and Deno all look like that, and refusing them would break each one
+   * rather than harden it.  The cost of that default is that identity binding
+   * degrades to nothing without a word when a TLS bundle is half applied or a
+   * backend stops reporting the certificate.  `true` turns the absence into a
+   * refusal: every peer proves its name, or the connection is closed with a
+   * WARN.
+   *
+   * Lives here and not on the shared {@link TlsTransportOptionsType} because
+   * the identity check is this transport's: the same TLS shape configures the
+   * HTTP server, the brokers and the log sinks, where the field would be
+   * accepted and ignored.
+   *
+   * Refused at construction where it cannot hold: without a `tls` whose `ca`
+   * holds a certificate (nothing asks a peer for one), with
+   * `requestClientCert: false` (the listener asks for none), and on Deno,
+   * whose TLS connection reports no peer certificate at all.
+   */
+  readonly requirePeerIdentity?: boolean;
+  /**
    * Per-frame size cap (security).  Frames whose length-prefix exceeds this
    * are rejected before any payload bytes are buffered — the 4-GiB-claim DoS
    * vector documented on `FrameDecoder`.  Default: `DEFAULT_MAX_FRAME_BYTES`
@@ -57,6 +86,13 @@ export type TcpTransportOptionsType = {
    * per connection, inbound and outbound alike (#880).
    */
   readonly readConstraints?: ReadConstraintsOptions;
+  /**
+   * Which `JsonTree` tags a peer's frame may use, handed to every
+   * `FrameDecoder` this transport builds (#1303).  A frame using any other
+   * tag is refused and logged; the connection stays.  Default: the data tags
+   * (`DEFAULT_WIRE_ADMITTED_TAGS`).
+   */
+  readonly wireDecode?: WireDecodeOptions;
   /**
    * How long a connection may sit without its half of the handshake before it
    * is torn down, in milliseconds (#846).  Default: 5 s
@@ -102,15 +138,15 @@ export type TcpTransportOptionsType = {
    * before the oldest are dropped (#846).  Default: 1000
    * (`MAX_PENDING_FRAMES`).
    *
-   * Today that is the pre-handshake buffer: a `send` racing the handshake is
-   * held rather than lost, and an unbounded hold turns a silently-stuck peer
-   * into a memory leak.  The name is the **category**, not that one buffer —
-   * #931 adds the post-handshake backpressure queue, which is the same
-   * quantity ("frames this node is holding because the peer is not taking
-   * them"), with the same drop-oldest policy and the same one-shot WARN, and
-   * it lands under this key rather than a second one.  A key cannot be renamed
-   * without a breaking config change, which is why it is named for where it
-   * is going.
+   * Two buffers carry this bound, each per connection.  The pre-handshake one:
+   * a `send` racing the handshake is held rather than lost, and an unbounded
+   * hold turns a silently-stuck peer into a memory leak.  And, since #931, the
+   * one behind a socket whose `write` answered `false`: the same quantity
+   * ("frames this node is holding because the peer is not taking them"), with
+   * the same drop-oldest policy and a WARN when an episode starts dropping and
+   * another naming the count when the socket drains.  Frames are held whole,
+   * so a peer that stops reading sees gaps, never a cut frame.  The name is
+   * the **category** for that reason: one key for both.
    *
    * Oldest first, because the newest membership and heartbeat state is the
    * state worth keeping.
@@ -275,6 +311,36 @@ export function findConnectDeadlineOrderingViolation(
 }
 
 /**
+ * Why `requirePeerIdentity: true` cannot hold with these settings, or
+ * `undefined` when it can (#1190).
+ *
+ * Each refusal is a configuration under which no peer could ever present a
+ * certificate, so the option would refuse every connection — a node that
+ * cannot join — while reading as "identity enforced".  Refusing it at
+ * construction turns that into a startup error that names the cause.
+ */
+function findRequirePeerIdentityViolation(
+  s: Partial<TcpTransportOptionsType>,
+  runtime: RuntimeKind = detectRuntime(),
+): string | undefined {
+  if (s.requirePeerIdentity !== true) return undefined;
+  const tls = s.tls ?? undefined;
+  if (tls === undefined || !holdsCertificate(tls.ca)) {
+    return 'needs a `tls` with a `ca` holding a certificate; with no `ca` nothing asks a peer for '
+      + 'a certificate, so every peer would be refused';
+  }
+  if (!requiresClientCertificate(tls)) {
+    return 'cannot hold with `requestClientCert: false`: the listener asks inbound peers for no '
+      + 'certificate, so every one of them would be refused';
+  }
+  if (runtime === 'deno') {
+    return 'cannot hold on Deno: `Deno.TlsConn` reports no peer certificate, so every peer would be '
+      + 'refused. Run this node on Node.js or Bun, or leave requirePeerIdentity off';
+  }
+  return undefined;
+}
+
+/**
  * Fluent builder for {@link TcpTransportOptionsType}.
  *
  *     const transportOptions = TcpTransportOptions.create()
@@ -291,6 +357,11 @@ export class TcpTransportOptionsBuilder extends OptionsBuilder<TcpTransportOptio
   /** TLS material for the listener and the dialer.  `null` is plaintext. */
   withTls(tls: TlsTransportOptionsType | null): this {
     return this.set('tls', tls);
+  }
+
+  /** Refuse a peer that presents no TLS certificate.  Default: false. */
+  withRequirePeerIdentity(requirePeerIdentity: boolean): this {
+    return this.set('requirePeerIdentity', requirePeerIdentity);
   }
 
   /** Per-frame wire cap in bytes.  Default: 16 MiB. */
@@ -311,6 +382,11 @@ export class TcpTransportOptionsBuilder extends OptionsBuilder<TcpTransportOptio
   /** Decode ceilings for every frame decoder this transport builds. */
   withReadConstraints(readConstraints: ReadConstraintsOptions): this {
     return this.set('readConstraints', readConstraints);
+  }
+
+  /** The tags a peer's frame may use, for every frame decoder this transport builds. */
+  withWireDecode(wireDecode: WireDecodeOptions): this {
+    return this.set('wireDecode', wireDecode);
   }
 
   /** Handshake deadline, both directions, in ms.  Default: 5000. */
@@ -365,6 +441,10 @@ export class TcpTransportOptionsValidator extends OptionsValidator<TcpTransportO
     // node that cannot be joined rather than a node with no cap.
     this.positiveInt('maxInboundConnections');
     this.positiveNumber('incompleteFrameIdleMs');
+    const peerIdentityViolation = findRequirePeerIdentityViolation(s);
+    if (peerIdentityViolation !== undefined) {
+      this.fail('requirePeerIdentity', peerIdentityViolation, true);
+    }
     // The two cross-field rules, and why each is a rule rather than a sentence
     // in the docs is beside it — {@link findStallDeadlineOrderingViolation}
     // and {@link findConnectDeadlineOrderingViolation} — along with why both

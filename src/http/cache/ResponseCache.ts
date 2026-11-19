@@ -258,11 +258,32 @@ function encodeResponse(r: HttpResponse, vary: ReadonlyArray<VariedHeader>): Cac
   }
   return {
     status: r.status,
-    headers: r.headers as Record<string, string> | undefined,
+    headers: withoutRateLimitCounters(r.headers as Record<string, string> | undefined),
     body,
     contentType: r.contentType,
     ...(vary.length > 0 ? { vary } : {}),
   };
+}
+
+/**
+ * `headers` minus every `x-ratelimit-*` entry (#983).
+ *
+ * Those counters describe one caller's budget at one moment.  Stored, they
+ * would be replayed to every later caller for `ttlMs` — which is exactly
+ * what `cached(rateLimit(handler))` did, on top of the limiter never
+ * running on a hit.  `rateLimit(cached(handler))` is the nesting that
+ * works, and with it the limiter adds fresh counters to every answer, hit
+ * or miss; stripping here keeps the wrong nesting from also lying.
+ */
+function withoutRateLimitCounters(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (headers === undefined) return undefined;
+  const names = Object.keys(headers);
+  if (!names.some((name) => name.toLowerCase().startsWith('x-ratelimit-'))) return headers;
+  const kept: Record<string, string> = {};
+  for (const name of names) {
+    if (!name.toLowerCase().startsWith('x-ratelimit-')) kept[name] = headers[name]!;
+  }
+  return kept;
 }
 
 /** Whether a stored entry may answer `request`. */

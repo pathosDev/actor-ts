@@ -4,18 +4,26 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
+import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
 import { classNameOf } from '../../util/ClassName.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS } from '../Constants.js';
+import { BrokerAcknowledgmentTracker } from './BrokerAcknowledgment.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import {
+  DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
+  DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS,
+  readBrokerAcknowledgmentOptionsFromConfig,
+} from './BrokerOptions.js';
 import { toBrokerDriverTls } from './BrokerTls.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
 import { MqttOptionsValidator } from './MqttOptions.js';
 import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
 import {
   MqttPayload,
+  inboundAcknowledgmentOf,
   isMqttSignal,
   mqttConnectedSignal,
   mqttDisconnectedSignal,
@@ -26,6 +34,7 @@ import {
   type MqttSubscribeCommand,
   type MqttUnsubscribeCommand,
   type MqttDisconnectedSignal,
+  type MqttInboundAcknowledgment,
   type MqttInboundSignal,
   type MqttSignal,
   type MqttMessage,
@@ -99,6 +108,21 @@ type SubscriptionEntry<T> = {
  * Lifecycle events (inbound / connected / disconnected) are delivered
  * through the mailbox, so `onMessage` and the hooks always run on the
  * actor thread (single-threaded, per-connection order preserved).
+ *
+ * **Acknowledgment** (#977).  Under the default `acknowledgment: 'on-reply'`
+ * the actor takes the acknowledgment away from mqtt.js — through the client's
+ * `handleMessage` hook, which mqtt.js waits on before it sends the PUBACK of
+ * a QoS 1 message (or the PUBCOMP of a QoS 2 one) and before it reads the
+ * next packet.  The acknowledgment goes out once `onMessage` has returned and
+ * every fan-out target — `ask`ed with the message — has replied
+ * `{ kind: 'acknowledgment' }`.  A throw from `onMessage`, a negative or
+ * unexpected reply, or nothing within `acknowledgmentTimeoutMs` drops the
+ * connection without it, so the broker redelivers the message on the next
+ * one — given a persistent session (`cleanSession: false`).  Inbound messages
+ * are processed one at a time per connection, which is the backpressure.
+ * `'on-delivery'` leaves the acknowledgment to mqtt.js, which sends it as the
+ * message enters the mailbox.  See {@link MqttQos} for what each level then
+ * guarantees.
  */
 export abstract class MqttActor<T = unknown, TSelf = never>
   extends BrokerActor<MqttOptionsType, MqttActorMessage<T, TSelf>, MqttPublish> {
@@ -112,6 +136,14 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   private readonly registry = new Map<string, SubscriptionEntry<T>>();
   /** Deathwatch bookkeeping: ref.path → its watched ref + the patterns it consumes. */
   private readonly watched = new Map<string, { ref: ActorRef<MqttMessage<T>>; patterns: Set<string> }>();
+  /**
+   * The fan-out targets' outstanding replies under `'on-reply'`, per
+   * connection; `null` while disconnected.  Teardown gives up on them, and
+   * on every {@link inboundAcknowledgments} entry with them.
+   */
+  private acknowledgments: BrokerAcknowledgmentTracker | null = null;
+  /** Inbound acknowledgments of the current connection not yet settled. */
+  private readonly inboundAcknowledgments = new Set<PendingInboundAcknowledgment>();
   /** Subscriptions requested in the constructor, flushed in `preStart`. */
   private pendingSubs: Array<{ topic: string; qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }> = [];
 
@@ -265,7 +297,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   private onMqttInbound(signal: MqttInboundSignal<T>): Promise<void> {
-    return this.routeInbound(signal.message);
+    return this.routeInbound(signal.message, inboundAcknowledgmentOf(signal));
   }
 
   private onMqttConnected(): void | Promise<void> {
@@ -290,23 +322,54 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   /* ----------------------- inbound routing ----------------------- */
 
-  private async routeInbound(message: MqttMessage<T>): Promise<void> {
+  /**
+   * Deliver one inbound message to `onMessage` and to every matching target,
+   * then settle its `acknowledgment` — present under `'on-reply'` only.
+   *
+   * Targets are `ask`ed, and their replies are awaited off the mailbox: a slow
+   * target holds the connection's acknowledgment (and so the next packet), not
+   * this actor's other messages.  A message `onMessage` declines as
+   * undecodable is acknowledged: redelivering it would fail the same way
+   * forever.  Anything else `onMessage` throws withholds the acknowledgment
+   * and goes on to ordinary supervision.
+   */
+  private async routeInbound(message: MqttMessage<T>, acknowledgment?: MqttInboundAcknowledgment): Promise<void> {
     let toSelf = false;
     const seen = new Set<ActorRef<MqttMessage<T>>>();
+    const replies: Promise<void>[] = [];
+    const tracker = acknowledgment === undefined ? null : this.acknowledgments;
     for (const [pattern, entry] of this.registry) {
       if (!matchesMqttPattern(pattern, message.topic)) continue;
       if (entry.deliverToSelf) toSelf = true;
       for (const ref of entry.targets.keys()) {
-        if (!seen.has(ref)) { seen.add(ref); ref.tell(message); }
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        if (tracker === null) ref.tell(message);
+        else replies.push(tracker.deliver(ref, message));
       }
     }
-    if (!toSelf) return;
-    try {
-      await this.onMessage(message);
-    } catch (err) {
-      if (err instanceof MqttDecodeError) return this.onInvalidMessage(err, message);
-      throw err;  // ordinary supervision
+    if (toSelf) {
+      try {
+        await this.onMessage(message);
+      } catch (err) {
+        if (!(err instanceof MqttDecodeError)) {
+          acknowledgment?.fail(err instanceof Error ? err : new Error(String(err)));
+          throw err;  // ordinary supervision
+        }
+        try {
+          await this.onInvalidMessage(err, message);
+        } catch (escalated) {
+          acknowledgment?.fail(escalated instanceof Error ? escalated : new Error(String(escalated)));
+          throw escalated;
+        }
+      }
     }
+    if (acknowledgment === undefined) return;
+    if (replies.length === 0) { acknowledgment.acknowledge(); return; }
+    void Promise.all(replies).then(
+      () => acknowledgment.acknowledge(),
+      (error: unknown) => acknowledgment.fail(error instanceof Error ? error : new Error(String(error))),
+    );
   }
 
   /* ----------------------- subscription registry ----------------- */
@@ -598,7 +661,13 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   protected configKey(): string { return ConfigKeys.io.broker.mqtt.root; }
 
   protected builtInDefaultOptions(): Partial<MqttOptionsType> {
-    return { qos: 0, cleanSession: true, keepAlive: 60 };
+    return {
+      qos: 0,
+      cleanSession: true,
+      keepAlive: 60,
+      acknowledgment: DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
+      acknowledgmentTimeoutMs: DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS,
+    };
   }
 
   protected readOptionsFromConfig(config: Config): Partial<MqttOptionsType> {
@@ -647,23 +716,67 @@ export abstract class MqttActor<T = unknown, TSelf = never>
         this.self.tell(mqttDisconnectedSignal(cause));
         this.handleConnectionLost(cause);
       };
+      // Withhold the acknowledgment of a message that was not processed, and
+      // make the broker redeliver it: a connection that ends without the
+      // PUBACK is what MQTT redelivers on.  The forced `end` keeps mqtt.js
+      // from sending anything more on this connection.
+      const abandonForRedelivery = (cause: Error): void => {
+        this.log.warn(
+          `MqttActor: an inbound message was not processed (${cause.message}) — dropping the connection `
+          + 'without acknowledging it, so the broker redelivers it',
+        );
+        try { client.end(true); } catch { /* already closing */ }
+        onDown(cause);
+      };
       client.once('connect', () => {
         if (done) return;
         done = true;
         client.removeAllListeners('error');
         this.client = client;
+        const acknowledgment = this.options.acknowledgment ?? DEFAULT_BROKER_ACKNOWLEDGMENT_MODE;
+        const acknowledgmentTimeoutMs = this.options.acknowledgmentTimeoutMs ?? DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS;
+        this.acknowledgments = new BrokerAcknowledgmentTracker(acknowledgment, acknowledgmentTimeoutMs);
+        const awaitsProcessing = acknowledgment === 'on-reply';
+        // mqtt.js emits `message` and then hands the same packet object to
+        // `handleMessage` in the same synchronous turn, so the packet is the
+        // key that joins the two.
+        const acknowledgmentsByPacket = new WeakMap<object, PendingInboundAcknowledgment>();
         client.on('message', (topic, payload, packet) => {
           // No user code on the mqtt.js loop: wrap into a lazily-decoding
           // payload and hand the message to our own mailbox.
+          const qos = (packet?.qos ?? 0) as MqttQos;
+          let inboundAcknowledgment: PendingInboundAcknowledgment | undefined;
+          if (awaitsProcessing) {
+            inboundAcknowledgment = new PendingInboundAcknowledgment(
+              qos, topic, acknowledgmentTimeoutMs, this.system.scheduler, this.inboundAcknowledgments,
+              (cause) => abandonForRedelivery(cause),
+              (cause) => this.log.warn(
+                `MqttActor: a QoS 0 message on '${topic}' was not processed (${cause.message}) — `
+                + 'QoS 0 has no redelivery',
+              ),
+            );
+            if (packet) acknowledgmentsByPacket.set(packet, inboundAcknowledgment);
+          }
           this.self.tell(mqttInboundSignal<T>({
             topic,
             payload: new MqttPayload<T>(payload, this.codec(), topic),
-            qos: (packet?.qos ?? 0) as MqttQos,
+            qos,
             retain: packet?.retain ?? false,
             userProperties: packet?.properties?.userProperties,
             reasonCode: packet?.properties?.reasonCode,
-          }));
+          }, inboundAcknowledgment));
         });
+        if (awaitsProcessing) {
+          // mqtt.js sends the PUBACK (QoS 1) / PUBCOMP (QoS 2) only once this
+          // calls back, and reads no further packet before it does — the
+          // hook its documentation offers for exactly this.  A message with
+          // no acknowledgment of ours is released at once.
+          client.handleMessage = (packet, callback): void => {
+            const pending = acknowledgmentsByPacket.get(packet);
+            if (pending === undefined) { callback(); return; }
+            pending.attach(() => callback());
+          };
+        }
         client.on('error', (e) => onDown(e));
         client.on('close', () => onDown(new Error('mqtt connection closed')));
         // (Re)apply the whole registry on every (re)connect — this is
@@ -685,6 +798,12 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   protected async disconnectImplementation(): Promise<void> {
+    // Nothing outstanding can be acknowledged any more: the connection the
+    // PUBACK would have travelled on is going, and the broker redelivers what
+    // it never saw acknowledged.
+    for (const pending of [...this.inboundAcknowledgments]) pending.cancel();
+    this.acknowledgments?.cancelAll('MqttActor: disconnecting before the target replied');
+    this.acknowledgments = null;
     if (!this.client) return;
     const client = this.client;
     this.client = null;
@@ -733,7 +852,8 @@ type MqttCredentialsOptions = NonNullable<MqttOptionsType['credentials']>;
 /**
  * Read the `actor-ts.io.broker.mqtt` block off the system config, at the full
  * paths `keys` holds; the reconnect / breaker / buffer leaves are
- * `BrokerActor`'s.  An unset leaf is omitted.  `keep-alive` is a duration in
+ * `BrokerActor`'s, and the `acknowledgment` pair is read by the shared
+ * `readBrokerAcknowledgmentOptionsFromConfig`.  An unset leaf is omitted.  `keep-alive` is a duration in
  * whole seconds — see {@link readWholeSeconds}.  Value validation
  * (`protocol-version` ∈ {4, 5} and the rest) is `MqttOptionsValidator`'s, on
  * the merged options.  `codec` is a pair of functions and `tls` certificate
@@ -752,7 +872,7 @@ export function readMqttOptionsFromConfig(
   if (config.hasPath(keys.cleanSession)) out.cleanSession = config.getBoolean(keys.cleanSession);
   if (config.hasPath(keys.keepAlive)) out.keepAlive = readWholeSeconds(config, keys.keepAlive);
   if (config.hasPath(keys.protocolVersion)) out.protocolVersion = config.getInt(keys.protocolVersion) as 4 | 5;
-  return out;
+  return { ...out, ...readBrokerAcknowledgmentOptionsFromConfig(config, keys) };
 }
 
 /**
@@ -901,6 +1021,77 @@ export function matchesMqttPattern(pattern: string, topic: string): boolean {
   return ps.length === ts.length;
 }
 
+/* ------------------------ inbound acknowledgment ----------------------- */
+
+/**
+ * The acknowledgment of one inbound message under `acknowledgment:
+ * 'on-reply'` (#977) — settled once, by whichever comes first of the actor
+ * finishing with the message, a failure, the deadline and a teardown.
+ *
+ * `attach` receives mqtt.js's `handleMessage` callback, which is what sends
+ * the PUBACK / PUBCOMP and lets the next packet in.  An acknowledged message
+ * releases it.  A failed one does not — the connection is dropped instead, so
+ * the broker redelivers — except at QoS 0, where there is nothing to
+ * redeliver and holding the callback would only stall the connection.
+ */
+class PendingInboundAcknowledgment implements MqttInboundAcknowledgment {
+  private state: 'pending' | 'acknowledged' | 'failed' = 'pending';
+  private release: (() => void) | null = null;
+  private readonly deadline: Cancellable;
+
+  constructor(
+    private readonly qos: MqttQos,
+    topic: string,
+    timeoutMs: number,
+    scheduler: Scheduler,
+    private readonly registry: Set<PendingInboundAcknowledgment>,
+    private readonly onRedeliverableFailure: (cause: Error) => void,
+    private readonly onUnrecoverableFailure: (cause: Error) => void,
+  ) {
+    registry.add(this);
+    this.deadline = scheduler.scheduleOnceFunction(timeoutMs, () => this.fail(new Error(
+      `the message on '${topic}' was not processed within ${timeoutMs} ms`,
+    )));
+  }
+
+  /** Hand over mqtt.js's callback; run now if the outcome already allows it. */
+  attach(release: () => void): void {
+    if (this.state === 'acknowledged' || (this.state === 'failed' && this.qos === 0)) {
+      release();
+      return;
+    }
+    if (this.state === 'pending') this.release = release;
+  }
+
+  acknowledge(): void {
+    if (!this.settle('acknowledged')) return;
+    this.release?.();
+  }
+
+  fail(cause: Error): void {
+    if (!this.settle('failed')) return;
+    if (this.qos === 0) {
+      this.onUnrecoverableFailure(cause);
+      this.release?.();
+      return;
+    }
+    this.onRedeliverableFailure(cause);
+  }
+
+  /** The connection is gone: settle silently, releasing nothing. */
+  cancel(): void {
+    this.settle('failed');
+  }
+
+  private settle(outcome: 'acknowledged' | 'failed'): boolean {
+    if (this.state !== 'pending') return false;
+    this.state = outcome;
+    this.deadline.cancel();
+    this.registry.delete(this);
+    return true;
+  }
+}
+
 /* ----------------------------- peer-dep shapes -------------------------- */
 
 type MqttConnectOptions = {
@@ -956,6 +1147,14 @@ export interface MqttClientLike {
   subscribe(topic: string, options: { qos: MqttQos }, callback?: (err?: Error) => void): void;
   unsubscribe(topic: string, options: undefined, callback?: (err?: Error) => void): void;
   end(force?: boolean, options?: object, callback?: () => void): void;
+  /**
+   * mqtt.js's per-message hook: it sends the PUBACK of a QoS 1 message (the
+   * PUBCOMP of a QoS 2 one) and reads the next packet only once `callback`
+   * runs.  Assigned by the actor under `acknowledgment: 'on-reply'` (#977).
+   * mqtt.js has no `manualAcks` switch; overriding this is how it defers an
+   * acknowledgment.
+   */
+  handleMessage?: (packet: MqttInboundPacketLike, callback: (error?: Error) => void) => void;
 }
 
 /** The `mqtt` module surface we use.  Exported as a test seam. */

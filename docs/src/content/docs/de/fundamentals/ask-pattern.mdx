@@ -103,6 +103,16 @@ dass eine Antwort vom Typ `ActorRef<number>` erwartet wird);
 Actors, die sowohl `ask`-artige als auch Fire-and-Forget-Nachrichten
 behandeln.
 
+**`message.replyTo` wird nur an Plain Objects angehängt.**  Eine als
+Objekt-Literal geschriebene Nachricht wird kopiert und bekommt
+`replyTo` neben ihre Felder, sodass das übergebene Objekt nie
+verändert wird.  Alles andere — eine `Map`, ein `Set`, ein `Date`, ein
+Typed Array, ein Array, eine Instanz deiner eigenen Klasse — wird als
+genau das übergebene Objekt zugestellt, mit intaktem Prototyp und
+Inhalt, sodass `instanceof` und `P.instanceOf(...)` beim Empfänger
+matchen.  Eine solche Nachricht trägt kein `replyTo`-Feld; antworte
+über `this.sender`, das dieselbe temporäre Ref hält.
+
 ## Timeouts + der AskTimeoutError
 
 ```ts

@@ -200,6 +200,15 @@ wartete ein Versuch auf das Connect-Timeout des Betriebssystems, 21 s unter
 Windows und etwa zwei Minuten unter Linux, und jeder Record dahinter wartete
 mit. Die 10 s sind fest; noch setzt keine Option sie.
 
+Ein Graylog, das die Verbindung annimmt und dann langsam oder gar nicht mehr
+liest, drückt über den Socket zurück. Der Sink schreibt keinen weiteren
+Record, bis der Socket wieder aufnimmt; die Records warten also in der eigenen,
+begrenzten `delivery`-Queue des Sinks, die verwirft und meldet, was nicht
+hineinpasst, statt in einem Socket-Puffer, der ohne Grenze wächst. Eine
+Verbindung, die nach dem Zurückdrücken **10 s** lang nichts aufnimmt, wird
+abgebaut und lässt den Batch wiederholbar scheitern, sodass der nächste
+Versuch neu verbindet.
+
 ## Parseable
 
 ```ts
@@ -508,7 +517,10 @@ Zertifikat und Schlüssel selbst.
 Verbindung offen ist — über `tls`, sobald der Handshake abgeschlossen ist —,
 eine abgelehnte Verbindung lässt den Batch sofort und wiederholbar scheitern,
 und ein Collector, der gar nicht antwortet, wird nach festen **10 s** für
-Connect und Handshake zusammen aufgegeben.
+Connect und Handshake zusammen aufgegeben. Auf einen Collector, der nicht mehr
+liest, wird gewartet, statt an ihm vorbeizuschreiben: Der Sink hält seinen
+nächsten Record zurück, bis der Socket wieder aufnimmt, und baut die
+Verbindung nach **10 s** ohne Aufnahme ab.
 
 ## Verwandt
 

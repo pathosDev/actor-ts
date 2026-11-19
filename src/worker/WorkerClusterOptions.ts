@@ -136,6 +136,10 @@ export type WorkerClusterOptionsType = {
   readonly restartMinBackoffMs?: number;
   readonly restartMaxBackoffMs?: number;
   readonly restartRandomFactor?: number;
+  /**
+   * Restarts granted per slot inside `restartWindowMs` before it is retired;
+   * `-1` lifts the cap and keeps the exponential backoff (#1255).
+   */
   readonly maxRestarts?: number;
   readonly restartWindowMs?: number;
   readonly onWorkerPermanentlyDown?: (info: WorkerPermanentlyDownInfo) => void;
@@ -221,7 +225,9 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   /**
    * Restarts granted per slot within {@link withRestartWindowMs} before the
    * slot is retired for good.  `-1` restores the pre-budget behaviour of
-   * restarting forever.  Default: 10.
+   * restarting forever: it removes the cap, never the backoff — each respawn
+   * inside the window still waits twice as long as the last, up to
+   * {@link withRestartMaxBackoffMs} (#1255).  Default: 10.
    */
   withMaxRestarts(maxRestarts: number): this {
     return this.set('maxRestarts', maxRestarts);
@@ -364,7 +370,7 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
     // `RestartBudget` reads a negative allowance as; anything below that is a
     // typo, and a fraction would silently never be reached.
     if (s.maxRestarts !== undefined && (!Number.isInteger(s.maxRestarts) || s.maxRestarts < -1)) {
-      this.fail('maxRestarts', 'must be an integer >= -1 (-1 = unlimited)', s.maxRestarts);
+      this.fail('maxRestarts', 'must be an integer >= -1 (-1 = unlimited restarts, the backoff still grows)', s.maxRestarts);
     }
     if (s.restartMinBackoffMs !== undefined && s.restartMaxBackoffMs !== undefined
       && s.restartMaxBackoffMs < s.restartMinBackoffMs) {

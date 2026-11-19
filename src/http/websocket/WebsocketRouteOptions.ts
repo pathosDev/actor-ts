@@ -247,6 +247,25 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   withConnectionMailboxOverflow(overflow: BoundedMailboxOverflow): this {
     return this.set('connectionMailboxOverflow', overflow);
   }
+
+  /**
+   * Ping each connection's peer this often, and drop a connection from which
+   * nothing arrived since the previous ping — `1001` `'heartbeat timeout'`
+   * (#651).  Default 30 s; `0` turns it off.  HOCON:
+   * `actor-ts.http.websocket.heartbeat-interval`.
+   */
+  withHeartbeatIntervalMs(milliseconds: number): this {
+    return this.set('heartbeatIntervalMs', milliseconds);
+  }
+
+  /**
+   * Close a connection that has sent no message for this long — `1001`
+   * `'idle timeout'`; pongs do not count (#651).  Default `0`, off.  HOCON:
+   * `actor-ts.http.websocket.idle-timeout`.
+   */
+  withIdleTimeoutMs(milliseconds: number): this {
+    return this.set('idleTimeoutMs', milliseconds);
+  }
 }
 
 /**

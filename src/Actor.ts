@@ -222,6 +222,15 @@ export abstract class Actor<TMessage = unknown> {
   /**
    * Supervisor strategy for this actor's children.  Defaults to restart,
    * up to 10 times per minute, then stop.
+   *
+   * The restart allowance is **per child name** under a one-for-one
+   * strategy — each child may restart `maxRetries` times within the window,
+   * whatever its siblings do, and a child stopped and spawned again under the
+   * same name inside the window inherits what it already spent (#1437) — and
+   * **shared by the group** under an all-for-one one,
+   * whose directive restarts every child together (#917).  Building a fresh
+   * strategy on every call is fine: the tally is kept across calls as long
+   * as `maxRetries` and `withinTimeRangeMs` stay the same.
    */
   supervisorStrategy(): SupervisorStrategy { return defaultStrategy; }
 

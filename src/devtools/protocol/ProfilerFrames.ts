@@ -44,7 +44,10 @@ export type ProfilerCapabilitiesResult = {
 export type ProfilerStartParameters = {
   /** Default `'wallclock'`. */
   readonly mode?: ProfilerMode;
-  /** Auto-stop after this long; omit to stop manually. */
+  /**
+   * Auto-stop after this long, at most `MAXIMUM_DURATION_MS` (ten minutes).
+   * Omitted means that maximum, not unlimited (#973): a session always ends.
+   */
   readonly durationMs?: number;
 };
 
@@ -63,6 +66,12 @@ export type ProfilerStopResult = {
   readonly stoppedAtMs: number;
   readonly format: ProfilerFormat;
   readonly sampleCount: number;
+  /**
+   * Wallclock samples that got no bucket because the session already held
+   * `MAXIMUM_PROFILER_BUCKETS` distinct `(actor path, message type)` pairs
+   * (#973).  Not part of `sampleCount`.  Always `0` for a CPU profile.
+   */
+  readonly droppedSamples: number;
   /** Profile document in `format` — rendered by the panel, opaque here. */
   readonly profile: unknown;
 };

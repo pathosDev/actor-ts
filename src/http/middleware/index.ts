@@ -8,6 +8,9 @@ export {
   IpAllowlistOptionsValidator,
 } from './IpAllowlistOptions.js';
 export type { IpAllowlistOptionsType } from './IpAllowlistOptions.js';
+// The trusted-proxy walk IpAllowlist uses, for any other client-address need (#1236).
+export { clientIpResolver, resolveClientIp } from './ClientIp.js';
+export type { ClientIpResolver } from './ClientIp.js';
 
 // Security headers — HSTS, CSP, and the securityHeaders bundle.
 export { strictTransportSecurity, hsts } from './Hsts.js';
@@ -40,7 +43,8 @@ export {
 export type { CsrfOptionsType, CsrfCookieOptions, OriginScheme, SameOriginOptionsType } from './CsrfOptions.js';
 
 // Request id, HTTP Basic auth, request timeout.
-export { requestId, requestIdOf } from './RequestId.js';
+export { requestId, requestIdOf, requestIdOfError } from './RequestId.js';
+export type { RequestIdCorrelation } from './RequestId.js';
 export { DEFAULT_REQUEST_ID_HEADER } from './RequestIdOptions.js';
 export { RequestIdOptions, RequestIdOptionsBuilder } from './RequestIdOptions.js';
 export type { RequestIdOptionsType } from './RequestIdOptions.js';

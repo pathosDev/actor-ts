@@ -42,6 +42,7 @@ import {
   HttpError,
   Status,
   cached,
+  clientIpResolver,
   complete,
   completeJson,
   concat,
@@ -135,10 +136,15 @@ async function main(): Promise<void> {
   const region = cluster.sharding.start('user', UserEntity, shardingOptions);
   const askUser = (command: UserCommand): Promise<UserReply> => region.ask<UserReply>(command, 500);
 
-  // Rate limit: 60 req/min per IP — applied to every endpoint below.
+  // Rate limit: 60 req/min per client IP — applied to every endpoint below.
+  // Keyed on the trusted-proxy walk, never on a raw x-forwarded-for: a client
+  // rotates that header for a fresh bucket per request.  No proxies named, so
+  // this is the socket peer; behind a load balancer pass its CIDRs instead,
+  // e.g. clientIpResolver(['10.0.0.0/8']).
+  const clientIp = clientIpResolver();
   const limit = rateLimit({
     cache: limiterCache, windowMs: 60_000, max: 60,
-    key: (request) => request.headers['x-forwarded-for'] ?? '<anon>',
+    key: (request) => clientIp(request) ?? '<unresolved>',
   });
 
   // Response cache: GET /users/:id is cacheable for 30s.

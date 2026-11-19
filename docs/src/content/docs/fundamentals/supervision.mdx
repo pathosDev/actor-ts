@@ -30,6 +30,14 @@ When a child throws, the supervisor's decider returns one of:
 `Restart` for every error.  Use the other three when restart isn't
 the right semantic for your domain.
 
+An actor whose **constructor throws** never had an instance, so
+there is nothing to restart and nothing to resume.  Its parent is
+still asked (the cause is an `ActorInitializationError`), but
+`Restart` and `Resume` both end in a stop: watchers get
+`Terminated`, the parent drops the child, and queued messages go
+to dead letters.  A failure in `preStart` is different — the
+instance exists, and every directive applies as usual.
+
 ## A minimal example
 
 ```ts
@@ -239,16 +247,37 @@ new OneForOneStrategy(
 Past the bound the supervisor gives up on restarting and the
 affected children are **stopped** instead.  That is what breaks an
 infinite restart loop — a child that keeps crashing on
-permanently-broken state.  Note the parent-side counter is
-inclusive of the failure that trips it, so `maxRetries: 10`
-tolerates eleven restarts before the twelfth failure stops the
-child.
+permanently-broken state.  The count is literal: `maxRetries: 10`
+grants ten restarts inside the window, and the eleventh failure
+inside it stops the child.  A failure older than
+`withinTimeRangeMs` no longer counts, so a child that crashes once
+every ten minutes never exhausts a per-minute budget.  The window
+is measured on `system.clock`, so under a `ManualScheduler` a test
+crosses it by advancing virtual time rather than by sleeping.
 
-<Aside type="caution" title="The typed wrapper counts differently">
+The budget belongs to **each child separately**.  Under
+`OneForOneStrategy` only the failures of *that* child count: five
+siblings that crash once each are all five restarted under
+`maxRetries: 2`.  The budget belongs to the child's **name** and is
+kept by the parent, so it survives the restarts it counts *and* the
+child itself: one stopped for spending its allowance and spawned
+again under the same name inside the window inherits the spent
+budget, and its next failure stops it again.  Re-creating a child is
+therefore no way around the bound — a sharded entity re-created
+after its restart backoff gets no fresh allowance either.  Once the
+window has passed, the name starts from a whole allowance; under
+`withinTimeRangeMs: 0` the budget is forgotten when the child stops.  `AllForOneStrategy`
+deliberately keeps **one** budget for the whole group instead: its
+directive restarts every child together anyway, so a failure
+anywhere in the group counts as one restart of the group.  A
+`supervisorStrategy()` that builds a fresh strategy on every call
+does not reset the budget; only a strategy with a different
+`maxRetries` or `withinTimeRangeMs` starts a new tally.
+
+<Aside type="caution" title="The typed wrapper escalates instead">
   [`Behaviors.supervise(...).onFailure(strategy)`](/typed/behaviors/)
-  honours the same two knobs, but reads `maxRetries` literally —
-  `maxRetries: 10` grants ten restarts — and **escalates** past the
-  bound rather than stopping.  It has to: the typed wrapper lives
+  honours the same two knobs and grants the same `maxRetries`
+  restarts, but **escalates** past the bound rather than stopping.  It has to: the typed wrapper lives
   *inside* the failing actor, not in a parent that stays around to
   observe the death, so stopping there would discard the error with
   nobody upstream any the wiser.  Escalating hands the failure to

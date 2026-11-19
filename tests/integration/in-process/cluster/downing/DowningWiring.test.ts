@@ -467,12 +467,12 @@ describe('Cluster + DowningProvider — wiring', () => {
     //
     // A member speaking for itself always clears `maySpeakFor`, so the frame
     // needs no privilege; the sequence only has to out-number the peer's own
-    // counter (seeded from its wall-clock) while staying inside
-    // `maxVersionSkewMs`, which 60 s does on both counts.
+    // stamps (its wall clock, #1262) while staying inside the lead the seed
+    // allows past the clock that peer has shown, which 5 s does on both counts.
     const leavingFrame: GossipMessage = {
       kind: 'gossip',
       from: peer.cluster.selfAddress.toJSON(),
-      sequence: Date.now() + 60_000,
+      sequence: Date.now() + 5_000,
       members: [viewOfPeer()!.withStatus('leaving').toData()],
     };
     peer.cluster.transport.send(seed.cluster.selfAddress, leavingFrame);

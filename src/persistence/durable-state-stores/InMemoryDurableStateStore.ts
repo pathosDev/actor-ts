@@ -9,6 +9,7 @@ import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import { fromNullable, type Option } from '../../util/Option.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 /**
  * Reference Durable State store backed by a JS Map.  Useful for tests and
@@ -44,6 +45,7 @@ export class InMemoryDurableStateStore implements DurableStateStore {
     state: S,
     _options?: PersistenceOptions,
   ): Promise<DurableStateRecord<S>> {
+    assertValidPersistenceId(persistenceId, 'InMemoryDurableStateStore.upsert');
     // A bogus revision is a caller bug, not a lost race — reporting it as a
     // concurrency conflict would send the caller into a pointless retry loop.
     // Matches the relational and object-storage stores.

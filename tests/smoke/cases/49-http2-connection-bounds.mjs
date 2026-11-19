@@ -17,8 +17,13 @@
  *     value on every runtime: a session pinged every 250 ms is closed about
  *     800 ms after its response, and a handler slower than the bound is
  *     answered with no GOAWAY under it.
+ *   - **Unset, the session is bounded by the framework's default** (#1757),
+ *     PINGs or not, on Fastify and — under Node — on Hono, with the 72 s
+ *     default shortened through an internal seam.
+ *   - **idle-timeout bounds the HTTP/1.1 connections on the same port** on
+ *     Bun as on Node (#1756).
  *   - **The binding report says which protocol a bound holds for.**  On Bun
- *     idle-timeout and request-timeout hold for HTTP/2 only; on Node the
+ *     every bound holds for both, and nothing is said; on Node the
  *     header cap holds for HTTP/1.1 only — and bind() warns in those words.
  *     On Deno the server holds no header cap at all, so a set
  *     max-header-bytes refuses the bind, and the two timeouts are in effect.
@@ -33,9 +38,10 @@
  */
 import { readFile } from 'node:fs/promises';
 import { connect as http2Connect } from 'node:http2';
+import { connect as tlsConnect } from 'node:tls';
 
 export const name = 'http2 connection bounds';
-export const description = 'request-timeout answers a stalled HTTP/2 stream 408 at the deadline and leaves a request received in full to its handler, and idle-timeout closes a session with no stream open at the same value on every runtime, PINGs or not, on the Fastify HTTP/2 listener';
+export const description = 'request-timeout answers a stalled HTTP/2 stream 408 at the deadline and leaves a request received in full to its handler, and idle-timeout closes a session with no stream open at the same value on every runtime, PINGs or not, on the Fastify HTTP/2 listener — and unset, at the framework default on Fastify and on Hono under Node';
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
 /** The request deadline the listener is bound with. */
@@ -162,6 +168,158 @@ async function idleTimeoutLeg(context, runtime) {
   });
 }
 
+/** The default the seam stands in for 72 s in the unset legs. */
+const DEFAULT_STAND_IN_MS = 300;
+/** A client that pings well inside the default. */
+const DEFAULT_PING_INTERVAL_MS = 50;
+/** The latest the session may close under the stand-in: the value plus slack for a loaded runner. */
+const DEFAULT_CLOSE_WITHIN_MS = DEFAULT_STAND_IN_MS + 1_200;
+
+/**
+ * The internal seam that shortens the unset default for a run, reached the way
+ * the TCP cases reach runtime plumbing — it is no public API, and no barrel
+ * publishes it.
+ */
+async function loadSessionIdleSeam() {
+  const fromBuild = globalThis.process?.env?.ACTOR_TS_SMOKE_USE_DIST === '1'
+    || globalThis.Deno?.env?.get?.('ACTOR_TS_SMOKE_USE_DIST') === '1';
+  const backendPath = fromBuild ? '../../../dist/http/backend/HttpServerBackend.js' : '../../../src/http/backend/HttpServerBackend.ts';
+  const { setHttp2SessionIdleDefaultOverride } = await import(new URL(backendPath, import.meta.url).href);
+  return setHttp2SessionIdleDefaultOverride;
+}
+
+/**
+ * idle-timeout **unset** (#1757): a session that opens no stream and pings
+ * every 50 ms is closed at the framework's default, on every pair a
+ * `node:http2` server backs — Fastify on any runtime that builds one, and
+ * Hono on Node.  Before the default, Fastify under Node closed it at its own
+ * 72 s, Fastify under Bun never while the PINGs kept coming, and Hono under
+ * Node never at all.  The default is 72 s, so the internal seam stands in a
+ * short value for it; the path is the unset one, since a set idle-timeout
+ * never reads the seam.  The seam is put back, and the system, binding,
+ * session and pinger released, on every path.
+ */
+async function defaultIdleLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime) {
+  const backends = runtime === 'node' ? ['fastify', 'hono'] : ['fastify'];
+  const setHttp2SessionIdleDefaultOverride = await loadSessionIdleSeam();
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  for (const backend of backends) {
+    setHttp2SessionIdleDefaultOverride(DEFAULT_STAND_IN_MS);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { http: { backend } } });
+    const system = ActorSystem.create(`smoke-http2-idle-default-${backend}`, systemOptions);
+    let binding;
+    let session;
+    let pinger;
+    try {
+      const serverOptions = HttpServerOptions.create().withTls({ cert, key }).withHttp2();
+      binding = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .withServerOptions(serverOptions)
+        .bind(routes);
+      const reported = binding.serverOptionsReport?.http2SessionIdleDefaultMs;
+      if (reported !== DEFAULT_STAND_IN_MS) {
+        throw new Error(`${backend} on ${runtime} reports the HTTP/2 session default as ${reported}, not the ${DEFAULT_STAND_IN_MS}ms stand-in — the unset path was not taken`);
+      }
+      session = http2Connect(`https://127.0.0.1:${binding.port}`, { ca, servername: 'localhost' });
+      session.on('error', () => { /* observed as the 'close' that follows */ });
+      await new Promise((resolve, reject) => {
+        session.once('connect', resolve);
+        session.once('close', () => { reject(new Error(`the ${backend} session closed before it connected on ${runtime}`)); });
+      });
+      if (session.alpnProtocol !== 'h2') {
+        throw new Error(`${backend} negotiated ${session.alpnProtocol}, not h2, on ${runtime} — the leg proves nothing about sessions`);
+      }
+      const since = performance.now();
+      pinger = setInterval(() => {
+        if (!session.closed && !session.destroyed) session.ping(() => { /* the answer is not the point */ });
+      }, DEFAULT_PING_INTERVAL_MS);
+      const closedAfterMs = await sessionClosedAfter(session, since);
+      if (closedAfterMs === null) {
+        throw new Error(`an idle HTTP/2 session pinged every ${DEFAULT_PING_INTERVAL_MS}ms was still open ${WATCH_MS}ms in with idle-timeout unset, on ${backend} under ${runtime}`);
+      }
+      if (closedAfterMs > DEFAULT_CLOSE_WITHIN_MS || closedAfterMs < DEFAULT_STAND_IN_MS / 2) {
+        throw new Error(`an idle HTTP/2 session closed ${Math.round(closedAfterMs)}ms in, outside ${DEFAULT_STAND_IN_MS / 2}–${DEFAULT_CLOSE_WITHIN_MS}ms for a ${DEFAULT_STAND_IN_MS}ms default, on ${backend} under ${runtime}`);
+      }
+    } finally {
+      clearInterval(pinger);
+      session?.destroy();
+      if (binding) await binding.unbind().catch(() => {});
+      await system.terminate();
+      setHttp2SessionIdleDefaultOverride(null);
+    }
+  }
+}
+
+/**
+ * The HTTP/1.1 half of idle-timeout on the same listener (#1756): a client
+ * that negotiates `http/1.1` through ALPN is held to the bound too.  Bun's
+ * HTTP/2 server reads no `keepAliveTimeout` for such a connection, so there
+ * the framework's own timer closes it; Node reads the property itself and
+ * pads it by a second.  Measured on bun 1.4.2 before the timer, the
+ * connection was still open 6 s after its response under 800 ms.
+ */
+async function http1IdleLeg(context, runtime) {
+  await withListener(context, (options) => options.withIdleTimeoutMs(IDLE_TIMEOUT_MS), async (_session, binding) => {
+    const closedAfterMs = await http1ClosedAfterResponse(binding.port, context.ca);
+    if (closedAfterMs === null) {
+      throw new Error(`an idle HTTP/1.1 keep-alive connection on the HTTP/2 listener was still open ${HTTP1_WATCH_MS}ms after its response under a ${IDLE_TIMEOUT_MS}ms idle-timeout on ${runtime}`);
+    }
+    if (closedAfterMs > HTTP1_IDLE_CLOSE_WITHIN_MS) {
+      throw new Error(`an idle HTTP/1.1 keep-alive connection on the HTTP/2 listener closed ${Math.round(closedAfterMs)}ms after its response, past ${HTTP1_IDLE_CLOSE_WITHIN_MS}ms for a ${IDLE_TIMEOUT_MS}ms idle-timeout on ${runtime}`);
+    }
+  });
+}
+
+/** How long an HTTP/1.1 connection is watched after its response. */
+const HTTP1_WATCH_MS = 5_000;
+/** The latest it may close: the value, Node's one-second padding, and slack. */
+const HTTP1_IDLE_CLOSE_WITHIN_MS = IDLE_TIMEOUT_MS + 1_000 + 1_500;
+
+/**
+ * One GET on a fresh TLS connection that negotiated `http/1.1`; resolves with
+ * how long after the response the server closed it, or `null` while it is
+ * open after {@link HTTP1_WATCH_MS}.  The socket and every timer are released
+ * on every path.
+ */
+function http1ClosedAfterResponse(port, ca) {
+  return new Promise((resolve, reject) => {
+    let answeredAt;
+    let received = '';
+    let watch;
+    const socket = tlsConnect({ host: '127.0.0.1', port, ca, servername: 'localhost', ALPNProtocols: ['http/1.1'] });
+    const finish = (outcome, failed) => {
+      clearTimeout(watch);
+      socket.destroy();
+      if (failed) reject(outcome);
+      else resolve(outcome);
+    };
+    socket.on('secureConnect', () => {
+      if (socket.alpnProtocol !== 'http/1.1') {
+        finish(new Error(`ALPN negotiated ${socket.alpnProtocol}, not http/1.1`), true);
+        return;
+      }
+      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+    });
+    socket.on('data', (chunk) => {
+      received += chunk.toString('latin1');
+      if (answeredAt === undefined && received.includes('\r\n\r\nok')) {
+        answeredAt = performance.now();
+        clearTimeout(watch);
+        watch = setTimeout(() => { finish(null, false); }, HTTP1_WATCH_MS);
+      }
+    });
+    socket.on('error', () => { /* observed as the close that follows */ });
+    socket.on('close', () => {
+      if (answeredAt === undefined) finish(new Error(`the HTTP/1.1 connection closed before its response: ${JSON.stringify(received.slice(0, 120))}`), true);
+      else finish(performance.now() - answeredAt, false);
+    });
+    watch = setTimeout(() => { finish(new Error(`no HTTP/1.1 response within ${HTTP1_WATCH_MS}ms`), true); }, HTTP1_WATCH_MS);
+  });
+}
+
 async function requestTimeoutLeg(context, runtime) {
   await withListener(context, (options) => options.withRequestTimeoutMs(REQUEST_TIMEOUT_MS), async (session) => {
     const stalled = await watchStream(
@@ -244,9 +402,11 @@ export async function run({ actorTs, runtime, loadEntry }) {
     const context = { system, HttpExtensionId, HttpServerOptions, routes, cert, key, ca };
     await requestTimeoutLeg(context, runtime);
     await idleTimeoutLeg(context, runtime);
+    await http1IdleLeg(context, runtime);
   } finally {
     await system.terminate();
   }
+  await defaultIdleLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime);
   await reportLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime);
 }
 
@@ -318,7 +478,7 @@ function recordingLogger(LogLevel) {
  * What the binding report and bind()'s warning say about the HTTP/2 listener
  * on this runtime, and the runtime facts they rest on.  A connection that
  * negotiates HTTP/1.1 on Bun's HTTP/2 listener reads neither keepAliveTimeout
- * nor requestTimeout, so there the two bounds hold for HTTP/2 only; under
+ * nor requestTimeout, so the framework holds both there itself (#1756); under
  * Node they hold for both.  The header cap is the other way round: Bun caps an
  * HTTP/2 stream's header list with it (a 4 KiB one is reset under 1 KiB) and
  * Node does not (the same stream reaches the handler), so under Node it holds
@@ -356,19 +516,22 @@ async function reportLeg(context, runtime) {
     const report = binding.serverOptionsReport;
     const held = report?.heldForOneProtocol ?? {};
     const said = warnings();
-    if (said.length !== 1) {
-      throw new Error(`bind() logged ${said.length} warnings on ${runtime}, not one: ${JSON.stringify(said)}`);
+    // On Bun every bound holds for both protocols since the framework bounds
+    // the HTTP/1.1 half itself (#1756), so nothing is said; on Node the
+    // header cap holds for HTTP/1.1 only, which the one warning says.
+    const expectedWarnings = runtime === 'bun' ? 0 : 1;
+    if (said.length !== expectedWarnings) {
+      throw new Error(`bind() logged ${said.length} warnings on ${runtime}, not ${expectedWarnings}: ${JSON.stringify(said)}`);
     }
     const expected = runtime === 'bun'
-      ? { idleTimeoutMs: false, requestTimeoutMs: false, maxHeaderBytes: true, held: { idleTimeoutMs: 'HTTP/2', requestTimeoutMs: 'HTTP/2' } }
+      ? { idleTimeoutMs: true, requestTimeoutMs: true, maxHeaderBytes: true, held: {} }
       : { idleTimeoutMs: true, requestTimeoutMs: true, maxHeaderBytes: false, held: { maxHeaderBytes: 'HTTP/1.1' } };
     const actual = { idleTimeoutMs: report?.idleTimeoutMs, requestTimeoutMs: report?.requestTimeoutMs, maxHeaderBytes: report?.maxHeaderBytes, held };
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       throw new Error(`the HTTP/2 listener's report on ${runtime} is ${JSON.stringify(actual)}, not ${JSON.stringify(expected)}`);
     }
-    const phrase = runtime === 'bun' ? 'for HTTP/2 only' : 'for HTTP/1.1 only';
-    if (!said[0].includes(phrase)) {
-      throw new Error(`bind()'s warning on ${runtime} does not say the bound holds ${phrase}: ${said[0]}`);
+    if (runtime !== 'bun' && !said[0].includes('for HTTP/1.1 only')) {
+      throw new Error(`bind()'s warning on ${runtime} does not say the bound holds for HTTP/1.1 only: ${said[0]}`);
     }
     // The runtime fact the header-cap answer rests on: a 4 KiB header list
     // over HTTP/2 under the 1 KiB cap.

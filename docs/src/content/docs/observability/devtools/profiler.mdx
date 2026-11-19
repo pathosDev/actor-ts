@@ -69,14 +69,24 @@ removes it afterwards, restoring whatever was there before. Outside a
 session the cost is one null check per message.
 
 Only one session runs at a time — two overlapping profiles would each
-see part of the picture and neither would be right. A session left
-running because a browser tab closed is stopped when DevTools detaches,
-so the hook never outlives the thing that asked for it.
+see part of the picture and neither would be right. A session ends with
+the DevTools connection that started it: close the tab and the observer
+comes off, and a detach stops whatever is still running, so the hook
+never outlives the thing that asked for it.
 
-Sessions can auto-stop after a set duration (`durationMs`, capped at ten
-minutes). A profiler is a measurement, not a monitoring agent — for
+Every session stops itself. `durationMs` sets when, up to ten minutes,
+and a start without one runs for the full ten minutes — never
+indefinitely. A profiler is a measurement, not a monitoring agent — for
 continuous figures use
-[metrics](/observability/metrics/core-metrics/).
+[metrics](/observability/metrics/core-metrics/). A session that stopped
+itself keeps its profile until it is collected, so the panel still shows
+it.
+
+A wallclock session holds at most **10 000** distinct actor-path and
+message-type pairs. Under sharding an actor path names the entity, so
+the pair count grows with the entities a node serves; past the cap a new
+pair is not added, pairs already held keep counting, and the result's
+`droppedSamples` says how many messages fell outside the profile.
 
 ## Switching it off
 

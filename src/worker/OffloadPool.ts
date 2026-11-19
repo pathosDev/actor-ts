@@ -415,7 +415,13 @@ export class OffloadPool {
       }
       return;
     }
-    this.system.log.warn(`[offload] worker ${slot.index} died (${detail}); replacing it (restart ${this.budget.recordedRestarts})`);
+    // `registerRestart` records nothing under an unlimited allowance, so the
+    // tally would read 0 for every replacement; the line says what is true
+    // instead, as `WorkerCluster`'s respawn line does (#1255).
+    const budgetDetail = (this.options.maxRestarts ?? DEFAULT_MAX_RESTARTS) < 0
+      ? 'restart budget unlimited'
+      : `restart ${this.budget.recordedRestarts}`;
+    this.system.log.warn(`[offload] worker ${slot.index} died (${detail}); replacing it (${budgetDetail})`);
     this.pump();
   }
 

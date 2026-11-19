@@ -190,8 +190,7 @@ export type DecodeOptions = {
    * key at all.  `allowUnencryptedBodies: true` re-admits plaintext
    * bodies for the migration window of a corpus written before
    * encryption was enabled, and for the tools that rewrite a body
-   * without deciding what it means (the re-encryption sweep, the
-   * layout migration).
+   * without deciding what it means (the re-encryption sweep).
    */
   readonly encryption?:
     & ({ readonly subKey: Uint8Array } | { readonly subKeyFor: SubKeyResolver })
@@ -473,7 +472,7 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
       subKey = enc.subKey;
     }
 
-    const compressedPlaintext = await aesGcmDecrypt(subKey, iv, ciphertext, context);
+    const compressedPlaintext = await decryptNamingTheVersion(subKey, iv, ciphertext, context, keyVersion);
     payload = await compressorFor(compression).decompress(compressedPlaintext, maxOut);
   } else {
     const compressedSlice = bodyForRest.subarray(5);
@@ -490,6 +489,39 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
 }
 
 /* ----------------------------- internals -------------------------------- */
+
+/**
+ * `aesGcmDecrypt`, with an authentication failure turned into a diagnosis
+ * (#1050).
+ *
+ * WebCrypto reports a failed GCM tag as a bare `OperationError`, which names
+ * neither the body nor a cause.  The commonest cause an operator can act on is
+ * a ring that maps the body's version to a different key — a version number
+ * reused after its retired entry was deleted, which `validateMasterKeyRing`
+ * cannot see because no duplicate is left.  Only the authentication failure
+ * is rewritten; a wrong-length key or IV keeps its own message.
+ */
+async function decryptNamingTheVersion(
+  subKey: Uint8Array,
+  iv: Uint8Array,
+  ciphertext: Uint8Array,
+  context: Uint8Array | undefined,
+  keyVersion: number | undefined,
+): Promise<Uint8Array> {
+  try {
+    return await aesGcmDecrypt(subKey, iv, ciphertext, context);
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== 'OperationError') throw error;
+    const version = keyVersion === undefined ? '0 (an unversioned body)' : String(keyVersion);
+    throw new Error(
+      `BodyCodec: the body at key version ${version} failed to authenticate — the key configured `
+      + `for that version is probably not the key it was written with (a version number reused `
+      + `after its retired entry was removed), or the body was written under another encryption `
+      + `info or another storage key.`,
+      { cause: error },
+    );
+  }
+}
 
 /**
  * Normalise a caller-supplied context, treating the empty string as no

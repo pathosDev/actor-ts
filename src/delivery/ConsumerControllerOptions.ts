@@ -46,6 +46,19 @@ export const DEFAULT_PRODUCER_IDLE_TTL_MS = 300_000;
  * sequences, against a set that had no bound at all (#728).
  */
 export const DEFAULT_MAX_OUT_OF_ORDER = 1_024;
+/**
+ * Built-in default for
+ * {@link ConsumerControllerOptionsType.maxIncarnationsPerProducer}.
+ *
+ * Four, the live incarnation included, so three held beside it.  A real
+ * producer needs one: it restarts, and its new incarnation waits beside the old
+ * one until the old one has gone quiet for the idle TTL.  The other two cover a
+ * producer that restarts again before that — a crash loop shorter than five
+ * minutes — without refusing it.  The cost is linear in the number: each held
+ * incarnation retains its own out-of-order set, so the worst case per producer
+ * is four times {@link DEFAULT_MAX_OUT_OF_ORDER}.
+ */
+export const DEFAULT_MAX_INCARNATIONS_PER_PRODUCER = 4;
 
 /** Plain options-object shape accepted by a {@link ConsumerController}. */
 export type ConsumerControllerOptionsType<T> = {
@@ -129,13 +142,46 @@ export type ConsumerControllerOptionsType<T> = {
    * {@link DEFAULT_MAX_OUT_OF_ORDER} for how the default is sized against that.
    */
   readonly maxOutOfOrder?: number;
+  /**
+   * Most incarnations of one `producerId` the consumer holds a deduplication
+   * window for at once, the live incarnation included.  Default 4;
+   * `Infinity` opts out of the cap.
+   *
+   * **A new incarnation does not replace the live one (#1237).**  Nothing on a
+   * delivery binds it to the producer it names, so a consumer that swapped
+   * the window on any unfamiliar incarnation let one envelope from anybody who
+   * could reach it empty a live producer's duplicate suppression — and that
+   * producer's next retransmit of a sequence already handled ran the handler
+   * again.  The new incarnation is held *beside* the live one instead, and
+   * deduplicated in a window of its own, so its messages are handled at once
+   * and handled once.  It is promoted — the old window dropped — only when the
+   * old incarnation has gone quiet for {@link producerIdleTtlMs}, which is the
+   * evidence the idle sweep already takes as "this producer is gone": a
+   * forger gains nothing by sending a new incarnation that it would not gain
+   * by waiting for the sweep.
+   *
+   * Past this cap a delivery under yet another incarnation is **refused** — a
+   * dead letter, no handler call and no acknowledgment — so its producer keeps
+   * it in its own window and retransmits until a held incarnation has gone
+   * quiet for the idle TTL and released its slot.  Refusing rather than
+   * evicting a held window is the same trade {@link maxOutOfOrder} makes:
+   * eviction would re-run the handler for messages already handled and
+   * acknowledged, a refusal only delays them.
+   *
+   * With `producerIdleTtlMs: Infinity` no incarnation ever goes quiet, so a
+   * restarted producer is never promoted: it keeps working in its held window,
+   * and a producer that restarts more often than this cap allows is refused
+   * from then on.  Leave the sweep on where producers restart.
+   */
+  readonly maxIncarnationsPerProducer?: number;
 };
 
 /**
  * Fluent builder for {@link ConsumerControllerOptionsType}.  The `handler`
  * is required — pass it via {@link withHandler} before `build()`; the
  * resource bounds default (1 024 producers, 5-minute idle TTL, 1 024 retained
- * out-of-order sequences per producer) when left unset.
+ * out-of-order sequences and 4 held incarnations per producer) when left
+ * unset.
  *
  *     ConsumerControllerOptions.create<Command>()
  *       .withHandler(async (body) => { … })
@@ -166,13 +212,18 @@ export class ConsumerControllerOptionsBuilder<T> extends OptionsBuilder<Consumer
   withMaxOutOfOrder(maxOutOfOrder: number): this {
     return this.set('maxOutOfOrder', maxOutOfOrder);
   }
+
+  /** Cap on incarnations held per producer, the live one included.  `Infinity` opts out.  Default 4. */
+  withMaxIncarnationsPerProducer(maxIncarnationsPerProducer: number): this {
+    return this.set('maxIncarnationsPerProducer', maxIncarnationsPerProducer);
+  }
 }
 
 /**
  * Validates resolved {@link ConsumerControllerOptionsType} settings.
  *
- * All three bounds legitimately admit `Infinity` (unbounded map / sweep off /
- * unbounded out-of-order window), which the generic `positiveInt` /
+ * All four bounds legitimately admit `Infinity` (unbounded map / sweep off /
+ * unbounded out-of-order window / unbounded incarnations), which the generic `positiveInt` /
  * `positiveNumber` helpers reject, so the rules are bespoke — the same shape
  * `InMemoryCacheOptionsValidator` uses for the same reason.
  *
@@ -186,7 +237,7 @@ export class ConsumerControllerOptionsValidator<T> extends OptionsValidator<Cons
     super('ConsumerControllerOptions');
   }
   protected rules(s: Partial<ConsumerControllerOptionsType<T>>): void {
-    const { maxProducers, producerIdleTtlMs, maxOutOfOrder } = s;
+    const { maxProducers, producerIdleTtlMs, maxOutOfOrder, maxIncarnationsPerProducer } = s;
     if (
       maxProducers !== undefined && maxProducers !== Infinity &&
       (typeof maxProducers !== 'number' || !Number.isInteger(maxProducers) || maxProducers < 1)
@@ -205,12 +256,19 @@ export class ConsumerControllerOptionsValidator<T> extends OptionsValidator<Cons
     ) {
       this.fail('maxOutOfOrder', 'must be a positive integer or Infinity', maxOutOfOrder);
     }
+    if (
+      maxIncarnationsPerProducer !== undefined && maxIncarnationsPerProducer !== Infinity &&
+      (typeof maxIncarnationsPerProducer !== 'number' || !Number.isInteger(maxIncarnationsPerProducer)
+        || maxIncarnationsPerProducer < 1)
+    ) {
+      this.fail('maxIncarnationsPerProducer', 'must be a positive integer or Infinity', maxIncarnationsPerProducer);
+    }
   }
 }
 
 /**
  * `0` is how this block spells "no bound", because `Infinity` — the opt-out
- * all three fields document — is not writable in HOCON at all: `getInt`
+ * all four fields document — is not writable in HOCON at all: `getInt`
  * accepts only a number or a `/^-?\d+(\.\d+)?$/` string, and `parseDuration`
  * throws outright on a non-finite one.  `0` is also what the rest of the
  * reference config already uses for it (`cluster.max-members`,
@@ -218,14 +276,18 @@ export class ConsumerControllerOptionsValidator<T> extends OptionsValidator<Cons
  * spelling rather than two.
  *
  * Nothing else in any field's range collides: a cap of zero producers, a
- * zero-millisecond idle lifetime and a cap of zero retained sequences are all
- * states the validator rejects, so the sentinel costs no reachable
+ * zero-millisecond idle lifetime, a cap of zero retained sequences and a cap of
+ * zero held incarnations are all states the validator rejects, so the sentinel costs no reachable
  * configuration.
  */
 const unboundedWhenZero = (value: number): number => (value === 0 ? Infinity : value);
 
 /** The fields {@link readConsumerControllerOptionsFromConfig} reads — every bound, never the handler. */
-type ConsumerControllerConfigFields = 'maxProducers' | 'producerIdleTtlMs' | 'maxOutOfOrder';
+type ConsumerControllerConfigFields =
+  | 'maxProducers'
+  | 'producerIdleTtlMs'
+  | 'maxOutOfOrder'
+  | 'maxIncarnationsPerProducer';
 
 /**
  * Read `actor-ts.reliable-delivery.consumer.*` into the shape
@@ -253,6 +315,9 @@ export function readConsumerControllerOptionsFromConfig(
   }
   if (config.hasPath(keys.maxOutOfOrder)) {
     out.maxOutOfOrder = unboundedWhenZero(config.getInt(keys.maxOutOfOrder));
+  }
+  if (config.hasPath(keys.maxIncarnationsPerProducer)) {
+    out.maxIncarnationsPerProducer = unboundedWhenZero(config.getInt(keys.maxIncarnationsPerProducer));
   }
   return out;
 }

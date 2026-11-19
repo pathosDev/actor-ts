@@ -123,6 +123,36 @@ export const DEFAULT_DISPATCHER_KIND = 'hybrid' as const;
 export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
 
 /**
+ * Budget the `actor-system-terminate` phase is seeded with — the phase whose
+ * built-in task drains and tears down the whole system (#920).
+ *
+ * Its own number, because draining the system is not comparable to unbinding
+ * a listener: the phase holds the `shutdown-drain-timeout` drain (2 s), every
+ * actor's `postStop` — write-behind flushes of dirty entities among them
+ * (#1548) — and the journal and sink closes behind them.  Under the generic
+ * 5 s budget a slow drain was abandoned half-done.  Twice the generic default,
+ * and never less than it: a `default-phase-timeout` above this raises the
+ * terminator's budget with it, and `phases.actor-system-terminate.timeout`
+ * sets it outright.
+ */
+export const DEFAULT_ACTOR_SYSTEM_TERMINATE_TIMEOUT_MS = 10_000;
+
+/**
+ * Bound on a whole `CoordinatedShutdown` run — the one number an operator
+ * sizes `terminationGracePeriodSeconds` against, rather than a sum of twelve
+ * per-phase budgets (#920).
+ *
+ * Past it the run halts in the phase it is in, logs which tasks were still
+ * pending, and — with `exit-process` on — exits with a failure status; an
+ * exit at the end of a run also waits no longer than this for a task a phase
+ * budget abandoned.  30 s covers the worst case of the pipeline a typical
+ * service registers into — four 5 s phases and the 10 s terminator — and fits
+ * a 45 s grace period with a 10 s `preStop` and room to spare.  `0` disables
+ * it.
+ */
+export const DEFAULT_SHUTDOWN_OVERALL_TIMEOUT_MS = 30_000;
+
+/**
  * Status the process exits with once the `CoordinatedShutdown` pipeline
  * finishes and `actor-ts.coordinated-shutdown.exit-process` is on.
  *
@@ -166,14 +196,15 @@ export const MAX_PROCESS_EXIT_CODE = 255;
  * How long `ActorSystem.terminate()` lets the `/user` subtree finish the work
  * it already has before the stop cascade begins (#663).
  *
- * Deliberately **under** {@link DEFAULT_PHASE_TIMEOUT_MS}, and that is the
- * whole reason it is not 5 s too.  `CoordinatedShutdown`'s last phase is a
- * task that awaits the teardown, bounded by the phase timeout; a drain
- * budget equal to it could burn the entire phase before a single actor had
- * been told to stop, and the phase would then be abandoned with the system
- * still up.  2 s leaves the teardown itself three, and still gives a backlog
- * a real chance — the drain returns the moment the tree goes quiet, so a
- * system that is already idle pays a tick, not a budget.
+ * Deliberately **under** {@link DEFAULT_ACTOR_SYSTEM_TERMINATE_TIMEOUT_MS}, and
+ * under {@link DEFAULT_PHASE_TIMEOUT_MS} too, which that budget was until #920.
+ * `CoordinatedShutdown`'s last phase is a task that awaits the teardown,
+ * bounded by the phase timeout; a drain budget equal to it could burn the
+ * entire phase before a single actor had been told to stop, and the phase
+ * would then be abandoned with the system still up.  2 s leaves the teardown
+ * itself the rest, and still gives a backlog a real chance — the drain returns
+ * the moment the tree goes quiet, so a system that is already idle pays a
+ * tick, not a budget.
  *
  * Not an options default: like `actor-ts.logger.close-timeout`, the drain
  * budget is HOCON-only (`actor-ts.system.shutdown-drain-timeout`) — it is an

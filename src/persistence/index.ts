@@ -18,6 +18,8 @@ export type { SnapshotPolicy } from './PersistentActor.js';
 // built-in defaults, and what `reference.conf` publishes under
 // `actor-ts.persistence`, the startup switch as `auto-start`.
 export {
+  DEFAULT_ALLOW_FULLY_COMPACTED_RECOVERY,
+  DEFAULT_ALLOW_NON_ATOMIC_BATCH_APPEND,
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
   DEFAULT_PERSISTENCE_AUTO_START,
@@ -42,7 +44,7 @@ export type { PersistenceOptionField, PersistenceOptionSupport } from './Persist
 // Exported as a class for the same reason `StorageLocalityError` is: a caller
 // that catches an unhonourable encryption/integrity request discriminates on
 // the class, and `error.name === '…'` breaks on any rewording (#960).
-export { UnsupportedPersistenceOptionError } from './PersistenceCapabilities.js';
+export { NonAtomicBatchAppendError, UnsupportedPersistenceOptionError } from './PersistenceCapabilities.js';
 export type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
 export { JournalConcurrencyError, JournalError } from './JournalTypes.js';
 // The two integrity failures a recovery can raise.  Exported because
@@ -730,6 +732,11 @@ export {
 // exported so an out-of-tree journal can implement the optional method against
 // the same definition the in-repo backends are checked against.
 export { persistenceIdPage } from './Journal.js';
+// #957 — the lookback window plus deduplication every by-tag consumer reads
+// through, exported for an application that polls `currentEventsByTag` itself.
+export { TagLookbackWindow } from './query/TagLookbackWindow.js';
+export type { DeliveredEventMark, TagCursor } from './query/TagLookbackWindow.js';
+export { DEFAULT_TAG_LOOKBACK_WINDOW_MS } from './Constants.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';
 export { CassandraQuery } from './query/CassandraQuery.js';
@@ -876,16 +883,3 @@ export type {
   ReEncryptResumeState,
   ReEncryptProgressStore,
 } from './object-storage/ReEncryptionSweep.js';
-// The #716 key-layout migration.  Public because it is the only procedure
-// that moves a durable-state corpus onto the new keys with its revisions
-// intact — an `upsert`-based recipe either throws against the empty
-// destination or rewinds every record to revision 1.
-export {
-  migrateObjectStorageDurableStateLayout,
-  DurableStateLayoutMigrationKeyError,
-} from './object-storage/DurableStateLayoutMigration.js';
-export type {
-  DurableStateLayoutMigrationOptions,
-  DurableStateLayoutMigrationProgress,
-  DurableStateLayoutMigrationResult,
-} from './object-storage/DurableStateLayoutMigration.js';

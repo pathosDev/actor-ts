@@ -12,6 +12,7 @@ import { applySqliteBusyTimeout } from '../journals/SqliteClient.js';
 import { SqliteSnapshotStoreOptionsValidator } from './SqliteSnapshotStoreOptions.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
 import type { StorageLocality } from '../StorageLocality.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 type SnapshotRow = {
   persistence_id: string;
@@ -97,6 +98,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
+    assertValidPersistenceId(persistenceId, 'SqliteSnapshotStore.save');
     let payload: string;
     try {
       payload = await sealPayload(

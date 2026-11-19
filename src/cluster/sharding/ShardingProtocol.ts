@@ -25,6 +25,21 @@ export type RegisterRegion = {
    * itself.
    */
   readonly numShards: number;
+  /**
+   * The newest freshness token this region has seen per shard, as
+   * `[shardId, token]` pairs (#1214) — see {@link HandOff.token}.
+   *
+   * A coordinator that has just taken over holds no record of the tokens its
+   * predecessor issued, and a region refuses a `HandOff` whose token is not
+   * newer than the last one it saw.  So the region says what it has seen, and
+   * the coordinator issues above it: the regions are the only parties whose
+   * view of the counter decides anything, and a new coordinator hears from each
+   * of them — every region registers on the leader change — before it orders
+   * one to give a shard up.
+   *
+   * Optional for reading only: a region of an earlier build sends none.
+   */
+  readonly shardTokens?: ReadonlyArray<readonly [number, number]>;
 };
 
 export type RegisterAcknowledgment = {
@@ -99,6 +114,16 @@ export type ShardHome = {
   readonly shardId: number;
   readonly region: string;
   readonly node: NodeAddressData;
+  /**
+   * The shard's freshness token as of this placement (#1214) — see
+   * {@link HandOff.token}.  A region never refuses a `ShardHome` over its
+   * token's age; it records it, so that a `HandOff` issued before the placement
+   * is older than what the region has seen.  That is what makes a shard that
+   * moved away and came back refuse the hand-off its previous stay was sent.
+   * A `ShardHome` without one is refused all the same: without it a placement
+   * back onto this region could not outdate that hand-off.
+   */
+  readonly token: number;
 };
 
 /**
@@ -119,6 +144,27 @@ export type BeginHandOffAcknowledgment = {
 export type HandOff = {
   readonly kind: 'sharding.HandOff';
   readonly shardId: number;
+  /**
+   * Per-shard freshness token (#1214).  A region refuses a `HandOff` whose
+   * token is not newer than the last one it saw for the shard, on a `HandOff`
+   * or a {@link ShardHome}, and one that carries no token at all.
+   *
+   * The origin gate (#584) answers who may order a hand-off and the ownership
+   * precondition makes a duplicate harmless, but neither orders frames in time:
+   * `Transport` flushes what it buffered before a handshake completed, so an
+   * authentic `HandOff` can land after the shard has moved on — away and back
+   * again, or under a coordinator that has taken over since.
+   *
+   * The coordinator draws each token as `max(previous + 1, wall clock)`:
+   * `previous + 1` keeps a shard's tokens strictly increasing under one
+   * coordinator, and the wall-clock floor together with the tokens every region
+   * reports in {@link RegisterRegion.shardTokens} carries the order across a
+   * failover — see `ShardCoordinator.nextShardToken`.
+   *
+   * Added within wire version 3, so nothing negotiates it: a node of an earlier
+   * build sends no token and has its hand-offs refused.
+   */
+  readonly token: number;
 };
 
 export type HandOffComplete = {
@@ -210,10 +256,29 @@ export type EntityStarted = {
   readonly entityId: string;
 };
 
+/**
+ * Why an entity stopped, as its shard saw it (#954).
+ *
+ * `'passivated'` is the one stop a shard asks for — a region passivation, an
+ * entity's own `Passivate`, or a passivation releasing the slot of an entity
+ * backing off — and the only one under which `rememberEntities` forgets the
+ * entity.  `'unrequested'` is every other stop: a failure past the restart
+ * budget, a failure under `stoppingStrategy`, a start that keeps failing, a
+ * plain `stopSelf`.  The shard cannot tell those apart — `Terminated` carries
+ * no cause — and need not: none of them is the system deciding the entity
+ * should go away, so a remembered entity keeps its place in the registry.
+ */
+export type EntityStopReason = 'passivated' | 'unrequested';
+
 export type EntityStopped = {
   readonly kind: 'sharding.EntityStopped';
   readonly shardId: number;
   readonly entityId: string;
+  /**
+   * Optional on the wire: a region from before #954 sends none, and a report
+   * without one is read as `'passivated'` — the only meaning a stop had then.
+   */
+  readonly reason?: EntityStopReason;
 };
 
 export type RememberedEntities = {
@@ -482,6 +547,16 @@ export function isShardingMessage(message: unknown): message is ShardingMessage 
     && message !== null
     && typeof (message as { kind?: unknown }).kind === 'string'
     && (message as { kind: string }).kind.startsWith('sharding.');
+}
+
+/**
+ * Whether `value` can be a shard freshness token (#1214) — a positive safe
+ * integer.  `unknown` because the wire is free to put anything in the field,
+ * and a token that is not an integer, or one past the point where `+ 1` still
+ * yields a larger number, cannot be ordered.
+ */
+export function isShardToken(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 /**

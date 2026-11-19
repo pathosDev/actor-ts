@@ -13,8 +13,21 @@ export {
   BrokerOptionsError,
   DEFAULT_RECONNECT,
   DEFAULT_OUTBOUND_BUFFER,
+  type BrokerAcknowledgmentMode,
+  type BrokerAcknowledgmentOptionsType,
+  DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
+  DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS,
 } from './BrokerOptions.js';
+// The reply contract of the `'on-reply'` acknowledgment mode (#975–#977).
 export {
+  type BrokerDeliveryReply,
+  type BrokerReplyableDelivery,
+  acknowledgeDelivery,
+  negativelyAcknowledgeDelivery,
+  BrokerDeliveryNotAcknowledgedError,
+} from './BrokerAcknowledgment.js';
+export {
+  BrokerAcknowledgmentFailed,
   BrokerConnected,
   BrokerDisconnected,
   BrokerReconnectAttempt,
@@ -290,7 +303,7 @@ export type {
   SseCommand,
   SseEvent,
 } from './SseActor.js';
-export { SseOptions, SseOptionsBuilder, SseOptionsValidator } from './SseOptions.js';
+export { DEFAULT_SSE_MAX_BUFFER_CHARS, SseOptions, SseOptionsBuilder, SseOptionsValidator } from './SseOptions.js';
 export type { SseOptionsType } from './SseOptions.js';
 
 // Email bridge (#1133) — IMAP IDLE in, pooled SMTP out.

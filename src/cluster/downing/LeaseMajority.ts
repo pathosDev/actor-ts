@@ -4,6 +4,7 @@ import {
   type DowningDecision,
   type DowningProvider,
 } from './DowningProvider.js';
+import type { Member } from '../Member.js';
 import { LeaseMajorityOptionsValidator } from './LeaseMajorityOptions.js';
 import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajorityOptions.js';
 
@@ -19,12 +20,25 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  *      - Reachable side has strict majority → down the unreachable side.
  *      - Reachable side is the strict minority → down ourselves
  *        (and every reachable peer on this side).
- *   2. Equal-size partition (or insufficient info) → start
+ *   2. Equal-size partition (or insufficient info) → this side's
+ *      arbiter (its lowest-addressed reachable `up` member) starts
  *      `lease.acquire()`.  Return no decision while the acquire is
- *      pending so the cluster waits.
+ *      pending so the cluster waits.  Every other member of the side
+ *      returns no decision and never touches the lease (#1824).
  *   3. When acquire resolves:
  *      - `true` → we are the surviving side.  Down the unreachable side.
  *      - `false` → some other side won.  Down our own side.
+ *
+ * **One arbiter per side (#1824)**
+ *
+ * Each node owns its own lease instance — config builds it owned by the node's
+ * address and incarnation — so a side whose members all acquired had at most
+ * one winner, and every side-mate of the winner lost and downed its own side,
+ * the winner included: an even split left one node standing, not one side.
+ * The side-mates now learn the arbiter's verdict from the membership instead —
+ * see {@link isArbiterOfThisSide}.  The #1660 tie below covers the arbiter's
+ * own survival; a side-mate's rests on reaching the arbiter, and when the
+ * arbiter takes itself out the side-mate arbitrates afresh.
  *
  * The `decide()` interface stays sync (the rest of the resolver
  * pipeline is sync).  Async work happens off-band — this strategy
@@ -99,6 +113,14 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  * produce a usable win: the strategy keeps arbitrating and returns no
  * decision, which is the same conservative posture as a pending acquire.
  *
+ * **Applied win (#1660)**
+ *
+ * Re-validation covers a win that is asked for again; it cannot cover one
+ * that was applied, because `Cluster` stops asking then.  So once `decide`
+ * has handed a win out, the strategy watches the lease's `onLost`, and a
+ * loss downs this node through the binding `Cluster` passes to
+ * {@link bindSelfDown} — see {@link onLeaseLost}.
+ *
  * **Fencing tokens (optional)**
  *
  * If the underlying `Lease` implements `acquireWithToken()` (K8s
@@ -170,11 +192,35 @@ export class LeaseMajority implements DowningProvider {
   /** Set once by {@link shutdown}; every decision after it is the empty one. */
   private stopped = false;
 
+  /**
+   * True from the moment {@link decide} hands out a won arbitration until the
+   * lease behind it is lost or the strategy is shut down (#1660).
+   *
+   * Handing it out is what makes it matter: `Cluster` applies whatever
+   * `decide` returns, tombstoning the other side, and then stops asking about
+   * that partition — the next view has nobody unreachable, so {@link reset}
+   * runs and nothing here consults the lease again.  This flag is what keeps
+   * the survival that decision granted tied to the lease after that.  It
+   * survives `reset()` on purpose, for exactly that reason.
+   */
+  private survivalRestsOnLease = false;
+
+  /** How `Cluster` takes this node out between decisions — see {@link bindSelfDown}. */
+  private downSelf: ((reason: string) => void) | null = null;
+
+  /** Unsubscribes {@link onLeaseLost} from the lease; called by {@link shutdown}. */
+  private readonly stopWatchingLease: () => void;
+
   private readonly options: LeaseMajorityOptionsType;
 
   constructor(options: LeaseMajorityOptions) {
     this.options = options as LeaseMajorityOptionsType;
     new LeaseMajorityOptionsValidator().validate(this.options);
+    this.stopWatchingLease = this.options.lease.onLost((reason) => this.onLeaseLost(reason));
+  }
+
+  bindSelfDown(downSelf: (reason: string) => void): void {
+    this.downSelf = downSelf;
   }
 
   decide(view: ClusterPartitionView): DowningDecision {
@@ -234,7 +280,10 @@ export class LeaseMajority implements DowningProvider {
       // Cached from a prior tick on this same view.  A won arbitration is
       // returned only while the lease behind it is still held (#937);
       // otherwise it is dropped here and the kickoff below arbitrates afresh.
-      if (!this.decisionRestsOnLease || this.options.lease.checkAlive()) {
+      if (!this.decisionRestsOnLease) return this.decision;
+      if (this.options.lease.checkAlive()) {
+        // Handed out from here on, so applied: survival now rests on the lease.
+        this.survivalRestsOnLease = true;
         return this.decision;
       }
       this.decision = null;
@@ -263,6 +312,12 @@ export class LeaseMajority implements DowningProvider {
     // attempt would race the undo, and the same owner re-acquiring is
     // exactly the case where the undo turns destructive (#600).
     if (this.abandonedAcquireEpoch !== null) {
+      return new Set();
+    }
+
+    // Only this side's arbiter consults the lease; the rest of the side waits
+    // for its verdict to reach them through the membership (#1824).
+    if (!this.isArbiterOfThisSide(reachable, view)) {
       return new Set();
     }
 
@@ -298,11 +353,33 @@ export class LeaseMajority implements DowningProvider {
   async shutdown(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.survivalRestsOnLease = false;
+    this.stopWatchingLease();
     this.reset();
     await this.options.lease.release();
   }
 
   /* ------------------------------ internals ------------------------------ */
+
+  /**
+   * The lease reported itself lost (#1660).  If a win resting on it was handed
+   * out, this node survived the split only because it held the lease, and it
+   * cannot tell a lapse nobody noticed from the other side having taken the
+   * record and downed this one — which is the case that forks the cluster.
+   * So it fails closed: this node downs itself through the binding `Cluster`
+   * gave it, once, and the cluster stops rather than splits.
+   *
+   * The watch lasts until {@link shutdown}, not for a fixed window after the
+   * win: the other side can arbitrate as long as any of its members runs and
+   * still sees this one unreachable, and this side has no way to learn when
+   * that has stopped.  No `down-removal-margin` exists to bound it, and the
+   * downed members' tombstone lifetime — a day by default — is no tighter.
+   */
+  private onLeaseLost(reason: string): void {
+    if (this.stopped || !this.survivalRestsOnLease) return;
+    this.survivalRestsOnLease = false;
+    this.downSelf?.(`the lease behind an applied lease-majority win was lost: ${reason}`);
+  }
 
   /**
    * Run a single acquire attempt, scoped to a captured epoch.  The
@@ -395,6 +472,38 @@ export class LeaseMajority implements DowningProvider {
       // acquire.
       this.abandonedAcquireEpoch = null;
     }
+  }
+
+  /**
+   * Whether this node arbitrates an even split for its side (#1824).
+   *
+   * Every node owns its own lease instance, so if each acquired for itself, at
+   * most one node in the cluster would win, and each of its side-mates would
+   * lose and down its side — itself and the winner.  So one node per side asks:
+   * the lowest-addressed reachable `up` member, the order `KeepOldest` uses,
+   * which every node on the side computes alike from the same view.
+   *
+   * The others never touch the lease and decide nothing, and that is enough:
+   * an arbiter that wins tombstones the other side, which reaches them by
+   * gossip as a view with nobody unreachable; one that loses leaves, and the
+   * `leaving` member is no longer `up`, so the next member in line becomes the
+   * arbiter and its acquire loses to the lease the other side holds.  A side
+   * where nobody is `up` falls back to its lowest member, so it is never left
+   * without an arbiter.
+   *
+   * Only `up` counts, not a member's address alone, because this strategy's
+   * fingerprint is addresses only: the arbiter going to `leaving` does not
+   * reset the view, and without the status the next in line would wait on a
+   * node that has gone.
+   */
+  private isArbiterOfThisSide(reachable: readonly Member[], view: ClusterPartitionView): boolean {
+    const up = reachable.filter((m) => m.status === 'up');
+    const eligible = up.length > 0 ? up : reachable;
+    const arbiter = eligible.reduce<Member | null>(
+      (lowest, m) => (lowest === null || m.address.compareTo(lowest.address) < 0 ? m : lowest),
+      null,
+    );
+    return arbiter !== null && arbiter.address.equals(view.self);
   }
 
   private reset(): void {

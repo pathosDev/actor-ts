@@ -114,6 +114,98 @@ export const DEFAULT_RECONNECT = {
 export const DEFAULT_OUTBOUND_BUFFER = 1000;
 
 /**
+ * When a consuming broker actor tells its broker that a delivery is done
+ * (#975, #976, #977):
+ *
+ *   - `'on-reply'` (default) — the actor `ask`s the target with the delivery
+ *     and acknowledges / commits only once the target replies with
+ *     `{ kind: 'acknowledgment' }`.  A `{ kind: 'negativeAcknowledgment' }`
+ *     reply, any other reply, or no reply within `acknowledgmentTimeoutMs`
+ *     leaves the delivery unacknowledged, so the broker redelivers it:
+ *     **at-least-once**.  See {@link BrokerDeliveryReply}.
+ *   - `'on-delivery'` — the actor acknowledges once the delivery is in the
+ *     target's mailbox and expects no reply.  A delivery lost after that —
+ *     a crash, a mailbox overflow, a handler that throws — is not
+ *     redelivered: **at-most-once**, for consumers that would rather lose a
+ *     message than see it twice.
+ */
+export type BrokerAcknowledgmentMode = 'on-reply' | 'on-delivery';
+
+/** Every {@link BrokerAcknowledgmentMode}, for validation and messages. */
+export const BROKER_ACKNOWLEDGMENT_MODES: ReadonlyArray<BrokerAcknowledgmentMode> = ['on-reply', 'on-delivery'];
+
+/** The built-in {@link BrokerAcknowledgmentOptionsType.acknowledgment}. */
+export const DEFAULT_BROKER_ACKNOWLEDGMENT_MODE: BrokerAcknowledgmentMode = 'on-reply';
+
+/**
+ * The built-in {@link BrokerAcknowledgmentOptionsType.acknowledgmentTimeoutMs}:
+ * how long a target may take to reply before its delivery is given back to
+ * the broker.  Thirty seconds, the figure `KafkaActor`'s manual-commit timeout
+ * and `JetStreamActor`'s acknowledgment timeout already use, so the three
+ * consuming actors that grew an acknowledgment wait in the same release agree
+ * on how patient they are.
+ */
+export const DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS = 30_000;
+
+/**
+ * The acknowledgment options of the broker actors that consume with a broker-
+ * side acknowledgment — `KafkaActor`, `AmqpActor` and `MqttActor`.
+ *
+ * A type of its own rather than part of {@link BrokerCommonOptionsType}: the
+ * other brokers have nothing to acknowledge, and an option every broker
+ * advertised but only three honoured would be a knob that silently does
+ * nothing on the rest — the reasoning `BrokerActor.idleTimeoutMs` gives for
+ * being a hook rather than a common option.
+ */
+export type BrokerAcknowledgmentOptionsType = {
+  /**
+   * When a delivery is acknowledged — see {@link BrokerAcknowledgmentMode}.
+   * Default `'on-reply'`.
+   */
+  readonly acknowledgment?: BrokerAcknowledgmentMode;
+  /**
+   * How long, in ms, the actor waits for the target's reply in `'on-reply'`
+   * mode before it negatively acknowledges the delivery.  Default `30_000`.
+   * Unused in `'on-delivery'` mode.
+   */
+  readonly acknowledgmentTimeoutMs?: number;
+};
+
+/**
+ * The full config paths of the {@link BrokerAcknowledgmentOptionsType} leaves
+ * under one broker's root.  Declared in `ConfigKeys` under each of the three
+ * roots that read them — `ConfigKeys.io.broker.kafka`, `.amqp` and `.mqtt`
+ * each satisfy this shape — rather than composed under every broker root the
+ * way {@link brokerCommonKeysUnder} composes the shared leaves, because no
+ * other broker reads them.
+ */
+export type BrokerAcknowledgmentKeys = {
+  readonly acknowledgment: string;
+  readonly acknowledgmentTimeout: string;
+};
+
+/**
+ * Read the acknowledgment leaves at the paths `keys` names — the protocol
+ * readers of the three consuming brokers each call it with their own
+ * `ConfigKeys` group.  An unset leaf is omitted.  `acknowledgment` is read as the word it is and checked by the
+ * broker's validator, on the merged options, like every other enum leaf here;
+ * `acknowledgment-timeout` is a duration, so `5s` reads as 5000.
+ */
+export function readBrokerAcknowledgmentOptionsFromConfig(
+  config: Config,
+  keys: BrokerAcknowledgmentKeys,
+): BrokerAcknowledgmentOptionsType {
+  const out: { -readonly [K in keyof BrokerAcknowledgmentOptionsType]: BrokerAcknowledgmentOptionsType[K] } = {};
+  if (config.hasPath(keys.acknowledgment)) {
+    out.acknowledgment = config.getString(keys.acknowledgment) as BrokerAcknowledgmentMode;
+  }
+  if (config.hasPath(keys.acknowledgmentTimeout)) {
+    out.acknowledgmentTimeoutMs = config.getDuration(keys.acknowledgmentTimeout);
+  }
+  return out;
+}
+
+/**
  * The full config paths of the leaves every broker block shares, under one
  * broker's root.  Built by {@link brokerCommonKeysUnder} rather than declared
  * once, because the root is the actor's `configKey()` — one per protocol, and
@@ -337,6 +429,27 @@ export abstract class BrokerOptionsBuilder<T extends BrokerCommonOptionsType> ex
 }
 
 /**
+ * {@link BrokerOptionsBuilder} plus the two acknowledgment setters, for the
+ * brokers whose options carry {@link BrokerAcknowledgmentOptionsType}.
+ */
+export abstract class AcknowledgingBrokerOptionsBuilder<
+  T extends BrokerCommonOptionsType & BrokerAcknowledgmentOptionsType,
+> extends BrokerOptionsBuilder<T> {
+  /**
+   * When a delivery is acknowledged: `'on-reply'` (default — the target must
+   * reply) or `'on-delivery'`.  See {@link BrokerAcknowledgmentMode}.
+   */
+  withAcknowledgment(mode: BrokerAcknowledgmentMode): this {
+    return this.set('acknowledgment' as keyof T, mode as T[keyof T]);
+  }
+
+  /** How long `'on-reply'` waits for the target's reply.  Default 30 s. */
+  withAcknowledgmentTimeoutMs(ms: number): this {
+    return this.set('acknowledgmentTimeoutMs' as keyof T, ms as T[keyof T]);
+  }
+}
+
+/**
  * Shared validator base for every broker options type — the counterpart to
  * {@link BrokerOptionsBuilder}.  Concrete broker validators call
  * {@link commonRules} at the top of their own `rules()` to cover the
@@ -398,6 +511,27 @@ export abstract class BrokerOptionsValidator<T extends BrokerCommonOptionsType> 
         common.circuitBreaker,
       );
     }
+  }
+
+  /**
+   * The {@link BrokerAcknowledgmentOptionsType} fields, for the validators of
+   * the brokers that carry them.  Checked imperatively for the reason
+   * {@link commonRules} is: the field-name helpers address `T`'s own keys,
+   * which this generic base cannot name.
+   */
+  protected acknowledgmentRules(s: Partial<T>): void {
+    const acknowledging = s as Partial<BrokerAcknowledgmentOptionsType>;
+    if (
+      acknowledging.acknowledgment !== undefined
+      && !BROKER_ACKNOWLEDGMENT_MODES.includes(acknowledging.acknowledgment)
+    ) {
+      this.fail(
+        'acknowledgment',
+        `must be one of ${BROKER_ACKNOWLEDGMENT_MODES.map((mode) => `'${mode}'`).join(', ')}`,
+        acknowledging.acknowledgment,
+      );
+    }
+    this.nestedPositive('acknowledgmentTimeoutMs', acknowledging.acknowledgmentTimeoutMs);
   }
 
   /**

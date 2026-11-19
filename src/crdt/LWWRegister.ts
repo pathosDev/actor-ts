@@ -3,12 +3,15 @@ import {
   assertPlausibleTimestamp,
   assertString,
 } from './CrdtWireValidation.js';
+import { canonicalOrderKey } from '../util/CanonicalOrderKey.js';
 
 /**
  * Last-Writer-Wins register.  A single value with a timestamp; on
  * `merge` the higher timestamp wins.  Concurrent writes (same ts on
  * two replicas) are resolved deterministically by `replicaId`
- * lexicographic order — same input on every node, same winner.
+ * lexicographic order — same input on every node, same winner — and a
+ * write tied on both (one replica, two values, one millisecond) by the
+ * value's canonical order key (#950, #1841).
  *
  * Use this for **single-value state** that's eventually consistent —
  * a user's display name, a feature-flag value, the latest-known
@@ -64,7 +67,17 @@ export class LWWRegister<V> implements Crdt<LWWRegister<V>> {
     if (other._timestamp < this._timestamp) return this;
     // Tie on timestamp — break by replica id so every node converges
     // to the same winner regardless of arrival order.
-    return other._replica > this._replica ? other : this;
+    if (other._replica > this._replica) return other;
+    if (other._replica < this._replica) return this;
+    // A full tie: one replica stamped two values at one timestamp — two writes
+    // in one millisecond.  Falling through to `this` made merge keep its left
+    // argument, so two nodes receiving the pair in opposite orders kept
+    // different values forever (#950).  The value is the last key of the total
+    // order: any deterministic comparison works, as long as it never depends
+    // on which register is `this`.
+    // The key is injective (#1841), so two values that tie on it are equal and
+    // keeping `this` is indistinguishable from keeping `other`.
+    return canonicalOrderKey(other._value) > canonicalOrderKey(this._value) ? other : this;
   }
 
   toJSON(): LWWRegisterJson<V> {
@@ -93,10 +106,17 @@ export class LWWRegister<V> implements Crdt<LWWRegister<V>> {
     return new LWWRegister<V>(json.value, json.timestamp, json.replica);
   }
 
+  /**
+   * Same timestamp, same replica and canonically equal values.  The values are
+   * compared through `canonicalOrderKey`, the key a full tie in `merge` is
+   * ranked by, so two registers are equal exactly when a merge could keep
+   * either of them.  `JSON.stringify` did this before and threw on a `bigint`
+   * value and called `{ v: undefined }` equal to `{}` (#1841).
+   */
   equals(other: LWWRegister<V>): boolean {
     return this._timestamp === other._timestamp
       && this._replica === other._replica
-      && JSON.stringify(this._value) === JSON.stringify(other._value);
+      && canonicalOrderKey(this._value) === canonicalOrderKey(other._value);
   }
 }
 

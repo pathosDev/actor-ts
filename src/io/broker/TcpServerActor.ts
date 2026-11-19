@@ -3,12 +3,12 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { getTcpBackend } from '../../runtime/tcp/index.js';
-import type { TcpListener, TcpSocketLike } from '../../runtime/tcp/index.js';
+import type { TcpBackend, TcpListener, TcpSocketLike } from '../../runtime/tcp/index.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { DEFAULT_FRAMING, readFramingFromConfig } from './TcpFraming.js';
 import type { TcpFrame } from './TcpFraming.js';
 import { TcpInboundBuffer } from './TcpInboundBuffer.js';
-import { TcpServerOptionsValidator } from './TcpServerOptions.js';
+import { DEFAULT_TCP_SERVER_MAX_BUFFERED_BYTES, TcpServerOptionsValidator } from './TcpServerOptions.js';
 import type { TcpServerOptions, TcpServerOptionsType } from './TcpServerOptions.js';
 import type { TcpOutbound } from './TcpSocketActor.js';
 
@@ -71,6 +71,19 @@ type ServerConnection = {
    * partial frame (#610).
    */
   readonly inbound: TcpInboundBuffer;
+  /**
+   * Whether the socket's last write answered `false` and no `onDrain` has come
+   * since (#1827) — while it is set, every payload goes into {@link outbox}.
+   */
+  backPressured: boolean;
+  /**
+   * Payloads held behind a socket that pushed back, oldest first, written in
+   * order on its `onDrain` until it pushes back again.  Whole payloads, never
+   * parts of one; at most `maxBufferedBytes` of them, counted in
+   * {@link outboxBytes}.
+   */
+  readonly outbox: Uint8Array[];
+  outboxBytes: number;
 };
 
 /**
@@ -162,8 +175,17 @@ export class TcpServerActor
 
   /* ----------------------------- lifecycle ------------------------------ */
 
+  /**
+   * What the listener binds through — the runtime's own backend.  `protected`
+   * so a test can bind through a backend whose sockets answer as it decides:
+   * back-pressure on cue is not something a real loopback peer can promise.
+   */
+  protected tcpBackend(): Promise<TcpBackend> {
+    return getTcpBackend();
+  }
+
   protected async connectImplementation(): Promise<void> {
-    const backend = await getTcpBackend();
+    const backend = await this.tcpBackend();
     this.listener = await backend.listen({
       host: this.options.bindHost ?? '0.0.0.0',
       port: this.options.bindPort!,
@@ -173,6 +195,7 @@ export class TcpServerActor
         onData: (socket, chunk) => this.onSocketData(socket, chunk),
         onClose: (socket) => this.onSocketClosed(socket),
         onError: (socket, error) => this.onSocketError(socket, error),
+        onDrain: (socket) => this.onSocketDrain(socket),
       },
     });
     this.actualPort = this.listener.port;
@@ -218,7 +241,51 @@ export class TcpServerActor
     const bytes = command.payload instanceof Uint8Array
       ? command.payload
       : new TextEncoder().encode(command.payload);
-    connection.socket.write(bytes);
+    this.writeOrHold(connection, bytes);
+  }
+
+  /**
+   * Hand one payload to the socket — or, while the socket is pushing back, to
+   * the connection's {@link ServerConnection.outbox} (#1827).
+   *
+   * Every payload used to go straight to the socket whatever it answered, and
+   * since #931 every adapter keeps what it is handed, so one client that
+   * stopped reading grew the listener's heap by everything the `target` sent
+   * it.  After a `false` nothing more is written until `onDrain`, and at most
+   * `maxBufferedBytes` are held.  Past that the connection is failed — aborted,
+   * since a peer that is not reading will not read a FIN either, and announced
+   * like any other close — rather than trimmed, because a stream with a
+   * payload missing from its middle is worse than no stream.  `=== false`, as
+   * in `TcpTransport`: a socket that answers nothing never pushes back.
+   */
+  private writeOrHold(connection: ServerConnection, bytes: Uint8Array): void {
+    if (!connection.backPressured) {
+      connection.backPressured = connection.socket.write(bytes) === false;
+      return;
+    }
+    const cap = this.options.maxBufferedBytes ?? DEFAULT_TCP_SERVER_MAX_BUFFERED_BYTES;
+    if (connection.outboxBytes + bytes.byteLength > cap) {
+      this.log.warn(
+        `TcpServerActor: closing '${connection.connectionId}' — it is not reading, and `
+        + `${connection.outboxBytes + bytes.byteLength} bytes would exceed maxBufferedBytes=${cap}`,
+      );
+      this.abortConnection(connection);
+      return;
+    }
+    connection.outbox.push(bytes);
+    connection.outboxBytes += bytes.byteLength;
+  }
+
+  /** The socket can take more again: write what is held, in order, until it pushes back (#1827). */
+  private onSocketDrain(socket: TcpSocketLike): void {
+    const connection = this.connectionsBySocket.get(socket);
+    if (connection === undefined || !this.connections.has(connection.connectionId)) return;
+    connection.backPressured = false;
+    while (connection.outbox.length > 0 && !connection.backPressured) {
+      const bytes = connection.outbox.shift()!;
+      connection.outboxBytes -= bytes.byteLength;
+      connection.backPressured = socket.write(bytes) === false;
+    }
   }
 
   private onClose(command: CloseCommand): void {
@@ -261,6 +328,9 @@ export class TcpServerActor
       connectionId,
       socket,
       inbound: new TcpInboundBuffer(),
+      backPressured: false,
+      outbox: [],
+      outboxBytes: 0,
     };
     this.connections.set(connectionId, connection);
     this.connectionsBySocket.set(socket, connection);
@@ -303,7 +373,19 @@ export class TcpServerActor
 
   /** End the socket and announce it — the single teardown path for one connection. */
   private closeConnection(connection: ServerConnection): void {
+    // What is held goes out ahead of the FIN (#1827): a `send` followed by a
+    // `close` must not lose the send because the socket was pushing back.
+    // Bounded already, and the socket queues it whatever it answers.
+    for (const bytes of connection.outbox.splice(0)) {
+      try { connection.socket.write(bytes); } catch { /* already closing */ }
+    }
     this.endSocketQuietly(connection.socket);
+    this.forgetConnection(connection);
+  }
+
+  /** Abort the socket and announce it — for a connection that will not read what it is owed (#1827). */
+  private abortConnection(connection: ServerConnection): void {
+    this.abortSocketQuietly(connection.socket);
     this.forgetConnection(connection);
   }
 
@@ -318,6 +400,8 @@ export class TcpServerActor
     // weak but the socket outlives this call, and a connection closed for
     // breaching a cap is holding the largest buffer of the lot (#578).
     connection.inbound.clear();
+    connection.outbox.length = 0;
+    connection.outboxBytes = 0;
     this.deliver({ kind: 'connectionClosed', connectionId: connection.connectionId });
   }
 
@@ -376,6 +460,7 @@ export function readTcpServerOptionsFromConfig(
   if (config.hasPath(keys.bindHost)) out.bindHost = config.getString(keys.bindHost);
   if (config.hasPath(keys.bindPort)) out.bindPort = config.getInt(keys.bindPort);
   if (config.hasPath(keys.maxConnections)) out.maxConnections = config.getInt(keys.maxConnections);
+  if (config.hasPath(keys.maxBufferedBytes)) out.maxBufferedBytes = config.getBytes(keys.maxBufferedBytes);
   if (config.hasPath(keys.framing.root)) out.framing = readFramingFromConfig(config, keys.framing);
   return out;
 }

@@ -104,13 +104,13 @@ t2: Replica B persists event_B1 at vc { B: 1 }    ← concurrent
 t3: Replica A reads event_B1.
     Comparing event_B1's vc { B: 1 } to state_A's vc { A: 1 }:
        → concurrent
-    Invoke resolver:
-       merged_state = resolver.resolve(state_A, [event_A1, event_B1])
-       state_A = merged_state
+    Fold the conflict group { event_A1, event_B1 }:
+       state_A = applyEvent(initial, resolver.resolve(event_A1, event_B1))
+       (no resolver: applyEvent(applyEvent(initial, event_A1), event_B1))
        state_A's vc = { A: 1, B: 1 } (the merge)
 
 t4: Replica A persists event_A2 at vc { A: 2, B: 1 }
-       state_A = applyEvent(merged_state, event_A2)
+       state_A = applyEvent(state_A, event_A2)
 
 t5: Replica B eventually sees the entire chain — its own,
     A's pre-merge events, plus A's post-merge events.

@@ -49,7 +49,7 @@ const routes =
 `X-Content-Type-Options: nosniff` braucht keine Einrichtung. Geschrieben
 wird der Header vom **Backend**, nicht von einer Middleware — er erreicht
 damit auch die Responses, die keine Middleware sieht: das backend-eigene
-Fehler-Mapping, den `fallback`-404 und den 413 bei zu großem Body. Ein
+Fehler-Mapping, den 404 für einen Pfad ohne passende Route und den 413 bei zu großem Body. Ein
 Header aus dem Handler gewinnt weiterhin.
 
 Er ist bewusst der einzige, der per Default an ist — es ist der einzige
@@ -132,8 +132,9 @@ braucht.
   }
   ```
 
-  Was die Forwarded-Header hier tun: `X-Forwarded-For` liest nur
-  [`IpAllowlist`](/de/http/middleware/ip-allowlist/), und erst, wenn du die
+  Was die Forwarded-Header hier tun: `X-Forwarded-For` lesen nur
+  [`IpAllowlist`](/de/http/middleware/ip-allowlist/) und der
+  `clientIpResolver`, den sie teilt, und erst, wenn du die
   Proxys benannt hast; `X-Forwarded-Proto` liest nichts — `Csrf` bekommt das
   Scheme stattdessen aus `expectedScheme`, gerade weil ein weitergereichtes
   Scheme von dem gesetzt wird, der die Anfrage schickt.
@@ -218,6 +219,18 @@ eigene Name macht jeden bewussten Off-Origin-Sprung mit einem Befehl
 auffindbar. Übergib eine Konstante oder ein Ziel aus deiner Allowlist —
 nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
 
+**Der Server prüft jeden Redirect, den er sendet, nicht nur die, die
+`redirect` baut** (#1056).  Ein `301`/`302`/`303`/`307`/`308`, dessen
+`location` auf einen anderen Host als den des Requests zeigt, wird mit der
+generischen `500` abgewiesen — ob ein Handler den Header selbst geschrieben
+hat (`complete(Status.Found, null, { location })`), ein geworfener
+`HttpError` ihn trägt oder eine `fallback()`-Route damit geantwortet hat.
+Die Abweisung wird auf `error` geloggt, ohne das Ziel.  Zwei Opt-ins lassen
+einen Redirect gehen: `redirectExternal(...)` pro Route und serverweit
+`withAllowedRedirectOrigins([...])` an `newServerAt(...)`, das exakte
+Origins nimmt (`https://payments.example`, ohne Pfad) oder `['*']`, um die
+Prüfung abzuschalten.  Ein leeres Ziel lehnt `redirect('')` mit `400` ab.
+
 ## Untrusted Input begrenzen
 
 - **Request-Bodies** sind auf jedem Backend bei **1 MiB** gekappt, und ein
@@ -280,8 +293,8 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   über einen `node:http`-Server**: Fastify, Express und Hono-auf-Node tragen sie,
   Hono auf Bun trägt nur `idle-timeout` — dort ist es also die einzige
   Schranke für einen Request, dessen Body nicht mehr weiterkommt, und für eine
-  untätige Verbindung, und mit `0` bleibt eine solche Verbindung offen, bis der
-  Client sie schließt —, Hono auf Deno keinen — die Tabelle steht in der
+  untätige Verbindung, und `bind()` lehnt `0` ab, womit eine solche Verbindung
+  offen bliebe, bis der Client sie schließt —, Hono auf Deno keinen — die Tabelle steht in der
   [Konfigurationsreferenz](/de/reference/configuration/). Wo es eines nicht
   kann, sagt `bind()` es: jede Schranke, die du gesetzt hast und die laut
   Meldung des Backends nicht wirkt, wird beim Binden des Servers in einer
@@ -327,28 +340,26 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
     Client, der alle 300 ms pingt, wird die untätige Session pünktlich
     geschlossen.
 
-  **Ungesetzt** begrenzt eine untätige HTTP/2-Session auf dem Default-Backend
-  Fastifys eigener Session-Timer: **72 s auf Node, aber 144 s auf Bun**, das ihn
-  beim doppelten Wert feuern lässt — und auf Bun zählt dieser Timer einen
-  PING-Frame als Aktivität; ein Client, der einmal pro Sekunde pingte, hielt
-  eine Session ohne jeden Request offen, solange er weiter pingte (nach 170 s
-  noch offen, bun 1.4.2). Auf Hono über Node lässt ein ungesetzter
-  `idle-timeout` eine untätige HTTP/2-Session ganz ohne Schranke. **Setze
-  `idle-timeout` auf jedem HTTP/2-Listener.**
+  **Ungesetzt** schließt der eigene Timer von actor-ts eine untätige
+  HTTP/2-Session nach **72 s**, mit oder ohne PINGs, auf Fastify unter Node und
+  Bun und auf Hono über Node. Vorher war das Sache des Backends: Fastifys
+  Session-Timer, den Bun nach 144 s feuert und bei jedem PING-Frame
+  zurücksetzt — ein Client, der einmal pro Sekunde pingte, hielt eine Session
+  ohne jeden Request offen, solange er weiter pingte (nach 170 s noch offen,
+  bun 1.4.2) —, und auf Hono über Node gar nichts.
 
-  **Auf Bun begrenzt keine der beiden eine HTTP/1.1-Verbindung auf dem
-  HTTP/2-Listener.** Der Listener hält HTTP/1.1 auf demselben Port bereit, und
-  Bun reicht eine solche Verbindung an eine Behandlung weiter, die weder
-  `keepAliveTimeout` noch `requestTimeout` liest: eine
+  **Auf Bun begrenzt actor-ts die HTTP/1.1-Verbindungen auf dem
+  HTTP/2-Listener selbst.** Der Listener hält HTTP/1.1 auf demselben Port
+  bereit, und Bun reicht eine solche Verbindung an eine Behandlung weiter, die
+  weder `keepAliveTimeout` noch `requestTimeout` liest: eine
   HTTP/1.1-Keep-Alive-Verbindung war unter einem `idle-timeout` von 800 ms
   8 s nach ihrer Antwort noch offen, ein stockender HTTP/1.1-Body unter einem
-  `request-timeout` von 2 s nach 40 s (bun 1.4.2) — wo Node die erste nach 1,8 s
-  schließt und den zweiten beim nächsten Sweep mit `408` beantwortet. Auf Bun
-  werden die beiden deshalb als nur für HTTP/2 wirksam gemeldet, und `bind()`
-  warnt; `header-timeout` und `max-connections` gelten dort für beide
-  Protokolle. Wo nicht vertrauenswürdige Clients einen HTTP/2-Listener auf Bun
-  erreichen, terminiere HTTP/1.1 vor dem Prozess oder lass den Listener bei
-  HTTP/1.1.
+  `request-timeout` von 2 s nach 40 s (bun 1.4.2). actor-ts stellt deshalb auf
+  jeder solchen Verbindung eigene Timer — untätig zwischen zwei Requests, und
+  eine Empfangs-Deadline pro Request, beantwortet mit `408` —, und beide Keys
+  wirken dort für beide Protokolle, wie `header-timeout` und
+  `max-connections` schon zuvor. HTTP/1.1 per ALPN abzulehnen war die
+  Alternative, und sie würde jeden Client abweisen, der kein h2 spricht.
 
   **`header-timeout` ist anders, und das mit Absicht: actor-ts stellt die
   Deadline selbst scharf, statt die Zahl an die Runtime zu reichen und zu
@@ -519,7 +530,7 @@ einem angenommenen — die 101 schreibt das Backend selbst.  Siehe
 | CSRF (Browser-Formulare) | `csrfProtection(...)` |
 | API-Authentifizierung | `JwtAuth(...)` — Signatur, `exp`, `iss` und `aud` gegen die Schlüssel deines Ausstellers geprüft; `BearerTokenAuth(...)` für ein vorab geteiltes Operator-Token |
 | Keine internen Fehler-Leaks | `withErrorHandler` + generische Bodies |
-| Keine Open Redirects | `redirect(...)` — same-origin per Default |
+| Keine Open Redirects | jeder 3xx des Servers bleibt auf dem Origin des Requests, außer `redirectExternal(...)` oder `withAllowedRedirectOrigins(...)` erlaubt es |
 | Request-Korrelation | `requestId()` |
 | Begrenzte Latenz | `requestTimeout(...)` — die Frist auch aus `actor-ts.http.request-timeout` |
 | Sichere Dateiauslieferung | `getFromDirectory`-Defaults (dotfiles deny, Symlink-Confinement) |

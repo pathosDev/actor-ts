@@ -12,6 +12,7 @@ import { isHealthy } from '../../management/HealthCheck.js';
 import type { HealthCheckRegistry, HealthCheckResult } from '../../management/HealthCheck.js';
 import { BrokerOptionsError } from './BrokerOptions.js';
 import type { GrpcChannelOptions } from './GrpcClientOptions.js';
+import { DEFAULT_MAX_PENDING_REQUEST_MESSAGES, GrpcServerOptionsValidator } from './GrpcServerOptions.js';
 import type { GrpcServerOptions, GrpcServerOptionsType } from './GrpcServerOptions.js';
 
 type UnaryHandler = { readonly kind: 'unary'; readonly target: ActorRef<GrpcUnaryCall> };
@@ -159,11 +160,14 @@ export class GrpcServerActor extends Actor<unknown> {
   private async resolveOptions(): Promise<GrpcServerOptionsType> {
     const defaults: Partial<GrpcServerOptionsType> = {
       credentials: { kind: 'insecure' },
+      maxPendingRequestMessages: DEFAULT_MAX_PENDING_REQUEST_MESSAGES,
     };
     const config = this.system.config;
     rejectRetiredLeaves(config, ConfigKeys.io.broker.grpc.server.root, RETIRED_GRPC_SERVER_LEAVES);
     const fromConfig = readGrpcServerOptionsFromConfig(config);
-    return { ...defaults, ...fromConfig, ...this._ctorOptions } as GrpcServerOptionsType;
+    const merged = { ...defaults, ...fromConfig, ...this._ctorOptions } as GrpcServerOptionsType;
+    new GrpcServerOptionsValidator().validate(merged);
+    return merged;
   }
 
   private validateRequired(): void {
@@ -219,7 +223,11 @@ export class GrpcServerActor extends Actor<unknown> {
     this.server = new grpc.Server(this.options.channelOptions);
     const impl: Record<string, unknown> = {};
     for (const [methodName, handler] of Object.entries(this.options.handlers ?? {})) {
-      impl[methodName] = buildGrpcMethodImplementation(methodName, handler);
+      impl[methodName] = buildGrpcMethodImplementation(
+        methodName,
+        handler,
+        this.options.maxPendingRequestMessages,
+      );
     }
     this.server.addService(serviceConstructor.service, impl);
 
@@ -298,6 +306,7 @@ const RETIRED_GRPC_SERVER_LEAVES: RetiredLeaves = {
  * the full paths `keys` holds.  An unset leaf is omitted.  `handlers` are
  * functions, `credentials` certificate material, `health` a registry and
  * `channelOptions` grpc-js's own keys, so none of them has a leaf.
+ * `max-pending-request-messages` is a count of frames, read as an integer.
  */
 export function readGrpcServerOptionsFromConfig(
   config: Config,
@@ -308,6 +317,9 @@ export function readGrpcServerOptionsFromConfig(
   if (config.hasPath(keys.packageName)) out.packageName = config.getString(keys.packageName);
   if (config.hasPath(keys.serviceName)) out.serviceName = config.getString(keys.serviceName);
   if (config.hasPath(keys.bind)) out.bind = config.getString(keys.bind);
+  if (config.hasPath(keys.maxPendingRequestMessages)) {
+    out.maxPendingRequestMessages = config.getInt(keys.maxPendingRequestMessages);
+  }
   return out;
 }
 
@@ -338,13 +350,21 @@ function readProtoPath(config: Config, path: string): string | ReadonlyArray<str
  * state, and this way the whole call → handler → reply path of all
  * four call classes is exercisable with plain fakes — no gRPC module,
  * no bound socket, no actor system.
+ *
+ * `maxPendingRequestMessages` bounds what a client-stream or bidi call
+ * holds before its handler subscribes — see
+ * `GrpcServerOptionsType.maxPendingRequestMessages`.
  */
-export function buildGrpcMethodImplementation(methodName: string, handler: GrpcHandler): unknown {
+export function buildGrpcMethodImplementation(
+  methodName: string,
+  handler: GrpcHandler,
+  maxPendingRequestMessages: number = DEFAULT_MAX_PENDING_REQUEST_MESSAGES,
+): unknown {
   return match(handler)
     .with({ kind: 'unary' }, (h) => unaryImplementation(methodName, h))
     .with({ kind: 'serverStream' }, (h) => serverStreamImplementation(methodName, h))
-    .with({ kind: 'clientStream' }, (h) => clientStreamImplementation(methodName, h))
-    .with({ kind: 'bidi' }, (h) => bidiImplementation(methodName, h))
+    .with({ kind: 'clientStream' }, (h) => clientStreamImplementation(methodName, h, maxPendingRequestMessages))
+    .with({ kind: 'bidi' }, (h) => bidiImplementation(methodName, h, maxPendingRequestMessages))
     .exhaustive();
 }
 
@@ -376,10 +396,12 @@ function serverStreamImplementation(methodName: string, handler: ServerStreamHan
   };
 }
 
-function clientStreamImplementation(methodName: string, handler: ClientStreamHandler) {
+function clientStreamImplementation(methodName: string, handler: ClientStreamHandler, maxPending: number) {
   return (call: GrpcServerReadableCall, callback: GrpcUnaryCallback): void => {
-    const requests = createRequestStreamFanOut();
     let answered = false;
+    const requests = createRequestStreamFanOut(maxPending, (message) => {
+      if (!answered) { answered = true; callback({ code: GRPC_STATUS_RESOURCE_EXHAUSTED, message }); }
+    });
     const userCall: GrpcClientStreamCall = {
       method: methodName,
       metadata: extractMetadata(call.metadata),
@@ -398,10 +420,12 @@ function clientStreamImplementation(methodName: string, handler: ClientStreamHan
   };
 }
 
-function bidiImplementation(methodName: string, handler: BidiHandler) {
+function bidiImplementation(methodName: string, handler: BidiHandler, maxPending: number) {
   return (call: GrpcServerDuplexCall): void => {
-    const requests = createRequestStreamFanOut();
     let ended = false;
+    const requests = createRequestStreamFanOut(maxPending, (message) => {
+      if (!ended) { ended = true; call.emit('error', { code: GRPC_STATUS_RESOURCE_EXHAUSTED, message }); }
+    });
     const userCall: GrpcBidiCall = {
       method: methodName,
       metadata: extractMetadata(call.metadata),
@@ -427,12 +451,22 @@ function bidiImplementation(methodName: string, handler: BidiHandler) {
  * would silently lose its opening chunks, and for a client-streaming
  * call those chunks are the entire request.
  */
-function createRequestStreamFanOut(): {
+function createRequestStreamFanOut(
+  maxPending: number,
+  onOverflow: (message: string) => void,
+): {
   subscribe(target: ActorRef<GrpcRequestStreamInbound>): void;
   emit(message: GrpcRequestStreamInbound): void;
 } {
   const subscribers = new Set<ActorRef<GrpcRequestStreamInbound>>();
   const pending: GrpcRequestStreamInbound[] = [];
+  // The hold is bounded because the peer, not the handler, decides how long
+  // the call stays open and how fast it streams: a handler that never
+  // subscribes would otherwise let one client grow this array for as long as
+  // it likes (#1039).  Once refused, the stream is dead to the handler too:
+  // the hold is emptied and nothing is emitted again, so a late subscriber
+  // receives nothing rather than a request with a hole in it.
+  let refused = false;
   return {
     subscribe: (target) => {
       subscribers.add(target);
@@ -440,7 +474,17 @@ function createRequestStreamFanOut(): {
       for (const message of replayed) target.tell(message);
     },
     emit: (message) => {
-      if (subscribers.size === 0) { pending.push(message); return; }
+      if (refused) return;
+      if (subscribers.size === 0) {
+        if (pending.length >= maxPending) {
+          refused = true;
+          pending.length = 0;
+          onOverflow(`request stream exceeded ${maxPending} frames before the handler subscribed`);
+          return;
+        }
+        pending.push(message);
+        return;
+      }
       for (const ref of subscribers) ref.tell(message);
     },
   };
@@ -455,6 +499,8 @@ export const GRPC_HEALTH_SERVICE_NAME = 'grpc.health.v1.Health';
 const GRPC_STATUS_NOT_FOUND = 5;
 /** `INTERNAL` — the fallback status for a handler that blew up. */
 const GRPC_STATUS_INTERNAL = 13;
+/** `RESOURCE_EXHAUSTED` — a request stream outran its pre-subscribe hold (#1039). */
+const GRPC_STATUS_RESOURCE_EXHAUSTED = 8;
 
 /**
  * `grpc.health.v1.HealthCheckResponse.ServingStatus`.  The member names are

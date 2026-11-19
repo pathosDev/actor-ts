@@ -11,6 +11,21 @@ import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { SseEvent } from './SseActor.js';
 
+/**
+ * Safety cap on the pending event buffer (chars).  A well-behaved server ends
+ * an event with a blank line frequently — in any of the three framings the
+ * grammar allows, `\n\n`, `\r\n\r\n` or `\r\r`, all of which reach the
+ * delimiter search as `\n\n` (#1510) — and this bounds the damage from one
+ * that never does (security audit BRK-2).  1 MiB is far above any real single
+ * SSE event.
+ *
+ * Measured against the characters as they *arrive*, while what the buffer
+ * keeps is the normalised form, which is never longer.  So normalising cannot
+ * loosen the cap: a CRLF-framed feed reaches it no later than the same bytes
+ * framed with LF would.
+ */
+export const DEFAULT_SSE_MAX_BUFFER_CHARS = 1_048_576;
+
 export interface SseOptionsType extends BrokerCommonOptionsType {
   /** SSE endpoint URL. */
   readonly url?: string;
@@ -45,6 +60,18 @@ export interface SseOptionsType extends BrokerCommonOptionsType {
    * because `fetch` has no deadline of its own.
    */
   readonly connectTimeoutMs?: number;
+  /**
+   * Declare the stream lost once an event grows past this many characters
+   * without a delimiter (#371).  Default {@link DEFAULT_SSE_MAX_BUFFER_CHARS}
+   * (1 MiB worth).  Raise it for a feed whose single events are legitimately
+   * larger; lower it to bound what one misbehaving endpoint can make this
+   * actor hold.
+   *
+   * The unit is UTF-16 code units, the length of the decoded text — not
+   * bytes, which is why the name says chars: a byte-named cap compared
+   * against code units is the defect #752 fixed in the TCP actor.
+   */
+  readonly maxBufferChars?: number;
 }
 
 export class SseOptionsBuilder extends BrokerOptionsBuilder<SseOptionsType> {
@@ -77,6 +104,11 @@ export class SseOptionsBuilder extends BrokerOptionsBuilder<SseOptionsType> {
   withConnectTimeoutMs(ms: number): this {
     return this.set('connectTimeoutMs', ms);
   }
+
+  /** Declare the stream lost once an event passes `chars` without a delimiter.  Default: 1 048 576. */
+  withMaxBufferChars(chars: number): this {
+    return this.set('maxBufferChars', chars);
+  }
 }
 
 /** Validates resolved {@link SseOptionsType} settings. */
@@ -90,6 +122,8 @@ export class SseOptionsValidator extends BrokerOptionsValidator<SseOptionsType> 
     // `0` is the documented "off" for both, so non-negative rather than positive.
     this.nonNegativeInt('idleTimeoutMs');
     this.nonNegativeInt('connectTimeoutMs');
+    // No "off" here: a cap of 0 would refuse the first byte.
+    this.positiveInt('maxBufferChars');
   }
 }
 

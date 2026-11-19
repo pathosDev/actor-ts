@@ -26,7 +26,11 @@ export type PriorityMailboxOverflow =
   | 'drop-lowest-priority'
   /** Discard the message being enqueued, whatever priority it was given. */
   | 'drop-new'
-  /** Throw `MailboxFullError` at the `tell` site — caller surfaces it. */
+  /**
+   * Refuse the message being enqueued and dead-letter it (`deadLetterDrops`
+   * defaults to on under this policy).  Nothing is thrown at the `tell`
+   * site; the sender is never failed for this queue being full (#919).
+   */
   | 'reject';
 
 /** Plain options-object shape accepted by a {@link PriorityMailbox}. */
@@ -45,7 +49,8 @@ export type PriorityMailboxOptionsType<T> = {
   readonly capacity?: number;
   /**
    * What a full mailbox does with the next arrival.  Only meaningful together
-   * with {@link capacity}, and rejected without it.  Default `reject`.
+   * with {@link capacity}, and rejected without it.  Default
+   * `drop-lowest-priority`.
    */
   readonly overflow?: PriorityMailboxOverflow;
   /**
@@ -62,7 +67,8 @@ export type PriorityMailboxOptionsType<T> = {
   readonly onDrop?: MailboxDropObserver<T>;
   /**
    * Route every dropped envelope to `system.deadLetters` rather than only
-   * counting it (#773).  Default `false`.
+   * counting it (#773).  Default `false`, except under `reject`, where it is
+   * `true` (#919).
    *
    * Opt-in for the reason `BoundedMailboxOptionsType.deadLetterDrops` gives
    * — the drop runs on the sender's stack and a dead letter is a durable
@@ -124,7 +130,7 @@ export class PriorityMailboxOptionsBuilder<T> extends OptionsBuilder<PriorityMai
     return this.set('capacity', capacity);
   }
 
-  /** What to do when a message arrives on a full mailbox.  Default `reject`. */
+  /** What to do when a message arrives on a full mailbox.  Default `drop-lowest-priority`. */
   withOverflow(overflow: PriorityMailboxOverflow): this {
     return this.set('overflow', overflow);
   }
@@ -134,7 +140,7 @@ export class PriorityMailboxOptionsBuilder<T> extends OptionsBuilder<PriorityMai
     return this.set('onDrop', onDrop);
   }
 
-  /** Dead-letter each dropped envelope instead of only counting it.  Default `false`. */
+  /** Dead-letter each dropped envelope instead of only counting it.  Default `false`, `true` under `reject`. */
   withDeadLetterDrops(deadLetterDrops: boolean): this {
     return this.set('deadLetterDrops', deadLetterDrops);
   }

@@ -96,19 +96,40 @@ describe('idempotent — missing header policy', () => {
 });
 
 describe('idempotent — error path', () => {
-  test('handler throw → in-flight marker is released so retries can succeed', async () => {
+  test("handler throw under onHandlerError: 'release' → the claim is released so retries can succeed", async () => {
     const cache = new InMemoryCache();
     let attempt = 0;
-    const handler = idempotent({ cache })(() => {
+    const handler = idempotent({ cache, onHandlerError: 'release' })(() => {
       attempt++;
       if (attempt === 1) throw new Error('transient');
       return complete(Status.OK, { ok: true });
     });
     await expect(handler(makeReq({ 'idempotency-key': 'rec' }))).rejects.toThrow();
-    // After failure, the marker is dropped → retry runs the handler again.
+    // After failure, the claim is dropped → retry runs the handler again.
     const second = await handler(makeReq({ 'idempotency-key': 'rec' }));
     expect(second.status).toBe(200);
     expect(attempt).toBe(2);
+  });
+
+  test('handler throw by default → the failure is retained and the handler is not run again (#984)', async () => {
+    const cache = new InMemoryCache();
+    let attempt = 0;
+    const handler = idempotent({ cache })(() => {
+      attempt++;
+      throw new Error('may have applied a side effect');
+    });
+    await expect(handler(makeReq({ 'idempotency-key': 'kept' }))).rejects.toThrow();
+    expect((await handler(makeReq({ 'idempotency-key': 'kept' }))).status).toBe(500);
+    expect(attempt).toBe(1);
+  });
+
+  test('a claim written by an instance from before #1082 still answers 409', async () => {
+    const cache = new InMemoryCache();
+    await cache.set('idem:legacy', { inFlight: true }, 60_000);
+    let ran = 0;
+    const handler = idempotent({ cache })(() => { ran++; return complete(Status.OK, {}); });
+    expect((await handler(makeReq({ 'idempotency-key': 'legacy' }))).status).toBe(409);
+    expect(ran).toBe(0);
   });
 });
 

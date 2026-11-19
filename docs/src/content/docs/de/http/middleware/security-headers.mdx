@@ -136,10 +136,12 @@ geschrieben, was die Response trägt. Eine Route unter `hsts()` bekommt die
 konfigurierte Policy also auch auf einem Server, dessen
 `withSecurityHeaders({ hsts })` eine andere nennt, und nur die Responses, die
 kein HSTS auf Routenebene erreicht — ein `413` aus dem Body-Parsing etwa —,
-tragen die serverweite Policy. Der eigene `404` des Backends für einen Pfad,
-auf den keine Route passt, trägt keine, auf keinem Backend: Er wird außerhalb
-jedes Decorators beantwortet. Ein Baum, der mit einem `fallback(...)` endet,
-beantwortet diesen `404` selbst, und dann trägt er die Policy
+tragen die serverweite Policy. Ebenso der eigene `404` des Frameworks für einen
+Pfad, auf den keine Route passt, auf jedem Backend: Ohne `fallback(...)`
+beantwortet der Server ihn trotzdem selbst, mit einem festen
+`{"error":"Not Found"}`-Body, über denselben Writer wie jede andere Response.
+Ein Baum, der mit einem `fallback(...)` endet, beantwortet diesen `404`
+stattdessen mit seinem eigenen Handler, und auch dann trägt er die Policy
 ([#1059](https://github.com/pathosDev/actor-ts/issues/1059)).
 
 import { Aside } from '@astrojs/starlight/components';

@@ -353,8 +353,10 @@ Siehe [Runtime — Compatibility Matrix](/de/runtime/compatibility-matrix/).
   Vier häufige Ursachen:
   - **Der Ref zeigt auf einen gestoppten Actor** — Nachrichten
     werden an `/deadLetters` geroutet (prüfe das System-Log).
-  - **Die Mailbox ist voll** mit `reject`-Overflow — `tell` wirft
-    `MailboxFullError` am Sender.  Fang es dort, wo Du tellst.
+  - **Die Mailbox ist voll** — eine begrenzte Mailbox verwirft nach
+    ihrer Overflow-Policy, und unter `reject` ist jede abgelehnte
+    Nachricht ein Dead Letter, der den vollen Actor nennt.  `tell`
+    wirft dafür nie.
   - **Recovery ist noch nicht abgeschlossen** für einen
     `PersistentActor` — Nachrichten, die vor `onRecoveryComplete`
     gesendet werden, warten in der Mailbox.  Langsame Recovery
@@ -372,7 +374,9 @@ Siehe [Runtime — Compatibility Matrix](/de/runtime/compatibility-matrix/).
 <Aside type="caution" title="Warum startet mein Actor ständig neu?">
   Normalerweise wirft `onReceive`.  Prüfe das System-Log — jeder
   Fehler wird mit dem Error und der angewendeten Direktive
-  geloggt.  Der Default-Supervisor restartet bis zu 10/Minute;
+  geloggt, als ERROR (`Resume` als WARN), höchstens eine Zeile pro
+  Actor und Sekunde; die nächste Zeile nennt, wie viele Fehler
+  dazwischen nicht geloggt wurden.  Der Default-Supervisor restartet bis zu 10/Minute;
   sobald diese Schwelle überschritten wird, stoppt er das Kind
   und loggt "Restart threshold exceeded (10 in 60000ms) —
   stopping children".

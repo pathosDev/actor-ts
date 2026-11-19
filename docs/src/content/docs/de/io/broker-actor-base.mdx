@@ -545,6 +545,7 @@ Publisht auf `system.eventStream`:
 | `BrokerBufferOverflow` | Der Outbound-Buffer hat ein Envelope verworfen. |
 | `BrokerNotConnected` | Gesendet ohne Verbindung. |
 | `BrokerCircuitBreakerStateChanged` | Der Circuit Breaker, den der Actor nennt, wurde `open`, `half-open` oder `closed`. |
+| `BrokerAcknowledgmentFailed` | Der Broker hat ein Acknowledgment des Actors abgelehnt — die Delivery kommt wieder.  `KafkaActor`, `AmqpActor` und `MqttActor` konsumieren mit einem Acknowledgment, das standardmäßig auf die Antwort des Targets wartet; siehe [AMQP](/de/io/amqp/#acknowledgment). |
 
 Subscribiere, um jeden Broker-Actor einheitlich zu beobachten:
 
@@ -569,7 +570,9 @@ ab — eines der gemeinsamen Blätter oder eines, das `retiredLeaves()` aufführ
 Danach liest es die gemeinsamen Reconnect-, Circuit-Breaker- und Puffer-Blätter
 selbst und die eigenen des Protokolls über `readOptionsFromConfig`, beide aus
 der System-Config unter vollen Pfaden unterhalb von `configKey()`, mergt die
-drei Ebenen, validiert gegen `requiredOptions()`, löst den Circuit Breaker auf,
+drei Ebenen — ein in `leafMergedOptionGroups()` genanntes Feld Blatt für
+Blatt, sodass eine im Code gesetzte Gruppe die Blätter behält, die sie nicht
+nennt —, validiert gegen `requiredOptions()`, löst den Circuit Breaker auf,
 den `circuitBreaker` nennt, und legt das Ergebnis für den Rest des
 Actor-Lebens unter `this.options` ab.
 

@@ -81,6 +81,8 @@ export type CoverageGateArguments = {
 
 export const DEFAULT_LINE_FLOOR: number;
 export const MODULE_LINE_FLOORS: ModuleFloorTable;
+/** The prefix the aggregate floor and the README badge roll up (#1016). */
+export const AGGREGATE_PREFIX: string;
 
 export function normaliseCoveragePath(value: string): string;
 export function parseLcovRecords(text: string): readonly LcovRecord[];
@@ -89,6 +91,8 @@ export function evaluateModuleFloors(
   records: readonly LcovRecord[],
   floors?: ModuleFloorTable,
 ): readonly ModuleVerdict[];
+/** The weighted rollup of `AGGREGATE_PREFIX` — what the aggregate floor gates. */
+export function aggregateLineCoverage(records: readonly LcovRecord[]): ModuleRollup;
 export function parseAggregateLineCoverage(output: string): number | undefined;
 export function parseArguments(argv: readonly string[]): CoverageGateArguments;
 export function badgeLineCoverage(percentage: number): string;

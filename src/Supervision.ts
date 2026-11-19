@@ -100,13 +100,47 @@ export class RestartBudget {
   registerRestart(): boolean {
     if (this.strategy.maxRetries < 0) return true;
     const now = this.clock.now();
-    if (this.strategy.withinTimeRangeMs > 0) {
-      const threshold = now - this.strategy.withinTimeRangeMs;
-      this.failureTimes = this.failureTimes.filter((timestamp) => timestamp >= threshold);
-    }
+    this.pruneExpired(now);
     if (this.failureTimes.length >= this.strategy.maxRetries) return false;
     this.failureTimes.push(now);
     return true;
+  }
+
+  /**
+   * Whether any recorded restart still counts — the window pruned first, so
+   * a tally whose restarts have all aged out answers `false`.
+   *
+   * What a supervisor asks before forgetting a budget whose child is gone:
+   * one that still counts must outlive the child, so that the same child
+   * spawned again under its name inherits it rather than a fresh allowance.
+   */
+  holdsRestarts(): boolean {
+    this.pruneExpired(this.clock.now());
+    return this.failureTimes.length > 0;
+  }
+
+  /** Whether the tally has a window at all — without one it never empties by itself. */
+  get windowed(): boolean { return this.strategy.withinTimeRangeMs > 0; }
+
+  private pruneExpired(now: number): void {
+    if (this.strategy.withinTimeRangeMs <= 0) return;
+    const threshold = now - this.strategy.withinTimeRangeMs;
+    this.failureTimes = this.failureTimes.filter((timestamp) => timestamp >= threshold);
+  }
+
+  /**
+   * Whether this budget was built for the same allowance as `strategy`.
+   *
+   * Compared by value, not by identity, because the idiomatic
+   * `override supervisorStrategy() { return new OneForOneStrategy(…) }` hands
+   * the supervisor a fresh object on every failure.  A supervisor that rebuilt
+   * its budget whenever the object changed therefore started from zero on
+   * every failure, and `maxRetries` never bit at all (#917).  A strategy whose
+   * allowance really changed still gets a fresh tally.
+   */
+  hasAllowanceOf(strategy: Pick<SupervisorStrategy, 'maxRetries' | 'withinTimeRangeMs'>): boolean {
+    return this.strategy.maxRetries === strategy.maxRetries
+      && this.strategy.withinTimeRangeMs === strategy.withinTimeRangeMs;
   }
 
   /** How many restarts are currently on record — for diagnostics and tests. */

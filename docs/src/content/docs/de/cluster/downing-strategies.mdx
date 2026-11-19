@@ -513,6 +513,24 @@ ersten Entscheidung der Strategie gebaut, aus der Adresse, die diese
 Entscheidung mitbringt, denn die Strategie entsteht, bevor es die Adresse
 des Nodes gibt.
 
+### Ein Arbiter pro Seite
+
+Jeder Node besitzt seine eigene Lease-Instanz, deshalb fragt bei einem
+gleich großen Split nur ein Node pro Seite die Lease: das reachable
+`up`-Mitglied der Seite mit der niedrigsten Adresse, dieselbe Ordnung,
+die `KeepOldest` verwendet.  Seine Seitengenossen fassen die Lease nie
+an und entscheiden nichts; sie folgen dem Arbiter über die
+Mitgliedschaft.  Gewinnt der Arbiter, downt er die andere Seite, und
+die Seitengenossen sehen deren Mitglieder als entfernt.  Verliert er,
+downt er seine eigene Seite und geht; sobald er `leaving` ist, ist das
+nächste Mitglied in der Reihe der Arbiter, und dessen Acquire verliert
+gegen die Lease, die die andere Seite hält.  Ein gleich großer Split
+endet also mit der ganzen Seite des Lease-Halters oben.  Vor v0.19.0
+hat jeder Node für sich selbst acquired, höchstens einer hat gewonnen,
+und seine Seitengenossen haben ihre Seite gedownt, den Gewinner
+eingeschlossen
+([Issue #1824](https://github.com/pathosDev/actor-ts/issues/1824)).
+
 ### Wenn ein Acquire aufgegeben wird
 
 Der interessante Fall ist nicht „die Lease sagt nein“, sondern
@@ -580,6 +598,39 @@ einen verwertbaren Gewinn liefern: Die Strategie arbitriert weiter
 und entscheidet nichts — dieselbe Haltung wie bei einem noch
 laufenden Acquire.
 
+### Nachdem ein Gewinn angewendet wurde
+
+Die Re-Validierung hilft nur, solange nach dem Gewinn noch gefragt
+wird.  Hat der Cluster ihn angewendet, ist die andere Seite im Bild
+dieser Seite als Tombstone vermerkt, das nächste Bild enthält
+niemanden Unerreichbaren mehr, und die Strategie wird zu dieser
+Partition nicht mehr gefragt.  Ein Gewinner, der *danach* länger als
+die TTL steht, verliert die Lease trotzdem — und arbitriert die
+andere Seite spät, weil ihr Stabilitätsfenster später aufging oder
+ihr erstes Acquire aufgegeben wurde, gewinnt sie die abgelaufene
+Lease und downt diese Seite, während diese Seite weiterläuft
+(#1660).
+
+Deshalb bleibt bei einem Gewinn, den die Strategie herausgegeben hat,
+das Überleben an die Lease gebunden.  Meldet das Backend die Lease
+als verloren (`onLost`, das beide eingebauten Backends beim ersten
+Renewal-Tick nach der Deadline feuern), downt sich dieser Node
+selbst: Er verlässt den Cluster genau so, wie es eine Entscheidung
+täte, die ihn nennt — `run-coordinated-shutdown-when-down` entscheidet,
+was folgt —, und loggt auf warn, warum.  Einen unbemerkten Ablauf
+kann er von einer Übernahme nicht unterscheiden, also fällt er
+sicher aus: Der Cluster hält an, statt sich zu spalten.
+
+Die Überwachung dauert, bis die Strategie heruntergefahren wird,
+nicht ein festes Fenster nach dem Gewinn: Die andere Seite kann
+arbitrieren, solange eines ihrer Mitglieder läuft und diese Seite
+noch als unerreichbar sieht, und nichts auf dieser Seite erfährt,
+wann das aufgehört hat.  Der Preis: Eine Lease, die viel später
+verloren geht — das Lease-Backend länger als die TTL unerreichbar —,
+nimmt den Node, der sie hält, ebenfalls heraus.  Ein Gewinn, der
+berechnet, aber nie herausgegeben wurde, und eine verlorene oder
+Mehrheitsentscheidung lösen nichts aus.
+
 ### Wenn dieser Node geht
 
 Ein gewonnener Schiedsspruch behält die Lease, und das Backend
@@ -599,6 +650,18 @@ zwei Regeln decken ihn ab: Ein Gewinn, den der Versuch danach meldet,
 wird verworfen und dort released, wo er ankommt.  Ein Release, das
 fehlschlägt, wird geloggt, und das Verlassen geht weiter; der Eintrag
 läuft dann mit seiner TTL ab.
+
+Auch ein Node, der terminiert, ohne zu gehen, gibt die Lease zurück.
+`system.terminate()` allein führt unter dem ausgelieferten
+`coordinated-shutdown.run-by-actor-system-terminate = false` keinen
+Coordinated Shutdown aus und verlässt den Cluster also nicht — aber
+`Cluster.join` registriert einen Terminierungsschritt, der den
+Failure-Detector-Tick stoppt und das `shutdown()` der Strategie
+aufruft, sodass der Eintrag released wird und seine Erneuerung den
+Prozess nicht mehr am Leben hält.  Der Hook läuft einmal pro Join,
+gleich ob ein Verlassen oder ein Terminieren ihn zuerst erreicht.  Die
+Peers erfahren von einem solchen Node weiterhin nur über ihre Failure
+Detectors, dass er weg ist; geh also zuerst, wo du kannst.
 
 Danach entscheidet die Strategie nichts mehr, ein Node, der erneut
 beitritt, braucht also eine frische.  Eine in der Konfiguration
@@ -635,6 +698,7 @@ Das Provider-Interface ist winzig:
 interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
   shutdown?(): Promise<void>;         // optional: zurückgeben, was sie hält
+  bindSelfDown?(downSelf: (reason: string) => void): void;  // optional: diesen Node später downen
 }
 
 type ClusterPartitionView = {
@@ -651,6 +715,14 @@ etwas hält, das sie zurückgeben muss: Der Cluster ruft es einmal auf,
 wenn dieser Node geht, nach dem letzten `decide()`, und
 `LeaseMajority` released dort ihre Lease.  Ein `shutdown()`, das
 wirft oder rejected, wird geloggt, und das Verlassen geht weiter.
+
+`bindSelfDown()` ist für eine Strategie, deren Urteil aufhören kann
+zu stimmen, nachdem es angewendet wurde.  Der Cluster ruft es einmal
+auf, mit einer Funktion, die diesen Node genau so gehen lässt, wie es
+eine Entscheidung täte, die ihn nennt; der Cluster fragt `decide()` zu
+einer Partition nicht mehr, sobald eine Entscheidung dazu angewendet
+wurde, also ist das der einzige Weg zurück.  `LeaseMajority` nutzt es,
+wenn die Lease hinter einem angewendeten Gewinn verloren geht.
 
 Nützlich für app-spezifische Regeln — z. B. "behalte immer den
 Node mit role=primary" oder "wenn die Partition den
@@ -721,10 +793,10 @@ import { Aside } from '@astrojs/starlight/components';
 Eine eigene Quarantäne gibt es nicht. Was ein entferntes Mitglied
 draußen hält, ist sein Tombstone: der `removed`-Eintrag, den der
 Cluster für die Adresse behält und der jeden Eintrag für sie mit
-gleicher oder älterer Version abweist. Ob eine Entfernung einen
-hinterlässt — und ob der entfernte Prozess also weiterreden und wieder
-hereingelassen werden kann —, hängt vom Weg ab, auf dem er entfernt
-wurde. *Derselbe Lauf* heißt unten dieser Prozess: dieselbe
+gleicher oder älterer Version abweist. Jede Entfernung
+hinterlässt einen, der entfernte Prozess kann also nicht weiterreden
+und wieder hereingelassen werden; von der Konfiguration hängt ab, ob
+ihn überhaupt etwas entfernt. *Derselbe Lauf* heißt unten dieser Prozess: dieselbe
 Inkarnation, die weiterhin die Version ankündigt, die sie bei ihrer
 Entfernung hatte.
 
@@ -733,15 +805,17 @@ Entfernung hatte.
 | `Cluster.down()` oder `POST /cluster/down` | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
 | Die Entscheidung einer Strategie oder `down-all-when-unstable` | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
 | Das eigene `leave` des Peers | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
-| Den Failure Detector ohne Strategie — `failure-detector.auto-down = on`, der Default | Nichts — der Eintrag wird gelöscht. | Mit seinem nächsten Gossip-Frame wieder aufgenommen; ein Heartbeat allein findet keinen Eintrag, den er zurückholen könnte. |
+| Den Failure Detector ohne Strategie — `failure-detector.auto-down = on`, der Default | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
 | Niemanden: keine Strategie und `auto-down = off`, das Opt-out | Entfernt wird nichts — der Peer wird auf `unreachable` geparkt. | Mit seinem nächsten Heartbeat an diesen Node wieder `up`. |
 
 Der Rückweg der letzten Zeile braucht einen Heartbeat des Peers an
-diesen Node, und der beendet eine Pause, keine Partition: Nachdem
-eine symmetrische Partition geheilt ist, schickt keine Seite einem
-Peer, den sie für unerreichbar hält, Heartbeats oder Gossip, also
-bleiben die geparkten Mitglieder geparkt und der Cluster gespalten,
-bis ein Operator handelt
+diesen Node, und das funktioniert nach einer Partition genauso wie
+nach einer Pause: Jeder Node schickt den Mitgliedern, die er für
+unerreichbar hält, weiter Heartbeats und in jeder
+`unreachable-gossip-rounds`-ten Runde einem von ihnen Gossip. Heilt
+eine symmetrische Partition, kommen die Heartbeats also durch, die
+geparkten Mitglieder kehren nach `up` zurück und die beiden Hälften
+wachsen zusammen
 ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 Ein Tombstone weist so lange ab, wie der größere der beiden Werte
@@ -788,9 +862,10 @@ deshalb kommt ein abgestürztes Mitglied unter `auto-down` immer wieder
 zurück
 ([was der Detector entscheidet](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht)
 hat die Messung). Einer geheilten Partition hilft das Löschen auch
-nicht: Keine Seite schickt einem Peer, den sie für unerreichbar hält,
-Heartbeats oder Gossip, und nach dem Löschen gibt es gar keinen Eintrag
-mehr, den sie adressieren könnte
+nicht: Nach dem Löschen bleibt kein Eintrag, dem man Heartbeats
+schicken könnte, also sprechen sich die beiden Seiten nie wieder an —
+während ein auf `unreachable` geparkter Peer durch die Partition
+hindurch weiter Heartbeats bekommt und zurückkehrt, sobald sie heilt
 ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 **Ein Neustart wird über die Version wieder aufgenommen.** Ein Prozess

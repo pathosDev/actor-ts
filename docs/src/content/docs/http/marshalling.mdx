@@ -47,6 +47,53 @@ If the body is missing or malformed, `entity` throws an
 `HttpError(400, ...)` — the framework catches it and produces a
 400 response with the error message.
 
+### JSON bodies are plain JSON
+
+A JSON body decodes to exactly what `JSON.parse` produces.  A key
+such as `__date__` or `__regexp__` is an ordinary property name: a
+client that posts `{"pattern":{"__regexp__":{"source":"(a+)+$","flags":"g"}}}`
+hands the handler a plain object, not a `RegExp` it wrote, and
+`{"amount":{"__bigint__":"1"}}` stays an object that fails
+`amount > 0`.
+
+Those keys are the tags of the [tagged JSON tree](/serialization/json/)
+the framework writes for its own persisted rows.  Up to v0.18
+`entity()` honoured every one of them, so the client chose the
+runtime class of any value in the body.  A route that wants some of
+those values back opts in, tag by tag:
+
+```ts
+import { entity, EntityOptions } from 'actor-ts/http';
+
+const entityOptions = EntityOptions.create().withTags(['date', 'bytes']);
+
+post(async (req) => {
+  const upload = entity<{ takenAt: Date; data: Uint8Array }>(req, entityOptions);
+  // {"takenAt":{"__date__":"2026-11-14T00:00:00.000Z"}} → a Date
+  // any other tag in the body             → HTTP 400 naming it
+  // ...
+});
+```
+
+With a list, the body is the tagged format restricted to those
+names: each listed tag builds its class, the `__literal__` escape
+unwraps, and any other tag is refused with a 400 rather than handed
+on as an object of another class.  The plain options object
+`{ tags: ['date'] }` works too.  An unknown name is the route's own
+bug, so it throws `OptionsError` (a 500), not the client's 400.
+
+**A CBOR body follows the same rule.**  CBOR carries rich types
+natively — a tag makes a `Date`, a `Set`, a bignum or a `RegExp`,
+and simple value 23 is an `undefined` — so by default a CBOR body
+decodes only plain data, the JSON data model: `null`, booleans,
+finite numbers, strings, arrays and string-keyed maps.  Anything
+else needs its name in the same list: `bytes` for a byte string,
+`bigint` for a bignum or an integer past 2^53, `number` for `NaN`
+or `±Infinity`, and so on.  Unlike JSON, an unadmitted CBOR type is
+a 400 naming it rather than data — a CBOR tag has no untagged form
+to fall back to, so passing it through would hand the handler a
+different value.  Form bodies carry nothing to restrict.
+
 ### Unsupported media types
 
 A Content-Type nothing decodes — `text/xml`, `application/pdf`,
@@ -324,7 +371,7 @@ empty case turns away clients that never set the header.
 `HttpResponse.body` accepts a web `ReadableStream<Uint8Array>`, and
 all three backends stream it straight to the client without
 buffering it in memory — Fastify hands the stream to `reply.send`,
-Express pipes it through `Readable.fromWeb`, and Hono returns it as
+Express runs it through `stream.pipeline`, and Hono returns it as
 a `Response` body.  Return one straight from a handler:
 
 ```ts
@@ -338,6 +385,16 @@ Without an explicit `Content-Type` a stream defaults to
 `application/octet-stream`.  Streams are one-shot, so don't wrap a
 streaming response in the caching middleware.  For SSE, use the
 [`SseActor`](/io/sse/).
+
+When the stream fails, the client never gets a response that looks
+complete.  A source that fails before its first chunk gets a 5xx or a
+closed connection; on Express it is an ordinary handler error, so
+`withErrorHandler` sees it and chooses the status.  Once the first
+chunk is out, the status is on the wire, so the backend closes the
+connection and the client sees a truncated body.  A client that
+disconnects mid-body cancels the stream, which releases whatever it
+reads from.  On Express, a failure after the first chunk is also logged
+at `error`.
 
 Set `Content-Length` yourself when you know it.  A backend derives
 the length from a `Uint8Array` body but has nothing to measure on a

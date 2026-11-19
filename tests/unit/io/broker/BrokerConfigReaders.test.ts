@@ -13,6 +13,7 @@ import { BrokerActor, type OutboundEnvelope } from '../../../../src/io/broker/Br
 import * as BrokerActorModule from '../../../../src/io/broker/BrokerActor.js';
 import {
   brokerCommonKeysUnder,
+  readBrokerAcknowledgmentOptionsFromConfig,
   readBrokerCommonOptionsFromConfig,
   RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES,
   RETIRED_BROKER_COMMON_LEAVES,
@@ -22,6 +23,7 @@ import * as BrokerOptionsModule from '../../../../src/io/broker/BrokerOptions.js
 import { EmailBridgeActor, readEmailBridgeOptionsFromConfig } from '../../../../src/io/broker/EmailBridgeActor.js';
 import { GrpcClientActor, readGrpcClientOptionsFromConfig } from '../../../../src/io/broker/GrpcClientActor.js';
 import { GrpcServerActor, readGrpcServerOptionsFromConfig } from '../../../../src/io/broker/GrpcServerActor.js';
+import { DEFAULT_MAX_PENDING_REQUEST_MESSAGES } from '../../../../src/io/broker/GrpcServerOptions.js';
 import { JetStreamActor, readJetStreamOptionsFromConfig } from '../../../../src/io/broker/JetStreamActor.js';
 import {
   JetStreamKeyValueActor,
@@ -141,6 +143,32 @@ ${ROOT} {
   outbound-buffer = 42
 }
 `;
+
+describe('readBrokerAcknowledgmentOptionsFromConfig', () => {
+  const keys = ConfigKeys.io.broker.kafka;
+
+  test('both leaves read into their fields, and into nothing else', () => {
+    const config = Config.parseString(`${keys.root} {\n  acknowledgment = "on-delivery"\n  acknowledgment-timeout = 45s\n}`);
+    expectExactOptions(readBrokerAcknowledgmentOptionsFromConfig(config, keys), {
+      acknowledgment: 'on-delivery',
+      acknowledgmentTimeoutMs: 45_000,
+    });
+  });
+
+  test('an unset leaf is omitted, and the other leaves of the block are not this reader\'s', () => {
+    const config = Config.parseString(`${keys.root} {\n  acknowledgment-timeout = 2s\n  client-id = "x"\n}`);
+    expectExactOptions(readBrokerAcknowledgmentOptionsFromConfig(config, keys), { acknowledgmentTimeoutMs: 2_000 });
+  });
+
+  test('a word that is no mode is read as written and left to the validator', () => {
+    // Refusing here would refuse only the HOCON door; the validator refuses
+    // it on the merged options whichever door it came through.
+    const config = Config.parseString(`${keys.root}.acknowledgment = "on-commit"`);
+    expectExactOptions(readBrokerAcknowledgmentOptionsFromConfig(config, keys), {
+      acknowledgment: 'on-commit' as never,
+    });
+  });
+});
 
 describe('readBrokerCommonOptionsFromConfig', () => {
   test('a full kebab block reads into every field, and into nothing else', () => {
@@ -1241,11 +1269,15 @@ describe('readAmqpOptionsFromConfig', () => {
       url              = "amqp://user@mq.local:5672/orders"
       prefetch         = 16
       auto-acknowledge = false
+      acknowledgment   = "on-delivery"
+      acknowledgment-timeout = 12s
     }`);
     expectExactOptions(readAmqpOptionsFromConfig(config), {
       url: 'amqp://user@mq.local:5672/orders',
       prefetch: 16,
       autoAcknowledge: false,
+      acknowledgment: 'on-delivery',
+      acknowledgmentTimeoutMs: 12_000,
     });
   });
 
@@ -1337,6 +1369,7 @@ describe('readGrpcClientOptionsFromConfig', () => {
       service-name = "Orders"
       endpoint     = "orders.local:50051"
       deadline     = 2s
+      stream-idle-timeout = 5m
     }`);
     expectExactOptions(readGrpcClientOptionsFromConfig(config), {
       protoPath: ['./a.proto', './b.proto'],
@@ -1344,7 +1377,13 @@ describe('readGrpcClientOptionsFromConfig', () => {
       serviceName: 'Orders',
       endpoint: 'orders.local:50051',
       deadlineMs: 2_000,
+      streamIdleTimeoutMs: 300_000,
     });
+  });
+
+  test('stream-idle-timeout = 0 reads as 0, which turns the timeout off (#1222)', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.grpc.client.root}.stream-idle-timeout = 0`);
+    expectExactOptions(readGrpcClientOptionsFromConfig(config), { streamIdleTimeoutMs: 0 });
   });
 
   test.each([
@@ -1453,13 +1492,28 @@ describe('the gRPC server block', () => {
       package-name = "orders.v1"
       service-name = "Orders"
       bind         = "0.0.0.0:50051"
+      max-pending-request-messages = 64
     }`);
     expectExactOptions(readGrpcServerOptionsFromConfig(config), {
       protoPath: ['./a.proto', './b.proto'],
       packageName: 'orders.v1',
       serviceName: 'Orders',
       bind: '0.0.0.0:50051',
+      maxPendingRequestMessages: 64,
     });
+  });
+
+  test('max-pending-request-messages reaches the started server, and a non-positive one fails preStart (#1039)', async () => {
+    const started = await startGrpcServer(`${root} {\n${GRPC_SERVER_REQUIRED}\nmax-pending-request-messages = 16\n}`);
+    expect(started.failure).toBeNull();
+    expect(started.options?.['maxPendingRequestMessages']).toBe(16);
+
+    const unset = await startGrpcServer(`${root} {\n${GRPC_SERVER_REQUIRED}\n}`);
+    expect(unset.options?.['maxPendingRequestMessages']).toBe(DEFAULT_MAX_PENDING_REQUEST_MESSAGES);
+
+    const refused = await startGrpcServer(`${root} {\n${GRPC_SERVER_REQUIRED}\nmax-pending-request-messages = 0\n}`);
+    expect(refused.failure).toBeInstanceOf(OptionsError);
+    expect((refused.failure as OptionsError).message).toContain('maxPendingRequestMessages');
   });
 
   test('proto-path takes a single path, the way the docs write it', () => {
@@ -1705,6 +1759,8 @@ describe('readKafkaOptionsFromConfig', () => {
         commit-timeout = 45s
       }
       topics = ["orders", "payments"]
+      acknowledgment = "on-delivery"
+      acknowledgment-timeout = 12s
     }`);
     expectExactOptions(readKafkaOptionsFromConfig(config), {
       brokers: ['kafka-1:9092', 'kafka-2:9092'],
@@ -1714,6 +1770,8 @@ describe('readKafkaOptionsFromConfig', () => {
       producer: { idempotent: true, allowAutoTopicCreation: true },
       consumer: { groupId: 'orders', fromBeginning: true, commitMode: 'manual', commitTimeoutMs: 45_000 },
       topics: ['orders', 'payments'],
+      acknowledgment: 'on-delivery',
+      acknowledgmentTimeoutMs: 12_000,
     });
   });
 
@@ -1755,6 +1813,8 @@ describe('readMqttOptionsFromConfig', () => {
       clean-session    = false
       keep-alive       = 45s
       protocol-version = 5
+      acknowledgment   = "on-delivery"
+      acknowledgment-timeout = 12s
     }`);
     expectExactOptions(readMqttOptionsFromConfig(config), {
       brokerUrl: 'mqtts://broker.local:8883',
@@ -1765,6 +1825,8 @@ describe('readMqttOptionsFromConfig', () => {
       cleanSession: false,
       keepAlive: 45,
       protocolVersion: 5,
+      acknowledgment: 'on-delivery',
+      acknowledgmentTimeoutMs: 12_000,
     });
   });
 
@@ -1862,13 +1924,22 @@ describe('readSseOptionsFromConfig', () => {
       headers { authorization = "Bearer x", x-trace = "on" }
       idle-timeout    = 90s
       connect-timeout = 5s
+      max-buffer-chars = 2048
     }`);
     expectExactOptions(readSseOptionsFromConfig(config), {
       url: 'https://events.local/stream',
       headers: { authorization: 'Bearer x', 'x-trace': 'on' },
       idleTimeoutMs: 90_000,
       connectTimeoutMs: 5_000,
+      maxBufferChars: 2_048,
     });
+  });
+
+  // #371: a count of UTF-16 code units, not bytes, so a size such as `2K`
+  // is refused rather than read as 2 048 of a unit the cap does not measure.
+  test('max-buffer-chars is a whole count, not a size', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.sse.root}.max-buffer-chars = 2K`);
+    expect(() => readSseOptionsFromConfig(config)).toThrow();
   });
 });
 
@@ -1909,12 +1980,14 @@ describe('readTcpServerOptionsFromConfig', () => {
       bind-host       = "127.0.0.1"
       bind-port       = 7001
       max-connections = 64
+      max-buffered-bytes = 2M
       framing { kind = "length-prefixed", max-frame-bytes = 16M }
     }`);
     expectExactOptions(readTcpServerOptionsFromConfig(config), {
       bindHost: '127.0.0.1',
       bindPort: 7001,
       maxConnections: 64,
+      maxBufferedBytes: 2_097_152,
       framing: { kind: 'length-prefixed', maxFrameBytes: 16_777_216 },
     });
   });

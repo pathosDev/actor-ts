@@ -27,7 +27,7 @@ import { LogLevel } from '../../../src/Logger.js';
 import { DeadLetter } from '../../../src/SystemMessages.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import { MetricsExtensionId, metricsOf } from '../../../src/metrics/MetricsExtension.js';
-import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS, DEFAULT_TAG_LOOKBACK_WINDOW_MS } from '../../../src/persistence/Constants.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemoryOffsetStore } from '../../../src/persistence/projection/OffsetStore.js';
 import { ProjectionActor } from '../../../src/persistence/projection/ProjectionActor.js';
@@ -70,7 +70,7 @@ describe('readProjectionOptionsFromConfig', () => {
     expectExactOptions(readProjectionOptionsFromConfig(hocon('actor-ts { }')), {});
   });
 
-  test('reads each leaf on its own, leaving the other five absent', () => {
+  test('reads each leaf on its own, leaving the others absent', () => {
     expectExactOptions(
       readProjectionOptionsFromConfig(hocon('actor-ts.projection { recovery-strategy = "retry-and-skip" }')),
       { recoveryStrategy: 'retry-and-skip' },
@@ -100,6 +100,11 @@ describe('readProjectionOptionsFromConfig', () => {
       readProjectionOptionsFromConfig(hocon('actor-ts.projection { group-after-envelopes = 50 }')),
       { groupAfterEnvelopes: 50 },
     );
+
+    expectExactOptions(
+      readProjectionOptionsFromConfig(hocon('actor-ts.projection { lookback-window = 90s }')),
+      { lookbackWindowMs: 90_000 },
+    );
   });
 
   test('an unquoted strategy resolves too — a hyphenated bare word is a HOCON string', () => {
@@ -114,7 +119,7 @@ describe('readProjectionOptionsFromConfig', () => {
 
   test('the shipped reference block reads back as the built-in defaults', () => {
     // The middle layer must be a no-op out of the box: reference.conf is
-    // always present, so every one of these six is *always* supplied by
+    // always present, so every one of these seven is *always* supplied by
     // HOCON, and a value that disagreed with its constant would silently
     // become the real default for the whole framework.
     expectExactOptions(readProjectionOptionsFromConfig(Config.load()), {
@@ -124,6 +129,7 @@ describe('readProjectionOptionsFromConfig', () => {
       maxRetryBackoffMs: DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
       pollIntervalMs: DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS,
       groupAfterEnvelopes: DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES,
+      lookbackWindowMs: DEFAULT_TAG_LOOKBACK_WINDOW_MS,
     });
   });
 
@@ -688,4 +694,104 @@ describe('a bad HOCON value is rejected like a bad explicit option', () => {
       await fixture.system.terminate();
     });
   }
+});
+
+/* ---------------------------- lookback-window --------------------------- */
+
+/** Where the cursor in the store stands — a window cursor with no floor, so the read starts exactly one window behind it. */
+const STORED_CURSOR_STAMP_MS = 100_000;
+
+/**
+ * Spawn a by-tag projection over a cursor already in the store and report the
+ * offset its first poll read from.  The cursor carries an empty `delivered`
+ * list, which is what makes the read start `lookbackWindowMs` behind it — a
+ * plain offset would be an inclusive floor and pin the read to the cursor.
+ */
+async function firstReadStamp(
+  fixture: Fixture,
+  name: string,
+  lookbackWindowMs?: number,
+): Promise<number> {
+  await fixture.offsetStore.saveOffset(name, 'orders', {
+    timestamp: STORED_CURSOR_STAMP_MS,
+    persistenceId: 'stream',
+    sequenceNr: 1,
+    delivered: [],
+  });
+  const readFrom: number[] = [];
+  const currentEventsByTag = fixture.query.currentEventsByTag.bind(fixture.query);
+  fixture.query.currentEventsByTag = ((...args: Parameters<typeof currentEventsByTag>) => {
+    readFrom.push(args[1].timestamp);
+    return currentEventsByTag(...args);
+  }) as typeof fixture.query.currentEventsByTag;
+  const base = ByTagProjectionOptions.create<CountedEvent>()
+    .withName(name)
+    .withQuery(fixture.query)
+    .withOffsetStore(fixture.offsetStore)
+    .withTag('orders')
+    .withHandle(() => {});
+  const projectionOptions = lookbackWindowMs === undefined ? base : base.withLookbackWindowMs(lookbackWindowMs);
+  const ref = ProjectionActor.byTag<CountedEvent>(fixture.system, projectionOptions);
+  await waitFor(() => readFrom.length > 0);
+  ref.stop();
+  return readFrom[0]!;
+}
+
+describe('actor-ts.projection.lookback-window sizes a by-tag projection\'s re-read', () => {
+  test('a projection that names no window re-reads the configured one', async () => {
+    const fixture = newFixture('proj-config-lookback', 'actor-ts.projection { lookback-window = 5s }');
+    expect(await firstReadStamp(fixture, 'lookback-config')).toBe(STORED_CURSOR_STAMP_MS - 5_000);
+    await fixture.system.terminate();
+  });
+
+  test('the shipped default applies when neither the projection nor the config names one', async () => {
+    const fixture = newFixture('proj-config-lookback-default', '');
+    expect(await firstReadStamp(fixture, 'lookback-default'))
+      .toBe(STORED_CURSOR_STAMP_MS - DEFAULT_TAG_LOOKBACK_WINDOW_MS);
+    await fixture.system.terminate();
+  });
+
+  test('an explicit window outranks the configured one', async () => {
+    const fixture = newFixture('proj-config-lookback-explicit', 'actor-ts.projection { lookback-window = 5s }');
+    expect(await firstReadStamp(fixture, 'lookback-explicit', 2_000)).toBe(STORED_CURSOR_STAMP_MS - 2_000);
+    await fixture.system.terminate();
+  });
+
+  test('a negative window is refused by the factory, naming the field', async () => {
+    const fixture = newFixture('proj-config-lookback-negative', '');
+    const spawn = (): void => {
+      const projectionOptions = ByTagProjectionOptions.create<CountedEvent>()
+        .withName('lookback-negative')
+        .withQuery(fixture.query)
+        .withTag('orders')
+        .withLookbackWindowMs(-1)
+        .withHandle(() => {});
+      ProjectionActor.byTag<CountedEvent>(fixture.system, projectionOptions);
+    };
+    expect(spawn).toThrow(OptionsError);
+    expect(spawn).toThrow('lookbackWindowMs');
+    await fixture.system.terminate();
+  });
+
+  test.each([Number.NaN, Number.POSITIVE_INFINITY])('a non-finite window (%p) is refused by the factory', async (window) => {
+    const fixture = newFixture('proj-config-lookback-non-finite', '');
+    const spawn = (): void => {
+      const projectionOptions = ByTagProjectionOptions.create<CountedEvent>()
+        .withName('lookback-non-finite')
+        .withQuery(fixture.query)
+        .withTag('orders')
+        .withLookbackWindowMs(window)
+        .withHandle(() => {});
+      ProjectionActor.byTag<CountedEvent>(fixture.system, projectionOptions);
+    };
+    expect(spawn).toThrow(OptionsError);
+    expect(spawn).toThrow('lookbackWindowMs');
+    await fixture.system.terminate();
+  });
+
+  test('a zero window is accepted and reads forward-only from the cursor', async () => {
+    const fixture = newFixture('proj-config-lookback-zero', '');
+    expect(await firstReadStamp(fixture, 'lookback-zero', 0)).toBe(STORED_CURSOR_STAMP_MS);
+    await fixture.system.terminate();
+  });
 });

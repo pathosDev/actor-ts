@@ -193,16 +193,44 @@ export class NodeAddress {
    * Yields no incarnation, and cannot: the string form is what a seed list, a
    * `SeedProvider` and an operator's config carry, and none of them knows which
    * process is currently answering at that address.
+   *
+   * A URI scheme in front — `actor-ts://my-app@host:port` — is refused rather
+   * than read into the system name (#941).  The prefix belongs to actor
+   * *paths*; folded into the address it yields `systemName:
+   * 'actor-ts://my-app'`, which never equals the `my-app` a `Cluster` derives
+   * from `system.name`, so a transport built from such an address announces an
+   * identity no member is stored under and the cluster never converges — with
+   * nothing louder than warnings to say why.  An old TLS recipe printed exactly
+   * that line, so the trap is one an operator can be led into.
    */
   static parse(s: string): NodeAddress {
     const at = s.indexOf('@');
     const colon = s.lastIndexOf(':');
     if (at < 0 || colon <= at) throw new Error(`Invalid node address: ${s}`);
     const systemName = s.slice(0, at);
+    const scheme = systemName.indexOf('://');
+    if (scheme >= 0) {
+      throw new Error(
+        `Invalid node address: ${s} — a node address has the form system@host:port `
+        + `and carries no URI scheme ('${systemName.slice(0, scheme + 3)}' belongs to actor paths); `
+        + `write ${s.slice(scheme + 3)}`,
+      );
+    }
     const host = s.slice(at + 1, colon);
-    const port = parseInt(s.slice(colon + 1), 10);
-    if (!Number.isFinite(port)) throw new Error(`Invalid port in node address: ${s}`);
-    return new NodeAddress(systemName, host, port);
+    // Digits and nothing else.  `parseInt` stops at the first non-digit, so
+    // `my-app@host:2552/system/receptionist` — an actor path where a node
+    // address belongs — read as port 2552 with the rest dropped without a word,
+    // the same quiet mis-read the scheme refusal above closes.
+    const portText = s.slice(colon + 1);
+    const digits = /^\d+/.exec(portText)?.[0] ?? '';
+    if (digits === '') throw new Error(`Invalid port in node address: ${s}`);
+    if (digits.length < portText.length) {
+      throw new Error(
+        `Invalid port in node address: ${s} — a node address has the form system@host:port `
+        + `and ends at the port; '${portText.slice(digits.length)}' follows it (write ${s.slice(0, colon + 1 + digits.length)})`,
+      );
+    }
+    return new NodeAddress(systemName, host, parseInt(digits, 10));
   }
 }
 

@@ -523,6 +523,7 @@ Published on `system.eventStream`:
 | `BrokerBufferOverflow` | The outbound buffer dropped an envelope. |
 | `BrokerNotConnected` | Sent without a connection. |
 | `BrokerCircuitBreakerStateChanged` | The circuit breaker the actor names went `open`, `half-open` or `closed`. |
+| `BrokerAcknowledgmentFailed` | The broker refused an acknowledgment the actor sent — the delivery will come back.  `KafkaActor`, `AmqpActor` and `MqttActor` consume with an acknowledgment that by default waits for the target's reply; see [AMQP](/io/amqp/#acknowledgment). |
 
 Subscribe to monitor every broker actor uniformly:
 
@@ -546,7 +547,9 @@ different broker actors in the system.
 shared leaves, or one `retiredLeaves()` lists.  It then reads the shared
 reconnect, circuit-breaker and buffer leaves itself and the protocol's own
 through `readOptionsFromConfig`, both off the system config at full paths
-under `configKey()`, merges the three layers, validates against
+under `configKey()`, merges the three layers — a field named in `leafMergedOptionGroups()`
+leaf by leaf, so a group set in code keeps the leaves it does not name —
+validates against
 `requiredOptions()`, resolves the circuit breaker `circuitBreaker` names, and
 stashes the result for the rest of the actor's life via `this.options`.
 

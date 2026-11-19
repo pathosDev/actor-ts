@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { requestId } from '../../../../src/http/middleware/RequestId.js';
+import { requestId, requestIdOfError } from '../../../../src/http/middleware/RequestId.js';
 import { RequestIdOptions } from '../../../../src/http/middleware/RequestIdOptions.js';
 import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
@@ -60,5 +60,40 @@ describe('requestId', () => {
     const rethrown: unknown = await Promise.resolve(requestId()(request(), () => Promise.reject(boom)))
       .then(() => null, (error: unknown) => error);
     expect(rethrown).toBe(boom);
+  });
+});
+
+describe('requestIdOfError — the id a non-HttpError throw passed through with (#1064)', () => {
+  test('names the id the middleware assigned and keeps the thrown value identical', async () => {
+    const boom = new Error('kaboom');
+    let assigned: string | undefined;
+    const rethrown: unknown = await Promise.resolve(requestId()(request(), async (enriched) => {
+      assigned = enriched?.headers['x-request-id'];
+      throw boom;
+    })).then(() => null, (error: unknown) => error);
+    expect(rethrown).toBe(boom);
+    expect(requestIdOfError(boom)).toEqual({ headerName: 'x-request-id', id: assigned! });
+  });
+
+  test('carries a renamed header', async () => {
+    const boom = new Error('kaboom');
+    const options = RequestIdOptions.create().withHeaderName('X-Correlation-Id');
+    await Promise.resolve(requestId(options)(request({ 'x-correlation-id': 'abc-1' }), () => Promise.reject(boom)))
+      .catch(() => undefined);
+    expect(requestIdOfError(boom)).toEqual({ headerName: 'x-correlation-id', id: 'abc-1' });
+  });
+
+  test('the innermost middleware wins — it named the id the handler saw', async () => {
+    const boom = new Error('kaboom');
+    const outer = requestId({ generate: () => 'outer-id', trustIncoming: false });
+    const inner = requestId({ generate: () => 'inner-id', trustIncoming: false });
+    await Promise.resolve(outer(request(), async (enriched) => inner(enriched!, () => Promise.reject(boom))))
+      .catch(() => undefined);
+    expect(requestIdOfError(boom)?.id).toBe('inner-id');
+  });
+
+  test('is undefined for a value no middleware saw, and for a primitive throw', () => {
+    expect(requestIdOfError(new Error('elsewhere'))).toBeUndefined();
+    expect(requestIdOfError('a string')).toBeUndefined();
   });
 });

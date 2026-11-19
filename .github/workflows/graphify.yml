@@ -20,6 +20,13 @@
 # Community labels are re-derived here: clustering re-runs and Louvain ids move
 # whenever nodes change, so hand-curated labels cannot survive an automated
 # rebuild — that is a known trade-off, not a defect (#1345).
+#
+# Two jobs, and the split is the security property (#1623), the same answer
+# #622 gave the README badge and #703 gave publishing: `rebuild` installs and
+# runs a third-party Python package with no credential at all, and `push`
+# holds `contents: write` and installs nothing.  They communicate only through
+# the uploaded `graphify-out/` artifact, which `push` commits as data and never
+# executes.
 name: graphify
 
 on:
@@ -41,39 +48,105 @@ jobs:
   rebuild:
     name: Rebuild knowledge graph
     runs-on: ubuntu-latest
-    # The only job in the file, but the write scope still lives here rather
-    # than at workflow level (#621): a scope that can change anything belongs
-    # on the job that uses it.
-    permissions:
-      contents: write
+    # No write scope: this job runs graphify and its whole Python closure.
     timeout-minutes: 60
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      changed: ${{ steps.moved.outputs.changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The graph belongs on develop; a dispatch from any other branch
           # still rebuilds and pushes there rather than forking the artifact.
           ref: develop
+          # Nothing here talks to the remote, so the credential checkout
+          # would leave in `.git/config` is pure attack surface for the
+          # package installed next.
+          persist-credentials: false
 
-      # Pinned on purpose.  The AST cache is keyed by version
-      # (`graphify-out/cache/ast/v<version>/`), so a silent upgrade would
-      # orphan the committed cache, force a full re-extraction and commit a
-      # second copy of it.  Bumping this is a deliberate change, and the
-      # rebuild that follows it is expected to be large.
+      # The push job commits on top of exactly the tree this graph describes.
+      - name: Record the source commit
+        id: source
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Pinned on purpose, in .github/graphify/requirements.txt.  The AST cache
+      # is keyed by version (`graphify-out/cache/ast/v<version>/`), so a silent
+      # upgrade would orphan the committed cache, force a full re-extraction
+      # and commit a second copy of it.  Bumping it is a deliberate change, and
+      # the rebuild that follows it is expected to be large.
+      #
+      # The whole closure is pinned, not just the top level: `--require-hashes`
+      # refuses any distribution whose sha256 is not in the file, and
+      # `--only-binary :all:` refuses an sdist, so no package's build or setup
+      # code runs at install time (#1623).
       - name: Install graphify
-        run: python3 -m pip install --disable-pip-version-check 'graphifyy==0.9.46'
+        run: >-
+          python3 -m pip install --disable-pip-version-check
+          --require-hashes --only-binary ':all:' --no-deps
+          -r .github/graphify/requirements.txt
 
       - name: Rebuild code side of the graph
         run: graphify update .
 
-      - name: Commit + push if the graph moved
+      - name: Did the graph move?
+        id: moved
         run: |
           if [[ -z "$(git status --porcelain graphify-out/)" ]]; then
             echo "graph unchanged — nothing to commit"
-            exit 0
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Hand the graph to the push job
+        if: steps.moved.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: graphify-out
+          path: graphify-out/
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    name: Commit + push the graph
+    needs: rebuild
+    if: needs.rebuild.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # The only scope in the file that can change anything, on the one job that
+    # needs it (#621) — and that job installs and runs nothing (#1623).
+    permissions:
+      contents: write
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.rebuild.outputs.commit }}
+
+      # Replaced wholesale, so a cache entry the rebuild dropped is dropped
+      # here too.
+      - name: Clear the old graph
+        run: rm -rf graphify-out
+
+      - name: Fetch the rebuilt graph
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: graphify-out
+          path: graphify-out
+
+      # Only `graphify-out/` is staged: the artifact is the one thing that
+      # crossed over from the job that ran third-party code, and it lands as
+      # data in that directory and nowhere else.  A push that fails because
+      # develop moved meanwhile fails loudly, as it did before the split; the
+      # next weekly run rebuilds on top.
+      - name: Commit + push
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add graphify-out/
+          if git diff --cached --quiet; then
+            echo "graph unchanged — nothing to commit"
+            exit 0
+          fi
           git commit -m "chore(graphify): refresh knowledge graph [skip ci]"
-          git push
+          git push origin HEAD:develop
           echo "pushed graph refresh"

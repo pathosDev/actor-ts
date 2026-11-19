@@ -13,6 +13,10 @@
  *   backends remember what they deleted, so `highestSeq` still reports N —
  *   and `persist` then sends expectedSeq=0 into a journal that has seen N,
  *   failing with `JournalConcurrencyError` on every attempt, permanently.
+ * - #1052 — with no snapshot either, the state the journal held is gone, so
+ *   recovery now fails with `JournalIntegrityError` by default; #628's
+ *   sequence clamp applies under the explicit opt-out
+ *   `actor-ts.persistence.allow-fully-compacted-recovery`.
  */
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
@@ -21,6 +25,8 @@ import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
   InMemoryJournal,
   InMemorySnapshotStore,
+  JournalIntegrityError,
+  PersistenceBehaviorOptions,
   PersistenceExtensionId,
   PersistentActor,
 } from '../../../../src/persistence/index.js';
@@ -53,8 +59,17 @@ type State = { total: number };
 type Report = { total: number } | { error: string };
 
 class Ledger extends PersistentActor<Command, AppendedEvent, State> {
-  constructor(readonly persistenceId: string, private readonly replyTo: (r: Report) => void) {
+  constructor(
+    readonly persistenceId: string,
+    private readonly replyTo: (r: Report) => void,
+    private readonly onFailure?: (reason: Error) => void,
+  ) {
     super();
+  }
+
+  override onRecoveryFailure(reason: Error): void {
+    if (this.onFailure === undefined) throw reason;
+    this.onFailure(reason);
   }
 
   initialState(): State { return { total: 0 }; }
@@ -75,12 +90,13 @@ class Ledger extends PersistentActor<Command, AppendedEvent, State> {
   }
 }
 
-function makeSystem(name: string): {
+function makeSystem(name: string, behavior?: PersistenceBehaviorOptions): {
   system: ActorSystem;
   journal: InMemoryJournal;
   snapshots: InMemorySnapshotStore;
 } {
-  const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const quiet = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const options = behavior === undefined ? quiet : quiet.withPersistence({ behavior });
   const system = ActorSystem.create(name, options);
   const journal = new InMemoryJournal();
   const snapshots = new InMemorySnapshotStore();
@@ -136,11 +152,44 @@ describe('compaction round-trip', () => {
     await system.terminate();
   });
 
-  test('recovery of a compacted journal with no snapshot still advances the sequence (#628)', async () => {
+  test('recovery of a compacted journal with no snapshot fails by default (#1052)', async () => {
     // The harsher variant: nothing to recover state from, but the journal
-    // still knows how far it got.  State restarts at zero — that is expected
-    // after deleting the only record of it — while writes must keep working.
-    const { system, journal, snapshots } = makeSystem('compaction-no-snapshot');
+    // still knows how far it got.  This test used to expect a silent restart
+    // at zero (#628); #1052 settled that the state is not reconstructible and
+    // that inventing `initialState()` for it is exactly what #122 refuses for
+    // a partial loss.  Recovery fails loudly unless the system opts out.
+    const { system, journal, snapshots } = makeSystem('compaction-no-snapshot-refused');
+    const reports: Report[] = [];
+    const failures: Error[] = [];
+    const collect = (r: Report): void => { reports.push(r); };
+
+    const first = system.spawn(() => new Ledger('ledger-4', collect), 'first');
+    for (const value of [5, 5]) first.tell({ kind: 'append', value });
+    await awaitReports(reports, 2, 'both appends reached the journal');
+    await journal.delete('ledger-4', 2);
+    await snapshots.delete('ledger-4', 2);
+    expect(await gracefulStop(first, 4_000)).toBe(true);
+
+    reports.length = 0;
+    system.spawn(() => new Ledger('ledger-4', collect, (e) => failures.push(e)), 'second');
+    await awaitCondition(() => failures.length === 1, {
+      timeoutMs: 4_000,
+      label: 'recovery over a snapshot-less full compaction failed',
+    });
+    expect(failures[0]).toBeInstanceOf(JournalIntegrityError);
+    expect(reports).toEqual([]);
+    // Nothing was written past the head the journal remembers.
+    expect(await journal.highestSeq('ledger-4')).toBe(2);
+
+    await system.terminate();
+  });
+
+  test('with allow-fully-compacted-recovery, it restarts empty and still advances the sequence (#628)', async () => {
+    // The explicit opt-out #1052 keeps for anyone who compacts without a
+    // snapshot on purpose.  State restarts at zero, and #628 still holds:
+    // the sequence resumes at the journal's head, so writes keep working.
+    const persistenceBehavior = PersistenceBehaviorOptions.create().withAllowFullyCompactedRecovery(true);
+    const { system, journal, snapshots } = makeSystem('compaction-no-snapshot', persistenceBehavior);
     const reports: Report[] = [];
     const collect = (r: Report): void => { reports.push(r); };
 

@@ -69,6 +69,11 @@ type TagIndexKeyRow = {
 export class CassandraJournal implements Journal {
   /** A Cassandra/Scylla cluster any node can reach (#1356). */
   readonly storageLocality: StorageLocality = 'shared';
+  /**
+   * Unlogged batches, one per partition: a batch that crosses a partition
+   * boundary is several writes, and a failure between them commits a prefix (#959).
+   */
+  readonly atomicBatchAppend: boolean = false;
   private cachedStorageIdentity: string | null = null;
 
   /** Identity of the keyspace's database — journal and snapshot store over one keyspace share it (#1358). */

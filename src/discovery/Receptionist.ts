@@ -3,8 +3,10 @@ import { Actor } from '../Actor.js';
 import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
+import { SenderClaimQuota } from '../util/SenderClaimQuota.js';
 import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
+  DEFAULT_MAX_REGISTRATIONS_CLAIMED_PER_SENDER,
   DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
   ReceptionistOptionsValidator,
   readReceptionistOptionsFromConfig,
@@ -90,6 +92,7 @@ export class Receptionist extends Actor<ReceptionistInbox> {
   private readonly gossipIntervalMs: number;
   private readonly maxSubscribersPerKey: number;
   private readonly maxSubscriptionsTotal: number;
+  private readonly maxRegistrationsClaimedPerSender: number;
 
   /**
    * Which keys each subscriber watches, and which subscribers each key has —
@@ -136,6 +139,8 @@ export class Receptionist extends Actor<ReceptionistInbox> {
     this.gossipIntervalMs = resolvedOptions.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.maxSubscribersPerKey = resolvedOptions.maxSubscribersPerKey ?? DEFAULT_MAX_SUBSCRIBERS_PER_KEY;
     this.maxSubscriptionsTotal = resolvedOptions.maxSubscriptionsTotal ?? DEFAULT_MAX_SUBSCRIPTIONS_TOTAL;
+    this.maxRegistrationsClaimedPerSender = resolvedOptions.maxRegistrationsClaimedPerSender
+      ?? DEFAULT_MAX_REGISTRATIONS_CLAIMED_PER_SENDER;
   }
 
   override preStart(): void {
@@ -324,6 +329,16 @@ export class Receptionist extends Actor<ReceptionistInbox> {
    * name another node and replace *its* whole service-registry contribution,
    * poisoning cluster-wide discovery (#574).  Every entry a node contributes
    * is now filed under the address that actually sent it.
+   *
+   * What a sender may make this node hold is bounded by
+   * {@link maxRegistrationsClaimedPerSender} (#1073): each claim is charged
+   * by the paths it names, a key naming none as one, and a claim that does
+   * not fit is dropped whole and logged.  Before, every key name in a frame
+   * opened an entry and every path list was stored whole, so one frame could
+   * leave tens of thousands of entries with no local `Register` behind them.
+   * A quota per sender rather than one cap on keys, for the reason the
+   * pub-sub mediator gave up its shared budget (#1074): a shared cap is
+   * denied to every peer by the first that fills it.  The connection stays.
    */
   private handleGossip(message: ReceptionistGossipMessage, from: NodeAddress): void {
     if (!this.clusterRef) return;
@@ -337,10 +352,24 @@ export class Receptionist extends Actor<ReceptionistInbox> {
         affected.add(id);
       }
     }
+    const quota = new SenderClaimQuota(this.maxRegistrationsClaimedPerSender);
+    let malformed = 0;
     for (const [id, paths] of Object.entries(message.entries)) {
+      // A list is what the frame promises; anything else would be charged a
+      // weight it does not have, and then stored.
+      if (!Array.isArray(paths)) { malformed++; continue; }
+      if (!quota.take(Math.max(1, paths.length))) continue;
       const entry = this.getOrCreate(new ServiceKey(id));
       entry.remote.set(senderAddr, paths.slice());
       affected.add(id);
+    }
+    if (quota.refused > 0 || malformed > 0) {
+      this.log.warn(
+        `receptionist: dropped ${quota.refused + malformed} service-key claim(s) gossiped by ${senderAddr}, `
+        + `which now holds ${quota.claimed} registration(s) — ${quota.refused} past `
+        + `maxRegistrationsClaimedPerSender (${this.maxRegistrationsClaimedPerSender}), `
+        + `${malformed} with no list of paths`,
+      );
     }
     this.notifyAndCompact(affected);
   }

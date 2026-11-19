@@ -66,6 +66,7 @@ interface SseOptionsType extends BrokerCommonOptionsType {
   target?:   ActorRef<SseEvent>;             // required — subscriber for inbound events
   idleTimeoutMs?:    number;                 // read-idle deadline; default 0 (off)
   connectTimeoutMs?: number;                 // connect deadline; default 0 (off)
+  maxBufferChars?:   number;                 // undelimited-event cap; default 1 048 576
 }
 ```
 
@@ -76,6 +77,7 @@ interface SseOptionsType extends BrokerCommonOptionsType {
 | `headers`  | no       | Extra request headers — e.g. `authorization` for a protected feed. |
 | `idleTimeoutMs` | no  | Declare the stream lost after this long without a single inbound byte. |
 | `connectTimeoutMs` | no | Abandon a connect that has not produced response headers in time. |
+| `maxBufferChars` | no | Declare the stream lost once one event grows past this many characters (UTF-16 code units, not bytes) without a delimiter.  Default `1048576`. |
 
 `requiredOptions` is `['url', 'target']`; both must be present or
 the actor fails fast at startup.
@@ -205,6 +207,7 @@ actor-ts.io.broker.sse {
   headers { authorization = "Bearer …" }
   idle-timeout    = 60s
   connect-timeout = 10s
+  max-buffer-chars = 1048576
 }
 ```
 

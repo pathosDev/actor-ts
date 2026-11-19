@@ -71,6 +71,11 @@ export type RelationalQueryAccess = {
  * left undefined and the query layer falls back to polling.
  */
 export class RelationalJournal extends RelationalStore implements Journal {
+  /**
+   * The append runs inside `pool.withTransaction` (#959).  A subclass whose
+   * transport has no real transaction behind that call overrides this — D1.
+   */
+  readonly atomicBatchAppend: boolean = true;
   private readonly tables: JournalTableNames;
   private readonly statements: {
     readonly head: string;

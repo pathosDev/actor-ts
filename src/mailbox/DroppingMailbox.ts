@@ -7,11 +7,14 @@ import {
 } from '../internal/Mailbox.js';
 
 /**
- * A message arrived on a full mailbox whose overflow policy is `reject`.
+ * A replay arrived on a full mailbox whose overflow policy is `reject`.
  *
- * Thrown at the **`tell` call site**, not inside the actor whose mailbox is
- * full — that is the whole point of choosing `reject` over a drop: the sender
- * learns it has to back off.
+ * Raised by `prependUser` only — the `unstashAll()` path, on the replaying
+ * actor's own stack, refusing the whole batch.  It used to be thrown at the
+ * **`tell` call site** too, into whoever sent the message, and when that
+ * sender was an actor it was failed and restarted because the actor it sent
+ * to was slow (#919).  A `tell` under `reject` now refuses the arrival without
+ * throwing and dead-letters it: see `BoundedMailboxOverflow`.
  *
  * Lives beside {@link DroppingMailbox} rather than in `BoundedMailbox.ts`
  * because both built-in bounds raise it, and a shared error that is defined
@@ -24,6 +27,24 @@ export class MailboxFullError extends Error {
     super(`bounded mailbox full (capacity=${capacity})`);
     this.name = 'MailboxFullError';
   }
+}
+
+/**
+ * `deadLetterDrops` as a bounded mailbox resolves it: what the caller said,
+ * else on under `reject` and off otherwise (#919).
+ *
+ * `reject` is the policy that promises a refusal is never silent, and since
+ * it stopped throwing at the `tell` the dead letter is how it keeps that
+ * promise; a `drop-*` policy says loss is acceptable, so the fan-out stays
+ * opt-in there.  Read off the raw argument because the base class holds the
+ * field and has to be constructed before the settings are validated.  Shared
+ * by the three bounded mailboxes, whose `overflow` vocabularies all carry
+ * `reject`.
+ */
+export function deadLetterDropsFor(
+  options: { readonly overflow?: string; readonly deadLetterDrops?: boolean },
+): boolean {
+  return options.deadLetterDrops ?? options.overflow === 'reject';
 }
 
 /**

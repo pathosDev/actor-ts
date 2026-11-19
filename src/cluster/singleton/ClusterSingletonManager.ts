@@ -185,20 +185,54 @@ export type SingletonDeliver = {
  * an in-flight `lease.acquire()`.  Every state transition arrives as a
  * single message in this manager's own mailbox — including the two that
  * originate on a scheduler tick, which fires outside a message turn.
+ *
+ * Classes, every one of them, recognised by `instanceof` (#1267).  They were
+ * plain `{ kind }` objects matched by their string, and the manager sits at a
+ * resolvable path, so anything that reached its mailbox and spelled one was
+ * obeyed — a plain `lease-lost` stopped a singleton whose lease was still
+ * held, with only the envelope trust policy's `/system` refusal in front of a
+ * raw frame.  An instance can only be minted inside this module.  `kind` stays
+ * for logs and debuggers; nothing dispatches on it.
  */
-type ReconcileEvent = { readonly kind: 'reconcile' };
-type LeaseAcquireResultEvent = {
-  readonly kind: 'lease-acquire-result';
-  readonly got: boolean;
-  readonly error?: Error;
-};
-type LeaseLostEvent = { readonly kind: 'lease-lost'; readonly reason: string };
-type AcquireRetryEvent = { readonly kind: 'acquire-retry' };
-type RestartChildEvent = { readonly kind: 'restart-child' };
-type HandOverTimeoutEvent = { readonly kind: 'hand-over-timeout' };
-type HandOverRetryEvent = { readonly kind: 'hand-over-retry' };
-type HostDisagreementHoldExpiredEvent = { readonly kind: 'host-disagreement-hold-expired' };
-type HandOverStateExpiredEvent = { readonly kind: 'hand-over-state-expired' };
+abstract class ManagerEventBase {}
+
+class ReconcileEvent extends ManagerEventBase {
+  readonly kind = 'reconcile' as const;
+}
+
+class LeaseAcquireResultEvent extends ManagerEventBase {
+  readonly kind = 'lease-acquire-result' as const;
+  constructor(readonly got: boolean, readonly error?: Error) { super(); }
+}
+
+class LeaseLostEvent extends ManagerEventBase {
+  readonly kind = 'lease-lost' as const;
+  constructor(readonly reason: string) { super(); }
+}
+
+class AcquireRetryEvent extends ManagerEventBase {
+  readonly kind = 'acquire-retry' as const;
+}
+
+class RestartChildEvent extends ManagerEventBase {
+  readonly kind = 'restart-child' as const;
+}
+
+class HandOverTimeoutEvent extends ManagerEventBase {
+  readonly kind = 'hand-over-timeout' as const;
+}
+
+class HandOverRetryEvent extends ManagerEventBase {
+  readonly kind = 'hand-over-retry' as const;
+}
+
+class HostDisagreementHoldExpiredEvent extends ManagerEventBase {
+  readonly kind = 'host-disagreement-hold-expired' as const;
+}
+
+class HandOverStateExpiredEvent extends ManagerEventBase {
+  readonly kind = 'hand-over-state-expired' as const;
+}
 
 type ManagerEvent =
   | ReconcileEvent
@@ -401,10 +435,10 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
     if (this.options.lease) {
       this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
-        this.self.tell({ kind: 'lease-lost', reason } satisfies ManagerEvent);
+        this.self.tell(new LeaseLostEvent(reason));
       });
       // Lease path: kick the initial reconcile via the mailbox.
-      this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
+      this.self.tell(new ReconcileEvent());
     } else {
       this.reconcileSync();
     }
@@ -412,7 +446,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   private onClusterMembershipChanged(): void {
     if (this.options.lease) {
-      this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
+      this.self.tell(new ReconcileEvent());
     } else {
       this.reconcileSync();
     }
@@ -468,19 +502,28 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     if (message instanceof AuthenticatedSingletonMessage) {
       return this.onAuthenticatedSingletonMessage(message);
     }
-    return match(message)
+    // The manager's own commands — classes, so a look-alike is not one (#1267).
+    if (message instanceof ManagerEventBase) {
+      return this.onManagerEvent(message as ManagerEvent);
+    }
+    return match(message as SingletonDeliver)
       .with({ kind: 'singleton-deliver' }, (m) => this.onSingletonDeliver(m))
-      .with({ kind: 'reconcile' }, () => this.onReconcile())
-      .with({ kind: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
-      .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
-      .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
-      .with({ kind: 'restart-child' }, () => this.onRestartChild())
-      .with({ kind: 'hand-over-timeout' }, () => this.onHandOverTimeout())
-      .with({ kind: 'hand-over-retry' }, () => this.onHandOverRetry())
-      .with({ kind: 'host-disagreement-hold-expired' }, () =>
-        this.onHostDisagreementHoldExpired())
-      .with({ kind: 'hand-over-state-expired' }, () => this.onHandOverStateExpired())
       .otherwise((m) => this.onUnhandled(m));
+  }
+
+  /** One of the manager's commands to itself (#1267). */
+  private onManagerEvent(event: ManagerEvent): void | Promise<void> {
+    return match(event)
+      .with(P.instanceOf(ReconcileEvent), () => this.onReconcile())
+      .with(P.instanceOf(LeaseAcquireResultEvent), (m) => this.onLeaseAcquireResult(m))
+      .with(P.instanceOf(LeaseLostEvent), (m) => this.onLeaseLost(m))
+      .with(P.instanceOf(AcquireRetryEvent), () => this.onAcquireRetry())
+      .with(P.instanceOf(RestartChildEvent), () => this.onRestartChild())
+      .with(P.instanceOf(HandOverTimeoutEvent), () => this.onHandOverTimeout())
+      .with(P.instanceOf(HandOverRetryEvent), () => this.onHandOverRetry())
+      .with(P.instanceOf(HostDisagreementHoldExpiredEvent), () => this.onHostDisagreementHoldExpired())
+      .with(P.instanceOf(HandOverStateExpiredEvent), () => this.onHandOverStateExpired())
+      .exhaustive();
   }
 
   /** One of {@link SingletonMessage}, stamped with the peer it arrived from. */
@@ -562,7 +605,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       // Re-trigger the appropriate reconcile path; either branch is
       // safe to call when the singleton state is "no child running".
       if (this.options.lease) {
-        this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
+        this.self.tell(new ReconcileEvent());
       } else {
         this.reconcileSync();
       }
@@ -607,7 +650,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
           // Through the mailbox rather than acting here: the timer fires
           // outside a message turn, and every other state transition in this
           // manager arrives as a message for exactly that reason.
-          this.self.tell({ kind: 'restart-child' } satisfies ManagerEvent);
+          this.self.tell(new RestartChildEvent());
         },
       );
       return;
@@ -652,7 +695,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     if (this.options.lease && this.leaseState !== 'held') {
       // The lease went away while we waited — the acquire path owns the
       // respawn from here, and `spawn()` must not run without the lease.
-      this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
+      this.self.tell(new ReconcileEvent());
       return;
     }
     // Deliberately `spawn()` and not `handleReconcile()`: with a lease still
@@ -793,11 +836,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private async runAcquire(): Promise<void> {
     try {
       const got = await this.options.lease!.acquire();
-      this.self.tell({ kind: 'lease-acquire-result', got } satisfies ManagerEvent);
+      this.self.tell(new LeaseAcquireResultEvent(got));
     } catch (error) {
-      this.self.tell({
-        kind: 'lease-acquire-result', got: false, error: error as Error,
-      } satisfies ManagerEvent);
+      this.self.tell(new LeaseAcquireResultEvent(false, error as Error));
     }
   }
 
@@ -849,7 +890,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // `Terminated` lands, so only the nothing-to-wait-for case needs one here —
     // and that is `pendingStop`, not "did `stopChild` have a child": an instance
     // already mid-stop when the lease went is still an instance to wait for.
-    if (!this.pendingStop) this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
+    if (!this.pendingStop) this.self.tell(new ReconcileEvent());
   }
 
   /* ------------------------ the hand-over ------------------------ */
@@ -890,11 +931,11 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       // fires outside a message turn, and every other transition in this
       // manager arrives as a message for that reason.
       timer: this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
-        this.self.tell({ kind: 'hand-over-timeout' } satisfies ManagerEvent);
+        this.self.tell(new HandOverTimeoutEvent());
       }),
       retryTimer: this.system.scheduler.scheduleAtFixedRateFunction(
         retryIntervalMs, retryIntervalMs,
-        () => this.self.tell({ kind: 'hand-over-retry' } satisfies ManagerEvent),
+        () => this.self.tell(new HandOverRetryEvent()),
       ),
       held: [],
       state: null,
@@ -1136,7 +1177,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
         () => {
           // Through the mailbox: a scheduler tick fires outside a message turn,
           // and every other transition in this manager arrives as a message.
-          this.self.tell({ kind: 'host-disagreement-hold-expired' } satisfies ManagerEvent);
+          this.self.tell(new HostDisagreementHoldExpiredEvent());
         },
       );
     }
@@ -1354,7 +1395,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       SINGLETON_HAND_OVER_STATE_RETENTION_MS,
       () => {
         // Through the mailbox, like every other timer in this manager.
-        this.self.tell({ kind: 'hand-over-state-expired' } satisfies ManagerEvent);
+        this.self.tell(new HandOverStateExpiredEvent());
       },
     );
   }
@@ -1643,7 +1684,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     const interval = this.options.acquireRetryIntervalMs ?? DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS;
     this.retryTimer?.cancel();
     this.retryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
-      this.self.tell({ kind: 'acquire-retry' } satisfies ManagerEvent);
+      this.self.tell(new AcquireRetryEvent());
     });
   }
 }

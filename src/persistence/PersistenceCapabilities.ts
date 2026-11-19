@@ -77,6 +77,34 @@ export class UnsupportedPersistenceOptionError extends Error {
 }
 
 /**
+ * Refusal raised when `PersistentActor.persistAll` is handed more than one
+ * event and the journal declares `atomicBatchAppend: false` (#959).
+ *
+ * The journal's own declaration is what decides, read the same way a store's
+ * {@link PersistenceOptionSupport} is: a journal that declares nothing is
+ * unknown and never refused.  Thrown before anything is written, so the
+ * caller's error means what it says — nothing was committed.
+ */
+export class NonAtomicBatchAppendError extends Error {
+  constructor(
+    public readonly journalName: string,
+    public readonly persistenceId: string,
+    public readonly eventCount: number,
+  ) {
+    super(
+      `persistence: '${persistenceId}' tried to persist ${eventCount} events in one persistAll, but the journal `
+      + `'${journalName}' does not append a batch atomically (atomicBatchAppend: false) — a failure partway `
+      + 'through would commit a prefix while the caller is told the whole batch failed, leaving the actor\'s '
+      + 'state behind its journal until a restart adopts the half-batch (#959). Persist one event that carries '
+      + 'the whole change, use a journal that appends atomically (in-memory, SQLite, Postgres, MariaDB, '
+      + 'SQL Server, libSQL, DynamoDB), or accept the risk with '
+      + 'actor-ts.persistence.allow-non-atomic-batch-append = on.',
+    );
+    this.name = 'NonAtomicBatchAppendError';
+  }
+}
+
+/**
  * Which requested fields of `options` the store will not act on.
  *
  * Two silences are deliberate:

@@ -40,6 +40,7 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { stageMember } from '../../../util/StagedMember.js';
 import { LogLevel } from '../../../../src/Logger.js';
 import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
@@ -55,6 +56,7 @@ import {
 import { DeadLetter } from '../../../../src/SystemMessages.js';
 import { RecordingLogger } from '../../../util/RecordingLogger.js';
 import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
+import { nextShardToken } from '../../../util/ShardTokens.js';
 
 const TYPE_NAME = 'entity';
 const NUM_SHARDS = 8;
@@ -198,17 +200,18 @@ async function startRegion(systemName: string, port: number): Promise<Harness> {
     (region as ActorRef<unknown>).tell(new AuthenticatedShardingMessage(cluster.selfAddress, message));
   };
   const place = (shardId: number): void => {
-    directive({ kind: 'sharding.ShardHome', shardId, region: region.path.toString(), node: cluster.selfAddress.toJSON() });
+    directive({ kind: 'sharding.ShardHome', token: nextShardToken(), shardId, region: region.path.toString(), node: cluster.selfAddress.toJSON() });
   };
   const moveAway = (shardId: number): void => {
     directive({
       kind: 'sharding.ShardHome',
+      token: nextShardToken(),
       shardId,
       region: `/system/cluster-sharding/${TYPE_NAME}-region`,
-      node: new NodeAddress(`${systemName}-elsewhere`, 'h', port + 1).toJSON(),
+      node: stageMember(cluster, new NodeAddress(`${systemName}-elsewhere`, 'h', port + 1)).toJSON(),
     });
   };
-  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId }); };
+  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId, token: nextShardToken() }); };
   const remember = (shardId: number, entityIds: string[]): void => {
     directive({ kind: 'sharding.RememberedEntities', shardId, entityIds });
   };

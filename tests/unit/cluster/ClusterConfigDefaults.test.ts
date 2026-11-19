@@ -6,6 +6,7 @@ import {
   DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
   DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
+  DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
@@ -13,6 +14,7 @@ import {
   DEFAULT_DOWN_SMALLER_ISLAND,
   DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
+  DEFAULT_UNREACHABLE_GOSSIP_ROUNDS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
   DEFAULT_UNTRUSTED_MODE,
@@ -46,6 +48,7 @@ describe('readClusterOptionsFromConfig', () => {
         cluster {
           gossip-interval     = 250ms
           seed-retry-interval = 1s
+          unreachable-gossip-rounds = 7
           failure-detector {
             heartbeat-interval = 100ms
             unreachable-after  = 400ms
@@ -65,6 +68,7 @@ describe('readClusterOptionsFromConfig', () => {
       maxFrameBytes: 2 * 1024 * 1024,
       gossipIntervalMs: 250,
       seedRetryIntervalMs: 1_000,
+      unreachableGossipRounds: 7,
       failureDetector: {
         heartbeatIntervalMs: 100,
         unreachableAfterMs: 400,
@@ -391,6 +395,9 @@ describe('readClusterOptionsFromConfig', () => {
       maxFrameBytes: DEFAULT_MAX_FRAME_BYTES,
       gossipIntervalMs: DEFAULT_GOSSIP_INTERVAL_MS,
       seedRetryIntervalMs: DEFAULT_SEED_RETRY_INTERVAL_MS,
+      // Ships a leaf, so it always lands; pinned to the constant `Cluster`
+      // falls back to, so a shipped value that differs is reported here (#930).
+      unreachableGossipRounds: DEFAULT_UNREACHABLE_GOSSIP_ROUNDS,
       weaklyUpAfterMs: 0,
       // 0 = arm no stats timer (#842).  Pinned here rather than only in the
       // reference file, because this exact-object shape is what says the leaf
@@ -405,6 +412,7 @@ describe('readClusterOptionsFromConfig', () => {
       shutdownAfterUnsuccessfulJoinMs: 0,
       maxMembers: DEFAULT_MAX_MEMBERS,
       maxTombstones: DEFAULT_MAX_TOMBSTONES,
+      gossipFramesPerSecondPerSender: DEFAULT_GOSSIP_FRAMES_PER_SECOND_PER_SENDER,
       // The Up threshold ships a leaf, so it always lands; the per-role
       // siblings ship comment-only and so must NOT appear next to it — which
       // is what the exact-object shape of this assertion checks (#837).
@@ -602,6 +610,7 @@ describe('readClusterOptionsFromConfig', () => {
         weakly-up-after = 4s
         max-members     = 12
         max-tombstones  = 34
+        gossip-frames-per-second-per-sender = 56
         tombstone {
           time-to-live   = 90m
           prune-interval = 30s
@@ -614,6 +623,7 @@ describe('readClusterOptionsFromConfig', () => {
       weaklyUpAfterMs: 4_000,
       maxMembers: 12,
       maxTombstones: 34,
+      gossipFramesPerSecondPerSender: 56,
       tombstoneTtlMs: 90 * 60 * 1_000,
       tombstonePruneIntervalMs: 30_000,
       tombstoneMinRetentionMs: 2_000,
@@ -845,7 +855,7 @@ describe('withClusterConfigDefaults', () => {
 /**
  * #591 — the predicate behind the startup warning.  It is the whole reason
  * `actor-ts.remote.tls.enabled` stopped being a dead key: nothing honours the
- * flag yet (#941), so reading it is all there is, and what the read is worth
+ * flag yet (#1854), so reading it is all there is, and what the read is worth
  * lies entirely in when it answers `true`.
  */
 describe('isRemoteTlsRequested', () => {

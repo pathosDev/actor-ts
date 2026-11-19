@@ -22,6 +22,7 @@ import {
   type DynamoDbSnapshotStoreOptions,
   type DynamoDbSnapshotStoreOptionsType,
 } from './DynamoDbSnapshotStoreOptions.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 
 /**
  * SnapshotStore backed by Amazon DynamoDB.
@@ -92,6 +93,7 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+    assertValidPersistenceId(persistenceId, 'DynamoDbSnapshotStore.save');
     const operations = await this.ensureOpen();
     const now = Date.now();
     try {

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -19,6 +19,11 @@ import {
   type StressOptions,
   type SummaryDocument,
 } from '../../../scripts/stress-test.mjs';
+
+/** Every character a RegExp reads as syntax, backslash included, made literal. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /**
  * The nightly measurement has to reach somebody.
@@ -433,4 +438,54 @@ describe('summary arguments', () => {
   test('a well-formed summary round-trips', () => {
     expect(readSummary(summaryFile(green))).toEqual(green);
   });
+});
+
+/**
+ * Every nightly job reaches the report (#1823).  The report job used to need
+ * only `worker-suites` and `stress`, so a red `time-factor`,
+ * `scheduled-orderings` or `decoder-inputs` night was a red scheduled check
+ * and nothing else — no issue, which is the one thing a night is for.
+ *
+ * Read from the workflow's text, the way `WorkflowHygiene.test.ts` reads it:
+ * each job other than `report` has to upload an artifact named after itself,
+ * be one the report job waits for, and have both a download step and a
+ * `--summary` argument there that point at the same directory.  A job added
+ * without the other three halves fails here rather than going quiet.
+ */
+describe('the nightly workflow wires every job into the report', () => {
+  const workflow = readFileSync(join(import.meta.dir, '..', '..', '..', '.github', 'workflows', 'nightly-flakes.yml'), 'utf8');
+  const lines = workflow.split(/\r?\n/);
+  const jobsAt = lines.indexOf('jobs:');
+  const jobs = lines.slice(jobsAt + 1).flatMap((line) => /^ {2}([a-z][a-z-]*):\s*$/.exec(line)?.[1] ?? []);
+  const reportAt = lines.findIndex((line) => line === '  report:');
+  const reportJob = lines.slice(reportAt).join('\n');
+  const measuring = jobs.filter((job) => job !== 'report');
+
+  /** The `path` of the report job's download step for `job`'s artifact, or `null`. */
+  const downloadPathFor = (job: string): string | null => {
+    const step = new RegExp(`name: ${job}-\\$\\{\\{ github\\.run_id \\}\\}-\\$\\{\\{ github\\.run_attempt \\}\\}\\s*\\n\\s*path: (\\S+)`).exec(reportJob);
+    return step?.[1] ?? null;
+  };
+
+  test('the workflow has the five jobs this guard was written against, and a report', () => {
+    expect(jobs).toContain('report');
+    expect(measuring.sort()).toEqual(['decoder-inputs', 'scheduled-orderings', 'stress', 'time-factor', 'worker-suites']);
+  });
+
+  test('the report job waits for every other job', () => {
+    const needs = /\n {4}needs: \[([^\]]*)\]/.exec(reportJob)?.[1]?.split(',').map((job) => job.trim()) ?? [];
+    expect(needs.sort()).toEqual([...measuring].sort());
+  });
+
+  test.each(['decoder-inputs', 'scheduled-orderings', 'stress', 'time-factor', 'worker-suites'])(
+    '%s uploads its report under its own name, and the report downloads and reads it',
+    (job) => {
+      const jobText = lines.slice(lines.indexOf(`  ${job}:`)).join('\n').split(/\n {2}[a-z][a-z-]*:\s*\n/)[0]!;
+      expect(jobText).toContain('bun run test:stress --');
+      expect(jobText).toContain(`name: ${job}-\${{ github.run_id }}-\${{ github.run_attempt }}`);
+      const path = downloadPathFor(job);
+      expect(path).not.toBeNull();
+      expect(reportJob).toMatch(new RegExp(`--summary="[^":]+:${escapeRegExp(path!)}/summary\\.json"`));
+    },
+  );
 });

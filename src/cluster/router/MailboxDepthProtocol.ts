@@ -65,6 +65,12 @@ export function isMailboxDepthQuery(body: unknown): body is MailboxDepthQueryMes
  * handler of its own — the same shape `RouterActor` uses for the `Terminated`
  * the system delivers.  A user message would have to carry this exact `kind`
  * *and* all three fields at the right types to be mistaken for one.
+ *
+ * The depth is narrowed to a non-negative integer, not just a number (#1042):
+ * the selection scan takes the smallest reading and stops at zero, so a
+ * negative one from a single peer would win every pick and pull the pool's
+ * traffic onto it.  A body that fails here is no report, which leaves that
+ * node without a reading — skipped, never preferred.
  */
 export function isMailboxDepthReport(body: unknown): body is MailboxDepthReportMessage {
   const message = body as Partial<MailboxDepthReportMessage> | null;
@@ -72,7 +78,9 @@ export function isMailboxDepthReport(body: unknown): body is MailboxDepthReportM
     && message?.kind === 'mailbox-depth-report'
     && typeof message.node === 'string'
     && typeof message.routeePath === 'string'
-    && typeof message.depth === 'number';
+    && typeof message.depth === 'number'
+    && Number.isInteger(message.depth)
+    && message.depth >= 0;
 }
 
 /**

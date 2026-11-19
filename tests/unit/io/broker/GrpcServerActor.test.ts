@@ -37,6 +37,7 @@ import { GrpcServerActor } from '../../../../src/io/broker/GrpcServerActor.js';
 // as `actor-ts/io`, so this file reaches them the same way; the gate that
 // notices is `typecheck:dev`, which is the one that compiles a call site.
 import type {
+  GrpcBidiCall,
   GrpcChannelOptions,
   GrpcProtoLoaderModule,
   GrpcServerLike,
@@ -60,13 +61,15 @@ import { awaitCondition } from '../../../util/AwaitCondition.js';
  */
 class FakeGrpcServer implements GrpcServerLike {
   readonly serviceDefinitions: unknown[] = [];
+  readonly implementations: Array<Record<string, unknown>> = [];
   boundTo: string | null = null;
   started = false;
 
   constructor(readonly channelOptions: GrpcChannelOptions | undefined) {}
 
-  addService(definition: unknown, _implementation: Record<string, unknown>): void {
+  addService(definition: unknown, implementation: Record<string, unknown>): void {
     this.serviceDefinitions.push(definition);
+    this.implementations.push(implementation);
   }
 
   bindAsync(bind: string, _credentials: unknown, callback: (error: Error | null, port: number) => void): void {
@@ -213,6 +216,42 @@ describe('GrpcServerActor — channel options', () => {
       // defaults survive one is a per-release question this framework has
       // no business answering.
       expect(fake.servers[0]!.channelOptions).toBeUndefined();
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/* =============================== #1039 ================================= */
+
+/** A bidi handler that never subscribes — the case the cap exists for. */
+class NeverSubscribingHandler extends Actor<GrpcBidiCall> {
+  override onReceive(_call: GrpcBidiCall): void { /* never calls onData */ }
+}
+
+describe('GrpcServerActor — the pre-subscribe cap reaches the method implementations (#1039)', () => {
+  test('withMaxPendingRequestMessages bounds a registered bidi method', async () => {
+    const system = newSystem('grpc-server-pending-cap');
+    try {
+      const fake = createFakeGrpcModule();
+      const handler = system.spawnAnonymous(NeverSubscribingHandler) as unknown as ActorRef<GrpcBidiCall>;
+      const serverOptions = baseOptions(system)
+        .withHandlers({ Chat: { kind: 'bidi', target: handler } })
+        .withMaxPendingRequestMessages(2);
+      await bind(system, serverOptions, fake.module);
+
+      const chat = fake.servers[0]!.implementations[0]!['Chat'] as (call: unknown) => void;
+      const dataListeners: Array<(chunk: unknown) => void> = [];
+      const errors: Array<{ code: number; message: string }> = [];
+      chat({
+        on: (event: string, listener: (chunk: unknown) => void) => { if (event === 'data') dataListeners.push(listener); },
+        write: () => { /* unused */ },
+        end: () => { /* unused */ },
+        emit: (_event: string, error: { code: number; message: string }) => { errors.push(error); },
+      });
+      for (let i = 0; i < 3; i++) for (const listener of dataListeners) listener({ i });
+
+      expect(errors.map((e) => e.code)).toEqual([8]);
     } finally {
       await system.terminate();
     }

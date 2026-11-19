@@ -38,6 +38,22 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
  */
 export const DEFAULT_MAX_SERIES_PER_FAMILY = 10_000;
 
+/**
+ * Built-in cap on the number of metric families one registry holds — the
+ * bound that keeps a metric *name* built from request data from minting a
+ * family per value (#1068), the dimension {@link DEFAULT_MAX_SERIES_PER_FAMILY}
+ * cannot see.
+ *
+ * **Why 1 000.**  The framework publishes a few dozen families of its own
+ * (the stock-metrics page lists them), and an application rarely adds more
+ * than a few hundred, so 1 000 clears every legitimate registry by a wide
+ * margin while still stopping a name-per-request loop after a bounded amount
+ * of work.  A family cannot be folded into an overflow series the way a label
+ * tuple can — the name *is* its identity — so a cap that bit on real metrics
+ * would silently drop them; erring high is the cheaper mistake.
+ */
+export const DEFAULT_MAX_FAMILIES = 1_000;
+
 /** Plain options-object shape accepted by a {@link DefaultMetricsRegistry}. */
 export type MetricsRegistryOptionsType = {
   /**
@@ -53,6 +69,18 @@ export type MetricsRegistryOptionsType = {
    * validation.)
    */
   readonly maxSeriesPerFamily?: number;
+  /**
+   * Cap on the number of metric families.  Once the registry holds this
+   * many, an instrument factory asked for a further name returns a no-op
+   * instrument instead of minting a family, and the registry logs one
+   * warning naming the first refused name.  It never throws: the factories
+   * are called from inside actors and request handlers, where a metrics
+   * failure must not become a request failure.  A family minted before the
+   * cap keeps recording.
+   *
+   * Default {@link DEFAULT_MAX_FAMILIES}.  **`0` disables the cap.**
+   */
+  readonly maxFamilies?: number;
 };
 
 /**
@@ -71,6 +99,11 @@ export class MetricsRegistryOptionsBuilder extends OptionsBuilder<MetricsRegistr
   withMaxSeriesPerFamily(maxSeriesPerFamily: number): this {
     return this.set('maxSeriesPerFamily', maxSeriesPerFamily);
   }
+
+  /** Cap on the number of metric families.  `0` disables the cap. */
+  withMaxFamilies(maxFamilies: number): this {
+    return this.set('maxFamilies', maxFamilies);
+  }
 }
 
 /** Validates resolved {@link MetricsRegistryOptionsType} settings. */
@@ -81,6 +114,7 @@ export class MetricsRegistryOptionsValidator extends OptionsValidator<MetricsReg
   protected rules(): void {
     // `>= 0` rather than `>= 1`: 0 is the documented opt-out.
     this.nonNegativeInt('maxSeriesPerFamily');
+    this.nonNegativeInt('maxFamilies');
   }
 }
 
@@ -95,7 +129,7 @@ export const MetricsRegistryOptions = MetricsRegistryOptionsBuilder;
 
 /**
  * Read the slice of `actor-ts.metrics.*` the in-process registry takes: the
- * cap.  `name-prefix` in the same block is the prom-client bridge's alone —
+ * two caps.  `name-prefix` in the same block is the prom-client bridge's alone —
  * this registry is rendered by the framework's own exporter, which has no
  * prefix to apply.
  *
@@ -105,14 +139,15 @@ export const MetricsRegistryOptions = MetricsRegistryOptionsBuilder;
  * `ActorSystem.create({ config })` — and, inside a mesh worker, the main
  * thread's effective config the worker was built from.
  *
- * An absent leaf stays absent rather than being filled with
- * {@link DEFAULT_MAX_SERIES_PER_FAMILY}, so `mergeOptions` can layer explicit
- * options over this answer per field.  `getInt`, because the cap counts series:
- * a fraction is refused naming the key rather than reaching the validator.
+ * An absent leaf stays absent rather than being filled with its built-in
+ * default, so `mergeOptions` can layer explicit options over this answer per
+ * field.  `getInt`, because the caps count series and families: a fraction is
+ * refused naming the key rather than reaching the validator.
  */
 export function readMetricsRegistryOptionsFromConfig(config: Config): Partial<MetricsRegistryOptionsType> {
   const keys = ConfigKeys.metrics;
   const out: { -readonly [K in keyof MetricsRegistryOptionsType]?: MetricsRegistryOptionsType[K] } = {};
   if (config.hasPath(keys.maxSeriesPerFamily)) out.maxSeriesPerFamily = config.getInt(keys.maxSeriesPerFamily);
+  if (config.hasPath(keys.maxFamilies)) out.maxFamilies = config.getInt(keys.maxFamilies);
   return out;
 }

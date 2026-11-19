@@ -214,10 +214,11 @@ What follows from it:
   `MemberUp`, every region registers again and re-asks for the shards it
   buffered, and the request is answered then; a member that is removed
   takes its regions with it, and the request waits for a region that can
-  host the type.  While #930 is open, a member cut off by a symmetric
-  partition is not heard from again after the network heals, so it does
-  not come back on its own: the request stays pending until auto-down, a
-  split-brain strategy or an operator removes the member.
+  host the type.  A member cut off by a symmetric partition comes back
+  on its own once the network heals, because heartbeats keep reaching
+  it (#930) — unless auto-down, a split-brain strategy or an operator
+  removed it first, in which case the request waits for a region that
+  can host the type.
 - **A flapping member stalls rebalancing.**  Every time a member leaves
   or rejoins the set of members that are up, the window starts again, so
   one that flips faster than the window keeps the coordinator from
@@ -357,6 +358,22 @@ cost every other node's traffic an extra round trip to the
 coordinator. Ownership is judged by allocation, not by whether the
 shard actor happens to be running: a shard that passivated for being
 idle is still owned and still hands off.
+
+Ownership alone does not order frames in time, so a fourth condition
+does: every `HandOff` carries a per-shard **freshness token**, and
+the region refuses one whose token is not newer than the last it saw
+for that shard. A frame buffered while a connection was being set up
+is flushed when it completes, so an authentic `HandOff` can arrive
+after the shard has moved away and come back — owned again, and
+still taken down by the order its previous stay was sent. Every
+placement (`ShardHome`) carries the shard's token too, so the move
+back outdates that frame. The coordinator draws tokens no lower than
+its wall clock and above every token the regions report in their
+`Register`, which they send on every leader change, so a coordinator
+that has just taken over issues above its predecessor without
+persisting anything. A `HandOff` or `ShardHome` without a token is
+refused: a cluster has to run one build on both sides of this change
+— see the CHANGELOG.
 
 The coordinator does not stall on the refusal. It only ever sends
 `HandOff` to the region its own allocation map names, so a refusal

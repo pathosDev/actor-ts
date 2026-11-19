@@ -106,6 +106,32 @@ describe('Stock actor metrics', () => {
     }
   });
 
+  test('actor_restarted_total names the class that restarted (#916)', async () => {
+    // "Which actor is restarting" is the question the counter exists for, and
+    // an unlabelled one could only say "something is".
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-restart-class', sysOptions);
+    const reg = sys.extension(MetricsExtensionId).enable();
+    try {
+      let starts = 0;
+      class Flaky extends Actor<string> {
+        override preStart(): void { starts++; }
+        override onReceive(): void { throw new Error('boom'); }
+      }
+      sys.spawn(Flaky, 'flaky').tell('fail');
+      await awaitCondition(() => starts === 2, { label: 'the actor restarted' });
+
+      const samples = reg.collect().filter((s) => s.name === 'actor_restarted_total');
+      expect(samples.map((s) => ({ labels: s.labels, value: s.value }))).toEqual([
+        { labels: { class: 'Flaky' }, value: 1 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('actor_messages_delivered_total ticks per onReceive call', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
@@ -393,7 +419,7 @@ describe('Stock cluster metrics', () => {
 const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   actor_created_total: [],
   actor_terminated_total: [],
-  actor_restarted_total: [],
+  actor_restarted_total: ['class'],
   actor_messages_delivered_total: [],
   actor_message_handler_seconds: [],
   actor_mailbox_size: ['class', 'path'],
@@ -428,6 +454,7 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   persistence_breaker_state: ['breaker'],
   router_scatter_gather_resolved_total: ['outcome'],
   router_scatter_gather_latency_seconds: [],
+  http_rate_limit_backend_errors_total: ['prefix'],
   websocket_client_inbound_paused_seconds_total: [],
   worker_mesh_snapshot_age_seconds: ['worker'],
 };
@@ -475,6 +502,10 @@ const PER_INSTANCE_LABELS: Readonly<Record<string, string>> = {
     + 'bounded by worker-mesh.workers, and the label the metric exists to carry, since '
     + 'which worker went silent is the whole of the alert; the series is removed when '
     + 'the slot leaves the mesh (#1570)',
+  'http_rate_limit_backend_errors_total.prefix': 'the keyPrefix of a rateLimit the '
+    + 'application constructs in code — never the per-request key, which is client-derived — '
+    + 'so bounded by the limiters the deployment declares, and the label that tells which '
+    + 'limiter has stopped counting (#983)',
 };
 
 /**

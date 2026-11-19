@@ -25,7 +25,11 @@ export interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
     /** Auto-create the group if missing.  Default: true. */
     readonly createIfMissing?: boolean;
   };
-  /** Block timeout per XREADGROUP call in ms.  Default: 5_000. */
+  /**
+   * Block timeout per XREADGROUP call in ms.  Default: 5_000.  Must be
+   * positive: `0` is Redis's "block indefinitely", which would hold the stop
+   * path's `quit()` behind a read that never returns (#982).
+   */
   readonly blockMs?: number;
   /**
    * Subscriber for inbound entries.  Required to consume.  No HOCON leaf: an
@@ -91,7 +95,10 @@ export class RedisStreamsOptionsValidator extends BrokerOptionsValidator<RedisSt
   protected rules(s: Partial<RedisStreamsOptionsType>): void {
     this.commonRules(s);
     this.url('url', ['redis', 'rediss']);
-    this.nonNegativeInt('blockMs'); // 0 = block indefinitely (Redis XREAD semantics)
+    // Positive, not merely non-negative: `BLOCK 0` blocks indefinitely on an
+    // idle stream, and `quit()` on stop queues behind that read, so 0 would let
+    // a stop wait forever for a reply nothing sends (#982).
+    this.positiveInt('blockMs');
     const tlsProblem = findBrokerTlsProblem(s.tls);
     if (tlsProblem !== null) this.fail('tls', tlsProblem);
   }

@@ -35,9 +35,17 @@ Der Vertrag:
   sinnvoll ist.  Default ist `Date.now()`, wenn nicht angegeben,
   aber du kannst jeden monotonen Wert übergeben.
 - **Ties beim Timestamp werden über die Replika-ID als
-  Tiebreaker entschieden.**  Gleicher Timestamp + gleiche
-  Replika-ID = gleicher Write; gleicher Timestamp +
+  Tiebreaker entschieden.**  Gleicher Timestamp +
   verschiedene Replikas = lexikographisch späterer gewinnt.
+  Gleicher Timestamp + gleiche Replika-ID ist nicht zwingend
+  derselbe Write — eine Replika kann in einer Millisekunde
+  zweimal schreiben —, deshalb entscheidet dort ein typisierter,
+  kanonischer Schlüssel des Werts (`canonicalOrderKey`), und
+  jeder Knoten behält denselben, egal in welcher Reihenfolge die
+  beiden Writes ankommen.  Der Schlüssel unterscheidet Werte, die
+  eine JSON-Darstellung verwechselt — `1n` und `"1n"`, `undefined`
+  und eine Funktion —, und nur strukturell gleiche Werte bleiben
+  gleichauf.
 - **Der letzte Write gewinnt, *still*.**  Nebenläufige Writes
   werden dem Caller nicht offengelegt — einer davon ist
   einfach weg.

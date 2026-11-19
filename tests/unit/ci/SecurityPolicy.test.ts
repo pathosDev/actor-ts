@@ -712,6 +712,27 @@ describe('security policy', () => {
     ).toContain('SECURITY.md');
   });
 
+  /**
+   * #1061: the one caveat the framework cannot close for the caller — deferred
+   * work inheriting the MDC of the turn that started it, which across a tenant
+   * boundary is a data leak — was documented only on the logging page.  A
+   * reader evaluating the package from npm sees the README and nothing else.
+   */
+  test('README.md names the deferred-work MDC leak and both remedies', () => {
+    const readme = readFileSync(join(REPOSITORY_ROOT, 'README.md'), 'utf8');
+    const start = readme.indexOf('## Known security caveats');
+    expect(start, 'README.md must carry a "Known security caveats" section (#1061).').toBeGreaterThan(-1);
+    const end = readme.indexOf('\n## ', start + 1);
+    const section = readme.slice(start, end === -1 ? undefined : end);
+    for (const needle of [
+      'LogContext.runFresh',
+      'LogContext.runEach',
+      'https://actor-ts.dev/fundamentals/logging/#what-is-still-yours-to-close',
+    ]) {
+      expect(section, `the caveats section must mention ${needle}`).toContain(needle);
+    }
+  });
+
   test('the security issue template points at SECURITY.md without a hedge', () => {
     expect(securityTemplate).toContain('SECURITY.md');
     expect(

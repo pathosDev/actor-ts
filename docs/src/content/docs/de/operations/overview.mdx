@@ -103,7 +103,12 @@ lässt.
 ## Upgrades
 
 Das Framework unterstützt **rolling Deployments ohne Downtime**,
-wenn entsprechend konfiguriert. Zwei getrennte Anliegen:
+wenn entsprechend konfiguriert, innerhalb einer Release-Linie. Ein
+Release, das die Cluster-Wire-Version ändert — das tat jedes Release
+von v0.16.0 bis v0.19.0 —, lässt sich nicht rollen: alle Nodes
+stoppen, dann alle Nodes auf der neuen Version starten.
+[Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/#cluster-wire-kompatibilität-pro-release)
+nennt, welche Releases das sind. Zwei getrennte Anliegen:
 
 - **Code-Rollouts** — Ersetzen der Node-Binaries, während der
   Cluster läuft. Übernimmt K8s Rolling Update + Coordinated
@@ -149,8 +154,8 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="Der zweite Anlaufpunkt sind Metriken">
-  Stock-Metriken geben dir Actor-Message-Rate, Mailbox-Tiefe,
-  Cluster-Member-Anzahl, Sharding-Region-Anzahl — genug, um
+  Stock-Metriken geben dir Actor-Message-Rate, Mailbox-Tiefe und
+  -Wartezeit, Cluster-Member-Anzahl, Journal-Latenz — genug, um
   "irgendwas läuft schief" zu erkennen, bevor Nutzer es merken.
   Verkabele in Produktion einen Prometheus-Exporter. Siehe
   [Stock-Metriken](/de/observability/metrics/stock-metrics/).

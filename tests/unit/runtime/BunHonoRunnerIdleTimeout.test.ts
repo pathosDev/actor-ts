@@ -21,7 +21,7 @@
  * is not configurable (the `HonoRunnerServeOptionsPrecedence.test.ts` shape).
  */
 import { describe, expect, test } from 'bun:test';
-import { BunHonoRunner } from '../../../src/runtime/http/BunHonoRunner.js';
+import { BunHonoRunner, bunIdleTimeoutOf } from '../../../src/runtime/http/BunHonoRunner.js';
 import type { HonoServeOptions, HonoServerHandle } from '../../../src/runtime/http/HonoServerRunner.js';
 
 const hello = (): Response => new Response('hello');
@@ -57,7 +57,6 @@ const earliestCutSeconds = (seconds: number): number => SWEEP_SECONDS * (Math.ce
 
 describe('BunHonoRunner — an explicit idleTimeoutMs reaches Bun.serve in whole seconds, rounded up', () => {
   test.each([
-    [0, 0],
     [100, 1],
     [1_500, 2],
     [5_000, 5],
@@ -97,6 +96,15 @@ describe('BunHonoRunner — an explicit idleTimeoutMs reaches Bun.serve in whole
     expect(new BunHonoRunner(capturingBun().bun).idleTimeoutCeilingMs).toBe(255_000);
   });
 
+  test('0 never reaches Bun.serve, which reads it as never closing — it is the only bound there (#1767)', async () => {
+    const { bun, bags } = capturingBun();
+    const runner = new BunHonoRunner(bun);
+
+    await expect(runner.serve({ host: '127.0.0.1', port: 0, fetch: hello, idleTimeoutMs: 0 })).rejects.toThrow(/only bound/);
+    expect(bags, 'Bun.serve was called with idleTimeout 0').toEqual([]);
+    expect(runner.idleTimeoutIsOnlyBound).toBe(true);
+  });
+
   test('a set idleTimeoutMs is reported applied; the explicit value beats the derived one', async () => {
     const { bag, handle } = await serveWith({ idleTimeoutMs: 5_000, requestDeadlineMs: 30_000 });
 
@@ -129,7 +137,6 @@ describe('BunHonoRunner — an explicit idleTimeoutMs reaches Bun.serve in whole
     [36_000, 30_000],
     [32_000, 26_000],
     [255_000, 250_000],
-    [0, 30_000],
   ])('idleTimeoutMs %d under a %d ms deadline lets the 503 win, and says nothing', async (idleTimeoutMs, requestDeadlineMs) => {
     const { handle } = await serveWith({ idleTimeoutMs, requestDeadlineMs });
 
@@ -225,5 +232,29 @@ describe('BunHonoRunner — the typed members decide the idle timeout, never the
 
     expect(bag.websocket).toBe(websocket);
     expect(bag.idleTimeout).toBe(2);
+  });
+});
+
+describe('bunIdleTimeoutOf — a deadline of 0 is no deadline', () => {
+  // `0` turns a bound off throughout the project, so a server with no request
+  // deadline neither derives an idle timeout from one nor reports an explicit
+  // idle timeout as short of it.
+  test.each([
+    [Number.POSITIVE_INFINITY],
+    [Number.NaN],
+    [-1],
+    [0],
+  ])('an explicit idleTimeoutMs under a %p ms deadline is held as given, with no earliest cut', (requestDeadlineMs) => {
+    expect(bunIdleTimeoutOf({ idleTimeoutMs: 1_000, requestDeadlineMs })).toEqual({ seconds: 1 });
+  });
+
+  test('a positive deadline the explicit value falls short of is still reported', () => {
+    expect(bunIdleTimeoutOf({ idleTimeoutMs: 1_000, requestDeadlineMs: 1 })).toHaveProperty('earliestCutMs');
+  });
+
+  test('with no idleTimeoutMs, a 0 ms deadline derives nothing and Bun keeps its own default', async () => {
+    expect(bunIdleTimeoutOf({ requestDeadlineMs: 0 })).toEqual({});
+    const { bag } = await serveWith({ requestDeadlineMs: 0 });
+    expect(bag).not.toHaveProperty('idleTimeout');
   });
 });

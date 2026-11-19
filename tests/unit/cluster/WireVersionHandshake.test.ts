@@ -2,10 +2,14 @@
  * #823 — the cluster wire's version, negotiated in the handshake.
  *
  * Version 2 requires every node address past the handshake to name its run.
- * Nodes on either side of that cut cannot form one cluster, so they refuse
- * each other at the `hello` — with a `hello-refused` that says why and a line
- * in this node's log — rather than half-working.  Driven over a real socket
- * against a real node, as a peer of another release would arrive.
+ * Version 3 is the receiver-side tag allow-list (#1303): a version-2 node
+ * writes `RegExp`, `URL`, `Error` and value-position `undefined` tags that a
+ * version-3 node refuses, so the two are refused at the handshake by name
+ * instead of losing those frames one by one.  Nodes on either side of a cut
+ * cannot form one cluster, so they refuse each other at the `hello` — with a
+ * `hello-refused` that says why and a line in this node's log — rather than
+ * half-working.  Driven over a real socket against a real node, as a peer of
+ * another release would arrive.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { connect as connectSocket } from 'node:net';
@@ -94,22 +98,42 @@ describe('the cluster wire version is negotiated in the handshake (#823)', () =>
     expect(cluster.getMembers()).toHaveLength(1);
   });
 
-  test('a version-2 hello without an incarnation is refused, naming the missing incarnation', async () => {
+  test('a v0.18 hello — version 2, incarnation and all — is refused, naming both versions (#1303)', async () => {
+    const log = new RecordingLogger();
+    const cluster = await startNode(log);
+
+    const { replies, closed } = await handshake(cluster.selfAddress.port, {
+      kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peerAddress(40_004, 'v018-run'),
+    });
+
+    expect(closed).toBe(true);
+    const refusal = replies.find((reply) => reply.kind === 'hello-refused') as
+      | { wireVersion: number; reason: string } | undefined;
+    expect(refusal?.wireVersion).toBe(3);
+    expect(refusal?.reason).toContain('v2..v2');
+    expect(refusal?.reason).toContain('v3..v3');
+    expect(replies.some((reply) => reply.kind === 'hello-ack')).toBe(false);
+    const warning = log.records.find((record) => record.level === 'warn' && record.message.includes('cluster handshake'));
+    expect(warning?.message).toContain('v2..v2');
+    expect(cluster.getMembers()).toHaveLength(1);
+  });
+
+  test('a current-version hello without an incarnation is refused, naming the missing incarnation', async () => {
     const cluster = await startNode(new RecordingLogger());
 
     const { replies } = await handshake(cluster.selfAddress.port, {
-      kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peerAddress(40_002),
+      kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peerAddress(40_002),
     });
 
     const refusal = replies.find((reply) => reply.kind === 'hello-refused') as { reason: string } | undefined;
     expect(refusal?.reason).toContain('incarnation');
   });
 
-  test('a version-2 hello with its incarnation is acknowledged with the version', async () => {
+  test('a current-version hello with its incarnation is acknowledged with the version', async () => {
     const cluster = await startNode(new RecordingLogger());
 
     const { replies } = await handshake(cluster.selfAddress.port, {
-      kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peerAddress(40_003, 'peer-run'),
+      kind: 'hello', wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION, self: peerAddress(40_003, 'peer-run'),
     });
 
     const ack = replies.find((reply) => reply.kind === 'hello-ack') as { wireVersion?: number } | undefined;
@@ -121,14 +145,16 @@ describe('the cluster wire version is negotiated in the handshake (#823)', () =>
 describe('wireVersionRefusal — the overlap rule (#823)', () => {
   const withRun = { systemName: 's', host: 'h', port: 1, incarnation: 'r' };
 
-  test('a peer that speaks a range reaching v2 is taken', () => {
-    expect(wireVersionRefusal({ wireVersion: 2, minWireVersion: 2 }, withRun)).toBeNull();
-    expect(wireVersionRefusal({ wireVersion: 3, minWireVersion: 1 }, withRun)).toBeNull();
+  test('a peer that speaks a range reaching the current version is taken', () => {
+    expect(wireVersionRefusal({ wireVersion: CLUSTER_WIRE_VERSION, minWireVersion: MIN_CLUSTER_WIRE_VERSION }, withRun))
+      .toBeNull();
+    expect(wireVersionRefusal({ wireVersion: CLUSTER_WIRE_VERSION + 1, minWireVersion: 1 }, withRun)).toBeNull();
   });
 
   test('a peer that only speaks versions this node does not is refused', () => {
     expect(wireVersionRefusal({}, withRun)).not.toBeNull();
     expect(wireVersionRefusal({ wireVersion: 1 }, withRun)).not.toBeNull();
-    expect(wireVersionRefusal({ wireVersion: 9, minWireVersion: 3 }, withRun)).not.toBeNull();
+    expect(wireVersionRefusal({ wireVersion: 2, minWireVersion: 2 }, withRun)).toContain('v2..v2');
+    expect(wireVersionRefusal({ wireVersion: 9, minWireVersion: CLUSTER_WIRE_VERSION + 1 }, withRun)).not.toBeNull();
   });
 });

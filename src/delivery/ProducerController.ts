@@ -344,10 +344,12 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * Transmit one in-flight send, with its retransmit armed first.
    *
    * The timer is the at-least-once guarantee, and the tell can throw — a
-   * bounded mailbox with the `reject` overflow policy throws
-   * `MailboxFullError` at the sender.  Armed after the tell, a throw on a
-   * retransmit skipped the re-arm, and that seq was never sent again: it held
-   * its window slot until the producer stopped (#1230).
+   * bounded mailbox with the `reject` overflow policy threw
+   * `MailboxFullError` at the sender until #919, and a remote transport or a
+   * caller's own `Mailbox` subclass may still throw anything.  Armed after
+   * the tell, a throw on a retransmit skipped the re-arm, and that seq was
+   * never sent again: it held its window slot until the producer stopped
+   * (#1230).
    *
    * What a throw does still depends on which transmission it hit.  The first
    * comes from {@link dispatch}, on this actor's turn, so a throw there faults
@@ -367,10 +369,30 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
       producerId: this.id,
       incarnation: this.incarnation,
       seq: inflight.seq,
+      floor: this.lowestUnacknowledged(),
       body: inflight.body,
       replyTo: this.self as unknown as ActorRef<Acknowledgment>,
     };
     this.options.consumer.tell(delivery);
+  }
+
+  /**
+   * The {@link Delivery.floor} to stamp on a send: the lowest seq still in
+   * flight (#1862).
+   *
+   * Taken from `inflight` and not from `nextSeq`.  Every caller is
+   * {@link send}, whose own seq is in the map at that moment, so the map is
+   * never empty here and the floor is never above the seq it travels with.
+   * `nextSeq` would claim the seqs still in flight as acknowledged, and a
+   * consumer that had dropped the window would then absorb their retransmits
+   * as duplicates without running the handler.
+   *
+   * The first key is the minimum because {@link dispatch} inserts seqs in
+   * ascending order and deleting a key does not reorder the rest, so this is
+   * O(1) per send rather than a scan of the window.
+   */
+  private lowestUnacknowledged(): number {
+    return this.inflight.keys().next().value ?? this.nextSeq;
   }
 
   /**

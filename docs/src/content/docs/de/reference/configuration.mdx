@@ -54,9 +54,11 @@ actor-ts {
   cluster {
     gossip-interval     = 1s
     seed-retry-interval = 3s
+    unreachable-gossip-rounds = 3 # 0 = no gossip to unreachable members
     weakly-up-after     = 0s      # 0 = opt-in only
     max-members         = 1000
     max-tombstones      = 10000
+    gossip-frames-per-second-per-sender = 50 # 0 = off
     tombstone {
       time-to-live   = 24h
       prune-interval = 5m
@@ -87,12 +89,14 @@ actor-ts {
       max-subscribers-per-topic  = 10000
       max-topics                 = 10000
       max-remote-nodes-per-topic = 1000
+      max-topics-claimed-per-sender = 1024
       send-to-dead-letters-when-no-subscribers = on
     }
     receptionist {
       gossip-interval         = 1s
       max-subscribers-per-key = 1000
       max-subscriptions-total   = 10000
+      max-registrations-claimed-per-sender = 10000
     }
   }
 
@@ -148,7 +152,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation.  Greift, wenn `ActorSystem.create()` ohne Namen aufgerufen wird; ein explizites `create('billing')` gewinnt. |
-| `system.shutdown-drain-timeout` | `2s` | Wie lange `terminate()` den Actors unter `/user` gibt, die eingereihte Arbeit zu beenden, bevor die Stop-Kaskade startet.  Kehrt zurück, sobald der Baum ruhig ist — ein untätiges System zahlt einen Tick.  Halte den Wert unter `coordinated-shutdown.default-phase-timeout`; `0` schaltet den Drain ab. |
+| `system.shutdown-drain-timeout` | `2s` | Wie lange `terminate()` den Actors unter `/user` gibt, die eingereihte Arbeit zu beenden, bevor die Stop-Kaskade startet.  Kehrt zurück, sobald der Baum ruhig ist — ein untätiges System zahlt einen Tick.  Halte den Wert unter dem Budget der Phase `actor-system-terminate` (`10s`, wenn nicht gesetzt); `0` schaltet den Drain ab. |
 
 ### `actor-ts.logger`
 
@@ -424,11 +428,13 @@ man daraus erneut zustellt.
 | `cluster.roles` | `[]` | Rollen-Tags dieses Nodes.  Shard-Regionen, Singletons, die Schwellen pro Rolle und die rollengefilterten Downing-Strategien platzieren alle **nach** Rolle. |
 | `cluster.app-version` | *(nicht gesetzt)* | Die Anwendungsversion, die dieser Node seinen Peers nennt — ein Label für Betreiber, angezeigt von `/cluster/members` und überall, wo ein Mitglied ausgegeben wird; nichts platziert, routet oder downt danach.  In `reference.conf` nur als Kommentar: nicht gesetzt nennt der Node keine und schickt nichts über die Leitung — siehe unten. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
+| `cluster.unreachable-gossip-rounds` | `3` | In jeder wievielten Gossip-Runde ein `unreachable`-Mitglied den Frame der Runde ebenfalls erhält, damit eine geheilte Partition zusammenwächst.  Heartbeats erreichen unerreichbare Mitglieder unabhängig davon bei jedem Schlag.  `0` schickt ihnen keinen Gossip — siehe [Failure Detector](/de/cluster/failure-detector/). |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | Wie oft dieser Node eine `ClusterStatsPublished`-Momentaufnahme seines Mitgliederbilds auf `system.eventStream` veröffentlicht.  `0` startet keinen Timer — siehe unten. |
 | `cluster.shutdown-after-unsuccessful-join` | `0s` | Wie lange ein Node `joining` oder `weakly-up` bleiben darf, bevor er den Join aufgibt.  Kann ihn zur Frist nichts mehr befördern, protokolliert er eine Warnung, verlässt den Cluster und führt die Coordinated-Shutdown-Pipeline mit `ClusterJoinUnsuccessfulReason` aus; andernfalls fragt er alle `seed-retry-interval` erneut.  `0` setzt keine Frist — siehe [Joining und Seeds](/de/cluster/joining-and-seeds/). |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
+| `cluster.gossip-frames-per-second-per-sender` | `50` | Gossip-Frames, die ein Absender diesem Node pro Sekunde zustellen darf; ein Frame über dem Budget wird ganz verworfen und unter `cluster_gossip_records_refused_total{reason="rate-limit"}` gezählt.  Es muss über der echten Rate eines Absenders bleiben: `1000 / gossip-interval-ms` mal einem Sicherheitsfaktor von mindestens 2.  Der Default deckt Intervalle bis etwa 40 ms ab.  `0` schaltet das Budget ab. |
 | `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
 | `cluster.role.<role>.minimum-members-before-up` | *(nicht gesetzt)* | Schwelle pro Rolle, mit der obigen als UND verknüpft.  In `reference.conf` nur als Kommentar, da Rollennamen zum Deployment gehören. |
 | `cluster.run-coordinated-shutdown-when-down` | `on` | Was ein Node tut, sobald ihn seine **eigene** Downing-Entscheidung entfernt.  `on` verlässt die Mitgliedschaft und führt danach die Coordinated-Shutdown-Pipeline mit `ClusterDowningReason` aus, die das Actor-System beendet; `off` verlässt sie und lässt seine Actors weiterlaufen.  Siehe unten. |
@@ -448,7 +454,7 @@ man daraus erneut zustellt.
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `3s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt — ein reiner Versatz, also geht beim Standard-Takt ein Stillstand bis etwa 3,5 s nach dem erwarteten Heartbeat durch.  Per Messung gewählt; siehe [den φ-Accrual-Detector](/de/cluster/failure-detector/#was-die-ausgelieferten-einstellungen-tolerieren). |
 | `cluster.failure-detector.phi.expected-response-after` | `"auto"` | Die Zwischenankunftszeit, die φ annimmt, bis das erste Heartbeat-Intervall eines Peers gemessen ist, mit einer Standardabweichung von einem Viertel davon.  `"auto"` ist `heartbeat-interval`; eine Dauer entkoppelt die beiden. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Welche Downing-Strategie eine Partition entscheidet — `off`, `keep-majority`, `keep-oldest`, `keep-referee`, `static-quorum` oder `lease-majority`. |
-| `cluster.split-brain-resolver.stable-after` | `20s` | Wie lange das Mitglieder- **und** Erreichbarkeitsbild unverändert bleiben muss, bevor die Strategie gefragt wird — oder, falls es das nie tut, die Hälfte davon, wie lange ein Peer durchgehend unerreichbar gewesen sein muss.  Siehe unten. |
+| `cluster.split-brain-resolver.stable-after` | `20s` | Wie lange das Mitglieder- **und** Erreichbarkeitsbild unverändert bleiben muss, bevor die Strategie gefragt wird — oder, falls es das nie tut, die Hälfte davon, wie lange ein Peer durchgehend unerreichbar gewesen sein muss.  Außerdem, mit oder ohne Strategie, wie lange eine `unreachable`-Markierung, die auf das Wort eines anderen Nodes hin gilt, bestehen muss, bevor ein Heartbeat sie auf diesem Node aufhebt ([#1828](https://github.com/pathosDev/actor-ts/issues/1828)).  Siehe unten. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Alle Mitglieder downen, diesen Node eingeschlossen, wenn das Bild über `3 × stable-after` Unruhe kein einziges Mal für `stable-after` stillsteht.  Aus — siehe unten. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zur Mehrheit.  `""` zählt alle. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Nur Mitglieder mit dieser Rolle kommen als „ältestes“ infrage.  `""` betrachtet alle. |
@@ -784,6 +790,7 @@ verteilt der Cluster-Bootstrap.
 | `cluster.client.system-name` | `"cluster-client"` | Synthetischer System-Name im `hello` des Clients.  Er benennt die Client-Seite des Handshakes und ist keine Identität. |
 | `cluster.client.ask-timeout` | `5s` | Frist für `ask(path, message)`, wenn der Aufruf selbst keine nennt.  Ein `timeoutMs` pro Aufruf gewinnt weiterhin. |
 | `cluster.client.connect-timeout` | `5s` | Wie lange **ein** Kontaktpunkt Zeit hat, den `hello`-Handshake zu beantworten, bevor der Client ihn aufgibt und den nächsten wählt. |
+| `cluster.client.outbound-queue-size` | `1000` | Frames, die für einen Kontaktpunkt gehalten werden, dessen Socket zurückgedrückt und noch nicht wieder aufgenommen hat; darüber hinaus wird das nächste `send` oder `ask` mit einem Fehler abgewiesen, statt ohne Grenze gepuffert zu werden.  Gehaltene Frames gehen der Reihe nach hinaus, sobald der Socket wieder aufnimmt. |
 | `cluster.client.receptionist.ask-timeout` | `5s` | Frist für das ask, das ein Cluster-Node stellvertretend für einen Client stellt, wenn ein ankommendes Envelope eine `askId` trägt. |
 
 Dieser Block wird anders gelesen als jeder andere auf dieser Seite, und
@@ -893,8 +900,9 @@ eine Konstante.
 | --- | --- | --- |
 | `cluster.pub-sub.gossip-interval` | `1s` | Wie oft ein Mediator seine Topic-Menge an einen zufälligen Peer schickt. |
 | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Obergrenze für lokale Subscriber eines Topics.  Ein `Subscribe` darüber wird mit `SubscribeRejected` beantwortet. |
-| `cluster.pub-sub.max-topics` | `10000` | Obergrenze für verschiedene Topics eines Mediators — gilt für gegossipte Topic-Ansprüche genauso wie für lokale Subscribes. |
+| `cluster.pub-sub.max-topics` | `10000` | Obergrenze für verschiedene Topics eines Mediators, in zwei getrennten Pools: Topics mit lokalem Subscriber (ein lokales `Subscribe` darüber wird abgelehnt) und Topics, die nur Peers beanspruchen (ein gegossipter Anspruch darüber wird verworfen).  Die Ansprüche eines Peers verbrauchen nie den lokalen Pool. |
 | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Obergrenze für Peers, die Subscriber für ein Topic beanspruchen dürfen. |
+| `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` | Obergrenze für Topics, die ein Gossip-Absender beanspruchen darf; Ansprüche darüber werden verworfen und mit dem Absender protokolliert.  Erhöhen, wenn ein Node mehr Topics abonniert. |
 | `cluster.pub-sub.send-to-dead-letters-when-no-subscribers` | `on` | Ein Publish, das niemanden erreicht hat, geht an `system.deadLetters`, statt verworfen zu werden. |
 
 Die drei Obergrenzen begrenzen, was ein Mediator überhaupt halten kann,
@@ -912,6 +920,7 @@ angelegt — ganz ohne lokales `Subscribe`.  Siehe
 | `cluster.receptionist.gossip-interval` | `1s` | Wie oft der Receptionist seine lokalen Registrierungen gossipt. |
 | `cluster.receptionist.max-subscribers-per-key` | `1000` | Obergrenze für Subscriber eines Service Keys.  Ein `Subscribe` darüber wird mit `ReceptionistSubscribeRejected` beantwortet. |
 | `cluster.receptionist.max-subscriptions-total` | `10000` | Obergrenze für Key/Subscriber-Paare über alle Keys dieses Nodes — ein Subscriber mit drei Keys zählt dreifach. |
+| `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` | Obergrenze für Registrierungen, die ein Gossip-Absender beanspruchen darf — die Actor-Pfade, die er nennt, ein Key ohne Pfad zählt als einer.  Ein Anspruch darüber wird verworfen und mit dem Absender protokolliert. |
 
 Beide Blöcke liegen unter dem, was dem `start(...)` der Extension
 übergeben wurde — ein explizites `withMaxTopics(…)` gewinnt also
@@ -1466,12 +1475,14 @@ Angreifer etablierte Peers vom Knoten schieben.
 hält, statt was ein Peer gegen ihn hält: Frames, die für einen Peer geschrieben
 wurden, der sie gerade nicht annehmen kann; die ältesten fallen zuerst weg, denn
 der neueste Membership- und Heartbeat-Stand ist der, den zu behalten sich lohnt.
-Heute ist das der Puffer vor dem Handshake, damit ein `tell`, das mit dem
-Handshake um die Wette läuft, gehalten statt verloren wird. Der Key ist nach der
-Kategorie benannt, nicht nach diesem einen Puffer: die Backpressure-Queue nach
-dem Handshake ([Issue #931](https://github.com/pathosDev/actor-ts/issues/931))
-ist dieselbe Größe mit derselben Policy und derselben Warnung und landet unter
-diesem Key statt unter einem zweiten.
+Das sind zwei Puffer mit je dieser Grenze: der vor dem Handshake, damit ein
+`tell`, das mit dem Handshake um die Wette läuft, gehalten statt verloren wird,
+und der hinter einem Socket, der Backpressure meldet
+([Issue #931](https://github.com/pathosDev/actor-ts/issues/931)) — ein Peer,
+der nicht mehr liest, kostet diesen Knoten höchstens so viele Frames statt
+seines Heaps. Frames werden ganz gehalten, nie abgeschnitten: Der Peer bekommt
+einen Frame-Strom mit Lücken, und jede Lücke meldet eine Warnung, wenn sie
+beginnt, und eine zweite mit ihrer Größe, wenn der Socket wieder abläuft.
 
 Keiner der fünf hat eine „Aus"-Schreibweise. `0` wird für jeden abgelehnt, weil
 es keine Art ist, eine Schranke zu entfernen, sondern jeweils eine eigene Art,
@@ -1491,7 +1502,7 @@ Security-Setting, das das Framework ignoriert, taucht damit in deinen Logs
 auf und nicht nur auf dieser Seite
 ([Issue #591](https://github.com/pathosDev/actor-ts/issues/591)).  Den
 Transport zu verschlüsseln ist separat verfolgt als
-[Issue #941](https://github.com/pathosDev/actor-ts/issues/941); bis das
+[Issue #1854](https://github.com/pathosDev/actor-ts/issues/1854); bis das
 landet, behandle das Cluster-Netz als etwas, das du anderweitig absichern
 musst.
 
@@ -1517,7 +1528,7 @@ diesen Node nicht auf.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
-| `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
+| `http.shutdown-grace-period` | `4s` | Wie lange `unbind()` laufende Requests zu Ende gehen lässt, bevor ihre Verbindungen erzwungen geschlossen werden — auf Fastify, Express und Hono gleich.  `0` erzwingt sofort.  Beim Shutdown ist der Drain ein Task in `service-requests-done`; halte den Wert also unter dem Budget dieser Phase (`default-phase-timeout`, `5s`).  `/ready` antwortet ab dem Start der Pipeline mit `503`. |
 | `http.server` | *(siehe unten)* | Verbindungsschranken für den lauschenden Socket selbst. |
 | `http.cors` | *(siehe unten)* | Pro-Route-Defaults für die [`cors()`](/de/http/middleware/cors/)-Direktive. |
 | `http.hsts` | *(siehe unten)* | Die Policy, die die Middleware [`hsts()`](/de/http/middleware/security-headers/) sendet. |
@@ -1533,9 +1544,18 @@ Ein unbekannter Name lässt `bind()` mit einem `ConfigError` scheitern,
 statt still auf Fastify zurückzufallen.  Express und Hono sind optionale
 Peer-Dependencies und werden nur importiert, wenn du sie benennst.
 
-Die Grace Period ist per Default `0` — sofort erzwingen —, weil `unbind()`
-genau das in der Praxis immer getan hat.  Erhöhe sie, wenn in-flight
-Requests fertig werden sollen.
+Die Grace Period ist per Default `4s`, und sie bedeutet auf jedem Backend
+dasselbe: `unbind()` nimmt sofort keine Verbindungen mehr an, lässt die
+laufenden Requests bis zu dieser Dauer zu Ende gehen und erzwingt dann, was
+noch offen ist; `0` erzwingt sofort.  Bei einem Coordinated Shutdown nimmt
+der Server in `service-unbind` keine Verbindungen mehr an und läuft in
+`service-requests-done` leer, und `/ready` antwortet seit
+`before-service-unbind` mit `503`.  Die 4 s liegen in den 5 s Budget dieser
+Phase, mit einer Sekunde für das erzwungene Schließen — erhöhe den
+`timeout` der Phase zusammen mit der Grace Period.  Bis v0.19 war der
+Default `0`, was bei einem Rolling Deploy jeden laufenden Request kappte,
+und Express wartete stillschweigend eine Sekunde, wo die anderen es nicht
+taten.
 
 Meist ist sie eine Obergrenze und keine Wartezeit: `unbind()` kehrt zurück,
 sobald der Server tatsächlich geschlossen ist.  Wo das `close()` eines
@@ -1549,7 +1569,7 @@ kommen aus `actor-ts.http.server`:
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(das des Backends)* | Wie lange eine untätige Verbindung gehalten wird, bevor sie geschlossen wird — eine Keep-Alive-Verbindung unter HTTP/1.1 zwischen zwei Requests, und eine HTTP/2-Session, auf der sich nichts bewegt.  Hat **kein Blatt** — siehe unten.  `0` schaltet ihn ab — auf dem Hono-Backend unter Bun ist er aber die einzige Schranke für einen Request, dessen Body nicht mehr weiterkommt, und eine solche Verbindung bleibt dann offen, bis der Client sie schließt (§ unten).  Höchstens `2147482647` ms — auf dem Hono-Backend unter Bun, wo er weiter greift, höchstens `255s` (§ unten). |
+| `http.server.idle-timeout` | *(das des Backends)* | Wie lange eine untätige Verbindung gehalten wird, bevor sie geschlossen wird — eine Keep-Alive-Verbindung unter HTTP/1.1 zwischen zwei Requests, und eine HTTP/2-Session, auf der sich nichts bewegt.  Hat **kein Blatt** — siehe unten.  `0` schaltet ihn ab — außer auf dem Hono-Backend unter Bun, wo er die einzige Schranke für einen Request ist, dessen Body nicht mehr weiterkommt; dort wird `0` abgelehnt (§ unten).  Höchstens `2147482647` ms — auf dem Hono-Backend unter Bun, wo er weiter greift, höchstens `255s` (§ unten). |
 | `http.server.header-timeout` | `60s` | Wie lange eine Verbindung brauchen darf, um ihren vollständigen Header-Block zu liefern, bevor sie mit `408` beantwortet und zerstört wird.  Der Slowloris-Schutz, den actor-ts selbst hält — siehe unten.  Ein kürzerer `request-timeout` ist zugleich die Header-Deadline: die Absicherung läuft mit dem kleineren der beiden Werte.  `0` schaltet ihn ab.  Höchstens `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | Wie lange eine Verbindung brauchen darf, um einen Request vollständig zu liefern — Header und Body.  Begrenzt das *Empfangen*, nie das Antworten — die Frist eines Handlers ist `http.request-timeout`.  Ist er kürzer als `header-timeout`, begrenzt er auch die Header-Phase, denn die Header gehören zum Request.  Höchstens `4294967295` ms. |
 | `http.server.max-connections` | *(unbegrenzt)* | Gleichzeitige Verbindungen, die der lauschende Socket annimmt, bevor er neue schließt.  Hat **kein Blatt** — siehe unten. |
@@ -1699,11 +1719,13 @@ Ein Wert, den du setzt, wird so geschrieben, wie er ist.  Wo er einen
 schweigenden Handler vor der `503` der Request-Deadline kappen kann — sein
 frühester Schnitt liegt weniger als 2 s hinter der Deadline —, warnt `bind()`
 und nennt den Key, den Wert und die Deadline: die `5s` des Beispiels oben
-schneiden einen Handler, der nichts geschrieben hat, ab 4 s ab.  `0` schaltet
-sie ab, und hier ist sie die einzige Schranke für einen Request, dessen Body
-nicht mehr weiterkommt, und für eine Verbindung, die zwischen zwei Requests
-untätig ist, weil keine der anderen drei installiert wird: mit `0` bleibt eine
-solche Verbindung offen, bis der Client sie schließt.
+schneiden einen Handler, der nichts geschrieben hat, ab 4 s ab.  `0` wird hier
+abgelehnt: sie ist die einzige Schranke für einen Request, dessen Body nicht
+mehr weiterkommt, und für eine Verbindung, die zwischen zwei Requests untätig
+ist, weil keine der anderen drei installiert wird, und `Bun.serve` liest `0`
+als „nie schließen“ — eine solche Verbindung bliebe offen, bis der Client sie
+schließt.  `bind()` scheitert mit einem `OptionsError`, der den Key und
+`withIdleTimeoutMs` nennt.
 
 Ungesetzt gilt nicht Buns eigenes 10-s-Default, das jeden Handler, der etwa
 12 s schwieg, ganz ohne Antwort abschnitt.  Der Wert wird aus der längsten
@@ -1745,13 +1767,18 @@ dessen Request bei `request-timeout` noch eintrifft, wird mit `408` beantwortet
 und zurückgesetzt.  Ein laufender Stream hält seine Session; ein langsamer
 Handler, ein Long Poll und ein SSE-Stream überdauern die Idle-Schranke also wie
 unter HTTP/1.1, und ein vollständig empfangener Request wird von der
-Empfangs-Deadline nie gekappt.  Ungesetzt bleibt eine untätige HTTP/2-Session
-Fastifys eigenem Session-Timer überlassen — 72 s auf Node, 144 s auf Bun, das
-ihn beim doppelten Wert feuern lässt und von einem PING zurücksetzen lässt —,
-auf Hono über Node gar keiner Schranke.  Auf Bun begrenzt der HTTP/2-Listener
-eine Verbindung, die auf demselben Port HTTP/1.1 aushandelt, mit keinem der
-beiden Keys; dort werden beide als nur für HTTP/2 wirksam gemeldet, und
-`bind()` warnt.  Nichts davon betrifft das
+Empfangs-Deadline nie gekappt.  Ungesetzt wird eine untätige HTTP/2-Session
+vom selben eigenen Timer von actor-ts nach **72 s** geschlossen — Fastifys
+eigener Wert, Fastify auf Node verhält sich also wie bisher, während Fastify
+auf Bun (das Fastifys Timer nach 144 s feuerte und von einem PING zurücksetzen
+ließ) und Hono über Node (das eine untätige Session nie schloss) jetzt dieselbe
+Schranke bekommen; die Binding-Meldung trägt sie als
+`http2SessionIdleDefaultMs`.  HTTP/1.1-Keep-Alive behält den Wert des Backends.
+Auf Bun liest der HTTP/2-Listener für eine Verbindung, die auf demselben Port
+HTTP/1.1 aushandelt, weder `keepAliveTimeout` noch `requestTimeout`; actor-ts
+begrenzt diese deshalb ebenfalls mit eigenen Timern: untätig zwischen zwei
+Requests, und eine Empfangs-Deadline pro Request, beantwortet mit `408`.  Beide
+Keys wirken dort für beide Protokolle.  Nichts davon betrifft das
 Hono-Backend unter Bun, dessen Sessions die eigene verbindungsweite Schranke
 von `Bun.serve` hält (§ oben), gesetzt oder abgeleitet: eine untätige Session
 wurde dort innerhalb eines Takts nach einem Wert von `4s` geschlossen (bun
@@ -2016,6 +2043,8 @@ ihre Defaults aus `actor-ts.http.websocket`:
 | `http.websocket.accept-timeout` | `10s` | Wie lange ein zugelassenes Upgrade auf seinen Connection-Actor wartet, bevor der Socket geschlossen und sein `max-connections`-Platz freigegeben wird.  `Infinity` schaltet den Watchdog ab und geht nur im Code, weil HOCON kein `Infinity`-Literal kennt — `withAcceptTimeoutMs(Infinity)` und ein `withConfig`-Overrides-Objekt erreichen es beide. |
 | `http.websocket.connection-mailbox-capacity` | *(ungesetzt)* | Wie viele ausgehende Nachrichten jeder Connection-Actor einreihen darf — die Queue, in die `connection.tell`, `sendRaw` und `close` laufen —, bevor die Overflow-Policy Frames verwirft; `close()` wird nie verworfen.  Ungesetzt fällt eine Verbindung wie jeder andere Anwendungs-Actor durch: auf den [`deployment`](#actor-tsdeployment)-Eintrag, der zu ihrem Pfad passt, dann auf `mailbox.default.capacity`.  Eine positive Ganzzahl; `0` wird abgelehnt statt als „aus“ gelesen. |
 | `http.websocket.connection-mailbox-overflow` | *(ungesetzt)* | `drop-head` / `drop-new` / `reject` für eine volle Connection-Mailbox.  Braucht eine Kapazität aus der Route oder dem Blatt darüber — eine konfigurierte, global oder pro Pfad, zählt nicht — und wird ohne sie in `bind()` abgelehnt.  Ungesetzt fällt sie auf das `mailbox-overflow` des passenden Deployment-Eintrags durch, dann auf `mailbox.default.overflow`. |
+| `http.websocket.heartbeat-interval` | `30s` | Wie oft jede Verbindung ihrem Peer einen Ping auf Protokollebene schickt.  Eine Verbindung, von der seit dem vorigen Ping nichts kam — kein Pong, kein Frame —, wird ohne Close-Handshake getrennt, und der Hub hört `1001` `"heartbeat timeout"`; ein halboffener Peer gibt also binnen zweier Intervalle seinen Actor, seinen Eintrag in `clients` und seinen `max-connections`-Platz zurück.  `0` schaltet ihn ab.  Hono unter Deno kann nicht pingen und warnt einmal pro Route; dort übernimmt Denos eigenes `idleTimeout`. |
+| `http.websocket.idle-timeout` | `0s` | Schließt eine Verbindung mit `1001` `"idle timeout"`, nachdem so lange keine eingehende Nachricht kam; Pongs zählen nicht.  `0`, der Default, schaltet es ab. |
 
 Hier gilt dieselbe Blattregel: kebab-case, Einheiten-Suffix weggelassen, und
 eine ausgemusterte camelCase-Schreibweise ist ein `ConfigError` statt einer
@@ -2032,6 +2061,7 @@ beim ersten Zugriff auf die `HttpExtension`.
 | `reliable-delivery.consumer.max-producers` | `1024` | Für wie viele Producer der Consumer gleichzeitig Deduplizierungs-Zustand hält.  An der Grenze wird der am längsten unbenutzte Eintrag verdrängt.  `0` = unbegrenzt. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | Wie lange der Deduplizierungs-Eintrag eines Producers ohne Zustellung von ihm überlebt; der Sweep läuft in genau diesem Intervall.  `0` schaltet den Sweep ab. |
 | `reliable-delivery.consumer.max-out-of-order` | `1024` | Wie viele Sequenzen der Consumer für einen Producer oberhalb einer offenen Lücke höchstens behält.  An der Grenze wird ein Delivery abgewiesen — kein Handler-Aufruf, keine Bestätigung —, und dieser Producer steht, bis sich die Lücke schließt.  Halte den Wert über der `window-size` jedes Producers.  `0` = unbegrenzt. |
+| `reliable-delivery.consumer.max-incarnations-per-producer` | `4` | Für wie viele Inkarnationen einer `producerId` der Consumer höchstens ein Deduplizierungs-Fenster hält, die aktuelle eingeschlossen.  Eine neue Inkarnation wird neben der aktuellen gehalten und erst befördert, wenn die aktuelle `producer-idle-time-to-live` lang still war; über der Grenze wird ein Delivery unter einer weiteren Inkarnation abgewiesen — ein Dead Letter, kein Handler-Aufruf, keine Bestätigung.  `0` = unbegrenzt. |
 
 Beide Blöcke liegen unter dem, was `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` übergeben bekommt — ein explizites
@@ -2042,7 +2072,7 @@ danach injiziert —, deshalb behält ein Controller, den du selbst konstruierst
 und an `system.spawn` übergibst, seine eingebauten Defaults und sieht diesen
 Block nie.
 
-`0` ist die Schreibweise, mit der alle drei Consumer-Grenzen das `Infinity`
+`0` ist die Schreibweise, mit der alle vier Consumer-Grenzen das `Infinity`
 ihrer Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt
 nicht schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
 Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
@@ -2053,7 +2083,9 @@ auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0` bei
 Consumer behält: ein Eintrag je verschiedener Id, nie freigegeben.  `0` bei
 `max-out-of-order` tut dasselbe innerhalb eines Eintrags: ein Sender, der eine
 Sequenz zurückhält und die folgenden weiter schickt, lässt die Menge dieses
-Producers wachsen, solange er weitermacht.
+Producers wachsen, solange er weitermacht.  `0` bei
+`max-incarnations-per-producer` lässt einen Sender für jede erfundene
+Inkarnation eines Producers ein eigenes Deduplizierungs-Fenster anlegen.
 
 `max-out-of-order` ist eine Untergrenze ebenso wie eine Obergrenze.  Ein
 Producer hat `window-size` Sends unterwegs, wenn sich eine Lücke öffnet — eine
@@ -2069,6 +2101,7 @@ für jedes Fenster, das ein Aufrufer plausibel konfigurieren würde.
 | `serialization.read-constraints.max-nesting-depth` | `256` | Container-Ebenen, in die ein Decoder absteigt, bevor er das Payload ablehnt.  Nie über die eigene Obergrenze des Encoders hinaus. |
 | `serialization.read-constraints.max-document-bytes` | `0` | Obergrenze für ein Dokument vor dem Parsen — geprüft in `JsonSerializer` / `CborSerializer` und auf dem Cluster-Wire gegen das Längen-Präfix des Frames.  `0` = keine eigene Obergrenze. |
 | `serialization.read-constraints.max-string-length` | `20M` | Obergrenze für einen CBOR-Byte-String, Text-String oder Map-Key, geprüft am Längen-Präfix, bevor die Bytes alloziert werden.  `0` hebt sie auf. |
+| `serialization.wire.admitted-tags` | `[date, bytes, typed-array, map, set, bigint, bidirectional-map, bidirectional-multi-map, number]` | Die `JsonTree`-Tags, die ein Cluster-Frame eines Peers verwenden darf.  Ein Frame mit einem anderen Tag wird abgelehnt und geloggt; die Verbindung bleibt bestehen.  `regexp`, `undefined`, `error` und `url` sind standardmäßig ausgeschlossen.  `[]` dekodiert Frames als reines JSON (#1303). |
 
 Diese Grenzen binden, was dieser Knoten **liest**, nie was er schreibt.  Ein
 Peer, der den Handshake abschließt, oder jeder Client, dessen Body einen
@@ -2131,6 +2164,9 @@ die Konfiguration lesen ließe — diese Naht ist Issue #967.
 | `management.enable-leave-endpoint` | `false` | `POST /cluster/leave` ausliefern ([HTTP-Endpunkte](/de/observability/management/http-endpoints/)). |
 | `management.enable-down-endpoint` | `false` | `POST /cluster/down` ausliefern — operator-initiiertes Force-Down eines Peers. |
 | `management.enable-metrics-endpoint` | `false` | `GET /metrics` im Prometheus-Textformat ausliefern. |
+| `management.enable-members-endpoint` | `false` | `GET /cluster/members` ausliefern — interne Adresse, Status und Rollen jedes Members. |
+| `management.enable-leader-endpoint` | `false` | `GET /cluster/leader` ausliefern. |
+| `management.enable-shards-endpoint` | `false` | `GET /cluster/shards?type=…` ausliefern — die Shard-zu-Region-Zuordnung eines Sharding-Typs. |
 | `management.auth-protect-health` | `false` | Die `auth`-Middleware zusätzlich über `/health` und `/ready` legen, nicht nur über `/cluster/*`. |
 | `management.liveness-path` | `"health"` | Einzelnes Pfadsegment, unter dem die Liveness-Probe antwortet. |
 | `management.readiness-path` | `"ready"` | Einzelnes Pfadsegment, unter dem die Readiness-Probe antwortet. |
@@ -2171,15 +2207,16 @@ zurückgegeben hat.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `metrics.max-series-per-family` | `10000` | Wie viele verschiedene Label-Tupel eine Metrik-Familie anlegen darf; jedes weitere Tupel wird in eine einzige `__overflow__`-Serie gefaltet ([die Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)).  Gilt für die In-Process-Registry und die prom-client-Bridge gleichermaßen.  `0` schaltet die Grenze ab. |
+| `metrics.max-families` | `1000` | Wie viele Metrik-Familien eine Registry halten darf.  Eine Factory, die danach nach einem weiteren Namen gefragt wird, gibt ein No-op-Instrument zurück, das nichts aufzeichnet, und die Registry warnt einmal; sie wirft nie, und eine vor der Grenze angelegte Familie zeichnet weiter auf ([die Familiengrenze](/de/observability/metrics/core-metrics/#die-familiengrenze)).  Gilt für die In-Process-Registry und die prom-client-Bridge gleichermaßen.  `0` schaltet die Grenze ab. |
 | `metrics.name-prefix` | `""` | Präfix, das die [prom-client-Bridge](/de/observability/metrics/prom-client-adapter/) jedem Metriknamen voranstellt, den sie registriert, z. B. `"actor_ts_"`.  Nur die Bridge. |
 
 Gelesen werden diese Keys, wenn `MetricsExtension` eine Registry baut, und zwar
 unter den Optionen des Aufrufs, der sie baut — die üblichen drei Ebenen: ein im
 Code gesetzter Wert gewinnt, eine Datei füllt, was der Code offen gelassen hat,
 und die eingebauten Defaults sind der Boden.  `enable(options)` nimmt die
-Grenze für die In-Process-Registry, `enablePromClient(options)` nimmt beide
-Leaves für die Bridge.  Das freie `promClientRegistry(options)` liest keinen
-von beiden: Es bekommt kein `ActorSystem`, die Bridge, die es zurückgibt,
+beiden Grenzen für die In-Process-Registry, `enablePromClient(options)` nimmt
+alle Leaves für die Bridge.  Das freie `promClientRegistry(options)` liest
+keinen davon: Es bekommt kein `ActorSystem`, die Bridge, die es zurückgibt,
 verhält sich mit `useRegistry` installiert also genau so, wie ihre Optionen
 sagen.
 
@@ -2251,6 +2288,8 @@ Sink, ein System, das ihn setzt, baut also gar keinen OTLP-Sink.
 | `persistence.max-concurrent-recoveries` | `50` | Journal-Replays, die systemweit gleichzeitig laufen dürfen.  `0` ist unbegrenzt.  `sharding.entity-recovery` taktet eine Ebene höher das *Starten* der Entities; dies begrenzt, wie viele ihrer *Replays* gleichzeitig unterwegs sind. |
 | `persistence.recovery-timeout` | `30s` | Obergrenze für die gesamte Recovery eines Actors — Snapshot laden, Journal lesen, falten und die `highestSeq`-Abfrage, die ein vollständig kompaktierter Stream braucht; bei einem `ReplicatedEventSourcedActor` das Laden seines Snapshots und das Lesen seines Journals.  Danach scheitert der Replay mit einem `RecoveryTimeoutError` — über `onRecoveryFailure` bei einem `PersistentActor`, als gescheitertes `preStart` bei einem `ReplicatedEventSourcedActor`, der keinen solchen Hook hat.  `0` heißt keine Frist. |
 | `persistence.snapshot-is-optional` | `false` | Auf einen vollständigen Journal-Replay zurückfallen, wenn der Snapshot Store nicht antworten kann.  Gilt nie für einen Actor, der `integrity()` oder `encryption()` gesetzt hat — siehe unten. |
+| `persistence.allow-fully-compacted-recovery` | `false` | Einen `PersistentActor`, dessen Journal vollständig kompaktiert wurde — Events gesehen, keines behalten, kein abdeckender Snapshot —, als `initialState()` wiederherstellen und an der Hochwassermarke des Journals fortsetzen.  Aus scheitert diese Recovery mit `JournalIntegrityError`, wie bei einem kompaktierten Präfix. |
+| `persistence.allow-non-atomic-batch-append` | `false` | Ein `persistAll` mit mehreren Events an ein Journal durchlassen, das `atomicBatchAppend: false` erklärt — D1, MongoDB, Cassandra.  Aus wird ein solcher Batch mit `NonAtomicBatchAppendError` abgelehnt, bevor etwas geschrieben ist; an kann ein Fehler mittendrin ein Präfix festschreiben, hinter dem der State des Actors zurückbleibt.  Ein `persist` mit einem Event wird nie abgelehnt. |
 | `persistence.journal-breaker` | `"persistence-journal"` | **Id** des Circuit Breakers, durch den das Journal gerufen wird; `""` schaltet ihn ab.  Seine Zahlen stehen unter `actor-ts.circuit-breaker.persistence-journal`. |
 | `persistence.snapshot-breaker` | `"persistence-snapshot"` | Wie oben, für den Snapshot Store. |
 | `persistence.auto-start` | `on` | Journal, Snapshot Store und Durable-State-Store, die ausgewählt sind, in der Phase `persistence-start` des Starts öffnen, sodass ein Plug-in, das niemand registriert hat, oder ein Store, der nicht öffnet, den Start scheitern lässt statt der ersten persistierten Nachricht.  `off` öffnet sie bei ihrer ersten Operation.  `withPersistence({ behavior })` gewinnt darüber, und ein `WorkerMesh`-Worker läuft immer mit abgeschaltetem Wert — siehe [Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen). |
@@ -2315,8 +2354,8 @@ tolerieren, und machte aus einer Integritätskontrolle einen Retry.
 
 Die fünf Verhaltens-Blätter gelten für jeden `PersistentActor` und für das
 eigene `persist`, die Recovery und das Speichern der Snapshots eines
-`ReplicatedEventSourcedActor`; sein Anhängen eines Events, das ein Peer
-geschickt hat, liegt bis #958 nicht hinter dem Journal-Breaker.
+`ReplicatedEventSourcedActor`, und auch sein Anhängen eines Events, das ein
+Peer geschickt hat, läuft durch den Journal-Breaker (#958).
 `DurableStateActor` steht außerhalb davon: Keines dieser Blätter erreicht einen
 Durable-State-Store, ob seine `DurableStateOptions` einen nennen oder er den
 systemweiten Store nutzt, den `persistence.durable-state.plugin` auswählt.
@@ -2816,6 +2855,7 @@ lassen sich deshalb in `reference.conf` nicht aufzählen.
 | `projection.max-retry-backoff` | `60s` | Obergrenze dieser Verdopplung.  Muss mindestens `retry-backoff` sein — eine Projektion, deren gemergte Settings das verletzen, startet nicht. |
 | `projection.poll-interval` | `1s` | Wie oft eine Projektion das Journal nach neuen Events fragt. |
 | `projection.group-after-envelopes` | `20` | Höchstzahl Events pro `handleGroup`-Aufruf ([gruppierte Handler](/de/persistence/projections/#gruppierte-handler)).  Nur für gruppierte Projektionen — eine `handle`-Projektion bekommt ein Event pro Aufruf und ignoriert den Wert. |
+| `projection.lookback-window` | `30s` | Wie weit hinter ihrem neuesten verarbeiteten Event eine By-Tag-Projektion erneut liest, damit ein Event, das erst committet wurde, nachdem die Projektion seinen Zeitstempel überholt hat, trotzdem verarbeitet wird — genau einmal ([späte Commits](/de/persistence/projections/#späte-commits-und-das-lookback-fenster)).  Nur für By-Tag-Projektionen; `0` liest nur vorwärts. |
 
 Das sind die **prozessweiten** Defaults für jede Projektion.
 `ProjectionOptions` einer einzelnen Projektion sticht sie, und sie
@@ -3309,7 +3349,8 @@ Kinder für die anderen Phasen schon.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
+| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Ein Task, der es überschreitet, wird aufgegeben — auf Error-Level geloggt, läuft weiter —, damit die nächste Phase noch läuft.  `actor-system-terminate` startet stattdessen mit `10s`, nie weniger als dieser Wert. |
+| `coordinated-shutdown.overall-timeout` | `30s` | Schranke für einen ganzen Lauf — die Zahl, gegen die eine Grace Period bemessen wird.  Danach hält der Lauf in seiner Phase an, loggt die offenen Tasks auf Error-Level, und `exit-process` beendet mit `1`, wo `exit-code` `0` ist; ein Exit wartet auch nicht länger als das auf aufgegebene Tasks.  `0` setzt keine Frist. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task das Actor-System in der finalen Phase herunterfährt. |
 | `coordinated-shutdown.exit-process` | `false` | Ob `process.exit(exit-code)` aufgerufen wird, sobald ein Lauf endet.  Ein Lauf, den eine Phase mit `recover = false` anhält, beendet den Prozess am Halt, anstelle des Teardowns, den er sonst bekäme, und mit `1`, wo `exit-code` `0` ist. |
 | `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start.  Ein Lauf für einen fehlgeschlagenen Start, ein Lauf für einen Node, der nicht beitreten konnte (`ClusterJoinUnsuccessfulReason`: das Aufgeben des Joins, ein gescheitertes Readiness-Warten oder eine Ablehnung von `Cluster.bootstrap`), und ein Lauf, den eine Phase mit `recover = false` anhält, enden mit `1`, wo hier `0` steht, und lesen sich so nie wie ein sauberer Stopp. |
@@ -3546,7 +3587,7 @@ Hostnamen, Ports, Rollen und Restart-Pacing der Threads sind die
 | `worker-cluster.restart-min-backoff` | `200ms` | Wartezeit vor dem ersten Respawn eines abgestürzten Slots. |
 | `worker-cluster.restart-max-backoff` | `10s` | Obergrenze für die Respawn-Wartezeit, die pro Versuch verdoppelt wird. |
 | `worker-cluster.restart-random-factor` | `0.2` | ±-Jitter-Anteil auf jede Respawn-Wartezeit, in `[0, 1]`. |
-| `worker-cluster.max-restarts` | `10` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` startet unbegrenzt neu. |
+| `worker-cluster.max-restarts` | `10` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` startet unbegrenzt neu, der Backoff wächst dabei weiter bis `restart-max-backoff`. |
 | `worker-cluster.restart-window` | `60s` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück. |
 
 Die vier Duration-Keys lassen das `Ms`-Suffix ihrer Felder im Options-Objekt weg
@@ -3831,6 +3872,11 @@ Nicht unterstützt und mit einem Fehler abgelehnt, der das sagt: Objekte oder
 Listen zusammenfügen (`{ a = 1 } { b = 2 }`, `[1] [2]`, `${base} { … }`),
 `+=` und Strings in dreifachen Anführungszeichen
 ([#537](https://github.com/pathosDev/actor-ts/issues/537)).
+
+Ein Dokument darf höchstens 256 Ebenen tief verschachtelt sein; jeder Schlüssel
+eines Pfadausdrucks, jedes Objekt unter einem Schlüssel und jede Liste zählt
+eine Ebene.  Tiefer wird mit einem Parse-Fehler abgelehnt, der die Zeile nennt
+([#1369](https://github.com/pathosDev/actor-ts/issues/1369)).
 
 ### Includes werden nicht unterstützt
 

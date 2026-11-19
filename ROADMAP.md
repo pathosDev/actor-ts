@@ -4,49 +4,41 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- **v0.18.0 is out** — the *configuration and cluster-correctness* release,
-  and once again the largest window the project has had: 2 630 commits
-  against v0.17.0's 820, and 467 changelog entries, 96 of them breaking.
-  Three things landed together.
+- **v0.19.0 is out** — the *correctness and test-methodology* release:
+  about 400 commits against v0.18.0, 144 changelog entries, 30 of them
+  breaking.  Three things landed together.
 
-  **Configuration is complete and checked (#887).**  Nearly every subsystem
-  reads its settings from HOCON now, and the dead-key gate was rewritten
-  after it was found to pass a key nothing reads (#1425).  A retired
-  spelling, a typo under `actor-ts.persistence` or a size that is not a
-  whole number of bytes is refused at start rather than ignored.
+  **The production-readiness defects are closed (#913, #1821).**  A
+  throwing constructor no longer leaves a zombie (#914), a crash is always
+  logged (#916), broker adapters acknowledge only after the handler ran
+  (#975–#977), a symmetric partition heals (#930), the by-tag cursor no
+  longer skips a slow commit (#957), and a dropped dedup window can no
+  longer stall a live producer (#1862).
 
-  **The cluster holds together under partition, restart and upgrade.**  A
-  removed or paused node learns it was removed and stands down (#940); the
-  split-brain strategies no longer down a cluster that is merely small
-  (#933) and `keep-oldest.down-if-alone` ships on (#932); a new leader's
-  coordinator waits for every region's claim before placing a shard (#1272);
-  two islands formed in a startup partition find each other (#1176); and a
-  joiner hears of its own promotion in one hop instead of by gossip lottery
-  (#1747).  The wire is versioned and carries a **required** incarnation
-  (#823) — which makes this the **third consecutive release to break
-  rolling upgrade**, and the last one that has to: from here a version
-  mismatch is refused at the handshake by name rather than discovered.
+  **The suite measures what it cannot find.**  An in-house mutation runner
+  (#1368) ran over every line this release changed; each of its 205 real
+  gaps now has a test shown to kill it, and the gaps it surfaced were three
+  defects, fixed (#1841–#1845).  Decoders get generative byte input
+  (#1369), promise order is under test control (#1370), and multi-node
+  scenarios repeat their fault episodes (#1379).
 
-  **Security, by the numbers: 86 entries and six advisories.**  The
-  re-audit's high findings are closed — a ref in a message body can no
-  longer choose where a node dials (#936), a stranger can no longer pick a
-  promoted node's roles (#1104) or mint a member from a gossip frame's
-  sender field (#939), `cached()` no longer hands one caller's response to
-  another (#980), and an object-storage store that reads with a key refuses
-  a plaintext body (#965) as the SQL stores already did (#1802).  Publishing
-  itself now needs a reviewer's approval in the `npm` environment (#704).
+  **Security, and the fourth rolling-upgrade break.**  A JSON or CBOR body
+  and a cluster frame decode as plain data unless a type is allowed
+  (#967, #1303), and the cluster wire is now **version 3** — the fourth
+  consecutive release that breaks rolling upgrade.  Thirty-two open security
+  issues were closed in one wave, among them off-origin redirects refused
+  (#1056), a per-sender gossip budget (#1105), a per-shard hand-off token
+  (#1214) and the durable-state body bound to its id (#1417).
 
-- Next window is open (`[Unreleased]`).  The obvious heads from here: the
-  test-methodology review under meta #1387, still unstarted, and the first
-  round to ask what the suite *cannot* find — mutation testing (#1368),
-  generative input for the decoders (#1369) and controlled
-  promise-resolution order (#1370); the residual security items, now all
-  medium or low (#112's replay bound can finally build on the required
-  incarnation #823 shipped, which it could not while the field was
-  optional; #1303 and #967, where a JSON body or a cluster frame still picks
-  a value's runtime class; #1659 and #1660 on the lease paths); and
-  `ReplicatedEventSourcedActor` never consulting `resolver()`, so every
-  documented `ConflictResolver` override is a silent no-op (#1245).
+- Next window is open (`[Unreleased]`), and the residual security items are
+  now all deferred features rather than defects: #112's replay bound,
+  built on the required incarnation #823 shipped, closed in this release;
+  what remains is declarative TLS for the cluster transport (#1854) with
+  certificate rotation (#1172), a byte bound on pub-sub gossip (#1261),
+  MongoDB read concern (#1242) and an HTML sanitizer (#355).  The obvious
+  heads beyond them: the mutation ratchet and nightly baseline (#1851), the
+  last `Date.now()` reads out of the virtual clock's reach (#1852), and
+  bootstrap re-discovery after a node loses every peer (#1853).
 - **Wave 3 (2026-08-18/19) left eighteen tracked residuals, #1211–#1228.**
   Three are worth reading first, because each is a defect the wave measured
   rather than inferred and then deliberately did not fold in: a broker
@@ -59,11 +51,16 @@ This document tracks the planned direction.  Nothing here is committed work — 
   shipped that no test binds — found by reverting one line at a time, not
   by reading — and they are the honest measure of what a green suite did
   not prove.
-- ~22 600 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- ~24 200 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
+- **v0.19.0 — the *correctness and test-methodology* release:** the
+  #1821 wave (the open #913 defects, the security residuals and the
+  test-methodology instruments of #1387), an independent mutation pass over
+  every changed line with all 205 gaps closed, the pre-release review's
+  follow-ups (#1822–#1836, #1846, #1862) and a 32-issue security wave.
 - **v0.18.0 — the *configuration and cluster-correctness* release:** the
   #887 wave (the `reference.conf` expansion and the fifth audit's findings,
   160 lanes over 39 phases, every one independently re-verified, 17 of 114

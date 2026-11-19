@@ -6,14 +6,14 @@
  * and feeds the same three-layer merge (constructor > HOCON under
  * `actor-ts.io.broker.kafka` > built-in defaults).
  */
-import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { AcknowledgingBrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
+import type { BrokerAcknowledgmentOptionsType, BrokerCommonOptionsType } from './BrokerOptions.js';
 import { findBrokerTlsProblem } from './BrokerTls.js';
 import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { KafkaCommitMode, KafkaRecord } from './KafkaActor.js';
 
-export interface KafkaOptionsType extends BrokerCommonOptionsType {
+export interface KafkaOptionsType extends BrokerCommonOptionsType, BrokerAcknowledgmentOptionsType {
   /** Bootstrap servers (`'kafka-1:9092,kafka-2:9092'` or array). */
   readonly brokers?: ReadonlyArray<string> | string;
   /** Stable client id reported to the broker. */
@@ -46,15 +46,19 @@ export interface KafkaOptionsType extends BrokerCommonOptionsType {
     readonly idempotent?: boolean;
     readonly allowAutoTopicCreation?: boolean;
   };
-  /** Consumer options.  `groupId` is required to start a consumer. */
+  /**
+   * Consumer options.  `groupId` is required to start a consumer.  Merged
+   * leaf by leaf across code, HOCON and the defaults, so a block set in code
+   * keeps the leaves it does not name from the config file (#975).
+   */
   readonly consumer?: {
     readonly groupId?: string;
     readonly fromBeginning?: boolean;
     /**
-     * Offset-commit policy.  Default `'auto'` — kafkajs auto-commits
-     * after the handler returns (at-least-once).  See
-     * {@link KafkaCommitMode} for the `'manual'` (exactly-once-with-
-     * processing) shape.
+     * Offset-commit policy.  Default `'auto'` — the actor resolves kafkajs's
+     * handler per {@link KafkaOptionsType.acknowledgment}, and kafkajs
+     * commits what resolved.  See {@link KafkaCommitMode} for `'manual'`,
+     * where the target drives the commit with explicit commands.
      */
     readonly commitMode?: KafkaCommitMode;
     /**
@@ -75,7 +79,7 @@ export interface KafkaOptionsType extends BrokerCommonOptionsType {
   readonly topics?: ReadonlyArray<string>;
 }
 
-export class KafkaOptionsBuilder extends BrokerOptionsBuilder<KafkaOptionsType> {
+export class KafkaOptionsBuilder extends AcknowledgingBrokerOptionsBuilder<KafkaOptionsType> {
   /** Start a fresh builder.  Equivalent to `new KafkaOptionsBuilder()`. */
   static create(): KafkaOptionsBuilder {
     return new KafkaOptionsBuilder();
@@ -109,7 +113,10 @@ export class KafkaOptionsBuilder extends BrokerOptionsBuilder<KafkaOptionsType> 
     return this.set('producer', producer);
   }
 
-  /** Consumer options.  `groupId` is required to start a consumer. */
+  /**
+   * Consumer options.  `groupId` is required to start a consumer.  Leaves
+   * not named here keep their HOCON / default value.
+   */
   withConsumer(consumer: NonNullable<KafkaOptionsType['consumer']>): this {
     return this.set('consumer', consumer);
   }
@@ -132,6 +139,7 @@ export class KafkaOptionsValidator extends BrokerOptionsValidator<KafkaOptionsTy
   }
   protected rules(s: Partial<KafkaOptionsType>): void {
     this.commonRules(s);
+    this.acknowledgmentRules(s);
     this.nonEmptyStringOrArray('brokers', s.brokers);
     this.nestedPositive('consumer.commitTimeoutMs', s.consumer?.commitTimeoutMs);
     const tlsProblem = findBrokerTlsProblem(typeof s.ssl === 'object' ? s.ssl : undefined);

@@ -198,6 +198,61 @@ describe('DefaultMetricsRegistry — cardinality cap', () => {
     expect(series).toHaveLength(1);
     expect(series[0]!.labels['path']).toBe('/c');
   });
+
+  /*
+   * #1067: the overflow tuple's label names come from the family, not from
+   * the first tuple the cap rejected.  Built from the rejected tuple, an
+   * unlabeled first overflow keyed onto the family's regular unlabeled
+   * series — the folded counts landed there and no series carried the marker.
+   */
+  test('an unlabeled first overflow still produces a marked overflow series', () => {
+    const registry = new DefaultMetricsRegistry({ maxSeriesPerFamily: 2 });
+    captureWarnings(() => {
+      registry.counter('hits', { path: '/a' }).inc();
+      registry.counter('hits', { path: '/b' }).inc();
+      registry.counter('hits').inc(100);              // unlabeled -> first overflow
+      registry.counter('hits', { path: '/c' }).inc(7);
+      registry.counter('hits', { path: '/d' }).inc(3);
+    });
+
+    const series = seriesOf(registry, 'hits');
+    expect(series).toHaveLength(3);
+    const overflow = series.filter((s) => s.labels['path'] === METRICS_OVERFLOW_LABEL_VALUE);
+    expect(overflow).toHaveLength(1);
+    expect(overflow[0]!.value).toBe(110);
+    expect(series.some((s) => Object.keys(s.labels).length === 0)).toBe(false);
+  });
+
+  test('a family whose first series is unlabeled takes its overflow names from its first labelled one', () => {
+    const registry = new DefaultMetricsRegistry({ maxSeriesPerFamily: 2 });
+    captureWarnings(() => {
+      registry.counter('hits').inc(50);
+      registry.counter('hits', { path: '/a' }).inc();
+      registry.counter('hits', { path: '/b' }).inc(4);   // first overflow
+    });
+
+    const series = seriesOf(registry, 'hits');
+    expect(series.find((s) => Object.keys(s.labels).length === 0)!.value).toBe(50);
+    expect(series.find((s) => s.labels['path'] === METRICS_OVERFLOW_LABEL_VALUE)!.value).toBe(4);
+  });
+
+  test('a first overflow carrying a subset of the label names gets every name of the family', () => {
+    const registry = new DefaultMetricsRegistry({ maxSeriesPerFamily: 1 });
+    captureWarnings(() => {
+      registry.counter('dropped', { path: '/a', reason: 'drop-head' }).inc();
+      registry.counter('dropped', { path: '/b' }).inc();   // subset -> first overflow
+      registry.counter('dropped', { path: '/c', reason: 'drop-new' }).inc();
+    });
+
+    const overflow = seriesOf(registry, 'dropped')
+      .filter((s) => s.labels['path'] === METRICS_OVERFLOW_LABEL_VALUE);
+    expect(overflow).toHaveLength(1);
+    expect(overflow[0]!.labels).toEqual({
+      path: METRICS_OVERFLOW_LABEL_VALUE,
+      reason: METRICS_OVERFLOW_LABEL_VALUE,
+    });
+    expect(overflow[0]!.value).toBe(2);
+  });
 });
 
 describe('MetricsRegistryOptions', () => {

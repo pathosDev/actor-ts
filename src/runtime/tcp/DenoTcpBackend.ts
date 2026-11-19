@@ -1,4 +1,4 @@
-import { listenerUsesTls } from './TcpBackend.js';
+import { assertDialCredentialIsWhole, listenerUsesTls } from './TcpBackend.js';
 import type {
   TcpBackend,
   TcpListener,
@@ -81,6 +81,7 @@ export class DenoTcpBackend implements TcpBackend {
     handlers: TcpSocketHandlers;
     signal?: AbortSignal;
   }): Promise<TcpSocketLike> {
+    if (options.tls !== undefined) assertDialCredentialIsWhole(options.tls);
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');
     const { signal } = options;
@@ -145,7 +146,8 @@ export class DenoTcpBackend implements TcpBackend {
     };
     if (tls.ca !== undefined) options.caCerts = [asString(tls.ca)];
     // Both halves or neither — a key without its certificate is not a
-    // credential, and Deno's own type pairs them for the same reason.
+    // credential, and Deno's own type pairs them for the same reason.  Half
+    // of one never gets this far: `connect` refuses it first (#1085).
     if (tls.cert !== undefined && tls.key !== undefined) {
       options.cert = asString(tls.cert);
       options.key = asString(tls.key);
@@ -157,13 +159,33 @@ export class DenoTcpBackend implements TcpBackend {
   private attach(connection: DenoConnection, handlers: TcpSocketHandlers): TcpSocketLike {
     const writer = connection.writable.getWriter();
     let closed = false;
+    // Bytes handed to the writer and not yet written, and whether a write has
+    // answered `false` since the queue last fell under the mark (#931).  The
+    // writer queues every write whatever its `desiredSize` says, so this is the
+    // only place the queue's size is known — and `desiredSize` counts writes,
+    // not bytes, so it could not have answered in bytes anyway.
+    let queuedBytes = 0;
+    let backPressured = false;
 
     const sock: TcpSocketLike = {
-      write(data: Uint8Array): void {
-        if (closed) return;
-        void writer.write(data).catch((err) => {
-          if (!closed) handlers.onError(sock, err as Error);
-        });
+      write(data: Uint8Array): boolean {
+        if (closed) return false;
+        queuedBytes += data.byteLength;
+        void writer.write(data).then(
+          () => {
+            queuedBytes -= data.byteLength;
+            if (backPressured && queuedBytes < DENO_WRITE_HIGH_WATER_MARK_BYTES && !closed) {
+              backPressured = false;
+              handlers.onDrain?.(sock);
+            }
+          },
+          (err) => {
+            if (!closed) handlers.onError(sock, err as Error);
+          },
+        );
+        if (queuedBytes < DENO_WRITE_HIGH_WATER_MARK_BYTES) return true;
+        backPressured = true;
+        return false;
       },
       end(): void {
         if (closed) return;
@@ -224,6 +246,15 @@ export class DenoTcpBackend implements TcpBackend {
 }
 
 /* ----------------------------- internals --------------------------------- */
+
+/**
+ * How many bytes a Deno socket queues before its `write` answers `false`
+ * (#931) — the high-water mark Node's own sockets use since Node 22, so a
+ * caller sees back-pressure at the same depth on every runtime; `Deno.Conn`'s
+ * writable has no byte-sized mark of its own to defer to.  The only tuned value
+ * under `src/runtime/` and read here alone, so it stays beside its queue.
+ */
+const DENO_WRITE_HIGH_WATER_MARK_BYTES = 64 * 1024;
 
 /**
  * `pending`, unless `signal` gives it up first — then a promise rejected with

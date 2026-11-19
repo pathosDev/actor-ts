@@ -19,6 +19,7 @@ import { NoopLogger } from '../../../src/Logger.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION } from '../../../src/cluster/WireVersion.js';
 
 /** A socket that records what was written to it and how it was closed. */
 type RecordingSocket = {
@@ -69,8 +70,8 @@ function saturated(): { transport: TcpTransport; admitted: RecordingSocket } {
 
 const hello = encodeFrame({
   kind: 'hello',
-  wireVersion: 2,
-  minWireVersion: 2,
+  wireVersion: CLUSTER_WIRE_VERSION,
+  minWireVersion: MIN_CLUSTER_WIRE_VERSION,
   self: new NodeAddress('refused-peer', '10.0.0.21', 2_552).toJSON(),
 });
 

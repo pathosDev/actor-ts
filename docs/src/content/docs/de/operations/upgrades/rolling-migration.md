@@ -9,6 +9,18 @@ ausrollst — **ohne Downtime** und **ohne koordinierte Stops**.
 Jeder Node bedient weiter Traffic, während die neue Version
 Instanz-für-Instanz rausgeht.
 
+> **Nur innerhalb einer Release-Linie.** Ein Rolling Deploy setzt
+> voraus, dass alte und neue Nodes ein paar Minuten lang miteinander
+> reden können. Ein Release, das die Cluster-Wire-Version ändert —
+> das tat jedes Release von v0.16.0 bis v0.19.0 —, bricht diese
+> Annahme: Aktualisiere den Cluster dann in einem Schritt (alle Nodes
+> stoppen, dann alle Nodes auf der neuen Version starten), zusammen
+> mit jeder Anwendung, die sich über `ClusterClient` verbindet. Das
+> Muster unten gilt für die Schema- und Schlüsseländerungen, die du
+> zwischen solchen Releases ausrollst. Die Tabelle pro Release steht
+> unter
+> [Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/#cluster-wire-kompatibilität-pro-release).
+
 Die Rolling-Deploy-Story des Frameworks baut auf vier
 ausgelieferten Features:
 
@@ -107,9 +119,11 @@ Deployment-Completion-Checkpoint, kein Deployment-Schritt.
 
 - Alle Instanzen melden dieselbe Build-Version (`/health`,
   Cluster-Management-Endpunkte oder dein eigener Deploy-Tracker).
-- v1-Events werden vom neuen Code-Pfad gelesen
-  (`migration_chain_upcast_total{from="1",to="2"}`-Metrik oder ein
-  Log-Stichproben-Check auf `chain.read`).
+- v1-Events werden vom neuen Code-Pfad gelesen. Das Framework zählt
+  und loggt keinen Upcast, diese Prüfung liegt also bei dir: eine
+  eigene Logzeile oder ein eigener Counter um `chain.read`, oder ein
+  Replay eines aufgezeichneten v1-Events durch die Chain des neuen
+  Builds.
 - Writer emittieren weiter v1 (peek das Journal — die
   Manifest-Version des jüngsten Records sollte `1` sein).
 

@@ -3,6 +3,7 @@ import { Config, ConfigError } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
+  DEFAULT_MAX_FAMILIES,
   DEFAULT_MAX_SERIES_PER_FAMILY,
   readMetricsRegistryOptionsFromConfig,
 } from '../../../src/metrics/MetricsRegistryOptions.js';
@@ -37,7 +38,20 @@ describe('readMetricsRegistryOptionsFromConfig', () => {
   test('the shipped reference.conf resolves to the documented default', () => {
     expectExactOptions(readMetricsRegistryOptionsFromConfig(configOf(REFERENCE_CONF)), {
       maxSeriesPerFamily: DEFAULT_MAX_SERIES_PER_FAMILY,
+      maxFamilies: DEFAULT_MAX_FAMILIES,
     });
+  });
+
+  test('max-families reaches maxFamilies (#1068)', () => {
+    expectExactOptions(
+      readMetricsRegistryOptionsFromConfig(configOf('actor-ts.metrics.max-families = 7')),
+      { maxFamilies: 7 },
+    );
+  });
+
+  test('a fractional family cap is refused as the wrong kind, not truncated', () => {
+    expect(() => readMetricsRegistryOptionsFromConfig(configOf('actor-ts.metrics.max-families = 2.5')))
+      .toThrow(ConfigError);
   });
 
   test('max-series-per-family reaches maxSeriesPerFamily', () => {
@@ -79,7 +93,15 @@ describe('readPromClientAdapterOptionsFromConfig', () => {
     expectExactOptions(readPromClientAdapterOptionsFromConfig(configOf(REFERENCE_CONF)), {
       namePrefix: DEFAULT_PROM_CLIENT_NAME_PREFIX,
       maxSeriesPerFamily: DEFAULT_MAX_SERIES_PER_FAMILY,
+      maxFamilies: DEFAULT_MAX_FAMILIES,
     });
+  });
+
+  test('max-families reaches maxFamilies (#1068)', () => {
+    expectExactOptions(
+      readPromClientAdapterOptionsFromConfig(configOf('actor-ts.metrics.max-families = 3000')),
+      { maxFamilies: 3_000 },
+    );
   });
 
   test('name-prefix reaches namePrefix', () => {
@@ -129,6 +151,7 @@ describe('ConfigKeys.metrics', () => {
   test('every leaf is spelled out, not covered by a block root', () => {
     expect(ConfigKeys.metrics).toEqual({
       maxSeriesPerFamily: 'actor-ts.metrics.max-series-per-family',
+      maxFamilies: 'actor-ts.metrics.max-families',
       namePrefix: 'actor-ts.metrics.name-prefix',
     });
   });

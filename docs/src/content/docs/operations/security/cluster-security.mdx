@@ -107,6 +107,24 @@ plain TCP, one-way TLS, and a Deno listener (which cannot report
 one at all) behave exactly as before. The check strengthens mTLS
 deployments rather than adding a switch that can be left off.
 
+The price of that default is that the check goes quiet when a
+certificate stops arriving — a half-applied TLS bundle, or a
+backend that no longer reports one. A deployment that wants every
+peer to prove its name sets `requirePeerIdentity` on the
+transport, and a peer that presents no certificate is then refused
+with a WARN (#1190):
+
+```ts
+const transportOptions = TcpTransportOptions.create()
+  .withTls(tls)
+  .withRequirePeerIdentity(true);
+const transport = new TcpTransport(self, log, transportOptions);
+```
+
+It is refused at construction where no peer could ever present a
+certificate: without a `ca` holding one, with
+`requestClientCert: false`, and on Deno.
+
 <Aside type="caution" title="One-way TLS authenticates nobody">
   The `hello` handshake carries no credential of its own, so on a
   TLS cluster the peer certificate *is* the admission control.  A
@@ -152,6 +170,13 @@ in a weaker state than they read as:
   rather than come up mis-secured — deliberately, but worth
   knowing before a rolling restart.
 </Aside>
+
+The dial side refuses the one shape of the four that is wrong
+there too: **half a client credential**, `cert` without `key` or
+the reverse, empty counting as absent.  Every runtime used to drop
+the half and dial one-way TLS under a configuration that read as
+mTLS; the dial now fails with an error naming the missing field
+(#1085).  `{ ca }` alone stays the ordinary one-way dial.
 
 A Deno node can still **join** an mTLS cluster: it presents its
 own `cert` / `key` when dialling, so the listener (on Node.js or
@@ -531,6 +556,36 @@ of the raw buffer would close it with neither set; it was
 measured at 18–28 % of every frame decode and not shipped, for
 a fourfold amplification (#880).
 
+## Which classes a peer can make you build
+
+A frame is a tagged JSON tree, and a tag asks the receiver to
+construct a class.  Until #1303 the receiver followed every tag, so
+a peer that completed the handshake chose the runtime class of any
+value in any body — an actor typed for a `string` could be handed a
+`RegExp` the peer wrote (`(a+)+$` blocks the event loop on a short
+input), an `Error` subclass, or an `undefined` in a slot no
+`JSON.parse` fills.
+
+The decoder now builds only the tags in
+`actor-ts.serialization.wire.admitted-tags`, by default the data
+tags: `date`, `bytes`, `typed-array`, `map`, `set`, `bigint`,
+`bidirectional-map`, `bidirectional-multi-map` and `number`.  A
+frame using any other tag is **refused on its own** — it never
+reaches a handler, the transport logs a WARN naming the tag, and
+the connection and the frames batched beside it are kept.  That
+last part is deliberate: an old node and a hostile one write the
+same bytes, and closing the link would let either cost a healthy
+peer every frame in the chunk.  A refused tag's content is never
+read, so a refused pattern is never compiled.
+
+Widening the list widens what every peer may make you build, so
+add a tag only where your own messages carry it, and on every node
+that receives them.  `[]` decodes frames as plain JSON.
+
+A v0.18 node never gets as far as a refused frame: the allow-list is
+why v0.19.0 speaks cluster wire version 3, and a version-2 `hello`
+is refused at the handshake with both versions named.
+
 ## What a well-formed frame still cannot grow
 
 Shape validation says a frame is *readable*, not that acting on
@@ -558,10 +613,12 @@ path as much as to local calls:
 | Live cluster members | `cluster.max-members` | `1000` |
 | `removed` tombstones | `cluster.max-tombstones` | `10000` |
 | Pub-sub subscribers per topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
-| Pub-sub topics | `cluster.pub-sub.max-topics` | `10000` |
+| Pub-sub topics, local and peer-only pools apart | `cluster.pub-sub.max-topics` | `10000` |
 | Pub-sub remote claimants per topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| Pub-sub topics one peer may claim | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` |
 | Receptionist subscribers per key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
 | Receptionist subscriptions total | `cluster.receptionist.max-subscriptions-total` | `10000` |
+| Receptionist registrations one peer may claim | `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` |
 
 A claim over a cap is dropped and logged rather than refused on
 the wire — the frame is well-formed, and dropping the connection
@@ -576,6 +633,21 @@ Lower the defaults for a deployment where the legitimate numbers
 are far below them: a cap is only a bound on the damage, and one
 set far above real usage bounds very little.
 
+The caps bound what sticks, not the work: every record in a gossip
+frame is decoded and checked even when each one is refused. That
+work is bounded per sender by
+`cluster.gossip-frames-per-second-per-sender` (#1105) — a frame
+over the budget is discarded whole before any record is read, the
+connection stays, and the refusals are counted under
+`cluster_gossip_records_refused_total{reason="rate-limit"}`. It is
+on by default at 50 frames a second, far above the one frame a
+second a sender at the shipped 1 s interval sends. A sender's
+legitimate rate follows its own gossip interval, which the receiver
+does not know, so the budget must stay above it: about
+`1000 / gossip-interval-ms`, times a safety factor of at least 2
+for join and promotion frames. Raise it for a cluster that gossips
+faster than every 40 ms; `0` turns it off.
+
 ### Why membership needs two caps
 
 Splitting members from tombstones is not tidiness: the two kinds
@@ -587,9 +659,8 @@ declare it `down` — φ measuring the silence from that moment.
 What that verdict does is the downing configuration's call. Under
 the default — no strategy, `failure-detector.auto-down = on` — the
 detector removes it, `down-after` after the attacker stops feeding
-it, and for good only once no other node still carries it, because
-that route deletes without a tombstone and a node that has not
-deleted the phantom yet gossips it back. With a strategy
+it, into a tombstone that frees its live slot and holds a
+`max-tombstones` slot until the prune (#1834). With a strategy
 configured, or under `auto-down = off`, the phantom is parked at
 `unreachable` like any silent peer and holds its live slot until a
 strategy or an operator removes it. A frame's *sender* field is no
@@ -658,8 +729,9 @@ at most one per seed, bounded by `max-members` and the seed list
 (#1103).
 
 :::note[The order these landed in mattered]
-The failure detector's `down → delete` cascade used to be what
-bounded phantom *live* members to seconds. That deletion is now
+The failure detector's `down → removed` cascade used to be what
+bounded phantom *live* members to seconds (a delete until #1834, a
+tombstone since). That removal is now
 gated — a configured `DowningProvider` takes the decision over, and
 with none `failure-detector.auto-down` decides, which ships on — so
 wherever a strategy is configured or `auto-down` is off the implicit
@@ -687,11 +759,10 @@ sit in front of the merge:
   outside because it is the leader's decision — and which is
   harmless to accept, since a joining node is already trying
   to become `up`. What bounds it is how little it carries: the
-  status, and a version limited only by the `maxVersionSkewMs`
-  cap (5 minutes by default, see *A version cannot claim an
-  address in advance* below), so a stranger can date this node's
-  record up to that far ahead — clamping the version is
-  tracked in #1797. Nothing else crosses over. The promotion asks
+  status, and a version at most one step past the record this
+  node holds — the step a genuine leader promotion takes — so a
+  stranger cannot date this node's record ahead (#1797). Nothing
+  else crosses over. The promotion asks
   nothing of its sender, which is why this node has to keep its
   own roles, incarnation, storage identities, configuration facts
   and app version over whatever the record says. Before #1104 the
@@ -783,7 +854,10 @@ configuration and at both seams — the cluster wire and the
 `ClusterClientReceptionist`. Framework actors stay reachable
 through their registered handlers, which is the door that knows
 which connection a frame came in on. Nothing an operator can
-configure opens the old route back up.
+configure opens the old route back up. The same holds for the bare
+`/user` guardian, `actor-ts://<system>/user`: a guardian is never an
+application endpoint, so it is refused even when an allow-list entry
+`/user/*` would otherwise admit its root (`reason="guardian-path"`).
 
 The `/user` half is a deployment's own decision, because a peer
 naming an application actor is how an `ActorRef` works across
@@ -814,6 +888,16 @@ a missing one — `Terminated` with `existenceConfirmed = false` —
 so a watcher never hangs and the answer reveals nothing the
 refusal did not already; the refusal is counted under
 `frame="watch"`.
+
+And it guards a path that arrives inside a body. An `ActorRef` in a
+message crosses the wire as a marker, and a marker naming the
+receiving node is resolved against that node's actor tree — so it
+is a path the peer chose, just as an envelope's target is. A marker
+naming a `/system` actor, or a `/user` actor off the allow-list
+while `untrusted-mode` is on, decodes to `Nobody`; so does one
+whose path is not a full `actor-ts://…` URI, which used to resolve
+to the root guardian. The rest of the message is delivered as it
+was, and the refusal is counted under `frame="ref"` (#1572).
 
 ### A ref in a message cannot choose where this node dials
 
@@ -1041,27 +1125,19 @@ off the wire stays *valid* indefinitely. Against a converged
 receiver that costs nothing: every record in it loses the
 "higher version wins" comparison to the record already on file.
 What makes it an exploit is an entry the receiver has
-**deleted**, and two paths delete one. The failure detector's own
-removal — the default with no strategy configured, under
-`failure-detector.auto-down = on` — deletes outright rather than
-leaving a tombstone. That was once justified as letting a healed
-partition re-discover the peer, and deleting buys no such thing:
-neither side heartbeats or gossips a peer it holds unreachable, and
-a deleted one is not in its map to address at all, so after a
-symmetric partition neither side hears from the other again
-([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
-Under the default, both sides of a real partition therefore remove
-each other and run on as two clusters, which is one more reason a
-production deployment configures `lease-majority` or another
-[downing strategy](/cluster/downing-strategies/).
-And an expired tombstone is pruned once the larger of its
-time-to-live and `tombstone.min-retention` has passed. Either way
-there is nothing left to compare against, and the branch that files
-a first sighting has no lower version bound at all. The other
-removals — an operator's `down()`, a strategy's decision, a peer's
-`leave` — leave a tombstone that out-versions the recording until
-that prune; with a strategy configured or under `auto-down = off`,
-the detector itself removes no one. A restart that replaces a live
+**deleted**, and one path deletes one: an expired tombstone is
+pruned once the larger of its time-to-live and
+`tombstone.min-retention` has passed. Then there is nothing left to
+compare against, and the branch that files a first sighting has no
+lower version bound at all. Every removal — an operator's `down()`,
+a strategy's decision, a peer's `leave` and the failure detector's
+own removal under the default `failure-detector.auto-down = on` —
+leaves a tombstone that out-versions the recording until that
+prune; with a strategy configured or under `auto-down = off`, the
+detector itself removes no one. The detector's route deleted the
+entry outright until
+[issue #1834](https://github.com/pathosDev/actor-ts/issues/1834),
+which made it a second path to the same exploit. A restart that replaces a live
 record of its previous run deletes that record too, but the new
 run's record takes the key at a higher version in the same step, so
 a recording of the old run still loses the comparison.
@@ -1072,24 +1148,27 @@ had. Shard placement and singleton hosting follow the roles, so
 the cluster starts routing work to a node it had evicted.
 
 Every gossip frame therefore carries a **sequence** its author
-stamps — seeded from that node's wall clock at startup and
-incremented once per frame — and a receiver remembers the
-highest one it has accepted from each connection peer. A frame
-that does not out-number that mark is dropped whole, before any
-record in it is looked at. The comparison itself needs no knob:
-it is between a peer and *itself*, so no clock-skew budget comes
-into it.
+stamps from its own wall clock — `max(previous + 1, now)`, so it
+still rises strictly while the clock stands still — and a receiver
+remembers the highest one it has accepted from each connection
+peer. A frame that does not out-number that mark is dropped whole,
+before any record in it is looked at. The comparison itself needs
+no knob: it is between a peer and *itself*, so no clock-skew
+budget comes into it.
 
 The mark is written in exactly one place — the gossip path, as it
 accepts a frame — so it exists for a peer this node has accepted a
 frame **from**, and for no other address. That is the bound, and
 the third residual below is what falls outside it.
 
-A sequence must also be **plausible** — a finite number no
-further ahead of the receiver's clock than `maxVersionSkewMs`,
-the same budget a gossiped version gets, because the number is
-stamped from the author's wall clock. A frame outside that budget
-is refused, exactly like a repeat.
+A sequence must also be **plausible**. A sender's first frame —
+and the first from each new incarnation of it — has shown no clock
+yet, so it meets the budget a gossiped version gets: a finite
+number no further ahead of the receiver's clock than
+`maxVersionSkewMs`. After that the bound comes from the sender
+itself: the receiver learns the sender's clock offset from the
+frames it accepts, and admits a frame at most ten seconds past it.
+A frame outside either bound is refused, exactly like a repeat.
 
 That started out as the weaker rule: the frame was merged, and
 only *adopting* its number as the mark was refused, on the
@@ -1102,9 +1181,38 @@ was therefore merged again on every delivery, without limit,
 against a receiver that held a mark for a sender that was still
 alive. Refusing it loses nothing: the mark stays where the last
 plausible frame put it, so the real node's next frame still
-out-numbers it and still lands. Silencing the real node forever —
-the exploit the version cap above exists to prevent — is closed
-from both sides rather than one.
+out-numbers it and still lands.
+
+**Pinning is bounded, not closed.** Until v0.19 the bound on every
+frame was `now + maxVersionSkewMs`, and a capture restamped
+*inside* it — four minutes ahead against the five-minute default —
+was admitted and became the mark, so the real node's own frames,
+numbered from its clock, were refused until the clock caught up
+([issue #1262](https://github.com/pathosDev/actor-ts/issues/1262)).
+Deriving the bound from the sender takes most of that away: a frame
+admitted at the edge pins the mark for at most the ten-second lead;
+repeated injections cannot walk it further ahead, because the
+learned offset rises by at most one millisecond per second; and the
+reading is held per (member, incarnation), so a mark pinned against
+one run never refuses the next. What remains, stated so nobody
+expects more:
+
+- An injector that keeps injecting at the edge keeps the sender's
+  own frames out for as long as it keeps doing so. No bound on a
+  wire without a MAC can stop that; mutual TLS, which binds the
+  handshake identity to a certificate, is what keeps an outsider
+  off the wire in the first place.
+- A sender's first frame, and the first from each new incarnation,
+  meets only `maxVersionSkewMs`, so a capture delivered before any
+  genuine frame can still pin for up to that budget — the
+  empty-mark case of the second residual below.
+- A node whose clock steps forward by more than the lead has its
+  gossip refused until a minute of such frames makes the receiver
+  forget its reading. A node from before v0.19, which numbers its
+  frames with a counter rather than its clock, never gets this far:
+  v0.19.0 speaks cluster wire version 3 only and refuses such a node
+  at the handshake, so every sender whose gossip reaches this bound
+  stamps it from its clock.
 
 An address additionally carries an **incarnation**: which
 *process* is answering at that `system@host:port`, minted once
@@ -1137,15 +1245,13 @@ carried, which is the wire break above.
 Second, a missing mark admits everything, and there are three ways
 to be missing one — only one of which is the sender's own
 eviction. An evicted member's mark goes when its entry does, for
-the reason above: at once on the detector's own `auto-down` route,
-which deletes, and on every other removal only when the tombstone is
-pruned, since a tombstone keeps the mark along with the entry.
-Under the default `auto-down` an ordinary partition takes out
-sender and subject together, so that route arrives ready to use;
-with a strategy configured or under `auto-down = off` a partition
-evicts nobody until something decides — both are parked, marks
-intact — and behind a tombstone the mark lasts exactly as long as
-the refusal does. A fresh or restarted process starts with none at
+the reason above: only when the tombstone is pruned, since a
+tombstone keeps the mark along with the entry — on every removal,
+the detector's own `auto-down` route included since #1834, which
+used to delete at once. With a strategy configured or under
+`auto-down = off` a partition evicts nobody until something decides
+— both are parked, marks intact — and behind a tombstone the mark
+lasts exactly as long as the refusal does. A fresh or restarted process starts with none at
 all. And a member learned
 **third-party** never had one: gossip is epidemic, so a node files
 C as `up` on B's word and has still never seen a frame *from* C.

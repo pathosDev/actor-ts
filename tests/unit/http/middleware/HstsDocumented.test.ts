@@ -10,8 +10,9 @@
  * 404 carries the server-wide policy, was never true: a path no route
  * matches is answered by the backend, outside every decorator, and carries
  * no Strict-Transport-Security at all (#1059).  The body-parse 413 half of
- * the same sentence does hold.  Both halves are bound below on every
- * backend, so the day #1059 is fixed this file says which sentence to change.
+ * the same sentence did hold.  #1059 is fixed now — the framework answers an
+ * unrouted path itself on every backend — and both halves are bound below,
+ * together with the pages' sentences that say so.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -78,9 +79,9 @@ describe('the floor a configured max-age is held to, as the pages state it', () 
 
 describe('the responses the server-wide policy reaches (#1059)', () => {
   test.each([
-    ['http/middleware/security-headers.mdx', 'a body-parse `413`, say — carry the server-wide policy. The backend\'s own `404` for a path no route matches carries none', 'the backend\'s own 404, a body-parse 413 — carry'],
-    ['de/http/middleware/security-headers.mdx', 'ein `413` aus dem Body-Parsing etwa —, tragen die serverweite Policy. Der eigene `404` des Backends für einen Pfad, auf den keine Route passt, trägt keine', 'der eigene 404 des Backends, ein Body-Parse-413 —, tragen'],
-  ])('%s says an unrouted 404 carries none, and points at #1059', (path, sentence, retired) => {
+    ['http/middleware/security-headers.mdx', 'a body-parse `413`, say — carry the server-wide policy. So does the framework\'s own `404` for a path no route matches, on every backend', 'carries none, on every backend'],
+    ['de/http/middleware/security-headers.mdx', 'ein `413` aus dem Body-Parsing etwa —, tragen die serverweite Policy. Ebenso der eigene `404` des Frameworks für einen Pfad, auf den keine Route passt, auf jedem Backend', 'trägt keine, auf keinem Backend'],
+  ])('%s says an unrouted 404 carries the policy too, and points at #1059', (path, sentence, retired) => {
     const text = prose(path);
     expect(text).toContain(sentence);
     expect(text).toContain('#1059');
@@ -118,22 +119,20 @@ describe('the responses the server-wide policy reaches (#1059)', () => {
     return `http://${binding.host}:${binding.port}`;
   }
 
-  test.each(backends)('%s: a body-parse 413 carries the server-wide policy, an unrouted 404 does not', async (_name, makeBackend) => {
+  test.each(backends)('%s: a body-parse 413 and an unrouted 404 both carry the server-wide policy', async (_name, makeBackend) => {
     const url = await serverWithBundle(makeBackend, path('upload', post(() => complete(Status.OK, 'stored'))));
 
     const tooLarge = await fetch(`${url}/upload`, { method: 'POST', body: 'x'.repeat(2 * 1024 * 1024) });
     expect(tooLarge.status).toBe(413);
     expect(tooLarge.headers.get('strict-transport-security')).toBe('max-age=100; includeSubDomains');
 
+    // Since #1059 a tree without fallback(...) still gets the framework's
+    // own not-found handler, so the unrouted 404 goes through the backend's
+    // writer and carries the policy like every other response.
     const unrouted = await fetch(`${url}/nowhere`);
     await unrouted.arrayBuffer();
     expect(unrouted.status).toBe(404);
-    // If this turns red, #1059 is fixed: the unrouted 404 carries the
-    // server-wide policy, and the 'Two emission paths' sentences of
-    // security-headers.mdx (EN + DE) have to say so.  (Express's own final
-    // handler puts a nosniff on that 404 by itself, so only the policy the
-    // sentence is about is asserted.)
-    expect(unrouted.headers.get('strict-transport-security')).toBeNull();
+    expect(unrouted.headers.get('strict-transport-security')).toBe('max-age=100; includeSubDomains');
   });
 
   test.each(backends)('%s: a tree that ends in fallback(...) answers that 404 itself, with the policy', async (_name, makeBackend) => {

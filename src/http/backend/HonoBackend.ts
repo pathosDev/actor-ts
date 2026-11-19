@@ -10,6 +10,7 @@ import {
   type WSEventsLike,
 } from '../../runtime/http/index.js';
 import { OptionsError } from '../../util/OptionsValidator.js';
+import { requestIdHeadersOfError } from '../middleware/RequestId.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
@@ -17,10 +18,13 @@ import {
   bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
+  drainWindowOf,
+  NOT_FOUND_RESPONSE,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
 } from './HttpServerBackend.js';
+import { readFirstChunk, reportingSourceFailure } from './StreamBodyFailure.js';
 import type {
   HttpServerBackend,
   NodeHttpServerLike,
@@ -29,7 +33,11 @@ import type {
   ServerListenOptions,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import { bufferWebsocketEvents } from '../websocket/SocketAdapter.js';
+import {
+  bufferWebsocketEvents,
+  runtimeSocketPingOf,
+  subscribeRuntimeSocketPong,
+} from '../websocket/SocketAdapter.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
@@ -172,6 +180,28 @@ type HonoContextLike = {
   readonly env?: unknown;
 };
 
+/**
+ * The request a response answers: the adapted one the stream-failure handler
+ * is told about, and the runtime request whose abort signal says the client
+ * went away before the first chunk of a stream body existed.
+ */
+type ResponseOrigin = {
+  readonly request: HttpRequest;
+  readonly context: HonoContextLike;
+};
+
+/**
+ * The abort signal of the runtime request behind a Hono context — a client
+ * that disconnects aborts it on Bun, on Deno and under `@hono/node-server`.
+ * Probed structurally for the reason {@link requestBodyStream} is.
+ */
+function requestAbortSignal(context: HonoContextLike): AbortSignal | undefined {
+  const raw = context.req.raw;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const signal = (raw as { signal?: unknown }).signal;
+  return typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal ? signal : undefined;
+}
+
 type HonoHandler = (context: HonoContextLike) => Promise<Response> | Response;
 type HonoErrorHandler = (err: unknown, context: HonoContextLike) => Promise<Response> | Response;
 type HonoNotFoundHandler = (context: HonoContextLike) => Promise<Response> | Response;
@@ -255,6 +285,34 @@ function refuseIdleTimeoutPastCeiling(runner: HonoServerRunner, idleTimeoutMs: n
 }
 
 /**
+ * Refuse `idle-timeout = 0` on a runner whose idle timeout is the only bound it
+ * can install — `Bun.serve`, today (#1767).
+ *
+ * There `header-timeout`, `request-timeout` and `max-connections` are
+ * unavailable, and `0` is written as `Bun.serve`'s own `idleTimeout: 0`, which
+ * never closes a connection: a request whose body stops arriving, or a
+ * keep-alive connection left idle, would stay open until the client closes it
+ * (measured on bun 1.4.2: still open after 40 s).  That takes away more than a
+ * value past the ceiling would, which is already refused, so `0` is refused
+ * the same way rather than warned about — a warning names the exposure and
+ * leaves the bound gone.  Every other backend and runtime keeps accepting
+ * `0`: each has bounds of its own beside it.
+ */
+function refuseIdleTimeoutOff(runner: HonoServerRunner, idleTimeoutMs: number | undefined): void {
+  if (runner.idleTimeoutIsOnlyBound !== true || idleTimeoutMs !== 0) return;
+  throw new OptionsError(
+    `HttpServerOptions: ${ConfigKeys.http.server.idleTimeout} (withIdleTimeoutMs in code) is 0, which turns the idle `
+      + 'timeout off, and on the Hono backend on this runtime it is the only bound on a request whose body stops '
+      + 'arriving and on a connection left idle — header-timeout, request-timeout and max-connections cannot be '
+      + 'installed here — so such a connection would stay open until the client closes it. Set a positive value, '
+      + 'or leave it unset to derive one from the request deadline.',
+    'HttpServerOptions',
+    'idleTimeoutMs',
+    idleTimeoutMs,
+  );
+}
+
+/**
  * Hono-backed HTTP backend — a thin adapter that compiles the actor-ts
  * routing DSL onto a Hono app and serves it with `Bun.serve`.  Hono is a
  * lightweight router that runs well on Bun and covers the middleware cases
@@ -282,6 +340,7 @@ export class HonoBackend implements HttpServerBackend {
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private streamFailureHandler: ((err: unknown, request: HttpRequest | undefined) => void) | null = null;
   private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
   /**
    * Bodies already read off a context, so a request that reaches the error
@@ -333,6 +392,10 @@ export class HonoBackend implements HttpServerBackend {
     this.errorHandler = handler;
   }
 
+  setStreamFailureHandler(handler: (err: unknown, request: HttpRequest | undefined) => void): void {
+    this.streamFailureHandler = handler;
+  }
+
   setDefaultResponseHeaders(headers: Readonly<Record<string, string>>): void {
     this.defaultResponseHeaders = headers;
   }
@@ -342,6 +405,7 @@ export class HonoBackend implements HttpServerBackend {
     this.bodyCapBytes = bodyCapOf('HonoBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
     const runner = await getHonoRunner();
     refuseIdleTimeoutPastCeiling(runner, serverOptions?.idleTimeoutMs);
+    refuseIdleTimeoutOff(runner, serverOptions?.idleTimeoutMs);
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
 
@@ -350,36 +414,40 @@ export class HonoBackend implements HttpServerBackend {
       this.attachRoute(r, r.method === 'GET' && !explicitHead.has(r.pattern));
     }
 
-    if (this.notFoundHandler) {
-      const handler = this.notFoundHandler;
-      app.notFound(async (context) => {
-        if (contentLengthExceeds(contentLengthHeader(context), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
-        const read = await this.readBodyWithinCap(context);
-        if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
-        const request = this.buildRequest(context, read.body);
-        const response = await handler(request);
-        return this.writeResponse(response);
-      });
-    }
+    // With no not-found hook set the framework's own 404 is written here too,
+    // rather than by Hono's plain-text default, so it carries the default
+    // headers (#1059).
+    const notFoundHandler = this.notFoundHandler ?? ((): HttpResponse => NOT_FOUND_RESPONSE);
+    app.notFound(async (context) => {
+      if (contentLengthExceeds(contentLengthHeader(context), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      const read = await this.readBodyWithinCap(context);
+      if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      const request = this.buildRequest(context, read.body);
+      const response = await notFoundHandler(request);
+      return this.writeResponse(response, { request, context });
+    });
 
     app.onError(async (err, context) => {
       const request = await this.adaptRequest(context);
       if (this.errorHandler) {
         try {
           const response = await this.errorHandler(err, request);
-          return this.writeResponse(response);
+          // Awaited inside the `try`: a stream body the error handler returns
+          // can fail before its first byte too, and then the default mapping
+          // below answers instead.
+          return await this.writeResponse(response, { request, context });
         } catch (inner) { err = inner; }
       }
       if (err instanceof HttpError) {
         return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
           status: responseStatusOrServerError(err.status),
-          headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
+          headers: this.errorHeaders(err.headers),
         });
       }
       // No `message` field — see the note on FastifyBackend.writeError.
       return new Response(
         JSON.stringify({ error: 'Internal Server Error' }),
-        { status: 500, headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8' } },
+        { status: 500, headers: this.errorHeaders(requestIdHeadersOfError(err)) },
       );
     });
 
@@ -456,20 +524,24 @@ export class HonoBackend implements HttpServerBackend {
         const srv = this.server;
         if (!srv) return;
         this.server = null;
-        if (gracePeriodMs && gracePeriodMs > 0) {
+        const grace = drainWindowOf(gracePeriodMs);
+        if (grace > 0) {
           // Race a graceful stop against the grace window — whichever wins
           // first resolves.  After the window we force-close regardless.
+          // A graceful stop only drains if the runner's promise waits for the
+          // requests in flight: Bun's used to resolve at once, so the force
+          // below cut them with any window (#997).
+          let timer: ReturnType<typeof setTimeout> | undefined;
           await Promise.race([
             srv.stop(true),
             new Promise<void>((resolve) => {
-              const timer = setTimeout(() => resolve(), gracePeriodMs);
+              timer = setTimeout(() => resolve(), grace);
               (timer as { unref?: () => void }).unref?.();
             }),
           ]);
-          await srv.stop(false); // force any still-active connections
-          return;
+          clearTimeout(timer);
         }
-        await srv.stop(false);
+        await srv.stop(false); // force any still-active connections
       },
     };
   }
@@ -496,7 +568,7 @@ export class HonoBackend implements HttpServerBackend {
         ? { ...request, params: { ...request.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
         : request;
       const out = await route.handler(finalRequest);
-      return this.writeResponse(out);
+      return this.writeResponse(out, { request: finalRequest, context: c });
     };
     const method = route.method.toLowerCase() as Lowercase<HttpMethod>;
     match(method)
@@ -568,6 +640,13 @@ export class HonoBackend implements HttpServerBackend {
         get terminate() {
           return terminateOf(ws?.raw);
         },
+        // The server heartbeat's ping (#651): Bun's `ServerWebSocket` and
+        // `ws`'s `WebSocket` have one, Deno's standard `WebSocket` does not.
+        // Their pongs come back through `onOpen`'s subscription below (`ws`)
+        // and through the runner's `pong` handler (Bun).
+        get ping() {
+          return runtimeSocketPingOf(ws?.raw);
+        },
         remoteAddress: adapted.remoteAddress,
         get protocol() {
           return ws?.protocol;
@@ -576,8 +655,10 @@ export class HonoBackend implements HttpServerBackend {
       return {
         onOpen: (_evt, wsContext) => {
           ws = wsContext;
+          subscribeRuntimeSocketPong(wsContext.raw, () => events.onPong());
           reg.onConnection(adapted, adapter);
         },
+        onPong: () => events.onPong(),
         onMessage: (evt, wsContext) => {
           ws = wsContext;
           events.onMessage(coerceWebsocketData(evt.data));
@@ -710,7 +791,29 @@ export class HonoBackend implements HttpServerBackend {
     };
   }
 
-  private writeResponse(response: HttpResponse): Response {
+  /**
+   * The headers of a response the error mapping builds itself.  Written with
+   * `Headers.set`, like {@link writeResponse}, and never by object spread: a
+   * plain object can hold `x-frame-options` and `X-Frame-Options` side by
+   * side, and the `Headers` constructor appends the second to the first, so
+   * an error's own header would join the server-wide default instead of
+   * replacing it (#1058).
+   */
+  private errorHeaders(own?: Readonly<Record<string, string>>): Headers {
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(this.defaultResponseHeaders)) headers.set(key, value);
+    headers.set('content-type', 'application/json; charset=utf-8');
+    if (own) for (const [key, value] of Object.entries(own)) headers.set(key, value);
+    return headers;
+  }
+
+  /**
+   * A stream body makes this asynchronous — see {@link writeStreamResponse} —
+   * and every other body stays synchronous, so a plain response pays no
+   * extra turn.  `origin` is the request the response answers, absent only
+   * where none was adapted.
+   */
+  private writeResponse(response: HttpResponse, origin?: ResponseOrigin): Response | Promise<Response> {
     const status = responseStatusOrServerError(response.status);
     const headers = new Headers();
     // Server-wide defaults go in first; `Headers.set` is case-insensitive, so
@@ -735,10 +838,39 @@ export class HonoBackend implements HttpServerBackend {
     }
     if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
       if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
-      return new Response(body as unknown as BodyInit, { status, headers });
+      return this.writeStreamResponse(body, status, headers, origin);
     }
     if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8');
     return new Response(JSON.stringify(body), { status, headers });
+  }
+
+  /**
+   * Read the first chunk of a stream body before the `Response` exists
+   * (#1830).  Handing the stream to `new Response(...)` as it came left the
+   * runtime to pull it after every error path had returned: under Bun a source
+   * that failed before its first byte reset the connection with no status line
+   * and never reached `withErrorHandler`.  Until the first chunk the status is
+   * still open, so a failure there rejects, Hono's `onError` receives it, and
+   * the error handler answers like it does for any other throw — what Express
+   * (#979) and Fastify already do.
+   *
+   * After it the headers are the runtime's to send and a `200` cannot be taken
+   * back: the source is re-wrapped so a later failure is reported once to
+   * {@link setStreamFailureHandler} before the runtime truncates the body
+   * (#1829).
+   */
+  private async writeStreamResponse(
+    body: ReadableStream<Uint8Array>,
+    status: number,
+    headers: Headers,
+    origin: ResponseOrigin | undefined,
+  ): Promise<Response> {
+    const reader = body.getReader();
+    const first = await readFirstChunk(reader, origin === undefined ? undefined : requestAbortSignal(origin.context));
+    if (first.done) return new Response(null, { status, headers });
+    const request = origin?.request;
+    const report = (err: unknown): void => { this.streamFailureHandler?.(err, request); };
+    return new Response(reportingSourceFailure(reader, report, first.value) as unknown as BodyInit, { status, headers });
   }
 
   private async createHonoApp(): Promise<HonoAppLike> {

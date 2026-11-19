@@ -20,6 +20,7 @@ import type {
   EntityEnvelope,
   EntityStarted,
   EntityStopped,
+  EntityStopReason,
   GetShardStats,
   PassivateEntity,
   StartEntities,
@@ -74,6 +75,17 @@ export type ShardConfig = {
    * buffers: the region's across every shard, this one per shard.
    */
   readonly bufferSize?: number;
+  /**
+   * Whether the type remembers its entities (#954).  Under it, an entity that
+   * stopped without being passivated is re-created at the end of its restart
+   * wait with no message for it: the coordinator keeps such an entity in the
+   * registry, and a remembered entity that only came back on its next message
+   * would be one the registry lists while nothing runs.
+   *
+   * Optional, and absent means off — the behaviour a `ShardConfig` written
+   * before this field had: the entity waits for a message.
+   */
+  readonly rememberEntities?: boolean;
 };
 
 /** What a shard accepts from the outside — its region, or a holder of its ref. */
@@ -383,7 +395,8 @@ export class Shard extends Actor<ShardInbox> {
       const record = this.restarts.get(message.entityId);
       if (record?.messageSinceStop === true) {
         record.messageSinceStop = false;
-        this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId: message.entityId });
+        // The region's own decision to drop the entity, so the forgetting kind.
+        this.notifyStopped(message.entityId, 'passivated');
       }
       return;
     }
@@ -546,14 +559,21 @@ export class Shard extends Actor<ShardInbox> {
   }
 
   /**
-   * An entity stopped.  The region hears of it either way, as before the
-   * backoff existed (#954 owns what that report means).
+   * An entity stopped.  The region hears of it either way, with the reason
+   * (#954): `'passivated'` for the stop this shard asked for, `'unrequested'`
+   * for every other.  Under `rememberEntities` the coordinator forgets only
+   * the first — an entity that exhausted its restart budget used to be
+   * persisted as `stopped` on the way out and was never revived after the next
+   * node failure.  `passivating` is non-null only on the asked-for path, so it
+   * is the flag that tells the two apart.
    *
    * A stop this shard asked for — a passivation — replays what arrived during
    * it, which re-creates the entity at once.  Any other stop backs the entity
    * off before anything re-creates it ({@link backOffEntity}): without that,
    * an entity past its restart budget was re-created by the very next message
    * for it, and one failing on every message was re-created per message.
+   * Under `rememberEntities` the end of that wait re-creates it with no
+   * message at all: the registry still lists it, so it has to be running.
    */
   private onEntityTerminated(message: Terminated): void {
     const entityId = this.entityPaths.getKey(message.actor.path.toString());
@@ -563,9 +583,10 @@ export class Shard extends Actor<ShardInbox> {
     const buffered = existing?.passivating ?? null;
     this.entities.delete(entityId);
     this.entityPaths.delete(entityId);
-    this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
+    this.notifyStopped(entityId, buffered === null ? 'unrequested' : 'passivated');
     if (buffered === null) {
-      this.backOffEntity(entityId);
+      const record = this.backOffEntity(entityId);
+      if (this.config.rememberEntities === true) this.armRestart(entityId, record);
       return;
     }
     // Recreates the entity and hands it everything that arrived while it
@@ -699,7 +720,7 @@ export class Shard extends Actor<ShardInbox> {
    * The record is moved to the back of {@link restarts}, which keeps the map
    * in the order of last stops for the prune.
    */
-  private backOffEntity(entityId: string): void {
+  private backOffEntity(entityId: string): EntityRestartRecord {
     const now = this.system.clock.now();
     let record = this.restarts.get(entityId);
     if (record === undefined) {
@@ -718,6 +739,7 @@ export class Shard extends Actor<ShardInbox> {
       + `without being passivated (stop ${record.attempts} in a row); re-creating it no sooner than `
       + `${Math.round(delayMs)} ms from now`,
     );
+    return record;
   }
 
   /**
@@ -813,6 +835,10 @@ export class Shard extends Actor<ShardInbox> {
    */
   private notifyRegion(message: EntityStarted | EntityStopped): void {
     this.context.parent.toNullable()?.tell(message as never);
+  }
+
+  private notifyStopped(entityId: string, reason: EntityStopReason): void {
+    this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId, reason });
   }
 }
 

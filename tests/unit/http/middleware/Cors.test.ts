@@ -1,21 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test } from 'bun:test';
-import { ActorSystem } from '../../../../src/ActorSystem.js';
-import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
-import { FastifyBackend } from '../../../../src/http/backend/FastifyBackend.js';
-import { ExpressBackend } from '../../../../src/http/backend/ExpressBackend.js';
-import { HonoBackend } from '../../../../src/http/backend/HonoBackend.js';
-import { HttpExtensionId } from '../../../../src/http/HttpExtension.js';
+import { describe, expect, test } from 'bun:test';
 import { compile, complete, concat, get, options, path, post, type Route } from '../../../../src/http/Route.js';
 import { cors } from '../../../../src/http/middleware/Cors.js';
 import { CorsOptions } from '../../../../src/http/middleware/CorsOptions.js';
 import { serializeCookie } from '../../../../src/http/Cookies.js';
 import { MAXIMUM_ECHOED_CORS_HEADERS_LENGTH } from '../../../../src/http/Constants.js';
-import type { HttpServerBackend, ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/WebsocketPolicy.js';
-import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 describe('cors — validation + compile', () => {
   /**
@@ -93,29 +85,6 @@ describe('cors — validation + compile', () => {
     expect(await ws.authorize(request({}))).toBeNull(); // no Origin → not treated as cross-origin
   });
 });
-
-const backends: Array<[string, () => HttpServerBackend]> = [
-  ['fastify', () => new FastifyBackend({ logger: false })],
-  ['express', () => new ExpressBackend()],
-  ['hono', () => new HonoBackend()],
-];
-
-const live: Array<{ binding: ServerBinding; system: ActorSystem }> = [];
-afterEach(async () => {
-  while (live.length) {
-    const { binding, system } = live.shift()!;
-    await binding.unbind();
-    await system.terminate();
-  }
-});
-
-async function start(mk: () => HttpServerBackend, routes: Route): Promise<string> {
-  const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
-  const system = ActorSystem.create('http-cors-test', sysOptions);
-  const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).useBackend(mk()).bind(routes);
-  live.push({ binding, system });
-  return `http://${binding.host}:${binding.port}`;
-}
 
 const ALLOWED = 'https://app.example';
 
@@ -323,111 +292,6 @@ describe('cors — echoed Access-Control-Allow-Headers (#792)', () => {
       body: null,
     });
     expect(response.headers?.['access-control-allow-headers']).toBe('x-a, x-b');
-  });
-});
-
-describe.each(backends)('cors — %s backend', (_name, mk) => {
-  const withCors = (): Route => cors(
-    CorsOptions.create().withOrigins(ALLOWED),
-    path('api', get(() => complete(Status.OK, 'data'))),
-  );
-
-  test('answers a preflight for an allowed origin', async () => {
-    const url = await start(mk, withCors());
-    const response = await fetch(`${url}/api`, {
-      method: 'OPTIONS',
-      headers: { origin: ALLOWED, 'access-control-request-method': 'GET' },
-    });
-    expect(response.status).toBe(204);
-    expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED);
-    expect(response.headers.get('access-control-allow-methods')).toContain('GET');
-    expect(response.headers.get('vary') ?? '').toContain('Origin');
-  });
-
-  test('without cors, a preflight carries no CORS headers (pins the routing constraint)', async () => {
-    const url = await start(mk, path('api', get(() => complete(Status.OK, 'data'))));
-    const response = await fetch(`${url}/api`, {
-      method: 'OPTIONS',
-      headers: { origin: ALLOWED, 'access-control-request-method': 'GET' },
-    });
-    expect(response.headers.get('access-control-allow-origin')).toBeNull();
-  });
-
-  test('decorates the actual response for an allowed origin', async () => {
-    const url = await start(mk, withCors());
-    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
-    expect(response.status).toBe(200);
-    expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED);
-    expect(response.headers.get('vary') ?? '').toContain('Origin');
-  });
-
-  test("keeps a handler's own Vary on the wire and merges Origin into it (#603)", async () => {
-    const url = await start(mk, cors(
-      CorsOptions.create().withOrigins(ALLOWED),
-      path('api', get(() => complete(Status.OK, 'data', { Vary: 'Cookie' }))),
-    ));
-    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
-    // Collapsing this to `Vary: Origin` lets a cache serve one user's
-    // cookie-dependent response to another.
-    const vary = (response.headers.get('vary') ?? '').toLowerCase();
-    expect(vary).toContain('cookie');
-    expect(vary).toContain('origin');
-  });
-
-  test('omits CORS headers for a disallowed origin', async () => {
-    const url = await start(mk, withCors());
-    const response = await fetch(`${url}/api`, { headers: { origin: 'https://evil.example' } });
-    expect(response.status).toBe(200);
-    expect(response.headers.get('access-control-allow-origin')).toBeNull();
-  });
-
-  test('withAnyOrigin echoes a literal * (no credentials)', async () => {
-    const url = await start(mk, cors(CorsOptions.create().withAnyOrigin(), path('api', get(() => complete(Status.OK, 'd')))));
-    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
-    expect(response.headers.get('access-control-allow-origin')).toBe('*');
-  });
-
-  test('credentials echoes the origin and sets allow-credentials', async () => {
-    const url = await start(mk, cors(
-      CorsOptions.create().withOrigins(ALLOWED).withCredentials(),
-      path('api', get(() => complete(Status.OK, 'd'))),
-    ));
-    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
-    expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED);
-    expect(response.headers.get('access-control-allow-credentials')).toBe('true');
-  });
-
-  test('echoes the requested headers on a preflight when none are configured', async () => {
-    const url = await start(mk, withCors());
-    const response = await fetch(`${url}/api`, {
-      method: 'OPTIONS',
-      headers: { origin: ALLOWED, 'access-control-request-method': 'GET', 'access-control-request-headers': 'x-custom, content-type' },
-    });
-    expect(response.status).toBe(204);
-    expect(response.headers.get('access-control-allow-headers') ?? '').toContain('x-custom');
-  });
-
-  test('uses the configured allowed headers + max-age on a preflight', async () => {
-    const url = await start(mk, cors(
-      CorsOptions.create().withOrigins(ALLOWED).withAllowedHeaders('x-a', 'x-b').withMaxAge(120),
-      path('api', get(() => complete(Status.OK, 'd'))),
-    ));
-    const response = await fetch(`${url}/api`, {
-      method: 'OPTIONS',
-      headers: { origin: ALLOWED, 'access-control-request-method': 'GET' },
-    });
-    expect(response.headers.get('access-control-allow-headers')).toBe('x-a, x-b');
-    expect(response.headers.get('access-control-max-age')).toBe('120');
-  });
-
-  test('a user OPTIONS route still handles a non-preflight OPTIONS', async () => {
-    const url = await start(mk, cors(
-      CorsOptions.create().withOrigins(ALLOWED),
-      path('api', concat(get(() => complete(Status.OK, 'g')), options(() => complete(Status.OK, 'custom-options')))),
-    ));
-    // No Origin / Access-Control-Request-Method → not a preflight → user handler runs.
-    const response = await fetch(`${url}/api`, { method: 'OPTIONS' });
-    expect(await response.text()).toBe('custom-options');
   });
 });
 

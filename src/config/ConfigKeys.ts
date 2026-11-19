@@ -353,6 +353,9 @@ export const ConfigKeys = {
         url: 'actor-ts.io.broker.amqp.url',
         prefetch: 'actor-ts.io.broker.amqp.prefetch',
         autoAcknowledge: 'actor-ts.io.broker.amqp.auto-acknowledge',
+        /** `'on-reply'` (default) or `'on-delivery'` — when a delivery is acked (#976). */
+        acknowledgment: 'actor-ts.io.broker.amqp.acknowledgment',
+        acknowledgmentTimeout: 'actor-ts.io.broker.amqp.acknowledgment-timeout',
       },
       /**
        * The IMAP-in / SMTP-out mail bridge (#1133).  One root for both
@@ -401,6 +404,7 @@ export const ConfigKeys = {
           serviceName: 'actor-ts.io.broker.grpc.client.service-name',
           endpoint: 'actor-ts.io.broker.grpc.client.endpoint',
           deadline: 'actor-ts.io.broker.grpc.client.deadline',
+          streamIdleTimeout: 'actor-ts.io.broker.grpc.client.stream-idle-timeout',
         },
         /**
          * `GrpcServerActor` — a plain actor, not a `BrokerActor`, so it shares
@@ -413,6 +417,7 @@ export const ConfigKeys = {
           packageName: 'actor-ts.io.broker.grpc.server.package-name',
           serviceName: 'actor-ts.io.broker.grpc.server.service-name',
           bind: 'actor-ts.io.broker.grpc.server.bind',
+          maxPendingRequestMessages: 'actor-ts.io.broker.grpc.server.max-pending-request-messages',
         },
       },
       /**
@@ -525,6 +530,9 @@ export const ConfigKeys = {
           commitTimeout: 'actor-ts.io.broker.kafka.consumer.commit-timeout',
         },
         topics: 'actor-ts.io.broker.kafka.topics',
+        /** `'on-reply'` (default) or `'on-delivery'` — when an auto-commit record may be committed (#975). */
+        acknowledgment: 'actor-ts.io.broker.kafka.acknowledgment',
+        acknowledgmentTimeout: 'actor-ts.io.broker.kafka.acknowledgment-timeout',
       },
       /**
        * `MqttActor`.  `keep-alive` is a duration in **whole seconds**, the
@@ -551,6 +559,9 @@ export const ConfigKeys = {
         cleanSession: 'actor-ts.io.broker.mqtt.clean-session',
         keepAlive: 'actor-ts.io.broker.mqtt.keep-alive',
         protocolVersion: 'actor-ts.io.broker.mqtt.protocol-version',
+        /** `'on-reply'` (default) or `'on-delivery'` — when the PUBACK goes out (#977). */
+        acknowledgment: 'actor-ts.io.broker.mqtt.acknowledgment',
+        acknowledgmentTimeout: 'actor-ts.io.broker.mqtt.acknowledgment-timeout',
       },
       /** `NatsActor`. */
       nats: {
@@ -584,6 +595,8 @@ export const ConfigKeys = {
         headers: 'actor-ts.io.broker.sse.headers',
         idleTimeout: 'actor-ts.io.broker.sse.idle-timeout',
         connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
+        /** A count of UTF-16 code units, not a size — hence the unit stays in the name (#371). */
+        maxBufferChars: 'actor-ts.io.broker.sse.max-buffer-chars',
       },
       /**
        * `TcpSocketActor`.  `framing` is the block both TCP actors carry, so its
@@ -610,6 +623,8 @@ export const ConfigKeys = {
         bindPort: 'actor-ts.io.broker.tcp-server.bind-port',
         /** The admission cap; unset means unlimited. */
         maxConnections: 'actor-ts.io.broker.tcp-server.max-connections',
+        /** Bytes held for one connection that pushes back before it is failed (#1827). */
+        maxBufferedBytes: 'actor-ts.io.broker.tcp-server.max-buffered-bytes',
         framing: tcpFramingKeysUnder('actor-ts.io.broker.tcp-server.framing'),
       },
       /** `UdpSocketActor`. */
@@ -803,6 +818,10 @@ export const ConfigKeys = {
       connectionMailboxCapacity: 'actor-ts.http.websocket.connection-mailbox-capacity',
       /** Comment-only in `reference.conf`; only meaningful beside a capacity. */
       connectionMailboxOverflow: 'actor-ts.http.websocket.connection-mailbox-overflow',
+      /** Server-side ping interval per connection; `0` turns it off (#651). */
+      heartbeatInterval: 'actor-ts.http.websocket.heartbeat-interval',
+      /** Close after this long without an inbound message; `0`, the default, is off (#651). */
+      idleTimeout: 'actor-ts.http.websocket.idle-timeout',
     },
     /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
     client: {
@@ -835,6 +854,17 @@ export const ConfigKeys = {
     maxConcurrentRecoveries: 'actor-ts.persistence.max-concurrent-recoveries',
     recoveryTimeout: 'actor-ts.persistence.recovery-timeout',
     snapshotIsOptional: 'actor-ts.persistence.snapshot-is-optional',
+    /**
+     * Recover a completely compacted journal with no snapshot as the initial
+     * state instead of failing with `JournalIntegrityError` (#1052).
+     */
+    allowFullyCompactedRecovery: 'actor-ts.persistence.allow-fully-compacted-recovery',
+    /**
+     * Allow a multi-event `persistAll` on a journal that declares
+     * `atomicBatchAppend: false`, accepting that a failure can commit a
+     * prefix (#959).
+     */
+    allowNonAtomicBatchAppend: 'actor-ts.persistence.allow-non-atomic-batch-append',
     /**
      * The `CircuitBreakerExtension` id each store is called through — a name,
      * not a block of numbers.  The numbers live under
@@ -1427,6 +1457,9 @@ export const ConfigKeys = {
     enableLeaveEndpoint: 'actor-ts.management.enable-leave-endpoint',
     enableDownEndpoint: 'actor-ts.management.enable-down-endpoint',
     enableMetricsEndpoint: 'actor-ts.management.enable-metrics-endpoint',
+    enableMembersEndpoint: 'actor-ts.management.enable-members-endpoint',
+    enableLeaderEndpoint: 'actor-ts.management.enable-leader-endpoint',
+    enableShardsEndpoint: 'actor-ts.management.enable-shards-endpoint',
     authProtectHealth: 'actor-ts.management.auth-protect-health',
     livenessPath: 'actor-ts.management.liveness-path',
     readinessPath: 'actor-ts.management.readiness-path',
@@ -1455,6 +1488,7 @@ export const ConfigKeys = {
    */
   metrics: {
     maxSeriesPerFamily: 'actor-ts.metrics.max-series-per-family',
+    maxFamilies: 'actor-ts.metrics.max-families',
     namePrefix: 'actor-ts.metrics.name-prefix',
   },
 
@@ -1535,6 +1569,8 @@ export const ConfigKeys = {
    *
    * `groupAfterEnvelopes` reaches `handleGroup` projections only; a `handle`
    * projection has no group to size and ignores it (#1448).
+   * `lookbackWindow` reaches `byTag` projections only; a by-persistence-id
+   * cursor is a sequence number, which a late commit cannot pass (#957).
    */
   projection: {
     recoveryStrategy: 'actor-ts.projection.recovery-strategy',
@@ -1543,6 +1579,7 @@ export const ConfigKeys = {
     maxRetryBackoff: 'actor-ts.projection.max-retry-backoff',
     pollInterval: 'actor-ts.projection.poll-interval',
     groupAfterEnvelopes: 'actor-ts.projection.group-after-envelopes',
+    lookbackWindow: 'actor-ts.projection.lookback-window',
   },
 
   /**
@@ -1587,6 +1624,11 @@ export const ConfigKeys = {
   cluster: {
     gossipInterval: 'actor-ts.cluster.gossip-interval',
     seedRetryInterval: 'actor-ts.cluster.seed-retry-interval',
+    /**
+     * On every how-many-th gossip round one `unreachable` member also receives
+     * the round's frame, so a healed partition merges (#930).  `0` sends none.
+     */
+    unreachableGossipRounds: 'actor-ts.cluster.unreachable-gossip-rounds',
     /** Auto-promotion `joining` → `weakly-up`; `0` keeps it opt-in (#841). */
     weaklyUpAfter: 'actor-ts.cluster.weakly-up-after',
     /**
@@ -1630,6 +1672,13 @@ export const ConfigKeys = {
      */
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
+    /**
+     * Gossip frames one sender may hand this node per second (#1105) — the
+     * work bound beside the two memory caps above.  `0` disables it.  Read by
+     * `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.gossipFramesPerSecondPerSender`.
+     */
+    gossipFramesPerSecondPerSender: 'actor-ts.cluster.gossip-frames-per-second-per-sender',
     /**
      * Members that must be present before anything is promoted to `up` (#837)
      * — the leader's promotions and a founder's own self-election alike.
@@ -1991,6 +2040,8 @@ export const ConfigKeys = {
       systemName: 'actor-ts.cluster.client.system-name',
       askTimeout: 'actor-ts.cluster.client.ask-timeout',
       connectTimeout: 'actor-ts.cluster.client.connect-timeout',
+      /** Frames held behind a contact point that pushes back before a send is refused (#1827). */
+      outboundQueueSize: 'actor-ts.cluster.client.outbound-queue-size',
       receptionist: {
         askTimeout: 'actor-ts.cluster.client.receptionist.ask-timeout',
       },
@@ -2008,6 +2059,7 @@ export const ConfigKeys = {
       maxSubscribersPerTopic: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic',
       maxTopics: 'actor-ts.cluster.pub-sub.max-topics',
       maxRemoteNodesPerTopic: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic',
+      maxTopicsClaimedPerSender: 'actor-ts.cluster.pub-sub.max-topics-claimed-per-sender',
       sendToDeadLettersWhenNoSubscribers:
         'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
     },
@@ -2021,6 +2073,7 @@ export const ConfigKeys = {
       gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
       maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
       maxSubscriptionsTotal: 'actor-ts.cluster.receptionist.max-subscriptions-total',
+      maxRegistrationsClaimedPerSender: 'actor-ts.cluster.receptionist.max-registrations-claimed-per-sender',
     },
   },
 
@@ -2175,6 +2228,7 @@ export const ConfigKeys = {
       maxProducers: 'actor-ts.reliable-delivery.consumer.max-producers',
       producerIdleTimeToLive: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live',
       maxOutOfOrder: 'actor-ts.reliable-delivery.consumer.max-out-of-order',
+      maxIncarnationsPerProducer: 'actor-ts.reliable-delivery.consumer.max-incarnations-per-producer',
     },
   },
 
@@ -2198,6 +2252,14 @@ export const ConfigKeys = {
       maxNestingDepth: 'actor-ts.serialization.read-constraints.max-nesting-depth',
       maxDocumentBytes: 'actor-ts.serialization.read-constraints.max-document-bytes',
       maxStringLength: 'actor-ts.serialization.read-constraints.max-string-length',
+    },
+    /**
+     * What the cluster wire's decoder builds out of a peer's frame (#1303) —
+     * read by `readWireDecodeOptionsFromConfig` and handed to every
+     * `FrameDecoder` a node's transport builds, and nothing else.
+     */
+    wire: {
+      admittedTags: 'actor-ts.serialization.wire.admitted-tags',
     },
   },
 
@@ -2285,7 +2347,7 @@ export const ConfigKeys = {
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides
    * nothing except whether the node warns about that at startup (#591).
-   * Encrypting the wire is its own issue (#941); until it lands, a key that
+   * Encrypting the wire is its own issue (#1854); until it lands, a key that
    * says `true` and a socket that is not encrypted is exactly the gap the
    * warning exists to close.
    *
@@ -2695,6 +2757,7 @@ export const ConfigKeys = {
    */
   coordinatedShutdown: {
     defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
+    overallTimeout: 'actor-ts.coordinated-shutdown.overall-timeout',
     terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
     exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
     exitCode: 'actor-ts.coordinated-shutdown.exit-code',

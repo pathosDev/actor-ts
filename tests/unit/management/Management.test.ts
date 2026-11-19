@@ -14,15 +14,19 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { BearerTokenAuth } from '../../../src/http/middleware/BearerToken.js';
 import { IpAllowlist } from '../../../src/http/middleware/IpAllowlist.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
 import {
   ACTOR_SYSTEM_LIVENESS_CHECK_NAME,
   HealthCheckRegistry,
   HealthCheckRegistryOptions,
   healthChecksOf,
   isHealthy,
+  defaultManagementRoutesOptions,
   managementRoutes,
+  ManagementRoutesOptions,
+  readManagementRoutesOptionsFromConfig,
 } from '../../../src/management/index.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import {
   DefaultMetricsRegistry,
@@ -176,7 +180,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/members returns the current membership as JSON', async () => {
     const { sys, cluster } = await startNode();
-    const routes = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster, { enableMembersEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -206,7 +210,7 @@ describe('managementRoutes — cluster queries', () => {
         .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', port)));
       if (appVersion !== undefined) clusterOptions.withAppVersion(appVersion);
       const cluster = await Cluster.join(sys, clusterOptions);
-      const routes = managementRoutes(sys, cluster);
+      const routes = managementRoutes(sys, cluster, { enableMembersEndpoint: true });
       const binding = await sys.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routes);
       try {
         const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/members`);
@@ -389,7 +393,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/shards 400s without `type` query parameter', async () => {
     const { sys, cluster } = await startNode();
-    const routes = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster, { enableShardsEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -402,7 +406,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/shards 404s for a type this node has no region for', async () => {
     const { sys, cluster } = await startNode();
-    const routes = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster, { enableShardsEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -598,6 +602,7 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
   test('/cluster/members is 401 without bearer token; 200 with correct token', async () => {
     const { sys, cluster } = await startNode();
     const routes = managementRoutes(sys, cluster, {
+      enableMembersEndpoint: true,
       auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
     });
     const http = sys.extension(HttpExtensionId);
@@ -689,5 +694,165 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
+  });
+});
+
+/** Collects the warnings the system logger was told, including via `withSource` / `withFields`. */
+class WarningRecorder implements Logger {
+  readonly warnings: string[] = [];
+  readonly level = LogLevel.Debug;
+  constructor(private readonly root: WarningRecorder | null = null) {}
+  debug(): void { /* not asserted */ }
+  info(): void { /* not asserted */ }
+  warn(message: string): void { (this.root ?? this).warnings.push(message); }
+  error(): void { /* not asserted */ }
+  withSource(): Logger { return new WarningRecorder(this.root ?? this); }
+  withFields(): Logger { return new WarningRecorder(this.root ?? this); }
+}
+
+describe('managementRoutes — the topology endpoints are opt-in (#971)', () => {
+  async function startNode(): Promise<{ sys: ActorSystem; cluster: Cluster; log: WarningRecorder }> {
+    const port = 55_900 + Math.floor(Math.random() * 90);
+    const log = new WarningRecorder();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(log)
+      .withLogLevel(LogLevel.Debug);
+    const sys = ActorSystem.create('mgmt', sysOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', port)));
+    const cluster = await Cluster.join(sys, clusterOptions);
+    return { sys, cluster, log };
+  }
+
+  const managementWarnings = (log: WarningRecorder): string[] =>
+    log.warnings.filter((w) => w.includes('managementRoutes'));
+
+  test('by default members, leader and shards answer 404, and health/ready stay anonymous 200s', async () => {
+    const { sys, cluster, log } = await startNode();
+    const binding = await sys.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(managementRoutes(sys, cluster));
+    try {
+      for (const [segment, disabled] of [
+        ['members', 'members endpoint disabled'],
+        ['leader', 'leader endpoint disabled'],
+        ['shards?type=Orders', 'shards endpoint disabled'],
+      ] as const) {
+        const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/${segment}`);
+        expect(response.status).toBe(404);
+        expect(await response.text()).toBe(disabled);
+      }
+      expect((await fetch(`http://127.0.0.1:${binding.port}/health`)).status).toBe(200);
+      expect((await fetch(`http://127.0.0.1:${binding.port}/ready`)).status).toBe(200);
+      // Nothing is exposed, so there is nothing to warn about.
+      expect(managementWarnings(log)).toEqual([]);
+    } finally {
+      await binding.unbind();
+      await cluster.leave(); await sys.terminate();
+    }
+  });
+
+  // The route test above runs on a system that always layers reference.conf,
+  // which publishes `false` for all three leaves — so a built-in default
+  // flipped to `true` would never reach it.  The floor `mergeOptions` starts
+  // from is pinned on its own here, so a flipped constant fails in this suite
+  // and not only in DocumentedDefaults, which pins the two layers together.
+  test('the built-in floor itself serves no topology endpoint', () => {
+    expect(defaultManagementRoutesOptions.enableMembersEndpoint).toBe(false);
+    expect(defaultManagementRoutesOptions.enableLeaderEndpoint).toBe(false);
+    expect(defaultManagementRoutesOptions.enableShardsEndpoint).toBe(false);
+    const published = readManagementRoutesOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+    expect(published.enableMembersEndpoint).toBe(false);
+    expect(published.enableLeaderEndpoint).toBe(false);
+    expect(published.enableShardsEndpoint).toBe(false);
+  });
+
+  test('each flag switches on its own endpoint and no other', async () => {
+    const { sys, cluster } = await startNode();
+    const managementOptions = ManagementRoutesOptions.create()
+      .withMembersEndpoint()
+      .withShardsEndpoint();
+    const routes = managementRoutes(sys, cluster, managementOptions);
+    const binding = await sys.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routes);
+    try {
+      expect((await fetch(`http://127.0.0.1:${binding.port}/cluster/members`)).status).toBe(200);
+      expect((await fetch(`http://127.0.0.1:${binding.port}/cluster/leader`)).status).toBe(404);
+      // A 400 for the missing query parameter is the endpoint answering.
+      expect((await fetch(`http://127.0.0.1:${binding.port}/cluster/shards`)).status).toBe(400);
+    } finally {
+      await binding.unbind();
+      await cluster.leave(); await sys.terminate();
+    }
+    const leaderOnly = await startNode();
+    const leaderRoutes = managementRoutes(leaderOnly.sys, leaderOnly.cluster, { enableLeaderEndpoint: true });
+    const leaderBinding = await leaderOnly.sys.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(leaderRoutes);
+    try {
+      expect((await fetch(`http://127.0.0.1:${leaderBinding.port}/cluster/leader`)).status).toBe(200);
+      expect((await fetch(`http://127.0.0.1:${leaderBinding.port}/cluster/members`)).status).toBe(404);
+    } finally {
+      await leaderBinding.unbind();
+      await leaderOnly.cluster.leave(); await leaderOnly.sys.terminate();
+    }
+  });
+
+  test('an exposed cluster endpoint with neither auth nor ipAllowlist warns exactly once, naming it', async () => {
+    const { sys, cluster, log } = await startNode();
+    const managementOptions = ManagementRoutesOptions.create()
+      .withMembersEndpoint()
+      .withLeaveEndpoint();
+    managementRoutes(sys, cluster, managementOptions);
+    const warnings = managementWarnings(log);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('/cluster/members');
+    expect(warnings[0]).toContain('/cluster/leave');
+    expect(warnings[0]).not.toContain('/cluster/leader');
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('auth or an ipAllowlist silences the warning', async () => {
+    const { sys, cluster, log } = await startNode();
+    managementRoutes(sys, cluster, { enableMembersEndpoint: true, auth: BearerTokenAuth({ tokens: ['t'] }) });
+    managementRoutes(sys, cluster, {
+      enableMembersEndpoint: true,
+      ipAllowlist: IpAllowlist({ allow: ['10.0.0.0/8'] }),
+    });
+    expect(managementWarnings(log)).toEqual([]);
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('no cluster, no warning: the endpoints answer 503 and disclose nothing', async () => {
+    const log = new WarningRecorder();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(log)
+      .withLogLevel(LogLevel.Debug);
+    const sys = ActorSystem.create('mgmt-no-cluster', sysOptions);
+    managementRoutes(sys, null, { enableMembersEndpoint: true });
+    expect(managementWarnings(log)).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('the three flags come from HOCON too', async () => {
+    const config = Config.parseString(`
+      actor-ts.management {
+        enable-members-endpoint = true
+        enable-leader-endpoint  = true
+        enable-shards-endpoint  = true
+      }
+    `);
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(config);
+    const sys = ActorSystem.create('mgmt-hocon', sysOptions);
+    const binding = await sys.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(managementRoutes(sys, null));
+    try {
+      // With no cluster an enabled endpoint answers 503; a disabled one 404s.
+      expect((await fetch(`http://127.0.0.1:${binding.port}/cluster/members`)).status).toBe(503);
+      expect((await fetch(`http://127.0.0.1:${binding.port}/cluster/leader`)).status).toBe(503);
+      expect((await fetch(`http://127.0.0.1:${binding.port}/cluster/shards?type=x`)).status).toBe(503);
+    } finally {
+      await binding.unbind();
+      await sys.terminate();
+    }
   });
 });

@@ -11,8 +11,9 @@
  * consumer's acknowledgment goes, an actor on the consumer's own node
  * included.  This file pins that behaviour, which the corrected text now
  * describes, so a change to it shows up here and not only as prose that went
- * stale.  Whether a ref from the wire should resolve like that at all is
- * #1572's question; nothing here decides it.
+ * stale — and pins its bound: since #1572 a same-node marker goes through the
+ * trust checks an envelope's own target does, so a `replyTo` naming a
+ * `/system` actor decodes to `Nobody` and the acknowledgment reaches nothing.
  *
  * Two nodes on `InMemoryTransport`, both controllers spawned under `/user`:
  * the facade's controllers live under `/system/delivery/`, which a node
@@ -113,5 +114,56 @@ describe('ConsumerController — a replyTo written by a peer', () => {
       incarnation: 'incarnation-1',
       seq: 1,
     });
+  });
+
+  test('a replyTo naming a /system actor on the consumer\'s node decodes to Nobody (#1572)', async () => {
+    const consumerNode = await startNode('reply-to-system', 47_531);
+    const peer = await startNode('reply-to-system', 47_532, ['reply-to-system@h:47531']);
+    await awaitCondition(() => consumerNode.cluster.upMembers().length === 2, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the two-node cluster converged',
+    });
+
+    const handled: string[] = [];
+    const consumer = consumerNode.system.spawn<Delivery<string>>(
+      () => new ConsumerController<string>({ handler: (body) => { handled.push(body); } }),
+      'consumer',
+    );
+    // Where the framework's own actors live — a path no peer may name.
+    const reached: unknown[] = [];
+    const framework = consumerNode.system._spawnSystemActor(
+      () => new Recorder(reached),
+      'delivery',
+      'pretend-producer',
+    );
+
+    const consumerSeenFromPeer = new RemoteActorRef(consumerNode.address, consumer.path.toString(), peer.cluster);
+    const frameworkSeenFromPeer = new RemoteActorRef(consumerNode.address, framework.path.toString(), peer.cluster);
+    consumerSeenFromPeer.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId: 'written-by-the-peer',
+      incarnation: 'incarnation-1',
+      seq: 1,
+      body: 'from-the-peer',
+      replyTo: frameworkSeenFromPeer,
+    });
+
+    // The delivery itself is still admitted: only the field is refused.
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the delivery was handled',
+    });
+    // A follow-up through the same actor proves the mailbox has moved past the
+    // acknowledgment, so the empty list below is an absence and not a race.
+    framework.tell('probe');
+    await awaitCondition(() => reached.length === 1, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the local probe reached the /system actor',
+    });
+    expect(handled).toEqual(['from-the-peer']);
+    expect(reached).toEqual(['probe']);
   });
 });

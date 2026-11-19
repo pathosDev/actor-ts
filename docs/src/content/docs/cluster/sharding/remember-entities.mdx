@@ -141,8 +141,10 @@ lifetime:
 
 1. **One write when the entity spawns** (an `append` of a
    `started` event).
-2. **One write when the entity passivates / stops** (an `append`
-   of a `stopped` event).
+2. **One write when the entity is passivated** (an `append` of a
+   `stopped` event).  A stop nobody asked for — a failure past the
+   restart budget, a plain `stopSelf` — writes nothing: the entity
+   stays remembered and comes back on its own.
 
 For high-churn entities (millions of short-lived sessions per
 hour), this is real overhead.  Consider:
@@ -157,6 +159,18 @@ hour), this is real overhead.  Consider:
 
 For low-churn workloads (10K stable entities), the cost is
 negligible.
+
+**The log does not grow with the churn.**  The default
+`JournalRememberEntitiesStore` compacts its stream: once 1 000
+events — or as many as the last snapshot holds, if that is more —
+have been appended behind its last snapshot, it writes one
+`snapshot` event carrying the live entity set and deletes the
+events before it.  A coordinator start therefore reads one snapshot
+plus at most one such interval, however long the type has been
+passivating and waking entities.  The snapshot itself is never
+deleted, so the stream is never compacted to nothing.  A registry
+written by an earlier release loads unchanged; once this release has
+compacted it, an earlier release can no longer read it.
 
 ## Pacing a restore
 
@@ -261,11 +275,13 @@ The framework's behavior:
 - **`Passivate` from the entity itself** — same.
 - **A stop without `Passivate`** — a failure past the shard's restart
   budget, a recovery failure the entity swallowed, a lost lease, a plain
-  `stopSelf` — appends a `stopped` event as well, so the entity is not
-  revived from the registry.  It comes back for the next message
-  addressed to it, no sooner than its
+  `stopSelf` — appends **nothing**: the system did not decide the
+  entity should go, so it stays in the registry and a failover restores
+  it.  Its shard re-creates it at the end of its
   [`entity-restart-backoff`](/cluster/sharding/overview/#an-entity-that-keeps-stopping)
-  allows: a message inside the wait is held until the wait ends.
+  without waiting for a message; a message inside the wait is held
+  until the wait ends.  An entity that should leave the registry has to
+  passivate.
 
 ### Remembered entities count against `maxEntities`
 

@@ -79,7 +79,7 @@ export class MailboxDepthProbe {
     // The local node is a routee like any other, so this node has to answer
     // too — and in the homogeneous deployment (a router on every node) this
     // one call is the whole of the routee-side setup.
-    this.releaseAgent = ClusterMailboxDepthAgent.serve(this.cluster);
+    this.releaseAgent = ClusterMailboxDepthAgent.serve(this.cluster, this.routeePath);
     this.refreshNow();
     this.timer = this.cluster.system.scheduler.scheduleAtFixedRateFunction(
       refreshMs,
@@ -173,8 +173,9 @@ export class MailboxDepthProbe {
       if (shallowest === null || depth < shallowestDepth) {
         shallowest = routee;
         shallowestDepth = depth;
-        // A depth is never negative, so nothing later in the scan wins under
-        // the strict `<`.  An optimisation, not a behaviour change.
+        // A depth is never negative — `isMailboxDepthReport` refuses one
+        // (#1042) — so nothing later in the scan wins under the strict `<`.
+        // An optimisation, not a behaviour change.
         if (depth === 0) break;
       }
     }

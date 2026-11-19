@@ -11,7 +11,7 @@ cluster-internal actors via known **receptionist contacts**.
 ```ts
 import { ClusterClient, ClusterClientOptions } from 'actor-ts/cluster';
 
-const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/cluster/receptionist']);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['my-app@10.0.0.5:2552']);
 const client = new ClusterClient(
   clusterClientOptions,
 );
@@ -71,6 +71,7 @@ type ClusterClientOptionsType = {
   clientIdentity?: { host: string; port: number }; // identity announced in the client's hello
   askTimeoutMs?: number;                           // default ask timeout (ms; default 5000)
   connectTimeoutMs?: number;                       // per-contact-point wait for hello-ack (ms; default 5000)
+  outboundQueueSize?: number;                      // frames held while the socket pushes back (default 1000)
   tls?: TlsTransportOptionsType;                   // must match the cluster's
   logger?: Logger;                                 // default: ConsoleLogger at WARN
 };
@@ -81,6 +82,27 @@ type ClusterClientOptionsType = {
 them in order; on failure, it falls back to the next.
 `connectTimeoutMs` bounds how long **one** of them gets to answer
 the `hello` handshake before the client moves on.
+
+A contact point the client moves on from is given up for good: a
+dial still connecting is cancelled, a connection that already
+opened is closed, and a `hello-ack` that arrives late changes
+nothing.  A contact point that resets or closes the connection
+before its `hello-ack` fails the attempt at once rather than at
+the deadline, and the next `send` or `ask` dials again.  `close()`
+also ends an attempt still in flight, rejecting every call waiting
+on it.
+
+A per-call `ask` deadline (`client.ask(path, message, timeoutMs)`)
+must be a positive finite number; `0`, a negative value, `NaN`
+and `Infinity` are refused with an `OptionsError` before anything
+is sent.  Leave it out to use `askTimeoutMs`.
+
+`tls` follows the cluster's settings.  `ca` alone is one-way TLS:
+the client checks the server's certificate and presents none.
+For mutual TLS set both `cert` and `key`; a client given only one
+of them is refused at construction, because the half would
+otherwise be dropped on the dial and the connection would quietly
+fall back to one-way TLS.
 
 For **stable contact addresses**, the cluster side typically
 runs a `ClusterClientReceptionist` on a fixed set of nodes,
@@ -97,6 +119,7 @@ actor-ts.cluster.client {
   system-name     = "checkout-client"
   ask-timeout     = 5s
   connect-timeout = 5s
+  outbound-queue-size = 1000
 
   receptionist {
     ask-timeout = 5s
@@ -143,6 +166,27 @@ configured value would have every client announce the same wire
 address, which is precisely what the draw prevents.  `tls`
 carries certificate material and `logger` is an object, so
 neither has a HOCON spelling either.
+
+### What the client builds out of a reply
+
+A client decodes its contact points' frames the way a node decodes
+a peer's: only the `JsonTree` tags in
+`actor-ts.serialization.wire.admitted-tags` build their class — the
+data tags by default — and a reply using any other tag (`regexp`,
+`undefined`, `error`, `url`) is refused with a WARN naming it, so
+the `ask` waits for its timeout.  The client reads that key from the
+same config it reads `actor-ts.cluster.client` from, so a cluster
+that widens its list widens it for its clients by the same key; an
+explicit `withWireDecode(...)` takes precedence over it.  The
+`actor-ts.serialization.read-constraints` ceilings apply too (#1303).
+
+```ts
+const wireDecode = WireDecodeOptions.create()
+  .withAdmittedTags([...DEFAULT_WIRE_ADMITTED_TAGS, 'error']);
+const clientOptions = ClusterClientOptions.create()
+  .withContactPoints(['orders@10.0.0.1:2551'])
+  .withWireDecode(wireDecode);
+```
 
 ## Server side — ClusterClientReceptionist
 
@@ -265,6 +309,23 @@ class OrderActor extends Actor<OrderCommand> {
 A successful reply is passed through untouched; only failures are
 redacted.  That keeps the domain contract explicit instead of
 turning whatever an exception happened to say into an API.
+
+### A contact point that stops reading
+
+A contact point that accepts the connection and then reads slowly, or
+not at all, pushes back through the socket.  The client then writes
+nothing more until the socket drains, and holds at most
+`outbound-queue-size` frames (default 1000, `withOutboundQueueSize`)
+in order for it.  Past that, `send` and `ask` reject at once:
+
+```
+ClusterClient: contact point … is not reading; 1000 frame(s) are already held for it, so this one is refused (actor-ts.cluster.client.outbound-queue-size)
+```
+
+Refused rather than dropped, because every envelope is a command a
+caller is waiting on, and only the caller knows whether to retry,
+shed or give up.  The held frames are written ahead of the FIN on
+`close()`.
 
 ## Comparison with cluster-aware ActorRef
 

@@ -1,6 +1,12 @@
 import type { Envelope } from '../internal/Mailbox.js';
-import { DroppingMailbox, MailboxFullError } from './DroppingMailbox.js';
-import { BoundedMailboxOptionsValidator, type BoundedMailboxOptions, type BoundedMailboxOptionsType, type BoundedMailboxOverflow } from './BoundedMailboxOptions.js';
+import { DroppingMailbox, MailboxFullError, deadLetterDropsFor } from './DroppingMailbox.js';
+import {
+  BoundedMailboxOptionsValidator,
+  DEFAULT_MAILBOX_OVERFLOW,
+  type BoundedMailboxOptions,
+  type BoundedMailboxOptionsType,
+  type BoundedMailboxOverflow,
+} from './BoundedMailboxOptions.js';
 
 // Re-exported from its historical home so `import { MailboxFullError } from
 // './BoundedMailbox.js'` keeps resolving — the class moved to
@@ -20,11 +26,11 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
     // `deadLetterDrops` is read before validation because the base holds it,
     // and the base has to be constructed first; the validator has nothing to
     // say about a boolean anyway.
-    super((options as Partial<BoundedMailboxOptionsType>).deadLetterDrops);
+    super(deadLetterDropsFor(options as Partial<BoundedMailboxOptionsType>));
     const settings = { ...(options as Partial<BoundedMailboxOptionsType>) };
     new BoundedMailboxOptionsValidator().validate(settings);
     this.capacity = settings.capacity!;
-    this.overflow = settings.overflow ?? 'reject';
+    this.overflow = settings.overflow ?? DEFAULT_MAILBOX_OVERFLOW;
     // The caller's hook is just the first observer — see `DroppingMailbox`.
     if (settings.onDrop !== undefined) this.observeDrops(settings.onDrop);
   }
@@ -69,7 +75,15 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
           this.reportDrop('drop-new', env);
           return;
         case 'reject':
-          throw new MailboxFullError(this.capacity);
+          // Refused, not thrown (#919).  The throw landed on the sender's
+          // stack — inside its `onReceive` when the sender was an actor — so
+          // the actor failed and restarted was the one that sent to a slow
+          // actor.  The arrival is what did not make it, hence `drop-new`;
+          // what sets `reject` apart is that `deadLetterDrops` defaults to on
+          // for it, so the refusal reaches `system.deadLetters` with its
+          // sender instead of only a counter.
+          this.reportDrop('drop-new', env);
+          return;
         default: {
           const _exhaustive: never = this.overflow;
           void _exhaustive;

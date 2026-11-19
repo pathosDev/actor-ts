@@ -55,7 +55,7 @@ them.
 
 | Hook | When |
 | --- | --- |
-| `onMessage(message)` | A message arrived on one of this actor's own subscriptions.  **Required.** |
+| `onMessage(message)` | A message arrived on one of this actor's own subscriptions.  **Required.**  Returning — or the returned promise settling — is the message's acknowledgment; a throw withholds it (see [Acknowledgment](#acknowledgment)). |
 | `onConnected()` | The connection (re)opened; the subscription registry has been re-applied on the broker. |
 | `onDisconnected(cause?)` | The connection dropped; a reconnect cycle may follow (per settings). |
 | `onInvalidMessage(err, message)` | `onMessage` threw an `MqttDecodeError` (a lazy `entity()` on a malformed payload).  Default: log + drop.  Rethrow to escalate. |
@@ -95,6 +95,8 @@ interface MqttOptionsType extends BrokerCommonOptionsType {
   codec?: MqttCodec<unknown>;   // default mqttJsonCodec()
   will?: { topic: string; payload: string | Uint8Array; qos?: 0 | 1 | 2; retain?: boolean };
   tls?: TlsTransportOptionsType;  // cert material for mqtts:// / wss://; code-only
+  acknowledgment?: 'on-reply' | 'on-delivery';  // when the PUBACK goes out; default 'on-reply'
+  acknowledgmentTimeoutMs?: number;             // how long 'on-reply' waits; default 30_000
 }
 ```
 
@@ -331,13 +333,67 @@ Since these commands are plain objects, keep any `TSelf` you define off
 the `kind` values `publish` / `subscribe` / `unsubscribe` — otherwise it
 would be dispatched as a command instead of reaching `onSelfMessage`.
 
+## Acknowledgment
+
+By default the actor acknowledges a message to the broker **only once it was
+processed**: the PUBACK of a QoS 1 message (the PUBCOMP of a QoS 2 one) goes
+out after `onMessage` has returned and after every fan-out target has
+replied `{ kind: 'acknowledgment' }`.  The actor `ask`s each target with the
+message, so a target replies on the message's `replyTo`:
+
+```ts
+import { acknowledgeDelivery } from 'actor-ts/io';
+
+class Mirror extends Actor<MqttMessage> {
+  override onReceive(message: MqttMessage): void {
+    store(message.payload.text());
+    acknowledgeDelivery(message);   // replies { kind: 'acknowledgment' }
+  }
+}
+```
+
+A throw from `onMessage`, a `{ kind: 'negativeAcknowledgment', reason? }`
+reply, any other reply, or no reply within `acknowledgmentTimeoutMs` (30 s)
+withholds the acknowledgment: the actor drops the connection without it,
+and the broker redelivers the message on the next one.  An undecodable
+payload that `onInvalidMessage` declines is acknowledged — redelivering it
+would fail the same way forever.
+
+Three consequences worth knowing:
+
+- **Redelivery needs a persistent session.**  With `cleanSession: true` —
+  the default — the broker discards a session's unacknowledged messages on
+  reconnect, so a message that failed is gone.  For at-least-once, set
+  `withCleanSession(false)`, a stable `clientId`, and subscribe at QoS 1.
+- **QoS 2 is not at-least-once processing.**  mqtt.js sends the PUBREC
+  itself on receipt; the actor holds back only the PUBCOMP, so a QoS 2
+  message that fails is not redelivered.  Use QoS 1 when processing must be
+  retried.  QoS 0 has no acknowledgment at all; a QoS 0 message that fails
+  is logged and dropped.
+- **One message at a time per connection.**  mqtt.js reads the next packet
+  only once the current one is acknowledged — that is the backpressure, and
+  a slow target holds the connection, not the actor's mailbox.  Keep
+  `acknowledgmentTimeoutMs` well below the keep-alive interval.
+
+**`acknowledgment: 'on-delivery'`** leaves the acknowledgment to mqtt.js,
+which sends it as the message enters the actor's mailbox, and asks no
+target for a reply (`replyTo` is absent).  Every QoS level is then
+at-most-once end to end, and messages are no longer serialised.
+
+```hocon
+actor-ts.io.broker.mqtt {
+  acknowledgment         = "on-reply"   # the default; or "on-delivery"
+  acknowledgment-timeout = 30s          # the default; on-reply only
+}
+```
+
 ## QoS levels
 
-| QoS | Delivery | Cost |
+| QoS | Delivery (default `acknowledgment: 'on-reply'`) | Cost |
 | --- | --- | --- |
 | **0** | At-most-once.  Fire-and-forget. | Cheapest; messages may be lost. |
-| **1** | At-least-once.  Broker stores until acked. | Default for most use cases.  Duplicates possible. |
-| **2** | Exactly-once.  Full handshake. | Slowest; rarely needed. |
+| **1** | At-least-once, given a persistent session: acknowledged once processed. | Default for most use cases.  Duplicates possible. |
+| **2** | Exactly-once on the wire; a message that fails processing is not redelivered. | Slowest; rarely needed. |
 
 For IoT telemetry, **QoS 1** is the typical balance.  Commands to
 devices: also QoS 1 (or QoS 2 if duplicates would be harmful).  Status

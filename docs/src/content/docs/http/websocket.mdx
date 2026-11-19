@@ -102,6 +102,8 @@ type WebsocketRouteOptions<TOut, TIn> = {
   acceptTimeoutMs?:    number;                        // setup deadline; default 10 000, Infinity to disable
   connectionMailboxCapacity?: number;                 // per-connection queue bound; default unset (global bound)
   connectionMailboxOverflow?: 'drop-head' | 'drop-new' | 'reject'; // needs a capacity
+  heartbeatIntervalMs?: number;                       // server ping interval; default 30 000, 0 to disable
+  idleTimeoutMs?:       number;                       // close after this long without a message; default 0 (off)
 };
 ```
 
@@ -228,6 +230,42 @@ a hub with its default mailbox cannot hold a finished upgrade past
 `withMailbox(...)` orders the command like any other message in that
 mailbox, and behind a FIFO backlog that takes longer than
 `acceptTimeoutMs` to drain the new connection is still closed with 1013.
+
+#### Heartbeat and idle timeout
+
+A peer can vanish without a close frame — a pulled cable, a laptop that
+went to sleep, a NAT that forgot the mapping.  Nothing then arrives on its
+socket and nothing ever will, and without a check the connection's actor,
+its entry in the hub's `clients` and its `maxConnections` slot stay for the
+life of the process.
+
+- **`heartbeatIntervalMs`** (default 30 s) sends each peer a protocol-level
+  ping every interval.  A connection from which nothing arrived since the
+  previous ping — no pong, no frame — is dropped without a close handshake,
+  which a vanished peer could not answer anyway, and the hub's
+  `onClientDisconnected` hears `{ code: 1001, reason: 'heartbeat timeout',
+  initiatedBy: 'server' }`.  A dead peer is gone between one and two
+  intervals after it went quiet, and its slot with it.  Every conforming
+  client answers a ping on its own — browsers, `ws`, Bun and Deno — so
+  nothing in your protocol changes.  `0` turns it off.
+- **`idleTimeoutMs`** (default off) closes a connection with `1001`
+  `'idle timeout'` once that long has passed without an inbound message.
+  Pongs do not count: a peer that answers every ping but says nothing is
+  idle by this measure.  What "too quiet" means is your protocol's to
+  decide, which is why it is off unless you set it.
+
+```ts
+const liveRouteOptions = WebsocketRouteOptions.create()
+  .withHeartbeatIntervalMs(15_000)
+  .withIdleTimeoutMs(5 * 60_000);
+websocket('/ws', chat, liveRouteOptions);
+```
+
+The heartbeat runs on all three backends with one exception: Hono on
+**Deno**, whose standard `WebSocket` cannot send a ping.  A route there
+warns once that its connections run without the heartbeat; Deno's own
+`idleTimeout` on `Deno.upgradeWebSocket` (120 s by default) still pings and
+drops an unresponsive peer.
 
 ### Origin checks (CSWSH defence)
 
@@ -482,18 +520,18 @@ connection's backlog to drain.  Everything else keeps arrival order,
 which is why the order per connection still holds: a connection's
 `onClientDisconnected` runs after its own queued frames.
 
-**A bound sheds the rest, never those two.**  Bound the hub with
+**A bound sheds frames, never the connection's lifecycle.**  Bound the hub with
 `withMailboxCapacity()`, with an
 [`actor-ts.deployment`](/reference/configuration/#actor-tsdeployment) entry
 for its path (`"/user/chat"`) where its spawn site is not yours to edit, or
 let `actor-ts.mailbox.default.capacity` reach it — in that order of
-precedence — and the bound applies to frames, `onClientDisconnected` and
-your `TSelf` messages; the spawn command and `onClientConnected` are neither
-counted nor shed.  A bounded hub under load therefore still accepts every
-upgrade and lists every new client in `this.clients`, while a flood is
-cut down to the capacity.  What it can still lose is a disconnect, which
-leaves a client in `this.clients` after it has gone — that part is your
-protocol, and only you know whether losing one is acceptable.
+precedence — and the bound applies to frames and your `TSelf` messages.
+The spawn command, `onClientConnected` and `onClientDisconnected` are never
+shed, neither by a bound nor by a `throttle({ onExcess: 'drop' })`, and only
+the first two ride the control lane: a disconnect keeps its place behind its
+connection's frames.  A bounded hub under load therefore still accepts every
+upgrade, lists every new client in `this.clients` and removes every client
+that leaves, while a flood is cut down to the capacity.
 
 The spawn command is the one that must not be lost.  It is sent exactly
 once, from the backend's upgrade callback, and it carries the only
@@ -510,9 +548,13 @@ spawned with a mailbox of its own keeps exactly that mailbox, and the
 order it gives everything: on a plain FIFO queue the spawn command waits
 its turn behind every frame queued before it.  It still cannot be shed —
 it takes the lane a death-watch `Terminated` takes, which `drop-head`,
-`drop-new`, `reject` and a `PriorityMailbox` all leave alone — but
-`onClientConnected` is an ordinary message there, and a bound built into
-that mailbox can drop it.
+`drop-new`, `reject` and a `PriorityMailbox` all leave alone — and so do
+`onClientConnected` and `onClientDisconnected`.  A mailbox that loses a
+disconnect anyway, one of your own whose `enqueue` discards it, is caught
+by the hub's death-watch on the connection's actor: once that actor has
+stopped, a client still in `this.clients` is removed and
+`onClientDisconnected` runs with code `1006` and `initiatedBy: 'error'`,
+beside a warning in the log.
 
 To keep strict arrival order for everything, give the hub a FIFO mailbox of
 its own — and bound it, because the hub is the actor its peers feed:
@@ -562,19 +604,16 @@ first upgrade.
 
 A bound sheds outbound *frames*, exactly as one on the hub sheds inbound
 ones.  `drop-head` drops the oldest queued frame, `drop-new` the arriving
-one, and `reject` refuses the arriving one by throwing `MailboxFullError`
-on the sender's stack.  For `reply` and `broadcast` that stack is the
-hub's, so both catch the refusal per connection: the frame is lost for
-that connection alone and counted the way `drop-new` would count it, and
-`broadcast` carries on with the next client.  One connection that has
-fallen behind cannot fail the hub, and with it every other connection.  A
-`connection.tell` you make yourself still gets the `MailboxFullError` —
-that is what `reject` is for, a sender that wants to know.  What a bound
-never sheds is `close()`: it takes the same exempt lane the accept
-command does, so `closeAll()` cannot become a set of sockets that quietly
-stay open, and `reject` cannot throw out of the middle of that loop and
-leave every client after the first one connected.  A shed frame is counted
-in `actor_mailbox_dropped_total`; it is not dead-lettered.
+one, and `reject` refuses the arriving one and dead-letters it.  None of
+them throws on the sender's stack — not in `reply` or `broadcast`, which
+run on the hub's, and not in a `connection.tell` you make yourself — so
+one connection that has fallen behind loses the frame alone, `broadcast`
+carries on with the next client, and the hub, with every other
+connection, is never failed for it.  What a bound never sheds is
+`close()`: it takes the same exempt lane the accept command does, so
+`closeAll()` cannot become a set of sockets that quietly stay open.  A
+shed frame is counted in `actor_mailbox_dropped_total` under `drop-head`
+or `drop-new`, and dead-lettered as well under `reject`.
 
 <Aside type="tip" title="Prefer the per-route caps">
   For a hub, reach for `maxConnections` and `maxFrameBytes` before
@@ -748,6 +787,8 @@ actor-ts.http.websocket {
   # Unset by default; a route's own value wins over both.
   # connection-mailbox-capacity = 256
   # connection-mailbox-overflow = "drop-head"
+  heartbeat-interval    = 30s   # 0 to disable
+  idle-timeout          = 0s    # off
 }
 ```
 

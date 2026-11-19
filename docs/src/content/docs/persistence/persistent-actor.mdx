@@ -297,6 +297,16 @@ cannot be reconstructed, and folding the surviving tail onto
 snapshot** — `deleteHistory(seq)` keeps the snapshot at `seq` for
 exactly this reason.
 
+That includes the case where *nothing* survives: a journal that has
+seen events, holds none of them, and has no snapshot covering them
+fails recovery with `JournalIntegrityError` too, rather than
+starting from `initialState()`.  A system that compacts without a
+snapshot on purpose — the state is meant to be forgotten — sets
+`actor-ts.persistence.allow-fully-compacted-recovery = on`; the
+actor then starts empty and resumes its sequence at the journal's
+high-water mark, so its next `persist` still lines up with what the
+journal remembers.
+
 The DevTools [time-travel
 panel](/observability/devtools/time-travel/) shares this replay
 code but opts out of that last part.  It asks what state looked
@@ -422,8 +432,7 @@ application family already registered under one of these names, say
 with, what the store said.
 
 Several callers reach a store without going through these breakers,
-so none of the above sees them: a `ReplicatedEventSourcedActor`'s
-append of an event it received from a peer (#958); the journal-backed
+so none of the above sees them: the journal-backed
 remember-entities store `JournalRememberEntitiesStore` (#852);
 `readEvents`, the protected helper for reading an actor's own events
 back; the durable [dead-letter queue](/operations/dead-letters/),
@@ -436,21 +445,16 @@ handed.
 
 [`ReplicatedEventSourcedActor`](/persistence/replicated-event-sourcing/overview/#when-the-stores-are-down)
 follows all five settings for its local `persist`, its recovery and
-its snapshot saves, through the same two breakers.  Three things
-differ.  Its append of an event a peer sent is not behind the journal
-breaker yet: that append is fire-and-forget and races itself, and its
-breaker belongs in the serialized append chain #958 introduces.  A
+its snapshot saves, through the same two breakers, and its append of
+an event a peer sent goes through the journal breaker as well, in a
+serialized append chain that retries it (#958).  Two things differ.  A
 recovery that fails — past `recovery-timeout`, or refused by a
 breaker — fails `preStart`, because the class has no
-`onRecoveryFailure`.  And a timed-out write is **not** safe by
-construction there: if it lands, nothing folds or broadcasts the
-event — only a successful `persist` does either — so no peer ever
-receives it, and the replica's journal holds an event its state does
-not show.  Whether a later recovery folds it depends on where that
-recovery starts: a snapshot taken after the landing counts the event
-as covered, so a recovery from that snapshot never folds it, while a
-full replay — no snapshot, or `snapshot-is-optional` falling back to
-the journal — does.
+`onRecoveryFailure`.  And a timed-out write is not simply failed
+there: the actor waits for the journal call to settle, and if the
+write landed after all it folds and broadcasts the event then, as
+the successful `persist` would have (#1732).  A rejected `persist`
+there means "not confirmed", not "never happened".
 
 [`DurableStateActor`](/persistence/durable-state/) is outside all of
 this: none of these settings reaches a durable-state store, whether
@@ -512,8 +516,12 @@ chat example relies on it: a DM channel is
 inside it cannot split off an extra field, and nothing anywhere
 splits an ID back apart.
 
-The same rules run again inside `journal.append()` — defence in
-depth for a journal reached without an actor — and, for
+The same rules run again inside `journal.append()`,
+`snapshotStore.save()` and `durableStateStore.upsert()` — defence in
+depth for a store reached without an actor, such as a migration
+script or a store wrapper. Only the writes are checked: `read`,
+`load` and `delete` still answer for an ID these rules refuse, so a
+stream written before them stays readable and removable — and, for
 [`DurableStateActor`](/persistence/durable-state/), in the options
 validator, where a violation is an `OptionsError` on the
 `persistenceId` field.
@@ -557,6 +565,14 @@ class Account extends PersistentActor<...> {
 The framework writes a snapshot via the snapshot store; on
 recovery, it loads the snapshot first and only replays events
 *after* that snapshot's seqNr.
+
+The policy's snapshot is taken after the append, so a save that
+fails there does not fail the command: its events are already
+durable.  The actor logs a warning, the failure is counted in
+`persistence_snapshot_failures_total{operation="save"}`, the
+`persist` callback runs as usual, and the next snapshot the policy
+asks for retries the save.  An explicit `saveSnapshot()` still
+throws on a failed save.
 
 `everyNEvents(N)` is the common case.  For custom policies (snapshot
 on a specific event kind, time-based), implement:

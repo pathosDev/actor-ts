@@ -5,7 +5,7 @@ import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter } from '../../SystemMessages.js';
 import { SystemGroups } from '../../internal/SystemPaths.js';
 import { metricsOf } from '../../metrics/MetricsExtension.js';
-import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../Constants.js';
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS, DEFAULT_TAG_LOOKBACK_WINDOW_MS } from '../Constants.js';
 import type { PersistentEvent } from '../JournalTypes.js';
 import {
   type LiveQueryOptions,
@@ -16,6 +16,7 @@ import {
   offsetStart,
   tagFilterCursorKey,
 } from '../query/PersistenceQuery.js';
+import { TagLookbackWindow } from '../query/TagLookbackWindow.js';
 import { InMemoryOffsetStore, type OffsetStore } from './OffsetStore.js';
 import {
   DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES,
@@ -45,7 +46,15 @@ const TICK: InternalTickMessage = { _: 'projection-tick' };
  * actor reads it without a fallback: every construction site goes through a
  * static factory, and each one resolves the field across all three layers.
  */
-type ResolvedLiveOptions = { readonly liveOptions: Required<LiveQueryOptions> };
+type ResolvedLiveOptions = { readonly liveOptions: ResolvedTickCadence };
+
+/**
+ * The one `LiveQueryOptions` field a projection uses.  Picked rather than the
+ * whole type made required: `lookbackWindowMs` there is the *stream's*
+ * window, and a by-tag projection resolves its own from
+ * `ByTagProjectionOptionsType.lookbackWindowMs` and HOCON instead.
+ */
+type ResolvedTickCadence = Required<Pick<LiveQueryOptions, 'pollIntervalMs'>>;
 
 /** Projection settings after the recovery defaults have been merged in. */
 type ResolvedProjectionOptions<E> =
@@ -53,7 +62,8 @@ type ResolvedProjectionOptions<E> =
 type ResolvedByPersistenceIdOptions<E> =
   ByPersistenceIdProjectionOptionsType<E> & ProjectionRecoveryOptionsType & ResolvedLiveOptions;
 type ResolvedByTagOptions<E> =
-  ByTagProjectionOptionsType<E> & ProjectionRecoveryOptionsType & ResolvedLiveOptions;
+  ByTagProjectionOptionsType<E> & ProjectionRecoveryOptionsType & ResolvedLiveOptions
+  & { readonly lookbackWindowMs: number };
 
 /** Which side of a projection tick failed — the `reason` label of the failure counter. */
 type ProjectionFailureReason = 'handler' | 'poll';
@@ -334,7 +344,7 @@ abstract class BaseProjectionActor<E, P> extends Actor<InternalTickMessage> {
       }
       // A retry and a stop both leave the cursor before the group.
       if (outcome !== 'delivered') return;
-      await this.commit(last.offset);
+      await this.commit(group);
       if (this.stopped) return;
       index = end;
     }
@@ -349,7 +359,7 @@ abstract class BaseProjectionActor<E, P> extends Actor<InternalTickMessage> {
     // A false directive leaves the cursor before this event, so the next
     // tick reads it again — still inside the split range, if it was in one.
     if (!await this.deliver(envelope.event)) return false;
-    await this.commit(envelope.offset);
+    await this.commit([envelope]);
     if (this.splitThrough !== null && this.comparePositions(envelope.offset, this.splitThrough) >= 0) {
       // The range is behind the cursor; delivery is grouped again from here.
       this.splitThrough = null;
@@ -622,8 +632,12 @@ abstract class BaseProjectionActor<E, P> extends Actor<InternalTickMessage> {
 
   protected abstract loadCursor(): Promise<void>;
   protected abstract runOnce(): Promise<void>;
-  /** Move the cursor to `position` and save it. */
-  protected abstract commit(position: P): Promise<void>;
+  /**
+   * Move the cursor past `envelopes` — one event, or one delivered group, in
+   * delivery order — and save it.  The whole group rather than its last
+   * position, because a by-tag cursor has to remember every event it covers.
+   */
+  protected abstract commit(envelopes: ReadonlyArray<ProjectionEnvelope<E, P>>): Promise<void>;
   /** Journal order on cursor positions — negative, zero or positive. */
   protected abstract comparePositions(a: P, b: P): number;
 }
@@ -651,12 +665,15 @@ class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E, number> {
       // A false directive leaves the cursor where it is, so the next tick
       // re-reads this same event — the retry, and the stop, both need that.
       if (!await this.deliver(ev)) return;
-      await this.commit(ev.sequenceNr);
+      await this.commit([{ event: ev, offset: ev.sequenceNr }]);
       if (this.stopped) return;
     }
   }
 
-  protected async commit(sequenceNr: number): Promise<void> {
+  protected async commit(envelopes: ReadonlyArray<ProjectionEnvelope<E, number>>): Promise<void> {
+    // A persistence id's events arrive in sequence order, so the last one
+    // is the whole commit.
+    const sequenceNr = envelopes[envelopes.length - 1]!.offset;
     this.cursor = sequenceNr;
     await this.offsetStore.saveSequence(this.config.name, this.config.persistenceId, sequenceNr);
   }
@@ -669,7 +686,15 @@ class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E, number> {
 /* ------------------------------ by tag -------------------------------- */
 
 class ByTagProjectionActor<E> extends BaseProjectionActor<E, Offset> {
-  private cursor: Offset = offsetStart;
+  /**
+   * The cursor and what lies behind it (#957).  Each poll reads from
+   * `window.readFrom()`, `lookbackWindowMs` behind the newest committed
+   * stamp, and hands on only what the window has not delivered — so an
+   * event whose write committed after the projection had passed its stamp is
+   * still handled, and handled once.  The window's state is what each commit
+   * saves, so the deduplication survives a restart as the offset does.
+   */
+  private window: TagLookbackWindow;
   /**
    * `OffsetStore` is keyed by string, while `tag` may now be a filter object.
    * Derived once: it must be identical on every load and save, or the
@@ -681,51 +706,46 @@ class ByTagProjectionActor<E> extends BaseProjectionActor<E, Offset> {
   constructor(private readonly config: ResolvedByTagOptions<E>) {
     super(config);
     this.cursorKey = tagFilterCursorKey(config.tag);
+    this.window = TagLookbackWindow.resuming(offsetStart, config.lookbackWindowMs);
   }
 
   protected async loadCursor(): Promise<void> {
-    this.cursor = await this.offsetStore.loadOffset(this.config.name, this.cursorKey);
+    const cursor = await this.offsetStore.loadOffset(this.config.name, this.cursorKey);
+    this.window = TagLookbackWindow.resuming(cursor, this.config.lookbackWindowMs);
   }
 
   protected async runOnce(): Promise<void> {
-    const events: TaggedEvent<E>[] = await this.config.query.currentEventsByTag<E>(
-      this.config.tag, this.cursor,
+    const read: TaggedEvent<E>[] = await this.config.query.currentEventsByTag<E>(
+      this.config.tag, this.window.readFrom(),
     );
+    // Dropped before the events are cut into groups: delivered again, or
+    // merely counted into a group's size, an event already handled would
+    // shift every group boundary behind it.
+    const events = this.window.admit(read);
     const handler = this.handler;
     if (handler.kind === 'group') {
-      // The same skip as below, taken before the events are cut into groups:
-      // delivered again, or merely counted into a group's size, the event
-      // committed last would shift every group boundary behind it.
-      await this.deliverGroups(events.filter((te) => !this.isCursor(te.offset)), handler);
+      await this.deliverGroups(events, handler);
       return;
     }
     for (const te of events) {
-      // Skip the event we already committed last round (the cursor
-      // is inclusive on load to support fresh-start replay, but on
-      // subsequent rounds we want strictly-after).
-      if (this.isCursor(te.offset)) continue;
-      // A false directive leaves the cursor where it is, so the next tick
-      // re-reads this same event — the retry, and the stop, both need that.
+      // A false directive leaves the event undelivered, so the next tick
+      // reads it again — the retry, and the stop, both need that.
       if (!await this.deliver(te.event)) return;
-      await this.commit(te.offset);
+      await this.commit([te]);
       if (this.stopped) return;
     }
   }
 
-  protected async commit(offset: Offset): Promise<void> {
-    this.cursor = offset;
-    await this.offsetStore.saveOffset(this.config.name, this.cursorKey, offset);
+  protected async commit(envelopes: ReadonlyArray<ProjectionEnvelope<E, Offset>>): Promise<void> {
+    // Every event of a group is marked, not only its last: a late event in
+    // the middle of a group sorts below the high-water mark, and only its
+    // own mark keeps the next read from delivering it again.
+    for (const envelope of envelopes) this.window.markDelivered(envelope.event);
+    await this.offsetStore.saveOffset(this.config.name, this.cursorKey, this.window.cursor());
   }
 
   protected comparePositions(a: Offset, b: Offset): number {
     return offsetCompare(a, b);
-  }
-
-  /** Whether `offset` is the one the cursor holds — the event committed last. */
-  private isCursor(offset: Offset): boolean {
-    return offset.timestamp === this.cursor.timestamp
-      && offset.persistenceId === this.cursor.persistenceId
-      && offset.sequenceNr === this.cursor.sequenceNr;
   }
 }
 
@@ -835,6 +855,9 @@ export class ProjectionActor {
       ...recoveryDefaultsFor(given, fromConfig),
       liveOptions: liveOptionsFor(given, fromConfig),
       groupAfterEnvelopes: groupAfterEnvelopesFor(given, fromConfig),
+      lookbackWindowMs: given.lookbackWindowMs
+        ?? fromConfig.lookbackWindowMs
+        ?? DEFAULT_TAG_LOOKBACK_WINDOW_MS,
     };
     validateProjectionOptions(resolvedOptions, 'tag');
     return system._spawnSystemActor(
@@ -888,7 +911,7 @@ function recoveryDefaultsFor<E>(
 function liveOptionsFor<E>(
   options: ProjectionOptionsType<E>,
   fromConfig: ProjectionConfigDefaults,
-): Required<LiveQueryOptions> {
+): ResolvedTickCadence {
   return {
     pollIntervalMs: options.liveOptions?.pollIntervalMs
       ?? fromConfig.pollIntervalMs

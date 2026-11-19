@@ -290,13 +290,15 @@ class Subscriber extends Actor<...> {
 
 The mediator holds three things that a subscriber — or a peer's
 gossip — could otherwise grow without end, and publish fan-out
-walks all three.  Each has a cap:
+walks all three.  Each has a cap, and a fourth bounds one peer's
+share:
 
 | Option | HOCON leaf | Default | Bounds |
 | --- | --- | --- | --- |
 | `maxSubscribersPerTopic` | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Local subscribers on one topic |
-| `maxTopics` | `cluster.pub-sub.max-topics` | `10000` | Distinct topics on this mediator |
+| `maxTopics` | `cluster.pub-sub.max-topics` | `10000` | Distinct topics on this mediator, per pool (see below) |
 | `maxRemoteNodesPerTopic` | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Peers claiming subscribers for one topic |
+| `maxTopicsClaimedPerSender` | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` | Topics one peer may claim |
 
 ```ts
 const distributedPubSubOptions = DistributedPubSubOptions.create()
@@ -323,6 +325,17 @@ well, and that is the half worth knowing about: a peer announcing
 involved anywhere.  Claims over a cap are dropped and logged; the
 connection stays up, because one noisy peer should not cost a
 healthy link.
+
+`maxTopics` counts two pools apart: the topics with a local
+subscriber, which a local `Subscribe` spends, and the topics only
+peers claim, which gossip spends.  A peer's claims therefore never
+refuse a local `Subscribe` (#1074) — the topic a peer claims is not
+free to subscribe to either, its first local subscriber takes a
+local slot.  Within the peer pool, each sender holds at most
+`maxTopicsClaimedPerSender` claims, so the first peer to fill it
+cannot deny it to the rest.  Raise that cap if one node of yours
+subscribes to more topics than it: claims past it never reach the
+other nodes, and their publishes to those topics miss that node.
 
 ## Publishes that reach nobody
 

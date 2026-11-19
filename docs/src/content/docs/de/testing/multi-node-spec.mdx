@@ -245,6 +245,15 @@ await spec.advanceUntil(
 spec.restore('a', 'b');
 ```
 
+Auf der virtuellen Uhr stellen `advance` und `advanceUntil` die Uhr vor und
+lassen danach jeden Knoten laufen, bis alle zugleich ruhig sind — die Aktoren
+unter `/system` eingeschlossen, wo Sharding-Regionen und -Koordinatoren, der
+Singleton-Manager und Pub-Sub leben. Ein Schritt stellt die Uhr also nie über
+eine knotenübergreifende Antwort hinweg, die bloß noch in der Warteschlange
+steht: Arbeit, die keine Zeit braucht, ist erledigt, wenn der Schritt
+zurückkehrt, und nur Arbeit, die auf einen Timer wartet, bleibt für den
+nächsten ([Issue #1835](https://github.com/pathosDev/actor-ts/issues/1835)).
+
 Jedes Feld ist optional und steht per Default auf „kein Fehler", ein Profil
 nennt also nur, was es ändert. `degrade` wirkt beidseitig wie `partition`; für
 eine einseitige Verschlechterung greifst du zu

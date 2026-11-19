@@ -163,6 +163,18 @@ victim logs in against the real app, and the browser lands on a look-alike
 that asks for the password "again".  The framework cannot make handlers
 validate, so the helper they already reach for validates instead.
 
+**The server checks every redirect it sends, not only the ones `redirect`
+builds** (#1056).  A `301`/`302`/`303`/`307`/`308` whose `location`
+resolves to another host than the request's is refused with the generic
+`500` — whether a handler wrote the header itself
+(`complete(Status.Found, null, { location })`), a thrown `HttpError`
+carries it, or a `fallback()` route answered with it.  The refusal is
+logged at `error` without the target.  Two opt-ins let a redirect leave:
+`redirectExternal(...)` per route, and server-wide
+`withAllowedRedirectOrigins([...])` on `newServerAt(...)`, which takes exact
+origins (`https://payments.example`, no path) or `['*']` to switch the check
+off.  An empty target is refused by `redirect('')` with a `400`.
+
 ### `redirectExternal(url, status?)`
 
 ```ts
@@ -228,6 +240,7 @@ type HttpRequest = {
   readonly query:   Record<string, string>;
   readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
+  readonly remoteAddress?: string;   // the socket peer — behind a proxy, the proxy
 };
 ```
 
@@ -236,6 +249,12 @@ never appears in it, because the parameters are already parsed into
 `query`.  That matters for anything built by appending to `path`: a
 redirect target, a cache key, a request fingerprint.  Percent-escapes
 are left encoded; decode once, then validate.
+
+`remoteAddress` is the **socket peer** on all three backends — no
+forwarding header is consulted.  Behind a reverse proxy that is the
+proxy; the client's own address comes from
+[`clientIpResolver`](/http/middleware/ip-allowlist/#reusing-the-walk),
+which needs the proxies named before it reads the forwarded chain.
 
 ### Path parameters
 

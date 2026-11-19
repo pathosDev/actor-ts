@@ -142,6 +142,11 @@ Die zweite Familie findet man durch Lesen:
 Wenn ja, ist das Warten ein Stellvertreter, den ein halb fertiger Schritt
 bereits erfüllt — warte stattdessen auf den *geprüften* Zustand.
 
+Lesen ist nicht mehr der einzige Weg dorthin.  Wo die Reihenfolge das ganze
+Korrektheitsargument eines Protokolls ist, lässt sie sich stattdessen unter
+Testkontrolle stellen — siehe
+[Reihenfolge unter Testkontrolle](#reihenfolge-unter-testkontrolle) weiter unten.
+
 ### Wo die Wiederholung bezahlt wird
 
 An drei Stellen, jede mit einer anderen Frage.
@@ -216,6 +221,91 @@ zurückkommt, und überlebt anders als eine Log-Zeile.
 seine letzte Assertion ist die entscheidende: Sie fragt fast-check, mit welchem
 Seed es *tatsächlich* läuft — ein Preload, der eingetragen und nie geladen
 wurde, fällt damit um, statt still den Zufalls-Default wiederherzustellen.
+
+### Reihenfolge unter Testkontrolle
+
+`ManualScheduler` entscheidet, *wann* ein Timer feuert.  Darüber, *welche
+Nachricht zuerst ankommt*, hat er nichts zu sagen, und das Wiederholen eines
+Tests ändert daran ebenfalls nichts: Der Dispatcher wählt immer wieder dieselbe
+Reihenfolge.  Der Scheduler von fast-check nimmt der Event-Loop diese Wahl ab.
+`fc.scheduler()` hält jedes Promise fest, das an `s.schedule(...)` übergeben
+wird, und gibt sie in einer Reihenfolge frei, die er selbst wählt;
+`fc.scheduledModelRun` treibt eine Befehlsfolge durch denselben Scheduler gegen
+ein Referenzmodell.  Ein Fehlschlag druckt die gefundene Verschränkung — jede
+Freigabe der Reihe nach als `task${n}`-Zeile — zusammen mit `{ seed, path }`.
+
+`tests/unit/delivery/DeliveryOrderingProperties.test.ts` tut das für Reliable
+Delivery (#1370).  Producer und Consumer sind die echten Controller; die
+Leitung dazwischen ist durch Hops ersetzt, die erst zustellen, wenn der
+Scheduler sie freigibt.  So rennen eine Zustellung, ihre Wiederholung und die
+Bestätigung beider in jeder Reihenfolge gegeneinander, die der Scheduler
+erkundet.  Das Modell prüft die drei Zusagen des Protokolls: Kein Send geht
+verloren, ein Duplikat lässt den Handler nie erneut laufen, und die Sequenz hat
+nie eine Lücke.  Entfernt man die `above`-Hälfte der Duplikatprüfung im
+Consumer, wird er rot — die Wiederholung einer Sequenz, die oberhalb einer
+offenen Lücke behandelt wurde, wird ein zweites Mal behandelt —, und die
+bestehenden Suiten bemerken das nur über einen Timeout.
+
+**Um einen Fehlschlag nachzuspielen**, gib den gedruckten `path` an
+`fc.assert` zurück; der Seed ist ohnehin der des Preloads:
+
+```ts
+await fc.assert(
+  fc.asyncProperty(deliveryScheduler(), deliveryScenario(4), async (scheduler, scenario) => {
+    expect(await runScheduledDelivery(scheduler, scenario)).toEqual([]);
+  }),
+  { numRuns: 40, path: '11' },
+);
+```
+
+Dieselbe Verschränkung kommt zurück, Freigabe für Freigabe.  Danach hält man
+sie wie bei jeder Property als Beispieltest fest: `deliverySchedulerFor([...])`
+spielt die `task${n}`-IDs aus dem Bericht in dieser Reihenfolge ab.
+
+Jeder Fall startet ein `ActorSystem` und lässt es nach jeder Freigabe zur Ruhe
+kommen, deshalb läuft die Datei pro Commit 40 Fälle, deutlich innerhalb von
+Buns 5-s-Limit.  Die tiefe Erkundung ist
+`tests/nightly/DeliveryOrderingDeep.nightly.ts`, die `nightly-flakes.yml` über
+ihren Pfad startet.  Ihr Name hält `bun test` davon ab, sie einzusammeln —
+keine Umgebungsvariable, die `NoEnvironmentGatedSkips.test.ts` verbietet.
+
+Der Handshake des Sharding-Koordinators wird genauso behandelt (#1823).
+`tests/unit/cluster/sharding/ShardingHandshakeOrderingProperties.test.ts`
+betreibt einen echten Koordinator und zwei echte Regionen auf einem
+`MultiNodeSpec` mit zwei Knoten, und jeder Frame zwischen den Knoten —
+`GetShardHome`, `ShardHome`, `Register`, Gossip, eine Übergabe — wird vom
+Scheduler freigegeben.  Zwischen zwei geplanten Phasen kann der Leader neu
+starten; genau für dieses Fenster gibt es die Registrierungsbarriere (#1272).
+Das Modell prüft, dass jeder Shard zu jedem Zeitpunkt höchstens ein Zuhause
+hat, dass kein Shard platziert wird, bevor die Region, die ihn noch hält, ihn
+beansprucht hat, und dass kein Shard ohne Zuhause bleibt, sobald das Netz
+geleert ist.  Ohne die Barriere wird die Property rot, und der ausgegebene Pfad
+spielt den Fehler wieder ab.  Der tiefe Lauf ist
+`tests/nightly/ShardingHandshakeDeep.nightly.ts`.
+
+Jeder nächtliche Job — die geplanten Reihenfolgen, die tiefen Decoder-Eingaben
+und der Lauf mit erhöhtem Zeitfaktor eingeschlossen — läuft über das
+Stress-Harness und speist den Report-Job, sodass eine rote Nacht in jedem von
+ihnen das `nightly-flake`-Issue anlegt.
+
+### Eingaben, die niemand gewählt hat
+
+Jeder Decoder, der Bytes von außen liest, bekommt auch Bytes, die kein Encoder
+geschrieben hat (#1369): `CborDecoder`, der `FrameDecoder` der Cluster-Leitung,
+der eingehende WebSocket-Pfad, `parseHocon` und der JSON-Baum-Walker, dazu eine
+Differential-Property, die CBOR und den JSON-Baum gegeneinander hält.  Die
+Eingaben sind gleichförmiges Rauschen und fast gültige Bytes — eine echte
+Kodierung mit ersetzten Bytes, an jedem Offset abgeschnitten, ein Längenfeld,
+das bis 2^64 - 1 beansprucht, Verschachtelung über jede Obergrenze hinaus.  Das
+Gesetz ist überall dasselbe: ein Wert oder der eigene Fehler des Decoders,
+niemals eine andere Exception; was er baut, bleibt in seiner Allow-List; und es
+ist nicht größer als die Eingabe, die dafür bezahlt hat.  Das gemeinsame
+Vokabular liegt in `tests/util/DecoderFuzz.ts`.
+
+Die tiefe Variante ist `tests/nightly/DecoderFuzzDeep.nightly.ts`.  Sie
+importiert die Dateien pro Commit unverändert und hebt nur die Fallzahl von 120
+auf 10 000, sodass die beiden nicht auseinanderlaufen können; der Seed bleibt
+der des Preloads.
 
 ## Der Katalog
 

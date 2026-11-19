@@ -1,11 +1,14 @@
 import type { ReplicaId } from '../../crdt/Crdt.js';
 import type { VectorClock } from './VectorClock.js';
+import { canonicalOrderKey } from '../../util/CanonicalOrderKey.js';
 
 /**
  * Resolution strategy for two events that {@link VectorClock} flags
  * as concurrent — neither happens-before the other.  The replicated-
- * event-sourced actor consults this when merging divergent histories
- * so every replica converges to the same state.
+ * event-sourced actor consults the one its `resolver()` returns for every
+ * run of mutually concurrent events in its canonical history, and folds the
+ * single event that comes out (#1245).  Without one — the default — every
+ * event is folded as it is.
  *
  * Two contracts:
  *   - The resolver is deterministic for a given `(a, b)` pair —
@@ -16,8 +19,9 @@ import type { VectorClock } from './VectorClock.js';
  *     event arrived first.
  *
  * The simplest deterministic resolver is **last-writer-wins** (LWW)
- * keyed on `(timestamp, replicaId)` — that's what we ship as the
- * default.  Domain-aware resolvers can do something smarter
+ * keyed on `(timestamp, replicaId)`, shipped as
+ * {@link LastWriterWinsResolver}; it keeps one event of a concurrent pair
+ * and drops the other.  Domain-aware resolvers can do something smarter
  * (e.g. additive merge for counters, set union for tag sets).
  */
 export interface ConflictResolver<E> {
@@ -48,7 +52,11 @@ export type ConflictCandidate<E> = {
 /**
  * Last-writer-wins on `(timestamp, replicaId)`.  Higher timestamp
  * wins; on ties the higher (lexicographic) replicaId wins so every
- * replica converges deterministically.
+ * replica converges deterministically.  A tie on both — one replica
+ * stamping two events in one millisecond — goes to the event whose canonical
+ * order key ranks higher, so the winner never depends on which candidate
+ * is `a` (the same last key `LWWRegister` uses since #950, injective since
+ * #1841).
  *
  * Caveat: relies on wall-clock timestamps being roughly comparable
  * across replicas.  Same trade-off as `LWWRegister`.
@@ -58,7 +66,17 @@ export class LastWriterWinsResolver<E> implements ConflictResolver<E> {
     if (a.timestamp > b.timestamp) return a.event;
     if (b.timestamp > a.timestamp) return b.event;
     // Tie on timestamp — break by replica id.
-    return a.replica > b.replica ? a.event : b.event;
+    if (a.replica > b.replica) return a.event;
+    if (b.replica > a.replica) return b.event;
+    // A full tie.  Falling through to `b.event` made the answer the second
+    // argument, so two replicas meeting the pair in opposite orders kept
+    // different events.  The payload is the last key of the order: any
+    // deterministic rank works, as long as it never depends on argument order.
+    // The key is injective (#1841), so two events that tie on it are equal and
+    // answering `a` is indistinguishable from answering `b`.  It lives in
+    // `src/util/` so this layer shares `LWWRegister`'s order without depending
+    // on the CRDT module.
+    return canonicalOrderKey(b.event) > canonicalOrderKey(a.event) ? b.event : a.event;
   }
 }
 

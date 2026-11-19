@@ -130,6 +130,10 @@ health.  The second family is found by reading:
 If yes, the wait is a proxy that a half-finished step already satisfies —
 wait on the *asserted* state instead.
 
+Reading is no longer the only way in.  Where the ordering is the protocol's
+whole correctness argument, the order can be put under test control instead —
+see [Ordering under test control](#ordering-under-test-control) below.
+
 ### Where the repetition is paid
 
 Three places, each asking a different question.
@@ -199,6 +203,82 @@ survives.
 and its last assertion is the one that matters: it asks fast-check what seed it
 is *actually* running with, so a preload that was registered and never loaded
 fails rather than quietly restoring the random default.
+
+### Ordering under test control
+
+`ManualScheduler` decides *when* a timer fires.  It has no say in *which
+message arrives first*, and repeating a test does not change that either: the
+dispatcher keeps choosing the same order.  fast-check's scheduler takes the
+choice away from the event loop.  `fc.scheduler()` holds every promise handed
+to `s.schedule(...)` and releases them in an order it picks;
+`fc.scheduledModelRun` drives a command sequence through the same scheduler
+against a reference model.  A failure prints the interleaving it found — each
+release, in order, as `task${n}` lines — together with `{ seed, path }`.
+
+`tests/unit/delivery/DeliveryOrderingProperties.test.ts` does this for reliable
+delivery (#1370).  The producer and consumer are the real controllers; the wire
+between them is replaced by hops that deliver only when the scheduler releases
+them, so a delivery, its retransmit and the acknowledgment of either race in
+every order the scheduler explores.  The model checks the protocol's three
+claims: no send is lost, a duplicate never re-runs the handler, and the
+sequence never gaps.  Removing the `above` half of the consumer's duplicate
+check turns it red — a retransmit of a sequence handled above an open gap is
+handled a second time — and existing suites only notice that by timing out.
+
+**To replay a failure**, hand the printed `path` back to `fc.assert`; the seed
+is already the preload's:
+
+```ts
+await fc.assert(
+  fc.asyncProperty(deliveryScheduler(), deliveryScenario(4), async (scheduler, scenario) => {
+    expect(await runScheduledDelivery(scheduler, scenario)).toEqual([]);
+  }),
+  { numRuns: 40, path: '11' },
+);
+```
+
+The same interleaving comes back, release for release.  Then pin it as an
+example test, as for any property: `deliverySchedulerFor([...])` replays the
+`task${n}` ids from the report in that order.
+
+Each case boots an `ActorSystem` and settles it after every release, so the
+per-commit file runs 40 cases, well inside bun's 5 s cap.  The deep exploration
+is `tests/nightly/DeliveryOrderingDeep.nightly.ts`, run by `nightly-flakes.yml`
+by path.  Its name is what keeps `bun test` from collecting it — not an
+environment variable, which `NoEnvironmentGatedSkips.test.ts` forbids.
+
+The sharding coordinator handshake gets the same treatment (#1823).
+`tests/unit/cluster/sharding/ShardingHandshakeOrderingProperties.test.ts` runs a
+real coordinator and two real regions on a two-node `MultiNodeSpec`, and every
+frame between the nodes — `GetShardHome`, `ShardHome`, `Register`, gossip, a
+hand-off — is released by the scheduler.  Between two scheduled phases the
+leader may restart, which is the window the registration barrier exists for
+(#1272).  The model checks one home per shard at any time, no placement before
+the region still hosting a shard has claimed it, and no shard left without a
+home once the network has drained.  Dropping the barrier turns it red, and the
+printed path replays the failure.  Its deep run is
+`tests/nightly/ShardingHandshakeDeep.nightly.ts`.
+
+Every nightly job — the scheduled orderings, the deep decoder inputs and the
+time-factor run included — goes through the stress harness and feeds the
+report job, so a red night in any of them files the `nightly-flake` issue.
+
+### Inputs nobody chose
+
+Every decoder that reads bytes from outside is also fed bytes no encoder wrote
+(#1369): `CborDecoder`, the cluster wire's `FrameDecoder`, the WebSocket
+inbound path, `parseHocon` and the JSON-tree walker, plus a differential
+property holding CBOR and the JSON tree against each other.  The inputs are
+uniform noise and almost-valid bytes — a real encoding with bytes replaced, cut
+at every offset, a length field claiming up to 2^64 - 1, nesting past any
+ceiling.  The law is the same everywhere: a value or the decoder's own error,
+never another exception; what it builds stays inside its allow-list; and it is
+no larger than the input that paid for it.  The shared vocabulary lives in
+`tests/util/DecoderFuzz.ts`.
+
+The deep variant is `tests/nightly/DecoderFuzzDeep.nightly.ts`.  It imports the
+per-commit files unchanged and only raises the case count from 120 to 10 000,
+so the two cannot drift apart; the seed stays the preload's.
 
 ## The catalog
 

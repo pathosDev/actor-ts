@@ -243,21 +243,25 @@ try {
   await this.persist(next);
 } catch (e) {
   if (e instanceof DurableStateConcurrencyError) {
-    // Another writer beat us — reload and retry, or surface to the user.
+    // Another writer beat us — this.state is already reloaded: retry, or surface to the user.
   }
 }
 ```
 
 When two writers update the same `persistenceId` concurrently, the
 store's revision check rejects the second one with
-`DurableStateConcurrencyError`.  Strategies:
+`DurableStateConcurrencyError`.  Before the error reaches your handler,
+the actor re-reads the record, so `this.state` and `this.revision` are
+the store's current ones and the next `persist` can succeed.  The error
+is still thrown, because the value you tried to write was computed from
+state that was already stale.  Strategies:
 
 - **Avoid the problem** — make sure only one actor at a time writes
   to a given `persistenceId`.  This is usually trivial: each `cart-user-42`
   has one actor, on one node (via sharding or singleton).
-- **Reload and retry** — catch the error, reload state, recompute
-  the new value, persist again.  Works when the operation is
-  idempotent.
+- **Retry** — catch the error, recompute the new value from the
+  already reloaded `this.state`, persist again.  Works when the
+  operation is idempotent.
 - **Surface to caller** — reply with an error; let the caller decide
   whether to retry.
 
@@ -359,18 +363,23 @@ believes was ciphertext.  `compression()` is a performance hint,
 so it warns once and the record is written uncompressed;
 `{ mode: 'none' }` is accepted everywhere.
 
-Configuring either authenticator — `client-aes256-gcm` or
-`hmac-sha256` — buys a second thing besides privacy and
-tamper-evidence: it is what gives the object-storage store
-**move detection**.  Every write binds the body to the storage
-key it goes to, so a record that later turns up under another
-entity's key is refused, with nothing to switch on.  Without
-one — the default — nothing at that layer notices: a
-durable-state body is `{ revision, state, timestamp }` and names
-no entity, and `load` answers with the `persistenceId` you asked
-for.  The snapshot store is not in the same position, and
+The object-storage store has **move detection** at two strengths.
+Its body names the entity it was written for, and `load` refuses
+a body naming another one with a `JournalError`
+([#1417](https://github.com/pathosDev/actor-ts/issues/1417)) — so
+in the default configuration a record copied or restored onto
+another entity's key is caught, but not a deliberate writer, who
+can put any name into a plaintext body.  Configuring either
+authenticator — `client-aes256-gcm` or `hmac-sha256` — closes
+that too, besides buying privacy and tamper-evidence: every
+write binds the body to the storage key it goes to, with nothing
+to switch on.
 [What encryption does not cover](/persistence/object-storage/encryption/#what-encryption-does-not-cover)
-is where the asymmetry is set out.
+sets out both.
+
+A body written by an earlier version carries no `persistenceId`
+and is refused; there is no migration path, so such records have
+to be rewritten.
 
 See
 [Object storage encryption](/persistence/object-storage/encryption/)

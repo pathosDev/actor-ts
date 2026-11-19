@@ -12,12 +12,14 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
 import { AmqpActor, type AmqpDelivery, type AmqpQueueBinding } from '../../../../src/io/broker/AmqpActor.js';
+import { acknowledgeDelivery } from '../../../../src/io/broker/BrokerAcknowledgment.js';
 import { AmqpOptions } from '../../../../src/io/broker/AmqpOptions.js';
 import { waitForPort } from '../lib/WaitForPort.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/Scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-consume.js';
 import { scenario as ackScenario } from './scenarios/02-ack-nack.js';
 import { scenario as fanoutScenario } from './scenarios/03-fanout-exchange.js';
+import { scenario as onReplyScenario } from './scenarios/04-on-reply-redelivery.js';
 
 export interface AmqpContext extends BrokerScenarioContext {
   readonly url: string;
@@ -30,9 +32,17 @@ function requireEnv(name: string): string {
   return value;
 }
 
+/**
+ * Inbox actor — acknowledges each delivery, so the default
+ * `acknowledgment: 'on-reply'` acks it (#976).  A no-op under
+ * `autoAcknowledge: false`, where the delivery carries no `replyTo`.
+ */
 export class InboxActor extends Actor<AmqpDelivery> {
   readonly received: AmqpDelivery[] = [];
-  override onReceive(m: AmqpDelivery): void { this.received.push(m); }
+  override onReceive(m: AmqpDelivery): void {
+    this.received.push(m);
+    acknowledgeDelivery(m);
+  }
 }
 
 async function main(): Promise<void> {
@@ -53,6 +63,7 @@ async function main(): Promise<void> {
       pubsubScenario,
       ackScenario,
       fanoutScenario,
+      onReplyScenario,
     ];
     await runScenarios(scenarios, context);
   } finally {

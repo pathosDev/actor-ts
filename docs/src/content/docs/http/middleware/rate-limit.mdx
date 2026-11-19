@@ -9,7 +9,7 @@ returned function with the handler you want to protect.
 Excess requests get **429** with a `Retry-After` header.
 
 ```ts
-import { rateLimit } from 'actor-ts/http';
+import { Status, complete, path, post, rateLimit } from 'actor-ts/http';
 import { InMemoryCache } from 'actor-ts/cache';
 
 const limited = rateLimit({
@@ -19,14 +19,46 @@ const limited = rateLimit({
   key:      (request) => request.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
 });
 
+const apiHandler = () => complete(Status.OK, { ok: true });
 const routes = path('api', post(limited(apiHandler)));
 ```
 
 Each distinct key (here: per client IP taken from the socket peer,
 `request.remoteAddress`) gets a 100/minute budget.  Excess requests get 429
-with a `Retry-After` header.  **Key on a value the client can't forge** —
-never key on a raw `x-forwarded-for` (see the security note below), or an
-attacker rotates it per request to bypass the limit.
+with a `Retry-After` header.  **Key on a value the client can't forge.**
+Served directly, that is the socket peer.  Behind a reverse proxy the
+socket peer is the proxy, so resolve the client with
+[`clientIpResolver`](#behind-a-reverse-proxy) and name the proxies you
+trust — not with the forwarding header itself, which an attacker rotates
+per request to bypass the limit.
+
+## Behind a reverse proxy
+
+`request.remoteAddress` is the socket peer on every backend.  Behind
+NGINX, an AWS ALB or Cloudflare that is the proxy, and keying on it puts
+every client into one bucket.  `clientIpResolver` resolves the client the
+way [`IpAllowlist`](/http/middleware/ip-allowlist/) does — it reads the
+forwarding chain from the socket end inwards and stops at the first
+address that is not one of your proxies:
+
+```ts
+import { clientIpResolver, rateLimit } from 'actor-ts/http';
+
+const clientIp = clientIpResolver(['10.0.0.0/8']);   // your load balancers
+const limited = rateLimit({
+  cache,
+  windowMs: 60_000,
+  max:      100,
+  key:      (request) => clientIp(request) ?? '<unresolved>',
+});
+```
+
+A direct client is its own socket peer, so a header it forges is never
+read; junk a client prepends to the chain is never reached.  The
+resolver answers `undefined` only when a request has no socket peer at
+all, and folding those into one shared bucket limits them together
+rather than letting them through.  A second argument names a vendor
+header such as `cf-connecting-ip` instead of `x-forwarded-for`.
 
 ## Configuration
 
@@ -38,6 +70,10 @@ type RateLimitOptions = {
   key:         (request: HttpRequest) => string | Promise<string>;
   keyPrefix?:  string;                    // default 'rl:'
   onLimit?:    (context: RateLimitContext) => HttpResponse;
+  failureMode?:    'open' | 'closed';     // default 'open'
+  onBackendError?: (error: unknown, context: RateLimitBackendErrorContext) => void;
+  logger?:         Logger;                // default: console, at warn
+  metrics?:        MetricsRegistry;       // unset: no metric
 };
 
 type RateLimitContext = {
@@ -57,6 +93,50 @@ type RateLimitContext = {
 | `key(request)` | Derive the rate-limit key — typically client IP, user ID, or API key. **Required.** |
 | `keyPrefix` | Cache-key namespace.  Default `'rl:'` so multiple limiters in the same Redis don't collide. |
 | `onLimit(context)` | Override the 429 response — full control over status / body / headers. |
+| `failureMode` | What happens when the cache cannot count a request: `'open'` passes it, `'closed'` answers 503.  See [when the cache fails](#when-the-cache-fails). |
+| `onBackendError(error, context)` | Called on every cache failure with the user `key`, the `failureMode` and whether the failure is `permanent`. |
+| `logger` | Where cache failures are logged — one line per `windowMs` while they continue. |
+| `metrics` | Registry for `http_rate_limit_backend_errors_total`. |
+
+## When the cache fails
+
+A limiter whose cache is down cannot count, and something has to happen
+to the request.  `failureMode` says what:
+
+- **`'open'` (default)** — the request passes.  A limiter is abuse
+  protection; turning a Redis blip into an outage of the whole API is
+  usually the worse trade.
+- **`'closed'`** — the request is answered **503** and the handler does
+  not run.  The choice for a limiter in front of something expensive or
+  abusable — login, password reset, a paid upstream — where an
+  unlimited window is worse than a refused request.  503 and not 429,
+  because the client has exceeded nothing.
+
+Either way the failure is visible.  It is logged at warn — one line per
+`windowMs` while failures continue, with the count of the suppressed
+ones — counted on `http_rate_limit_backend_errors_total{prefix}` when
+`metrics` is set, and handed to `onBackendError`:
+
+```ts
+import { MetricsExtensionId } from 'actor-ts/metrics';
+
+const metrics = system.extension(MetricsExtensionId).enable();
+const loginLimited = rateLimit({
+  cache,
+  windowMs:    60_000,
+  max:         10,
+  key:         (request) => `login:${request.remoteAddress ?? 'unknown'}`,
+  failureMode: 'closed',
+  metrics,
+});
+```
+
+A cache that rejects every call with the **identical** error is
+reported once, at error, as a permanent condition — that is what a
+`RedisCache` whose `ioredis` peer never loaded looks like, because the
+failed import is memoised and every later call rejects with it.  Under
+`'open'` that limiter is off until someone installs the package, so the
+log line says so instead of repeating every minute.
 
 ## Custom keying
 
@@ -107,6 +187,16 @@ Retry-After:           23           ← (on 429 only) seconds until reset
 
 Clients use these to back off without retrying randomly.
 
+## Combining with `cached()`
+
+**Nest the limiter outside: `rateLimit(cached(handler))`.**  A cache
+hit returns before anything inside `cached(...)` runs, so
+`cached(rateLimit(handler))` leaves every cached route unlimited.  The
+outside nesting counts every request, hit or miss, and adds fresh
+`X-RateLimit-*` headers to each answer.  `cached()` never stores those
+headers, so the wrong nesting at least does not replay one caller's
+counters to everyone else.
+
 ## Cluster-aware rate limiting
 
 ```ts
@@ -141,26 +231,65 @@ Three good fits:
 ## Layered rate limits
 
 ```ts
+import { InMemoryCache } from 'actor-ts/cache';
+import {
+  JwtAuth,
+  JwtAuthOptions,
+  Status,
+  clientIpResolver,
+  complete,
+  concat,
+  get,
+  jwtClaimsOf,
+  path,
+  post,
+  rateLimit,
+  withMiddleware,
+} from 'actor-ts/http';
+
+const cache = new InMemoryCache();
+const clientIp = clientIpResolver(['10.0.0.0/8']);   // your load balancers
+const jwtOptions = JwtAuthOptions.create()
+  .withAlgorithms('RS256')
+  .withIssuer('https://auth.example.com/')
+  .withJwksUrl('https://auth.example.com/.well-known/jwks.json');
+
 // Different limits per handler:
 const apiLimited = rateLimit({
   cache, windowMs: 60_000, max: 1000,
-  key: (request) => request.headers['x-user-id'] ?? request.remoteAddress ?? 'anon',
+  key: (request) => {
+    // `sub` of a token JwtAuth verified — never a header the client sets.
+    const user = jwtClaimsOf(request)?.sub;
+    return user !== undefined ? `user:${user}` : `ip:${clientIp(request) ?? '<unresolved>'}`;
+  },
 });
 
 const loginLimited = rateLimit({
   cache, windowMs: 60_000, max: 10,
-  key: (request) => `login:${request.remoteAddress ?? 'unknown'}`,
+  key: (request) => `login:${clientIp(request) ?? '<unresolved>'}`,
 });
+
+const loginHandler = () => complete(Status.OK, { ok: true });
+const ordersHandler = () => complete(Status.OK, { orders: [] });
 
 const routes = concat(
   path('login',  post(loginLimited(loginHandler))),
-  path('orders', get(apiLimited(ordersHandler))),
+  // JwtAuth wraps the limiter, so the claims are verified before the key is read.
+  path('orders', withMiddleware(JwtAuth(jwtOptions), get(apiLimited(ordersHandler)))),
 );
 ```
 
 Stricter limits on sensitive handlers; more permissive on
 general traffic.  Compose by wrapping each handler with the
 matching limiter.
+
+A per-user key has to come from something a middleware **verified**.
+`request.headers['x-user-id']` is client input: an attacker rotates it
+for a fresh bucket per request, or sets it to a victim's id to spend
+that victim's budget.  `jwtClaimsOf(request)` is only set inside
+`JwtAuth`, so `JwtAuth` must wrap the limiter, as above; nested the
+other way round, the claims are not there yet and every request falls
+back to the IP bucket.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -172,9 +301,10 @@ import { Aside } from '@astrojs/starlight/components';
   `X-Forwarded-For` (or similar) — but not at a position the request can
   be trusted to name: NGINX, AWS ALB and Cloudflare all **append** to the
   header, so whatever the client typed stays at its left.  Key on
-  `request.remoteAddress`, or resolve the client address the way
-  [`IpAllowlist`](/http/middleware/ip-allowlist/) does — name the proxies
-  and read the chain from the socket end inwards.
+  `request.remoteAddress` when served directly, and on
+  [`clientIpResolver`](#behind-a-reverse-proxy) behind a proxy — the
+  walk [`IpAllowlist`](/http/middleware/ip-allowlist/) runs, which names
+  the proxies and reads the chain from the socket end inwards.
 </Aside>
 
 <Aside type="caution" title="In-memory cache across pods">

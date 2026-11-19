@@ -85,9 +85,11 @@ const writerOptions = ActorOptions.create()
 const slowWriter = system.spawnAnonymous(SlowWriter, writerOptions);
 ```
 
-Bounde auf den Worst-Case-akzeptablen Puffer. `reject` propagiert
-Backpressure zum Sender — er sieht `MailboxFullError` und passt
-sich an (Retry, Drop, Alert).
+Bounde auf den Worst-Case-akzeptablen Puffer. `reject` lehnt ab, was
+nicht passt, und macht es samt Sender zum Dead Letter, sodass eine
+Ablehnung nie still ist — Gegendruck erzeugt es aber nicht: `tell`
+wirft nie, und ein Producer, der langsamer werden muss, beobachtet
+`DeadLetter` auf dem Event-Stream oder fragt per `ask`, statt zu tellen.
 
 ### 2. Telemetrie-artige Actors (veraltete Daten sind falsch)
 
@@ -190,10 +192,10 @@ Broker-Adapter (`KafkaActor`, `MqttActor`, `NatsActor`, `AmqpActor`,
 `JetStreamActor`, `RedisStreamsActor`, `SseActor`, `EmailBridgeActor`), die
 TCP- und UDP-Socket-Actors sowie den gRPC-Client und -Server. Von dir
 gespawnt liegen sie innerhalb der Schranke wie alles andere, was du spawnst.
-Das Accept-Kommando, das Signal `websocket-connected` und das Close-Kommando
-überstehen sie (siehe oben), der restliche Verkehr eines Hubs nicht — seine
-Frames und das Signal `websocket-disconnected` werden abgeworfen wie jede
-andere Nachricht; siehe die Warnung am Ende dieser Seite.
+Das Accept-Kommando, die Signale `websocket-connected` und
+`websocket-disconnected` und das Close-Kommando überstehen sie (siehe oben),
+der restliche Verkehr eines Hubs nicht — seine Frames werden abgeworfen wie
+jede andere Nachricht; siehe die Warnung am Ende dieser Seite.
 
 ### 5. Ein Actor oder eine Familie, aus der Config
 
@@ -264,8 +266,8 @@ Worst-Case-Latenz = 1000 / 100 = 10s     # bei voller Queue
 ```
 
 Wenn 10 Sekunden Queue okay sind, ist Kapazität 1000 fein. Wenn
-nicht, Kapazität reduzieren oder akzeptieren, dass Producer
-`MailboxFullError` sehen.
+nicht, Kapazität reduzieren oder akzeptieren, dass Ablehnungen als
+Dead Letters auftauchen.
 
 ## Die Metriken lesen
 
@@ -315,8 +317,8 @@ Beobachte:
   Actor, der seine Arbeit tut. Für Drop-Zahlen pro Instanz nimm ein
   eigenes `onDrop`; es bekommt neben dem Grund auch den verworfenen
   Envelope, kann also sagen *was* verloren ging und nicht nur wie viel.
-- **`MailboxFullError`-Rate** beim Sender — taucht meist als
-  Supervisor-Restarts des sendenden Actors auf.
+- **Dead Letters** einer `reject`-Schranke — jeder nennt die
+  abgelehnte Nachricht, ihren Sender und den vollen Actor.
 
 Dieselbe 10 000er-Schwelle erzeugt eine Log-Warnung, wiederholt bei
 jeder Verdopplung, unabhängig davon ob Metriken aktiv sind. Auf diese
@@ -391,13 +393,13 @@ konstruierst — `withMailboxCapacity` hat keine Tür dorthin.
 
 | Policy | Wann |
 | --- | --- |
-| **`reject`** | Backpressure schlägt zum Sender durch. Der Sender muss handeln. |
+| **`reject`** | Jede Ablehnung nachweisbar — abgelehnt und zum Dead Letter gemacht. |
 | **`drop-head`** | Telemetrie / Metriken — Neueste gewinnt. |
 | **`drop-new`** | Kritische Arbeit — Eingereihtes behalten, Eingehendes droppen. |
 
 Wähle nach **der richtigen Antwort auf Overflow**:
 
-- "Sender soll retryen / alerten" → `reject`.
+- "Jeder Verlust muss erklärbar sein" → `reject`.
 - "Veraltete Daten sind falsch" → `drop-head`.
 - "Eingereihte Arbeit ist wertvoll" → `drop-new`.
 
@@ -457,7 +459,7 @@ const workerOptions = ActorOptions.create<Message>()
 ```
 
 Die Policy-Menge ist `'drop-lowest-priority'` / `'drop-new'` /
-`'reject'`, per Default `reject`. `drop-head` fehlt mit Absicht: der
+`'reject'`, per Default `drop-lowest-priority`. `drop-head` fehlt mit Absicht: der
 Kopf einer Priority-Queue ist die Nachricht, die du als wichtigste
 bezeichnet hast. `drop-lowest-priority` wirft stattdessen vom anderen
 Ende ab — das ist die Variante von "Last abwerfen", für die eine
@@ -481,7 +483,7 @@ PriorityMailbox-Oberfläche.
 ## Mailbox + Backpressure-Design
 
 ```
-producer  →  reject Backpressure  →  Sender verlangsamt sich
+producer  →  reject                →  Ablehnung als Dead Letter; Producer beobachtet DeadLetter
 producer  →  drop-head             →  Producer macht weiter; Reader sieht das Neueste
 producer  →  drop-new              →  Producer macht weiter; Reader verarbeitet das Älteste
 ```
@@ -511,17 +513,18 @@ Protokoll-Design.
   einen Delivery-Producer, einen WebSocket-Hub — und der verworfene
   Envelope ist eine Kontrollnachricht. Genau das soll der unbounded
   Default verhindern, und eine globale Kapazität stellt es wieder her.
-  Vier Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
+  Fünf Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
   eines Death-Watch-Subscribers, das Kommando, das den Actor einer
-  WebSocket-Verbindung spawnt, das Signal `websocket-connected`, das
-  dieser Actor einem Hub mit seiner Default-Queue meldet, und das `close`
-  eben dieser Verbindung — alle vier überstehen jede Schranke.  Ein
-  begrenzter Hub kann also keinen Socket mehr stranden lassen, dessen
-  Handshake schon fertig war, und keinen Client bedienen, den er nie in
-  `clients` führt, und eine begrenzte Verbindung kann `closeAll()` nicht
-  in einen Peer verwandeln, der verbunden bleibt.  Alles andere in deinem
-  Protokoll, einschließlich des restlichen Verkehrs dieses Hubs — seiner
-  Frames und `websocket-disconnected` —, bleibt deine Beurteilung.
+  WebSocket-Verbindung spawnt, die Signale `websocket-connected` und
+  `websocket-disconnected`, die dieser Actor seinem Hub meldet, und das
+  `close` eben dieser Verbindung — alle fünf überstehen jede Schranke.
+  Ein begrenzter Hub kann also keinen Socket mehr stranden lassen, dessen
+  Handshake schon fertig war, keinen Client bedienen, den er nie in
+  `clients` führt, und keinen weiter führen, der längst weg ist, und eine
+  begrenzte Verbindung kann `closeAll()` nicht in einen Peer verwandeln,
+  der verbunden bleibt.  Alles andere in deinem Protokoll, einschließlich
+  des restlichen Verkehrs dieses Hubs — seiner Frames —, bleibt deine
+  Beurteilung.
 
   `actor-ts.mailbox.default.capacity` nimmt die eigenen Actors des
   Frameworks für dich aus, der Delivery-Producer, die Shard-Regions und
@@ -553,7 +556,7 @@ Protokoll-Design.
   ```ts
   new BoundedMailbox({ capacity: 10 });   // ✗ keine Burst-Toleranz
   ```
-  Kapazitäten unter der natürlichen Burst-Größe schaden — `reject`
+  Kapazitäten unter der natürlichen Burst-Größe schaden — die Policy
   feuert bei normalem Traffic. Starte bei ~10× der Steady-State-Ankunftsrate
   über dein Verarbeitungsfenster.
 </Aside>

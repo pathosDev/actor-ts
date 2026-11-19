@@ -55,7 +55,11 @@ import { readWebsocketClientOptionsFromConfig } from '../../src/http/websocket/W
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
 import { readDeploymentFromConfig } from '../../src/internal/Deployment.js';
 import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
-import { brokerCommonKeysUnder, readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerOptions.js';
+import {
+  brokerCommonKeysUnder,
+  readBrokerAcknowledgmentOptionsFromConfig,
+  readBrokerCommonOptionsFromConfig,
+} from '../../src/io/broker/BrokerOptions.js';
 import { readEmailBridgeOptionsFromConfig } from '../../src/io/broker/EmailBridgeActor.js';
 import { readGrpcClientOptionsFromConfig } from '../../src/io/broker/GrpcClientActor.js';
 import { readGrpcServerOptionsFromConfig } from '../../src/io/broker/GrpcServerActor.js';
@@ -138,6 +142,7 @@ import { readPersistencePluginIdsFromConfig } from '../../src/persistence/Persis
 import { readProjectionOptionsFromConfig } from '../../src/persistence/projection/ProjectionOptions.js';
 import { readInMemorySnapshotStoreOptionsFromConfig } from '../../src/persistence/snapshot-stores/InMemorySnapshotStoreOptions.js';
 import { readReadConstraintsOptionsFromConfig } from '../../src/serialization/ReadConstraintsOptions.js';
+import { readWireDecodeOptionsFromConfig } from '../../src/serialization/WireDecodeOptions.js';
 import { readOtelAdapterOptionsFromConfig } from '../../src/tracing/OtelAdapterOptions.js';
 import { readOtelLogsAdapterOptionsFromConfig } from '../../src/tracing/OtelLogsAdapterOptions.js';
 import { readOffloadPoolOptionsFromConfig } from '../../src/worker/OffloadPoolOptions.js';
@@ -583,6 +588,11 @@ const serializationReaders: readonly ReaderEntry[] = [
     name: 'readReadConstraintsOptionsFromConfig',
     read: readReadConstraintsOptionsFromConfig,
     suite: 'tests/unit/serialization/ReadConstraints.test.ts',
+  },
+  {
+    name: 'readWireDecodeOptionsFromConfig',
+    read: readWireDecodeOptionsFromConfig,
+    suite: 'tests/unit/cluster/WireTagAllowList.test.ts',
   },
 ];
 
@@ -1045,6 +1055,16 @@ const BROKER_BLOCK = 'reference.conf publishes no actor-ts.io block: every broke
 const kafkaCommonKeys = brokerCommonKeysUnder(ConfigKeys.io.broker.kafka.root);
 
 /**
+ * The acknowledgment pair (#975–#977) is declared under each of the three
+ * roots whose readers fold it in.  The shared reader runs on the Kafka pair;
+ * each protocol reader has to answer to its own root's pair, which is what
+ * keeps the three calls from being dropped unnoticed.
+ */
+const kafkaAcknowledgmentKeys = ConfigKeys.io.broker.kafka;
+const amqpAcknowledgmentKeys = ConfigKeys.io.broker.amqp;
+const mqttAcknowledgmentKeys = ConfigKeys.io.broker.mqtt;
+
+/**
  * A TCP framing block's leaves are read only beside the `kind` that selects
  * them — the delimiter and the line cap under `lines`, the frame cap under
  * `length-prefixed` — so each TCP reader runs once under each of those kinds
@@ -1062,6 +1082,12 @@ const brokerReaders: readonly ReaderEntry[] = [
     name: 'readBrokerCommonOptionsFromConfig',
     read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
     suite: BROKER_SUITE,
+  },
+  {
+    name: 'readBrokerAcknowledgmentOptionsFromConfig',
+    read: (config) => readBrokerAcknowledgmentOptionsFromConfig(config, kafkaAcknowledgmentKeys),
+    suite: BROKER_SUITE,
+    calledBy: ['readKafkaOptionsFromConfig', 'readAmqpOptionsFromConfig', 'readMqttOptionsFromConfig'],
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
   {
@@ -1197,6 +1223,8 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.amqp.url, 'amqp://mq.local:5672'],
     [ConfigKeys.io.broker.amqp.prefetch, 16],
     [ConfigKeys.io.broker.amqp.autoAcknowledge, false],
+    [amqpAcknowledgmentKeys.acknowledgment, 'on-delivery'],
+    [amqpAcknowledgmentKeys.acknowledgmentTimeout, '10s'],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.emailBridge.imap.host, 'imap.local'],
@@ -1230,10 +1258,12 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.grpc.client.serviceName, 'Orders'],
     [ConfigKeys.io.broker.grpc.client.endpoint, 'orders.local:50051'],
     [ConfigKeys.io.broker.grpc.client.deadline, '2s'],
+    [ConfigKeys.io.broker.grpc.client.streamIdleTimeout, '5m'],
     [ConfigKeys.io.broker.grpc.server.protoPath, './service.proto'],
     [ConfigKeys.io.broker.grpc.server.packageName, 'orders.v1'],
     [ConfigKeys.io.broker.grpc.server.serviceName, 'Orders'],
     [ConfigKeys.io.broker.grpc.server.bind, '0.0.0.0:50051'],
+    [ConfigKeys.io.broker.grpc.server.maxPendingRequestMessages, 1024],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.jetstream.servers, ['nats://a:4222']],
@@ -1306,6 +1336,8 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.kafka.consumer.commitMode, 'manual'],
     [ConfigKeys.io.broker.kafka.consumer.commitTimeout, '5s'],
     [ConfigKeys.io.broker.kafka.topics, ['orders']],
+    [kafkaAcknowledgmentKeys.acknowledgment, 'on-delivery'],
+    [kafkaAcknowledgmentKeys.acknowledgmentTimeout, '10s'],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.mqtt.brokerUrl, 'mqtt://broker.local:1883'],
@@ -1320,6 +1352,8 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.mqtt.cleanSession, false],
     [ConfigKeys.io.broker.mqtt.keepAlive, '30s'],
     [ConfigKeys.io.broker.mqtt.protocolVersion, 5],
+    [mqttAcknowledgmentKeys.acknowledgment, 'on-delivery'],
+    [mqttAcknowledgmentKeys.acknowledgmentTimeout, '10s'],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.nats.servers, ['nats://a:4222']],
@@ -1341,6 +1375,7 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.sse.headers, { authorization: 'Bearer t0k3n' }],
     [ConfigKeys.io.broker.sse.idleTimeout, '90s'],
     [ConfigKeys.io.broker.sse.connectTimeout, '5s'],
+    [ConfigKeys.io.broker.sse.maxBufferChars, 2048],
   ),
   // A framing block's delimiter and caps are observed under the framing
   // contexts of their reader; set alone, without a `kind`, the block cannot be
@@ -1361,6 +1396,7 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.tcpServer.bindHost, '127.0.0.1'],
     [ConfigKeys.io.broker.tcpServer.bindPort, 7001],
     [ConfigKeys.io.broker.tcpServer.maxConnections, 64],
+    [ConfigKeys.io.broker.tcpServer.maxBufferedBytes, '4M'],
     [ConfigKeys.io.broker.tcpServer.framing.kind, 'lines'],
     [ConfigKeys.io.broker.tcpServer.framing.delimiter, '\r\n'],
     [ConfigKeys.io.broker.tcpServer.framing.maxLineBytes, '64K'],

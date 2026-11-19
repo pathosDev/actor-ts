@@ -114,6 +114,24 @@ gar keins melden kann) verhalten sich exakt wie vorher. Die
 Prüfung stärkt mTLS-Deployments, statt einen Schalter
 hinzuzufügen, den man vergessen kann.
 
+Der Preis dieses Standards: Die Prüfung verstummt, sobald kein
+Zertifikat mehr ankommt — bei einem halb ausgerollten TLS-Bundle
+oder einem Backend, das keins mehr meldet. Ein Deployment, in dem
+jeder Peer seinen Namen beweisen soll, setzt `requirePeerIdentity`
+auf dem Transport; ein Peer ohne Zertifikat wird dann mit einer
+WARN abgewiesen (#1190):
+
+```ts
+const transportOptions = TcpTransportOptions.create()
+  .withTls(tls)
+  .withRequirePeerIdentity(true);
+const transport = new TcpTransport(self, log, transportOptions);
+```
+
+Abgewiesen wird die Option schon bei der Konstruktion, wo kein Peer
+je ein Zertifikat vorlegen könnte: ohne einen `ca`, der eins
+enthält, mit `requestClientCert: false` und auf Deno.
+
 <Aside type="caution" title="Einseitiges TLS authentifiziert niemanden">
   Der `hello`-Handshake trägt selbst keinerlei Credential, also
   *ist* auf einem TLS-Cluster das Peer-Zertifikat die
@@ -163,6 +181,14 @@ schwächeren Zustand zu starten, als sie sich lesen:
   Änderung nicht mehr**, statt fehlgesichert hochzukommen — so
   gewollt, aber vor einem Rolling Restart gut zu wissen.
 </Aside>
+
+Die Wählseite lehnt die eine der vier Formen ab, die auch dort
+falsch ist: **ein halbes Client-Credential**, `cert` ohne `key` oder
+umgekehrt, wobei leer als nicht gesetzt zählt.  Jede Runtime ließ
+die Hälfte bisher fallen und wählte einseitiges TLS unter einer
+Konfiguration, die sich wie mTLS las; jetzt schlägt das Wählen mit
+einem Fehler fehl, der das fehlende Feld nennt (#1085).  `{ ca }`
+allein bleibt das gewöhnliche einseitige Wählen.
 
 Einem mTLS-Cluster **beitreten** kann ein Deno-Knoten sehr wohl:
 er präsentiert beim Wählen sein eigenes `cert`/`key`, und der
@@ -569,6 +595,40 @@ Vorab-Scan des Rohpuffers würde es ohne beide schließen; er
 wurde mit 18–28 % jeder Frame-Dekodierung gemessen und für eine
 vierfache Verstärkung nicht ausgeliefert (#880).
 
+## Welche Klassen ein Peer dich bauen lassen kann
+
+Ein Frame ist ein getaggter JSON-Baum, und ein Tag fordert den
+Empfänger auf, eine Klasse zu konstruieren.  Bis #1303 befolgte der
+Empfänger jeden Tag, also wählte ein Peer, der den Handshake
+abgeschlossen hat, die Laufzeitklasse jedes Werts in jedem Body —
+ein für einen `string` typisierter Actor konnte eine vom Peer
+geschriebene `RegExp` bekommen (`(a+)+$` blockiert die Event-Loop
+bei einer kurzen Eingabe), eine `Error`-Unterklasse oder ein
+`undefined` an einer Stelle, die `JSON.parse` nie füllt.
+
+Der Decoder baut jetzt nur die Tags in
+`actor-ts.serialization.wire.admitted-tags`, standardmäßig die
+Daten-Tags: `date`, `bytes`, `typed-array`, `map`, `set`, `bigint`,
+`bidirectional-map`, `bidirectional-multi-map` und `number`.  Ein
+Frame mit einem anderen Tag wird **für sich allein abgelehnt** — er
+erreicht keinen Handler, der Transport loggt eine WARN, die den Tag
+nennt, und die Verbindung sowie die neben ihm gebündelten Frames
+bleiben erhalten.  Letzteres ist Absicht: Ein alter Node und ein
+feindlicher schreiben dieselben Bytes, und die Verbindung zu
+schließen ließe jeden von beiden einen gesunden Peer jeden Frame im
+Chunk kosten.  Der Inhalt eines abgelehnten Tags wird nie gelesen,
+ein abgelehntes Pattern also nie kompiliert.
+
+Die Liste zu erweitern erweitert, was jeder Peer dich bauen lassen
+kann; nimm einen Tag also nur dort auf, wo deine eigenen
+Nachrichten ihn tragen, und auf jedem Node, der sie empfängt.  `[]`
+dekodiert Frames als reines JSON.
+
+Ein v0.18-Node kommt gar nicht bis zu einem abgelehnten Frame: Die
+Allow-List ist der Grund, warum v0.19.0 Cluster-Wire-Version 3
+spricht, und ein `hello` mit Version 2 wird beim Handshake
+abgewiesen, mit beiden Versionen im Grund.
+
 ## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
 
 Die Shape-Prüfung sagt, dass ein Frame *lesbar* ist — nicht,
@@ -597,10 +657,12 @@ den Gossip-Pfad genauso wie für lokale Aufrufe:
 | Lebende Cluster-Mitglieder | `cluster.max-members` | `1000` |
 | `removed`-Tombstones | `cluster.max-tombstones` | `10000` |
 | PubSub-Subscriber pro Topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
-| PubSub-Topics | `cluster.pub-sub.max-topics` | `10000` |
+| PubSub-Topics, lokaler und Peer-Pool getrennt | `cluster.pub-sub.max-topics` | `10000` |
 | PubSub-Remote-Ansprüche pro Topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| PubSub-Topics, die ein Peer beanspruchen darf | `cluster.pub-sub.max-topics-claimed-per-sender` | `1024` |
 | Receptionist-Subscriber pro Key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
 | Receptionist-Subscriptions insgesamt | `cluster.receptionist.max-subscriptions-total` | `10000` |
+| Receptionist-Registrierungen, die ein Peer beanspruchen darf | `cluster.receptionist.max-registrations-claimed-per-sender` | `10000` |
 
 Ein Anspruch über einer Grenze wird verworfen und geloggt, statt
 auf der Wire abgewiesen zu werden — der Frame ist wohlgeformt,
@@ -616,6 +678,22 @@ Senke die Defaults für ein Deployment, dessen legitime Zahlen
 weit darunter liegen: eine Obergrenze begrenzt nur den Schaden,
 und eine weit über der echten Nutzung begrenzt sehr wenig.
 
+Die Grenzen beschränken, was bleibt, nicht die Arbeit: Jeder Record
+eines Gossip-Frames wird dekodiert und geprüft, auch wenn jeder
+einzelne abgewiesen wird. Diese Arbeit begrenzt pro Absender
+`cluster.gossip-frames-per-second-per-sender` (#1105) — ein Frame
+über dem Budget wird ganz verworfen, bevor ein Record gelesen wird,
+die Verbindung bleibt, und die Abweisungen zählt
+`cluster_gossip_records_refused_total{reason="rate-limit"}`.
+Standardmäßig ist es an, mit 50 Frames pro Sekunde — weit über dem
+einen Frame pro Sekunde, den ein Absender beim ausgelieferten
+Intervall von 1 s schickt. Die legitime Rate eines Absenders folgt
+seinem eigenen Gossip-Intervall, das der Empfänger nicht kennt; das
+Budget muss also darüber bleiben: etwa `1000 / gossip-interval-ms`,
+mal einem Sicherheitsfaktor von mindestens 2 für Join- und
+Beförderungs-Frames. Erhöhe es für einen Cluster, der schneller als
+alle 40 ms gossipt; `0` schaltet es ab.
+
 ### Warum die Mitgliedschaft zwei Grenzen braucht
 
 Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe: Die
@@ -627,10 +705,9 @@ Heartbeats für es schickt, erklären es beide Detectors für `down` —
 φ misst die Stille ab diesem Moment. Was dieses Urteil bewirkt,
 entscheidet die Downing-Konfiguration. Unter dem Default — keine
 Strategie, `failure-detector.auto-down = on` — entfernt der Detector
-es, `down-after` nach dem letzten Nachschub, und endgültig erst,
-wenn kein anderer Knoten es noch trägt, denn dieser Weg löscht ohne
-Tombstone, und ein Knoten, der das Phantom noch nicht gelöscht hat,
-gossipt es zurück. Mit konfigurierter Strategie oder unter
+es, `down-after` nach dem letzten Nachschub, in einen Tombstone, der
+seinen lebenden Platz freigibt und bis zum Aufräumen einen Platz von
+`max-tombstones` belegt (#1834). Mit konfigurierter Strategie oder unter
 `auto-down = off` wird das Phantom wie jeder stille Peer auf
 `unreachable` geparkt und hält seinen lebenden Platz, bis eine
 Strategie oder ein Operator es entfernt. Das *Absender*-Feld eines
@@ -712,9 +789,9 @@ Mitglied und höchstens einen pro Seed, begrenzt durch `max-members`
 und die Seed-Liste (#1103).
 
 :::note[Die Reihenfolge, in der das gelandet ist, hat gezählt]
-Früher war die `down → delete`-Kaskade des Failure Detectors das,
-was Phantom-Mitglieder in *lebenden* Status auf Sekunden begrenzte.
-Dieses Löschen hängt jetzt an einer Bedingung — ein konfigurierter
+Früher war die `down → removed`-Kaskade des Failure Detectors das,
+was Phantom-Mitglieder in *lebenden* Status auf Sekunden begrenzte
+(bis #1834 ein Löschen, seitdem ein Tombstone). Dieses Entfernen hängt jetzt an einer Bedingung — ein konfigurierter
 `DowningProvider` übernimmt die Entscheidung, und ohne einen
 entscheidet `failure-detector.auto-down`, das an ausgeliefert wird —,
 wo immer also eine Strategie konfiguriert oder `auto-down` aus ist,
@@ -745,11 +822,10 @@ Regeln:
   ist, und sie anzunehmen ist harmlos, denn ein joinender
   Knoten will ohnehin `up` werden. Begrenzt wird sie dadurch,
   wie wenig sie transportiert: den Status und eine Version, die
-  nur die Obergrenze `maxVersionSkewMs` beschränkt (standardmäßig
-  5 Minuten, siehe *Eine Version kann keine Adresse im Voraus
-  beanspruchen* unten) — ein Fremder kann den Record dieses
-  Knotens also bis zu so weit in die Zukunft datieren; die
-  Version zu klemmen verfolgt #1797. Mehr kommt nicht
+  höchstens einen Schritt über dem Record liegt, den dieser
+  Knoten hält — den Schritt, den eine echte Beförderung durch
+  den Leader macht —, ein Fremder kann den Record dieses Knotens
+  also nicht in die Zukunft datieren (#1797). Mehr kommt nicht
   herüber. Die Beförderung fragt nichts über ihren Absender,
   deshalb muss dieser Knoten seine eigenen Rollen, Inkarnation,
   Storage-Identitäten, Konfigurationsfakten und App-Version
@@ -853,7 +929,11 @@ Cluster-Verbindung und dem `ClusterClientReceptionist`.
 Framework-Aktoren bleiben über ihre registrierten Handler
 erreichbar, also über die Tür, die weiß, auf welcher Verbindung
 ein Frame ankam. Nichts, was ein Betreiber konfigurieren kann,
-öffnet den alten Weg wieder.
+öffnet den alten Weg wieder. Dasselbe gilt für den nackten
+`/user`-Guardian, `actor-ts://<system>/user`: Ein Guardian ist nie
+ein Anwendungs-Endpunkt, er wird also auch dann abgelehnt, wenn ein
+Allow-List-Eintrag `/user/*` dessen Wurzel sonst zulassen würde
+(`reason="guardian-path"`).
 
 Die `/user`-Hälfte ist die Entscheidung des Deployments, denn
 dass ein Peer einen Anwendungsaktor benennt, ist genau die Art,
@@ -887,6 +967,18 @@ wird wie ein fehlender beantwortet — `Terminated` mit
 `existenceConfirmed = false` —, sodass ein Watcher nie hängt und
 die Antwort nichts preisgibt, was die Ablehnung nicht ohnehin
 schon täte; die Ablehnung wird unter `frame="watch"` gezählt.
+
+Und sie bewacht einen Pfad, der in einem Body ankommt. Ein
+`ActorRef` in einer Nachricht überquert das Wire als Marker, und
+ein Marker, der den empfangenden Knoten nennt, wird gegen dessen
+Actor-Baum aufgelöst — er ist also ein Pfad, den der Peer gewählt
+hat, genau wie das Ziel eines Envelopes. Ein Marker, der einen
+`/system`-Actor nennt, oder bei eingeschaltetem `untrusted-mode`
+einen `/user`-Actor außerhalb der Allow-List, wird zu `Nobody`
+dekodiert; ebenso einer, dessen Pfad keine vollständige
+`actor-ts://…`-URI ist und früher zum Root-Guardian aufgelöst
+wurde. Der Rest der Nachricht wird wie bisher zugestellt, und die
+Ablehnung wird unter `frame="ref"` gezählt (#1572).
 
 ### Ein Ref in einer Nachricht bestimmt nicht, wohin dieser Knoten wählt
 
@@ -1137,31 +1229,20 @@ unbegrenzt *gültig*. Gegen einen konvergierten Empfänger kostet
 das nichts: jeder Record darin verliert den Vergleich „höhere
 Version gewinnt" gegen den Record, der schon da ist. Zum Exploit
 wird es bei einem Eintrag, den der Empfänger **gelöscht** hat,
-und zwei Wege löschen einen. Das eigene Entfernen des Failure
-Detectors — der Default ohne konfigurierte Strategie, unter
-`failure-detector.auto-down = on` — löscht rundheraus, statt einen
-Tombstone zu hinterlassen. Begründet wurde das einmal damit, dass
-eine Partition nach dem Heilen den Peer so wiederfinde, und genau
-das bringt das Löschen nicht: Keine Seite schickt einem Peer, den
-sie für unerreichbar hält, Heartbeats oder Gossip, und einen
-gelöschten hat sie gar nicht mehr in ihrer Map, um ihn zu
-adressieren — nach einer symmetrischen Partition hört also keine
-Seite je wieder von der anderen
-([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
-Unter dem Default entfernen sich die beiden Seiten einer echten
-Partition also gegenseitig und laufen als zwei Cluster weiter — ein
-weiterer Grund, warum ein Produktions-Deployment `lease-majority`
-oder eine andere [Downing-Strategie](/de/cluster/downing-strategies/)
-konfiguriert.
-Und ein abgelaufener Tombstone wird entfernt, sobald der größere
-Wert von seiner Lebensdauer und `tombstone.min-retention` verstrichen
-ist. So oder so bleibt nichts zum Vergleichen übrig, und der Zweig,
-der eine Erstsichtung ablegt, hat überhaupt keine untere
-Versionsgrenze. Die übrigen Entfernungen — ein `down()` des
-Operators, die Entscheidung einer Strategie, das `leave` eines
-Peers — hinterlassen einen Tombstone, der den Mitschnitt bis zu
-diesem Aufräumen überbietet; mit konfigurierter Strategie oder unter
-`auto-down = off` entfernt der Detector selbst niemanden. Ein
+und ein Weg löscht einen: Ein abgelaufener Tombstone wird entfernt,
+sobald der größere Wert von seiner Lebensdauer und
+`tombstone.min-retention` verstrichen ist. Dann bleibt nichts zum
+Vergleichen übrig, und der Zweig, der eine Erstsichtung ablegt, hat
+überhaupt keine untere Versionsgrenze. Jede Entfernung — ein
+`down()` des Operators, die Entscheidung einer Strategie, das
+`leave` eines Peers und das eigene Entfernen des Failure Detectors
+unter dem Default `failure-detector.auto-down = on` — hinterlässt
+einen Tombstone, der den Mitschnitt bis zu diesem Aufräumen
+überbietet; mit konfigurierter Strategie oder unter
+`auto-down = off` entfernt der Detector selbst niemanden. Der Weg
+des Detectors löschte den Eintrag bis
+[Issue #1834](https://github.com/pathosDev/actor-ts/issues/1834)
+rundheraus und war damit ein zweiter Weg zum selben Exploit. Ein
 Neustart, der einen lebenden Eintrag seines vorherigen Laufs
 ersetzt, löscht diesen Eintrag ebenfalls, aber der Eintrag des neuen
 Laufs übernimmt den Schlüssel im selben Schritt mit höherer Version,
@@ -1174,8 +1255,9 @@ und Singleton-Hosting richten sich nach den Rollen, der Cluster
 schickt also Arbeit an einen Knoten, den er verstoßen hatte.
 
 Jeder Gossip-Frame trägt deshalb eine **Sequence**, die sein
-Autor stempelt — beim Start aus dessen Wanduhr gesetzt und pro
-Frame um eins erhöht — und ein Empfänger merkt sich die höchste,
+Autor aus seiner eigenen Wanduhr stempelt — `max(previous + 1,
+now)`, sodass sie auch bei stehender Uhr streng steigt — und ein
+Empfänger merkt sich die höchste,
 die er von jedem Verbindungs-Peer akzeptiert hat. Ein Frame, der
 diese Marke nicht überbietet, wird als Ganzes verworfen, bevor
 ein einziger Record darin angesehen wird. Der Vergleich selbst
@@ -1188,12 +1270,15 @@ von dem dieser Knoten einen Frame angenommen hat, und für keine
 andere Adresse. Das ist die Grenze, und das dritte Restrisiko
 unten ist das, was außerhalb davon liegt.
 
-Eine Sequence muss außerdem **plausibel** sein — eine endliche
-Zahl, die nicht weiter vor der Uhr des Empfängers liegt als
-`maxVersionSkewMs`, dasselbe Budget, das eine gegossipte Version
-bekommt, denn die Zahl wird aus der Wanduhr des Autors gestempelt.
-Ein Frame außerhalb dieses Budgets wird abgewiesen, genau wie eine
-Wiederholung.
+Eine Sequence muss außerdem **plausibel** sein. Der erste Frame
+eines Absenders — und der erste jeder neuen Inkarnation von ihm —
+hat noch keine Uhr gezeigt, also trifft er auf das Budget, das eine
+gegossipte Version bekommt: eine endliche Zahl, die nicht weiter
+vor der Uhr des Empfängers liegt als `maxVersionSkewMs`. Danach
+kommt die Grenze vom Absender selbst: der Empfänger lernt dessen
+Uhren-Offset aus den Frames, die er annimmt, und lässt einen Frame
+höchstens zehn Sekunden darüber zu. Ein Frame außerhalb einer der
+beiden Grenzen wird abgewiesen, genau wie eine Wiederholung.
 
 Angefangen hat das als die schwächere Regel: der Frame wurde
 gemerged, und nur das *Übernehmen* seiner Zahl als Marke wurde
@@ -1208,10 +1293,42 @@ Zustellung erneut gemerged, unbegrenzt, gegen einen Empfänger, der
 eine Marke für einen noch lebenden Absender hielt. Ihn abzuweisen
 kostet nichts: die Marke bleibt dort, wo der letzte plausible
 Frame sie hinterlassen hat, der nächste Frame des echten Knotens
-überbietet sie also weiterhin und landet. Den echten Knoten für
-immer verstummen zu lassen — der Exploit, den die Versionsgrenze
-oben verhindert — ist damit von beiden Seiten geschlossen statt
-von einer.
+überbietet sie also weiterhin und landet.
+
+**Das Festnageln ist begrenzt, nicht geschlossen.** Bis v0.19 war
+die Grenze für jeden Frame `now + maxVersionSkewMs`, und ein
+Mitschnitt, der *innerhalb* davon umgestempelt wurde — vier Minuten
+voraus gegen den Standard von fünf Minuten —, wurde angenommen und
+zur Marke, sodass die eigenen Frames des echten Knotens, nach seiner
+Uhr nummeriert, abgewiesen wurden, bis die Uhr aufgeholt hatte
+([Issue #1262](https://github.com/pathosDev/actor-ts/issues/1262)).
+Die Grenze aus dem Absender abzuleiten nimmt das zum größten Teil
+weg: ein Frame, der an der Kante angenommen wird, nagelt die Marke
+höchstens für den Vorlauf von zehn Sekunden fest; wiederholte
+Injektionen können sie nicht weiter vorschieben, weil der gelernte
+Offset um höchstens eine Millisekunde pro Sekunde steigt; und die
+Ablesung wird pro (Mitglied, Inkarnation) gehalten, sodass eine
+gegen einen Lauf festgenagelte Marke den nächsten nie abweist. Was
+bleibt, ausgesprochen, damit niemand mehr erwartet:
+
+- Ein Injektor, der an der Kante weiter injiziert, hält die eigenen
+  Frames des Absenders draußen, solange er das tut. Keine Grenze auf
+  einem Draht ohne MAC kann das verhindern; gegenseitiges TLS, das
+  die Handshake-Identität an ein Zertifikat bindet, ist das, was
+  einen Außenstehenden gar nicht erst auf den Draht lässt.
+- Der erste Frame eines Absenders, und der erste jeder neuen
+  Inkarnation, trifft nur auf `maxVersionSkewMs`, sodass ein
+  Mitschnitt, der vor jedem echten Frame zugestellt wird, weiterhin
+  bis zu diesem Budget festnageln kann — der Fall der leeren Marke
+  im zweiten Restrisiko unten.
+- Ein Knoten, dessen Uhr um mehr als den Vorlauf nach vorn springt,
+  wird mit seinem Gossip abgewiesen, bis eine Minute solcher Frames
+  den Empfänger seine Ablesung vergessen lässt. Ein Knoten von vor
+  v0.19, der seine Frames mit einem Zähler statt mit seiner Uhr
+  nummeriert, kommt gar nicht so weit: v0.19.0 spricht nur
+  Cluster-Wire-Version 3 und weist einen solchen Knoten beim
+  Handshake ab, also stempelt jeder Absender, dessen Gossip diese
+  Schranke erreicht, ihn mit seiner Uhr.
 
 Eine Adresse trägt zusätzlich eine **Inkarnation**: welcher
 *Prozess* unter diesem `system@host:port` antwortet, einmal pro
@@ -1248,12 +1365,10 @@ genau der Wire-Bruch von oben.
 Zweitens lässt eine fehlende Marke alles zu, und es gibt drei Wege,
 keine zu haben — nur einer davon ist die Evakuierung des Absenders
 selbst. Ein evakuiertes Member verliert seine Marke mit seinem
-Eintrag, aus dem Grund von oben: sofort auf dem eigenen
-`auto-down`-Weg des Detectors, der löscht, und bei jeder anderen
-Entfernung erst, wenn der Tombstone aufgeräumt wird, denn ein
-Tombstone behält die Marke zusammen mit dem Eintrag. Unter dem
-Default `auto-down` trifft eine gewöhnliche Partition Absender und
-Subjekt gemeinsam, dieser Weg kommt also gebrauchsfertig; mit
+Eintrag, aus dem Grund von oben: erst, wenn der Tombstone aufgeräumt
+wird, denn ein Tombstone behält die Marke zusammen mit dem Eintrag —
+bei jeder Entfernung, seit #1834 auch auf dem eigenen
+`auto-down`-Weg des Detectors, der früher sofort löschte. Mit
 konfigurierter Strategie oder unter `auto-down = off` evakuiert eine
 Partition niemanden, bis etwas entscheidet — beide werden geparkt,
 die Marken bleiben —, und hinter einem Tombstone lebt die Marke

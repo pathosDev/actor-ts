@@ -73,7 +73,7 @@ import type { BoundedMailboxOverflow } from '../mailbox/BoundedMailboxOptions.js
 import { ControlAwareMailbox } from '../mailbox/ControlAwareMailbox.js';
 import { DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
 import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
-import { DEFAULT_STASH_CAPACITY, MAILBOX_HIGH_WATER_MARK } from './Constants.js';
+import { DEFAULT_STASH_CAPACITY, FAILURE_LOG_INTERVAL_MS, MAILBOX_HIGH_WATER_MARK } from './Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
 import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
@@ -127,6 +127,32 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
+   * Log on a lifecycle or supervision path, where the line must never decide
+   * the outcome (#1749).
+   *
+   * `Logger` is an extension point, and even the stock ones ran user code — a
+   * custom inspect, a throwing getter — while rendering.  Every lifecycle site
+   * used to log a caught failure first and act on it afterwards, so a throw
+   * from the report skipped the action: a `preStart` failure never reached the
+   * parent and the failed instance went on handling messages, a `postStop`
+   * failure left watchers without `Terminated` and `terminate()` unsettled, a
+   * `preRestart` failure stopped the restart half-way.  Each site now acts
+   * first and reports through here, and a report that throws is dropped: the
+   * logger is the thing that just failed, so there is nowhere left to say so.
+   *
+   * A message that reads fields off a failure (`cause.message`) is passed as a
+   * function, so that building it is guarded too: those fields are as hostile
+   * as the arguments.
+   */
+  private _report(level: 'debug' | 'warn' | 'error', message: string | (() => string), ...args: unknown[]): void {
+    try {
+      this.log[level](typeof message === 'function' ? message() : message, ...args);
+    } catch {
+      // Lost report, kept decision — see above.
+    }
+  }
+
+  /**
    * Not `readonly`, for exactly one write after the constructor's: the first
    * start of an actor that declares control messages swaps the queue built
    * here for one that can serve them, envelopes and all — see
@@ -163,11 +189,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * Does this actor's mailbox want its drops dead-lettered (#773)?
    *
    * Copied out of the mailbox in {@link _wireDropReporting} rather than read
-   * through it on every drop, and `false` for the shapes that cannot ask: a
-   * mailbox that does not report drops at all, and one the framework built
-   * from `withMailboxCapacity` or the global default — the `ControlAwareMailbox`
-   * a declaring actor is given included — which has no door onto the switch.
-   * That door is `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
+   * through it on every drop, and `false` for a mailbox that does not report
+   * drops at all.  One the framework built from `withMailboxCapacity` or the
+   * global default — the `ControlAwareMailbox` a declaring actor is given
+   * included — has no door onto the switch and takes its policy's default,
+   * which is on for `reject` alone (#919).  The door is
+   * `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
    */
   private _deadLetterMailboxDrops = false;
   private actor: Actor<TMessage> | null = null;
@@ -179,7 +206,6 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _pendingRecreate: RecreateCommand | null = null;
   private _anonChildCounter = 0;
-  private _childUidCounter = 0;
 
   private state: CellState = 'creating';
   private processing = false;
@@ -197,8 +223,25 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _watchWithMessages = new Map<string, TMessage>();
 
   /**
-   * Sliding-window restart tally for this cell's children, `null` until the
-   * first failure — which for most actors is never.
+   * Sliding-window restart tallies of this cell's children under a
+   * one-for-one strategy, **one per child name**, created on a child's first
+   * failure — which for most children is never.
+   *
+   * Per child, because the allowance is the failing child's own (#917): it
+   * used to be one tally for all of a parent's children, which made five
+   * siblings that each failed once spend one `maxRetries: 2` between them —
+   * and every top-level actor share the user guardian's.
+   *
+   * Per *name*, and kept on the parent rather than on the child's cell, so it
+   * outlives a child that is stopped and spawned again under the same name.
+   * On the cell it died with the child, and every re-creation bought a whole
+   * new allowance: an entity the shard re-creates after its restart backoff
+   * (#1437) got ten more restarts per re-creation instead of one instance per
+   * wait.  An entry for a name with no live child is dropped once its window
+   * holds no restart ({@link pruneRestartBudgets}); under a strategy with no
+   * window (`withinTimeRangeMs: 0`) it can never empty, so it is dropped when
+   * its child terminates — the alternative is a map that grows with every
+   * name that ever failed.
    *
    * A {@link RestartBudget} rather than a bare timestamp array, because this
    * cell used to keep the array *and* its own arithmetic over it, and the two
@@ -207,14 +250,25 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * `maxRetries: 5` therefore meant five restarts in the worker mesh, which
    * budgets its slot respawns through that class (#734), and six here.
    */
-  private _restartBudget: RestartBudget | null = null;
+  private _childRestartBudgets: Map<string, RestartBudget> | null = null;
 
   /**
-   * The strategy {@link _restartBudget} was built for.  A budget is bound to
-   * its allowance at construction, so a cell whose strategy is replaced has to
-   * start a new tally rather than keep spending the old one's.
+   * The one tally this cell's children share under an all-for-one strategy.
+   * Shared on purpose: an all-for-one directive already restarts the group as
+   * one unit, so a failure anywhere in it is a restart of all of it, and the
+   * allowance counts those group restarts.
    */
-  private _restartBudgetStrategy: SupervisorStrategy | null = null;
+  private _groupRestartBudget: RestartBudget | null = null;
+
+  /**
+   * When the parent last logged one of *this* cell's failures, on
+   * `system.clock`, and how many it has held back since — the per-actor
+   * throttle behind {@link FAILURE_LOG_INTERVAL_MS}.  On the cell, like
+   * its restart budget, so a crash loop is throttled across the restarts
+   * it consists of.
+   */
+  private _failureLoggedAt: number | null = null;
+  private _failuresNotLogged = 0;
 
   private _receiveTimeoutMs = 0;
   private _receiveTimeoutHandle: Cancellable | null = null;
@@ -386,7 +440,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         || parent?._userGuardian === true);
     this._entity = blueprint.entity ?? null;
     this._displayNameOverride = blueprint.displayName ?? null;
-    const uid = parent ? parent._nextChildUid() : 0;
+    const uid = parent ? system._nextActorUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
@@ -1076,7 +1130,6 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * one — anything routing or balancing on liveness wants this.
    */
   isStopping(): boolean { return this.state === 'terminated' || this.state === 'terminating'; }
-  /** @internal */ _nextChildUid(): number { return ++this._childUidCounter; }
 
   /**
    * @internal — test-only seam exposing the underlying mailbox so
@@ -1302,7 +1355,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     try {
       release();
     } catch (e) {
-      this.log.error(
+      this._report(
+        'error',
         `a release for ${describeMessageType(message)} threw — the message is handed over regardless`,
         e,
       );
@@ -1364,8 +1418,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       }
       watcher.tell(terminated as never);
     } catch (e) {
-      this.log.error(`watcher ${watcher.path} refused Terminated — dead-lettering it`, e);
       this.system.deadLetters.tell(new DeadLetter(terminated, this.self, watcher));
+      this._report('error', `watcher ${watcher.path} refused Terminated — dead-lettered it`, e);
     }
   }
 
@@ -1473,9 +1527,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * this second half a throttled actor could not be stopped, suspended or
    * supervised until its pause elapsed, which would trade the spin for an
    * unresponsive lifecycle.
+   *
+   * A cell that is not `running` is parked the same way, for the same
+   * reason: `run()` dequeues a user message only while `running`, so a user
+   * queue anywhere else is work no turn can make progress on.  Without this
+   * a `terminating` parent with one message still queued re-scheduled itself
+   * from `run()`'s `finally` until its last child had stopped — 123 683 empty
+   * turns in 300 ms behind one slow `postStop` (#915).  Its user queue goes to
+   * dead letters in `finalizeTermination`; the `childTerminated` it is waiting
+   * for is a system command and still earns its turn.
    */
   private hasDispatchableWork(): boolean {
-    if (this._throttleResumeTimer) return this.mailbox.hasSystemMessages();
+    if (this.state !== 'running' || this._throttleResumeTimer) return this.mailbox.hasSystemMessages();
     return this.mailbox.hasMessages();
   }
 
@@ -1684,8 +1747,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * ever reached the actor that failed.  Their mailboxes then filled and
    * nothing was ever processed again — no error, no dead letters, just a
    * silently dead branch of the tree (#635).
+   *
+   * No instance means the constructor threw, and there is nothing to resume —
+   * the same reasoning as {@link onRecreate}'s guard (#914).  Resuming here
+   * lifted the suspension off a cell that would stay `creating` for good: user
+   * messages are dispatched only to a running cell, so its queue filled
+   * unread, its parent kept it, and its watchers never heard of it (#1384).
    */
-  private onResume(): void {
+  private onResume(): void | Promise<void> {
+    if (!this.actor) return this.onTerminate();
     this.mailbox.resume();
     if (this.state === 'suspended') this.state = 'running';
     for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
@@ -1759,7 +1829,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // builds a DisplayNameLogger and renders the path on first use, and an
       // actor that never logs is meant never to pay for either (#867).
       if (this.system._diagnostics.debugLifecycle) {
-        this.log.debug(`started — ${actor.constructor.name}`);
+        this._report('debug', `started — ${actor.constructor.name}`);
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
@@ -1768,8 +1838,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // them would disagree with a caller's own `onDrop` for the same
       // messages.  A no-op unless the flush above already ran.
       this._flushDeferredMailboxDrops('unknown');
-      this.log.error('Actor initialization failed', err);
+      // Supervision first, the report second (#1749).
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to start`, err));
+      this._report('error', 'Actor initialization failed', err);
     }
   }
 
@@ -1832,7 +1903,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     try {
       await this.actor?.postStop();
     } catch (e) {
-      this.log.error('postStop threw', e);
+      this._report('error', 'postStop threw', e);
     }
 
     // Drain the stash first — those messages arrived before anything still
@@ -1877,7 +1948,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this.system.eventStream.hasSubscribers) {
       this.system.eventStream.publish(new ActorStopped(this.self));
     }
-    if (this.system._diagnostics.debugLifecycle) this.log.debug('stopped');
+    if (this.system._diagnostics.debugLifecycle) this._report('debug', 'stopped');
 
     // Notify watchers.  One shared `Terminated`, one guarded send each — see
     // `_notifyWatcher` for why the loop must not be able to throw.  Built only
@@ -1912,7 +1983,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   private async onRecreate(signal: RecreateCommand): Promise<void> {
     const cause = signal.cause;
-    if (!this.actor) return;
+    // No instance means the constructor itself threw: there is nothing to
+    // restart, only a factory that already failed.  Returning here used to
+    // leave the cell suspended for good — never stopped, still its parent's
+    // child, its watchers never told, its mailbox filling (#914).  Stopping is
+    // the only outcome that closes the loop, and it has to happen here rather
+    // than in `defaultStrategy`, because a user decider answering `Restart` for
+    // an `ActorInitializationError` would otherwise rebuild the zombie.
+    if (!this.actor) {
+      await this.onTerminate();
+      return;
+    }
 
     // Timers and stash belong to the outgoing instance.  The stash cannot
     // carry over — the new instance has none of the state that made those
@@ -1925,7 +2006,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     try {
       await this.actor.preRestart(cause);
     } catch (e) {
-      this.log.error('preRestart threw', e);
+      this._report('error', 'preRestart threw', e);
     }
 
     // Tear the children down unless the actor opted out.  This lives here
@@ -1970,14 +2051,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // keep the child alive but frozen, with its mailbox filling.
       for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
       this.state = 'running';
-      // Stock metric: count restarts.
+      // Stock metric: count restarts, by actor class (#916) — the label that
+      // answers "which actor is restarting" while staying bounded by the
+      // program; the path would be one series per entity (#658, #745).
       metricsOf(this.system).counter(
-        'actor_restarted_total', {},
+        'actor_restarted_total', { class: next.constructor.name },
         { help: 'Cumulative count of supervisor-driven actor restarts.' },
       ).inc();
       this.system.eventStream.publish(new ActorRestarted(this.self, cause));
       if (this.system._diagnostics.debugLifecycle) {
-        this.log.debug(`restarted after ${cause.name}: ${cause.message}`);
+        this._report('debug', () => `restarted after ${cause.name}: ${cause.message}`);
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
@@ -2026,13 +2109,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * One class of envelope is out of every policy's reach in all five shapes
    * since #729, and what defines the class is the door rather than the
    * message: whatever arrives through {@link postSignalEnvelope} carries
-   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Four
-   * senders use that door, from five call sites: `ActorCell._notifyWatcher`,
+   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Five
+   * senders use that door, from six call sites: `ActorCell._notifyWatcher`,
    * with the `Terminated` of a local death; `ActorCell.onWatchNotify`, with
    * the `Terminated` of a death another node reported (#918);
    * `ConnectionWiring.postAcceptCommand`, with the `websocket-accept` that
    * hands an upgraded socket to its hub (#717); `WebsocketConnection.close`,
-   * with the `close` a connection sends its own actor (#985); and
+   * with the `close` a connection sends its own actor (#985);
+   * `WebsocketConnectionActor.reportLifecycle`, with the `connected` and
+   * `disconnected` a connection reports to its hub (#986); and
    * `DistributedData.offerToSubscriber`, with the `DistributedDataChanged` a
    * replicator posts to an actor subscribed to one of its keys (#1468) — the
    * newest, and the one sender that passes a release.  What a dropped one of
@@ -2777,9 +2862,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this._parent) {
       this._parent.enqueueSystem({ kind: 'failure', cause, child: this.self, message });
     } else {
-      // Root guardian failed — log and terminate the system.
-      this.log.error(`Guardian ${this.path} failed; terminating system`, cause);
+      // Root guardian failed — terminate the system, then say so.
       this.enqueueSystem({ kind: 'terminate' });
+      this._report('error', `Guardian ${this.path} failed; terminating system`, cause);
     }
   }
 
@@ -2795,30 +2880,50 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // actor is supervised, so it has to be read here, on the parent — the
     // child never gets to answer for its own failure.
     //
-    // Two consequences of expressing a per-child override through
-    // parent-side machinery, both deliberate: an `all-for-one` strategy in a
-    // child's options still widens to every sibling, and the restart budget in
-    // `registerRestart` stays per-parent, so siblings share one allowance.
-    const strategy: SupervisorStrategy =
-      child.blueprint.supervisorStrategy
-      ?? this.actor?.supervisorStrategy()
-      ?? defaultStrategy;
-    const directive = strategy.decider(cause);
+    // One consequence of expressing a per-child override through parent-side
+    // machinery, deliberate: an `all-for-one` strategy in a child's options
+    // still widens to every sibling — and then spends the group's shared
+    // allowance in `registerRestart`, where a one-for-one failure spends only
+    // the failing child's own (#917).
+    //
+    // Choosing a strategy and asking it for a directive both run user code.
+    // A throw from either used to leave `onFailure` before any directive went
+    // out, so the child — already suspended by `failToParent` — stayed
+    // suspended for good, with a dispatcher error as the only trace (the
+    // #914 family).  It is a failure of this actor, the supervisor, so it
+    // escalates like one: this cell suspends its subtree and its own parent
+    // decides, and whatever that decides — a restart stops the children, a
+    // resume resumes them, a stop stops them — reaches the stranded child too.
+    let strategy: SupervisorStrategy;
+    let directive: Directive;
+    try {
+      strategy = child.blueprint.supervisorStrategy
+        ?? this.actor?.supervisorStrategy()
+        ?? defaultStrategy;
+      directive = strategy.decider(cause);
+    } catch (e) {
+      const deciderError = e instanceof Error ? e : new Error(String(e));
+      this.failToParent(deciderError, message);
+      this._report('error', `supervisor strategy threw while deciding on a failure of ${child.path} — escalating`, deciderError);
+      return;
+    }
 
     const affected = strategy.scope === 'all-for-one'
       ? Array.from(this._children.values())
       : [child];
 
+    // Act first, report second (#1749): the report runs user code — the
+    // logger, the cause's own getters — and must not be able to cost the
+    // failure its directive.
+    let budgetSpent = false;
     switch (directive) {
       case Directive.Resume:
         for (const child of affected) child.enqueueSystem({ kind: 'resume' });
         break;
       case Directive.Restart: {
-        const withinLimit = this.registerRestart(strategy);
+        const withinLimit = this.registerRestart(strategy, child);
         if (!withinLimit) {
-          this.log.warn(
-            `Restart threshold exceeded (${strategy.maxRetries} in ${strategy.withinTimeRangeMs}ms) — stopping children`,
-          );
+          budgetSpent = true;
           for (const child of affected) child.enqueueSystem({ kind: 'terminate' });
         } else {
           for (const child of affected) child.enqueueSystem({ kind: 'recreate', cause });
@@ -2832,20 +2937,109 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         this.failToParent(cause, message);
         break;
     }
+
+    this.reportChildFailure(child, cause, message, directive, budgetSpent);
+    if (budgetSpent) {
+      this._report(
+        'warn',
+        `Restart threshold exceeded (${strategy.maxRetries} in ${strategy.withinTimeRangeMs}ms) — stopping children`,
+      );
+    }
   }
 
   /**
-   * Ask this cell's budget for one restart.  Delegated rather than computed
-   * here: `RestartBudget` is the same sliding window over the same two
-   * allowance fields, and keeping a second copy is what let the two drift
-   * apart in the first place.  See {@link _restartBudget}.
+   * Log one supervised failure of `child`, naming the actor, the message it
+   * failed on, the cause and the directive taken (#916).
+   *
+   * Before this an actor that threw in `onReceive` and was restarted left no
+   * line at any level — the only traces were an unlabelled counter in a
+   * registry that is off by default and an event nothing subscribes to — so a
+   * crash loop surfaced first as a downstream symptom.  Logged on the parent,
+   * because the parent is where the directive is known, with the cause as an
+   * argument so the logger renders its stack.
+   *
+   * `Resume` is a warning, everything else an error: a resumed actor keeps its
+   * state and its next message, so nothing was lost but the one it failed on.
+   * Throttled per child to one line per {@link FAILURE_LOG_INTERVAL_MS} — the
+   * restart budget bounds a crash loop under the default strategy, but a
+   * `Resume` decider or an unlimited budget does not, and an actor failing on
+   * every message must not drown the log it is trying to appear in.  The next
+   * line after a quiet interval counts what was held back.  The threshold
+   * warning on a spent budget is not throttled; it fires once per stop.
    */
-  private registerRestart(strategy: SupervisorStrategy): boolean {
-    if (this._restartBudget === null || this._restartBudgetStrategy !== strategy) {
-      this._restartBudget = new RestartBudget(strategy);
-      this._restartBudgetStrategy = strategy;
+  private reportChildFailure(
+    child: ActorCell<any>, cause: Error, message: unknown, directive: Directive, budgetSpent: boolean,
+  ): void {
+    const now = this.system.clock.now();
+    if (child._failureLoggedAt !== null && now - child._failureLoggedAt < FAILURE_LOG_INTERVAL_MS) {
+      child._failuresNotLogged++;
+      return;
     }
-    return this._restartBudget.registerRestart();
+    const notLogged = child._failuresNotLogged;
+    child._failureLoggedAt = now;
+    child._failuresNotLogged = 0;
+    this._report(
+      directive === Directive.Resume ? 'warn' : 'error',
+      () => {
+        const failedOn = message === undefined ? '' : ` handling ${describeMessageType(message)}`;
+        const heldBack = notLogged === 0 ? '' : ` (${notLogged} further failures not logged since the last report)`;
+        const outcome = budgetSpent ? `${directive} refused, restart budget spent — stop` : directive;
+        return `${child.path} failed${failedOn}: ${cause.name}: ${cause.message} — ${outcome}${heldBack}`;
+      },
+      cause,
+    );
+  }
+
+  /**
+   * Ask the budget that `strategy` charges for one restart: the failing
+   * child's own under one-for-one, the group's under all-for-one (#917).
+   * Delegated rather than computed here: `RestartBudget` is the same sliding
+   * window over the same two allowance fields, and keeping a second copy is
+   * what let the two drift apart in the first place.  See
+   * {@link _childRestartBudgets}.
+   *
+   * The window is measured on `system.clock`, not the budget's wall-clock
+   * default: a parent under a `ManualScheduler` has to see "a minute passed"
+   * when the test says so, or `withinTimeRangeMs` can only be crossed by
+   * sleeping through it (#1019, #1424).
+   */
+  private registerRestart(strategy: SupervisorStrategy, child: ActorCell<any>): boolean {
+    if (strategy.scope === 'all-for-one') {
+      this._groupRestartBudget = this.budgetFor(this._groupRestartBudget, strategy);
+      return this._groupRestartBudget.registerRestart();
+    }
+    const budgets = this._childRestartBudgets ??= new Map();
+    const name = child.self.path.name;
+    const budget = this.budgetFor(budgets.get(name) ?? null, strategy);
+    budgets.set(name, budget);
+    return budget.registerRestart();
+  }
+
+  /**
+   * Forget the tallies of names with no live child that nothing can draw on
+   * any more: one whose window holds no restart, and one with no window at
+   * all, which would otherwise never empty.  Run whenever a child terminates,
+   * so the map is bounded by the live children plus the names that failed
+   * within their window.  See {@link _childRestartBudgets}.
+   */
+  private pruneRestartBudgets(): void {
+    const budgets = this._childRestartBudgets;
+    if (budgets === null) return;
+    for (const [name, budget] of budgets) {
+      if (this._children.has(name)) continue;
+      if (!budget.windowed || !budget.holdsRestarts()) budgets.delete(name);
+    }
+    if (budgets.size === 0) this._childRestartBudgets = null;
+  }
+
+  /**
+   * Keep `current` while it was built for the allowance `strategy` states,
+   * else start a fresh tally.  By allowance, not by object: see
+   * {@link RestartBudget.hasAllowanceOf}.
+   */
+  private budgetFor(current: RestartBudget | null, strategy: SupervisorStrategy): RestartBudget {
+    if (current !== null && current.hasAllowanceOf(strategy)) return current;
+    return new RestartBudget(strategy, this.system.clock);
   }
 
   private findChildByRef(ref: ActorRef): ActorCell<any> | null {
@@ -2857,6 +3051,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const childRef = signal.child;
     const key = childRef.path.name;
     if (this._children.has(key)) this._children.delete(key);
+    this.pruneRestartBudgets();
     // Any Terminated(childRef) owed to us was already delivered via the
     // child's watcher set in finalizeTermination — no double delivery here.
 
@@ -2930,15 +3125,14 @@ type MailboxBound = {
 /**
  * @internal The single writer of `actor_mailbox_dropped_total`.
  *
- * Two places lose a message to a full mailbox and report it here: the cell's
- * drop observer, for whatever a bound sheds, and a `WebsocketServerActor`
- * whose `reply` or `broadcast` met a connection that refused the frame under
- * `reject` — the queue threw rather than dropped, but the hub then let the
- * frame go, so the loss is the same one a `drop-new` bound reports.  One
- * function rather than one `counter(...)` call per site, so the family's labels
- * and help text cannot drift apart between them.
+ * Two sites in the cell report here — the drop observer, and the flush of the
+ * drops deferred while no class was known.  A `WebsocketServerActor` used to
+ * be a third, counting a frame a `reject` connection queue threw back at it;
+ * `reject` reports through the observer like every other policy now (#919).
+ * One function rather than one `counter(...)` call per site, so the family's
+ * labels and help text cannot drift apart between them.
  */
-export function countMailboxDrops(
+function countMailboxDrops(
   metrics: MetricsRegistry, className: string, reason: MailboxDropReason, delta: number,
 ): void {
   metrics.counter(

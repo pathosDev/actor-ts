@@ -113,6 +113,15 @@ never succeeds by accident.
 An `onData` subscriber receives `GrpcRequestStreamInbound` — either
 `{ kind: 'chunk', chunk }` or `{ kind: 'end' }`.
 
+Frames that arrive before the handler calls `onData` are held and
+replayed to it, because the handler runs a turn after the call
+arrives.  That hold is bounded: past
+`withMaxPendingRequestMessages(n)` frames (default `1024`) the call
+ends with `RESOURCE_EXHAUSTED` (status code 8) and the held frames
+are dropped.  The bound covers only the time before the first
+subscription, so a handler that calls `onData` in the turn it
+receives the call never meets it.
+
 ## Client
 
 ```ts
@@ -189,7 +198,19 @@ Every call names a **`target`** actor; the actor routes the reply
 and any stream frames there.  `.withDeadlineMs(30000)` (the default)
 bounds **unary** calls only.  A gRPC deadline covers a whole RPC, and
 one value cannot both fail a request/response call promptly and let a
-long-lived stream run, so the three streaming modes are left unbounded.
+long-lived stream run, so the three streaming modes have no deadline.
+
+They have an **idle timeout** instead.  A server-stream, client-stream
+or bidi call across which nothing has moved for
+`.withStreamIdleTimeoutMs(300000)` (the default, five minutes) is
+cancelled, and its `target` receives one terminal frame naming the
+timeout: `stream-error` for a server or bidi stream, `rpc-error` for a
+client stream.  Every frame in either direction resets it, the
+caller's own `clientStreamSend` / `bidiSend` included, so a stream that
+keeps talking lives as long as it likes; what it reaps is a peer that
+is still connected and has stopped answering.  `0` turns it off.  A
+service whose streams stay silent for longer than five minutes on
+purpose should either send a heartbeat or raise the value.
 
 ### Inbound frames
 
@@ -321,7 +342,7 @@ the next.
 Server-stream calls also carry a `streamId` on their `stream-data`
 / `stream-end` frames, so a single collector can multiplex several
 concurrent streams.  Streams stay open until either side closes
-them or the actor stops.
+them, the actor stops, or the idle timeout reaps them.
 
 #### Handles that no longer resolve
 
@@ -522,6 +543,8 @@ actor-ts.io.broker.grpc {
     package-name = "sensor.v1"
     service-name = "SensorService"
     bind         = "0.0.0.0:50051"
+    # Request-stream frames held before a handler subscribes.
+    max-pending-request-messages = 1024
   }
   client {
     proto-path   = "./proto/sensor.proto"
@@ -529,6 +552,8 @@ actor-ts.io.broker.grpc {
     service-name = "SensorService"
     endpoint     = "sensor.svc:50051"
     deadline     = 30s
+    # Cancel a stream after this long with nothing in either direction; 0 = off.
+    stream-idle-timeout = 5m
   }
 }
 ```

@@ -5,8 +5,8 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-22579%20of%2022579-22c55e?style=flat-square&logo=bun"/></a>
-  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~96%25-22c55e?style=flat-square"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-24164%20of%2024164-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~97%25-22c55e?style=flat-square"/></a>
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~22579 tests, ~96 % line) but the
+> production**.  Test coverage is good (~24164 tests, ~97 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -87,7 +87,9 @@ A short tour of what's in the box:
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections
   (event by event or a group per call with `withHandleGroup`, and a
   per-projection handler-failure strategy: retry with backoff, skip to dead
-  letters, or stop), persistence-query, replicated event sourcing.  Journals for in-memory,
+  letters, or stop; by-tag reads re-read a lookback window and deduplicate,
+  so an event committed late is still delivered once), persistence-query,
+  replicated event sourcing.  Journals for in-memory,
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
   Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,
@@ -102,7 +104,8 @@ A short tour of what's in the box:
   backends, response caching, rate-limiting, idempotency-key dedup.  Typed
   **WebSocket** routes: `websocket(path, actorRef)` binds a
   `WebsocketServerActor` (typed messages, `reply` / `broadcast`,
-  connect/disconnect hooks); `WebsocketClientActor` is the reconnecting
+  connect/disconnect hooks, a server heartbeat that reaps half-open
+  peers); `WebsocketClientActor` is the reconnecting
   client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
   a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
   Basic auth, JWT auth, request-id, timeout); HTML-escaping helpers; and
@@ -113,6 +116,8 @@ A short tour of what's in the box:
   NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP and IMAP/SMTP email
   integrations.
   Reconnect-with-backoff, outbound buffer, subscriber fan-out are baked in.
+  Kafka, AMQP and MQTT consume at-least-once by default: a delivery is
+  acknowledged only once the target actor replies that it processed it.
 - **Caching** — pluggable Cache with in-memory, Redis, Memcached backends.
 - **Typed options + fail-fast validation** — one fluent `XOptions` builder per
   configurable thing (or a plain object), with values validated once on the
@@ -148,7 +153,7 @@ A short tour of what's in the box:
   time and replayable by id — with a replay cap so a poison message cannot
   be retried into an ever-growing queue.
 - **Observability** — Prometheus exporter, OTel tracing, management
-  HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
+  HTTP endpoints (`/health`, `/ready`, plus opt-in `/cluster/members`, `/cluster/shards`),
   out-of-the-box stock metrics.
 - **Multi-sink logging** — one record to several destinations at once, each
   with its own minimum level, with bounded queues, batched delivery and a
@@ -502,6 +507,23 @@ or a real network.
 spread behind every figure, the pinned version of every arm, and what is
 deliberately not measured yet.  Reproduce with
 `bun run bench:compare -- --rounds=100`.
+
+---
+## Known security caveats
+
+**Deferred work inherits the log context (MDC) of the turn that started
+it.** `AsyncLocalStorage` binds a promise to the context current when it
+was created, so a background drain, a batch flush or a raw `setTimeout`
+started inside one message's turn stamps *that* turn's fields — tenant,
+user, correlation id — onto every log line and every `tell` it makes
+later. When the deferred work serves another principal, that is a
+cross-tenant data leak, not just a confusing log line. The framework
+cannot see such a promise, so closing it is the caller's job:
+`LogContext.runFresh(callback)` for work that belongs to nobody (it starts
+from an empty context), and `LogContext.runEach(entries, callback)` for a
+batch whose items each carry the context captured when they were
+enqueued. See
+[What is still yours to close](https://actor-ts.dev/fundamentals/logging/#what-is-still-yours-to-close).
 
 ---
 ## Roadmap & status

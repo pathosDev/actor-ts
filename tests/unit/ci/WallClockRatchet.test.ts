@@ -82,14 +82,24 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/ActorSystem.ts': 3,
   'src/Logger.ts': 2,
   'src/cache/InMemoryCache.ts': 8,
-  'src/cluster/Cluster.ts': 13,
+  // +2 after the ledger (#1262): a gossip sequence is a wall-clock stamp that
+  // a receiver compares against its own wall clock and against the sender's
+  // earlier stamps, across processes — `nextGossipSequence` stamps it and
+  // `nextGossipSenderClock` reads the receiver's side.  Virtual time would put
+  // the two ends on different clocks.
+  'src/cluster/Cluster.ts': 14,
   'src/cluster/EnvelopeTrust.ts': 1,
   'src/cluster/bootstrap/StableObservation.ts': 5,
   'src/cluster/downing/LeaseMajority.ts': 2,
   'src/cluster/router/MailboxDepthProbe.ts': 3,
   'src/cluster/sharding/CassandraRememberEntitiesStore.ts': 1,
   'src/cluster/sharding/ClusterSharding.ts': 1,
-  'src/cluster/sharding/ShardCoordinator.ts': 6,
+  // +2 after the ledger (#1214): a hand-off freshness token is drawn no lower
+  // than the wall clock so that a coordinator taking over outdates the frames
+  // its predecessor — another node, on its own clock — left in flight, and a
+  // token a region reports is bounded against the same clock.  Virtual time
+  // would put the two coordinators on different clocks.
+  'src/cluster/sharding/ShardCoordinator.ts': 8,
   'src/cluster/sharding/ShardRegion.ts': 7,
   'src/coordination/leases/InMemoryLease.ts': 1,
   'src/coordination/leases/KubernetesLease.ts': 5,
@@ -98,7 +108,6 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/crdt/LWWMap.ts': 2,
   'src/crdt/LWWRegister.ts': 1,
   'src/deadletters/DeadLetterQueue.ts': 2,
-  'src/delivery/ConsumerController.ts': 4,
   'src/devtools/cluster/Federation.ts': 3,
   'src/devtools/internal/ClusterMembership.ts': 3,
   'src/devtools/internal/NodeSampler.ts': 1,

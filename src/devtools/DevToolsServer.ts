@@ -85,7 +85,7 @@ import { ClusterMembership } from './internal/ClusterMembership.js';
  *
  * @internal
  */
-export const DEVTOOLS_SERVER_VERSION = '0.18.0';
+export const DEVTOOLS_SERVER_VERSION = '0.19.0';
 
 /** Panels that can be switched off individually, in dashboard order. */
 const OPTIONAL_PANELS: ReadonlyArray<{
@@ -122,8 +122,14 @@ export interface DevToolsTap {
   subscribersChanged?(count: number): void;
 }
 
-/** Handler behind one pull method. */
-export type DevToolsRequestHandler = (parameters: unknown) => Promise<unknown>;
+/**
+ * Handler behind one pull method.  `connectionId` names the DevTools
+ * connection the request arrived on — absent for a call that did not come
+ * through the hub — so a handler that starts something long-lived can tie it
+ * to that connection and end it in a listener given to
+ * {@link DevToolsServer.registerConnectionCloseListener} (#973).
+ */
+export type DevToolsRequestHandler = (parameters: unknown, connectionId?: string) => Promise<unknown>;
 
 /** Handle returned by `DevTools.attach`. */
 export interface DevToolsBinding {
@@ -138,6 +144,7 @@ export interface DevToolsBinding {
 export class DevToolsServer implements DevToolsHubContext {
   private readonly taps = new Map<DevToolsStreamId, DevToolsTap>();
   private readonly methods = new Map<DevToolsRequestMethod, DevToolsRequestHandler>();
+  private readonly connectionCloseListeners: Array<(connectionId: string) => void> = [];
   private readonly panels = new Map<DevToolsPanelId, DevToolsPanelDescriptor>();
   private hubRef: ActorRef<DevToolsHubCommand> | null = null;
   private explainMethods: ExplainMethods | null = null;
@@ -176,6 +183,14 @@ export class DevToolsServer implements DevToolsHubContext {
   /** Register the handler behind one pull method. */
   registerMethod(method: DevToolsRequestMethod, handler: DevToolsRequestHandler): void {
     this.methods.set(method, handler);
+  }
+
+  /**
+   * Be told when a DevTools connection closes, by the id a
+   * {@link DevToolsRequestHandler} was handed for its requests (#973).
+   */
+  registerConnectionCloseListener(listener: (connectionId: string) => void): void {
+    this.connectionCloseListeners.push(listener);
   }
 
   /** Mark a panel usable, or unusable with a reason the dashboard shows. */
@@ -432,8 +447,19 @@ export class DevToolsServer implements DevToolsHubContext {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    for (const tap of this.taps.values()) tap.uninstall();
+    // Every tap gets its turn even when one before it throws (#714).  The
+    // span tap's `uninstall()` is what releases the one-tap-per-system slot,
+    // and `stopped` above refuses a second `stop()` — so a throw that skipped
+    // it would keep the system closed to every later attach.
+    for (const tap of this.taps.values()) {
+      try {
+        tap.uninstall();
+      } catch (error) {
+        this.system.log.warn(`[devtools] the ${tap.stream} tap failed to uninstall: ${(error as Error).message}`);
+      }
+    }
     this.taps.clear();
+    this.connectionCloseListeners.length = 0;
     // Leaves no actor recording behind: a ring left running because a
     // browser tab closed is a leak nobody asked for.
     this.explainMethods?.uninstall();
@@ -477,13 +503,13 @@ export class DevToolsServer implements DevToolsHubContext {
     return this.methods.has(method);
   }
 
-  invoke(method: DevToolsRequestMethod, parameters: unknown): Promise<unknown> {
+  invoke(method: DevToolsRequestMethod, parameters: unknown, connectionId?: string): Promise<unknown> {
     const handler = this.methods.get(method);
     if (handler === undefined) return Promise.reject(new Error(`unknown method: ${method}`));
     // Wrapped so a handler that throws synchronously still surfaces as
     // a rejected promise the hub can turn into an error frame.
     try {
-      return handler(parameters);
+      return handler(parameters, connectionId);
     } catch (error) {
       return Promise.reject(error as Error);
     }
@@ -491,6 +517,18 @@ export class DevToolsServer implements DevToolsHubContext {
 
   streamSubscribersChanged(stream: DevToolsStreamId, count: number): void {
     this.taps.get(stream)?.subscribersChanged?.(count);
+  }
+
+  connectionClosed(connectionId: string): void {
+    for (const listener of this.connectionCloseListeners) {
+      // One listener failing must not cost the others their notice, nor the
+      // hub its turn: this runs inside the hub's disconnect handling.
+      try {
+        listener(connectionId);
+      } catch (error) {
+        this.system.log.warn(`[devtools] a connection-close listener failed: ${(error as Error).message}`);
+      }
+    }
   }
 
   /* -------------------------------- internals -------------------------- */

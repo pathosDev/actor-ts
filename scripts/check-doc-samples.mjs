@@ -159,12 +159,13 @@
  *   node scripts/check-doc-samples.mjs --keep     # leave the generated tree in place
  *   node scripts/check-doc-samples.mjs --docs=DIR --out=NAME   # drive a fixture tree
  *
- * Exit 2, whatever the flags, when the compiler did not run to completion.
+ * Exit 2, whatever the flags, when the compiler did not run to completion, and
+ * when `--out` is not a directory inside the repository (`outDirectoryRefusal`).
  */
 
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -694,6 +695,32 @@ export function parseArguments(argv) {
 }
 
 /**
+ * Why `out` cannot hold the generated tree, or `null` when it can (#1831).
+ *
+ * The tree has to sit inside the repository.  Its tsconfig extends the
+ * repository's and sets `rootDir` to it, `actor-ts…` resolves through `paths`
+ * into `src/`, and `@types/node` resolves from the `node_modules` above the
+ * tsconfig.  From a directory outside — `os.tmpdir()`, say — TypeScript
+ * answers with location-less errors (`TS6059` for `rootDir`, `TS2688` for the
+ * missing node types) that name no fence, the run dropped them, and a
+ * wrong-argument fence passed with `OK`.  Resolving correctly from anywhere
+ * would mean re-deriving all three from the tree's location; refusing is the
+ * one answer that cannot report a pass it did not check.
+ *
+ * The root itself is refused too: the run empties its output directory before
+ * it writes into it.
+ */
+export function outDirectoryRefusal(out, root = ROOT) {
+  const fromRoot = relative(root, resolve(root, out));
+  if (fromRoot === '') return 'it is the repository root itself, which the run would empty before writing into it';
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    return 'it lies outside the repository, where the generated tsconfig resolves neither actor-ts nor the node types, '
+      + 'so the compile would check no fence';
+  }
+  return null;
+}
+
+/**
  * `paths` derived from `package.json#exports`, mapping each published subpath
  * to the `src/` file its `types` condition points into.  Deriving it is the
  * whole point: a hand-written map would drift from the export surface exactly
@@ -805,6 +832,11 @@ async function main() {
   const options = parseArguments(process.argv.slice(2));
   const docs = resolve(ROOT, options.docs);
   const out = resolve(ROOT, options.out);
+  const refusal = outDirectoryRefusal(options.out);
+  if (refusal !== null) {
+    console.error(`--out=${options.out} is refused: ${refusal}. Point it at a directory inside the repository, such as ${DEFAULT_OUT}.`);
+    process.exit(2);
+  }
 
   const pages = markdownFiles(docs);
   const typescriptFences = pages

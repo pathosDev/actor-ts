@@ -47,7 +47,7 @@ interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
     consumer:        string;
     createIfMissing?: boolean;                    // default true
   };
-  blockMs?:      number;                          // XREADGROUP block; default 5_000
+  blockMs?:      number;                          // XREADGROUP block; default 5_000, must be > 0
   target?:       ActorRef<RedisStreamEntry>;      // consumer-actor for inbound entries
   tls?:          TlsTransportOptionsType;         // cert material; also enables TLS; code-only
 }

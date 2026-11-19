@@ -168,6 +168,18 @@ Nachbildung, die "nochmal" nach dem Passwort fragt.  Das Framework kann
 Handler nicht zur Prüfung zwingen — also prüft der Helper, zu dem sie
 ohnehin greifen.
 
+**Der Server prüft jeden Redirect, den er sendet, nicht nur die, die
+`redirect` baut** (#1056).  Ein `301`/`302`/`303`/`307`/`308`, dessen
+`location` auf einen anderen Host als den des Requests zeigt, wird mit der
+generischen `500` abgewiesen — ob ein Handler den Header selbst geschrieben
+hat (`complete(Status.Found, null, { location })`), ein geworfener
+`HttpError` ihn trägt oder eine `fallback()`-Route damit geantwortet hat.
+Die Abweisung wird auf `error` geloggt, ohne das Ziel.  Zwei Opt-ins lassen
+einen Redirect gehen: `redirectExternal(...)` pro Route und serverweit
+`withAllowedRedirectOrigins([...])` an `newServerAt(...)`, das exakte
+Origins nimmt (`https://payments.example`, ohne Pfad) oder `['*']`, um die
+Prüfung abzuschalten.  Ein leeres Ziel lehnt `redirect('')` mit `400` ab.
+
 ### `redirectExternal(url, status?)`
 
 ```ts
@@ -233,6 +245,7 @@ type HttpRequest = {
   readonly query:   Record<string, string>;
   readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
+  readonly remoteAddress?: string;   // der Socket-Peer — hinter einem Proxy der Proxy
 };
 ```
 
@@ -241,6 +254,12 @@ taucht dort nie auf, weil die Parameter bereits in `query` geparst
 sind.  Das zählt für alles, was durch Anhängen an `path` gebaut wird:
 ein Redirect-Ziel, ein Cache-Key, ein Request-Fingerprint.
 Prozent-Escapes bleiben kodiert; einmal dekodieren, dann validieren.
+
+`remoteAddress` ist auf allen drei Backends der **Socket-Peer** — kein
+Forwarding-Header wird herangezogen.  Hinter einem Reverse-Proxy ist das
+der Proxy; die eigene Adresse des Clients liefert
+[`clientIpResolver`](/de/http/middleware/ip-allowlist/#den-durchlauf-wiederverwenden),
+der die Proxys benannt haben will, bevor er die Forwarding-Kette liest.
 
 ### Pfadparameter
 

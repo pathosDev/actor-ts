@@ -57,11 +57,18 @@ frische `HealthCheckRegistry` an dieser Stelle trennt sie.
 | `cluster-transport` | Readiness | `Cluster.join` | der Knoten **keinen** der noch erwarteten Peers erreichen kann |
 | `startup` | Readiness | der Registry selbst, wenn das System [Startup-Tasks](/de/fundamentals/actor-system/#hochfahren) hat | der Startup-Graph noch läuft oder einer seiner Tasks fehlgeschlagen ist |
 | `shard-region:<type>` | Readiness | `Cluster.join`, einer pro Typ in [`actor-ts.sharding.healthcheck.names`](/de/reference/configuration/#actor-tssharding) | die Region dieses Knotens für den Typ nicht beim Koordinator registriert ist — siehe [Auf eine Shard-Region warten](#auf-eine-shard-region-warten) |
+| `shutdown` | Readiness | der Registry selbst, in `before-service-unbind`, sobald ein [Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/) beginnt | immer — es gibt ihn nur, solange das System leerläuft |
 
 `startup` gibt es nur auf einem System mit Startup-Tasks, und der Check
 bleibt, wenn der Start vorbei ist: von da an `true`, oder `false` mit
 dem fehlgeschlagenen Task und seinem Fehler im `detail`.  Solange der
 Graph läuft, nennt `detail` die Phase, in der er gerade ist.
+
+`shutdown` erscheint, wenn die Shutdown-Pipeline beginnt, eine Phase
+bevor die HTTP-Server keine Verbindungen mehr annehmen; `/ready`
+antwortet also mit `503`, während der Knoten seine laufenden Requests
+leerlaufen lässt und bis der Listener schließt.  Ein System, das nicht
+herunterfährt, trägt ihn nicht.
 
 `cluster-transport` prüft absichtlich auf *vollständige Isolation*
 und nicht auf „jeder Peer ist erreichbar".  Eine Teilpartition

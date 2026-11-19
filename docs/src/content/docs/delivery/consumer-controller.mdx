@@ -12,9 +12,11 @@ It:
   keeping that bookkeeping on a bounded budget — at most `maxProducers`
   producers, entries idle for `producerIdleTtlMs` swept, and at most
   `maxOutOfOrder` sequences retained above an open gap in one producer's
-  stream.
+  stream.  A new incarnation of a producer is held beside the live one rather
+  than replacing it, at most `maxIncarnationsPerProducer` per producer.
 - Refuses a malformed envelope — one with no `replyTo`, a `seq` that is not a
-  positive safe integer, or an empty / over-long identifier — as a dead letter,
+  positive safe integer, a `floor` that is not one or lies above its `seq`, or
+  an empty / over-long identifier — as a dead letter,
   without running the handler and without acking.
 - Invokes a user **handler function** with each message body.
 - Acks back to the producer **automatically** after the handler
@@ -55,6 +57,7 @@ type ConsumerControllerOptionsType<T> = {
   maxProducers?: number;         // default 1024,   Infinity = no cap
   producerIdleTtlMs?: number;    // default 300000, Infinity = no sweep
   maxOutOfOrder?: number;        // default 1024,   Infinity = no cap
+  maxIncarnationsPerProducer?: number; // default 4, Infinity = no cap
 };
 ```
 
@@ -64,11 +67,12 @@ type ConsumerControllerOptionsType<T> = {
 | `maxProducers` | Most producers the dedup map holds at once.  Past it, the least-recently-used producer's entry is evicted. |
 | `producerIdleTtlMs` | How long a producer's entry survives with no delivery from it.  A background sweep drops the ones past it. |
 | `maxOutOfOrder` | Most sequences one producer may have retained above an open gap.  Past it the consumer refuses the delivery — no handler call and no Ack — so that producer's window stalls. |
+| `maxIncarnationsPerProducer` | Most incarnations of one producer held side by side, the live one included.  Past it a delivery under a further incarnation is refused as a dead letter — no handler call and no Ack.  See *What the dedup key is bound to*. |
 
 You still don't configure a buffer size or a consumer ID, and the bounds on
 what an incoming *envelope* may contain stay non-configurable: those exist to
-bound wire input, and a limit the sender could raise is not a limit.  The three
-options above are a different kind of bound — a budget this consumer applies
+bound wire input, and a limit the sender could raise is not a limit.  The four
+bounds above are a different kind of bound — a budget this consumer applies
 to its own heap, which is exactly the sort of thing an operator should be able
 to set.
 
@@ -90,7 +94,7 @@ A plain object works everywhere the builder does — `{ handler, maxProducers }`
 
 ### From HOCON
 
-All three bounds also read from
+All four bounds also read from
 [`actor-ts.reliable-delivery.consumer`](/reference/configuration/#actor-tsreliable-delivery),
 in the project's usual order: **explicit options beat HOCON, and HOCON beats
 the built-in defaults**.
@@ -100,10 +104,11 @@ actor-ts.reliable-delivery.consumer {
   max-producers              = 64
   producer-idle-time-to-live = 1m
   max-out-of-order           = 256
+  max-incarnations-per-producer = 4
 }
 ```
 
-`0` is how all three keys spell the `Infinity` the option fields document,
+`0` is how all four keys spell the `Infinity` the option fields document,
 because `Infinity` cannot be written in HOCON at all — the number reader takes
 a numeric literal and the duration parser refuses a non-finite value.  It is
 the same spelling `cluster.max-members` and `sharding.max-entities` already
@@ -111,7 +116,9 @@ use, and it costs exactly what the section below describes: the map is keyed
 by a `producerId` the *sender* chooses, so `0` on `max-producers` hands a peer
 the decision about how much this consumer retains, and `0` on
 `max-out-of-order` lets a sender that withholds one sequence grow that
-producer's set for as long as it keeps sending.
+producer's set for as long as it keeps sending.  `0` on
+`max-incarnations-per-producer` lets a sender open a window per invented
+incarnation of one producer.
 
 `handler` has no key — it is a function, and the one required field rather than
 a tunable.
@@ -167,6 +174,32 @@ A stall is visible, and it is what retransmission already recovers from: the
 send stays in the producer's own window and keeps being retried.  It cannot
 deadlock, because the sequence that closes the gap is admitted however full
 the set is — it drains the set rather than growing it.
+
+### The producer's floor
+
+Every `Delivery` carries a `floor`: the lowest seq its producer still holds
+unacknowledged.  Everything below it has been acknowledged, so the handler has
+already run for it and the producer will never send it again.  On admission
+the consumer raises the window the delivery lands in to `floor - 1` and
+releases any retained sequences at or below it.
+
+That is what lets a producer carry on after the consumer forgot it.  The idle
+sweep, an LRU eviction, a promotion over its incarnation, the release of a
+quiet held incarnation and a restart of the consumer all drop a window, while
+the producer's seq counter carries on at N+1.  Without the floor, the next
+window waited at 0 for seqs 1..N that would never come again, retained every
+delivery from N+1 out of order, and refused the producer for good at
+`maxOutOfOrder`.  With it, the window starts where the producer actually is.
+Sequences still in flight are at or above the floor, so each of them still
+reaches the handler, in whatever order they arrive.
+
+A floor moves only the window of the incarnation its envelope names.  One
+under an incarnation the consumer has not seen lands in that incarnation's
+held window and never reaches the live one, so it cannot make the live
+producer's messages look like duplicates.  A floor above its own `seq` is
+refused as malformed.  An envelope without a `floor`, from a producer that
+predates the field, is read as floor 1, which is the old behaviour, stall
+included, so run the same version on both sides.
 
 Read `consumer.trackedProducers` for the current entry count.  It should sit
 near the number of producers actually talking to this consumer; climbing with
@@ -278,7 +311,9 @@ accepted on its next retransmit.
 
 See [Why the dedup state has a budget](#why-the-dedup-state-has-a-budget) for
 both halves.  Losing an entry never drops a message; it costs a duplicate.
-Reaching the out-of-order cap never drops one either; it costs a stall.
+Reaching the out-of-order cap never drops one either; it costs a stall.  Nor
+does a lost entry strand the producer: [the producer's
+floor](#the-producers-floor) starts the next window where the producer stands.
 
 ## Failure semantics
 
@@ -314,12 +349,38 @@ Each producer maintains its own seq.  The consumer dedups
 **per producer** automatically — it keeps a separate
 `(contiguous, above)` dedup state per `producerId`, so two
 producers' seq spaces don't collide.  The entry also records which
-*incarnation* of that `producerId` the counters describe, and a delivery from a
-new incarnation replaces it rather than adding a second entry.  That keeps a
-restarting producer at one entry rather than one per restart, at the cost of
-one more possible duplicate: a straggling delivery from the outgoing
-incarnation resets the window again, so a handful of already-handled seqs may
-run twice around the changeover.
+*incarnation* of that `producerId` the counters describe.
+
+### What the dedup key is bound to
+
+The window is keyed on `producerId` and, within it, on the incarnation — and
+**both are written by whoever built the envelope**.  Nothing on a `Delivery`
+binds it to the producer it names, so the consumer cannot tell a producer's
+restart from somebody else naming that producer under an invented incarnation.
+It therefore never lets an unrecognised incarnation *replace* the live window:
+
+- **The new incarnation is held beside the live one**, deduplicated in a window
+  of its own.  Its messages reach the handler at once and only once, and the
+  live producer's window is untouched — its retransmit of a sequence already
+  handled is still a duplicate.
+- **It is promoted only once the live incarnation has gone quiet** for
+  `producerIdleTtlMs`, on its next delivery after that.  Promotion makes its
+  window the live one and drops the old window.  That is the evidence the idle
+  sweep already takes as "this producer is gone", so a real restart converges
+  — the old incarnation stops sending — while a forged incarnation gets no
+  further than waiting for the sweep would.
+- **At most `maxIncarnationsPerProducer` are held per producer** (default 4,
+  the live one included).  A delivery under one more incarnation is refused: a
+  dead letter, no handler call and no acknowledgment, so its producer
+  retransmits until a held incarnation has gone quiet for the idle TTL and its
+  slot is released.
+
+What the changeover still costs is one possible duplicate: a straggling
+delivery from the outgoing incarnation after the promotion is an unrecognised
+incarnation again, gets a fresh window, and a handful of already-handled seqs
+may run twice.  With `producerIdleTtlMs: Infinity` no incarnation ever goes
+quiet, so a restarted producer stays held, and one that restarts more often
+than the cap allows is refused — leave the sweep on where producers restart.
 
 How many entries there are in total is `maxProducers`' business, not the
 incarnation's — with more distinct producers than that, the least recently

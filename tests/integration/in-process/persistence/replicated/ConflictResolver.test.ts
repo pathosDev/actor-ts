@@ -7,6 +7,7 @@
  * a hand-written case and a tiny property-style cross-check.
  */
 import { describe, expect, test } from 'bun:test';
+import * as fc from 'fast-check';
 import {
   CustomMergeResolver,
   LastWriterWinsResolver,
@@ -53,20 +54,71 @@ describe('LastWriterWinsResolver', () => {
     expect(resolver.resolve(candidateB, candidateA)).toBe('B');
   });
 
-  test('tie on timestamp AND replica ⇒ either branch returns its own event', () => {
-    // Same `(timestamp, replica)` is a real degenerate case — two
-    // events written by the SAME node at the SAME tick.  The current
-    // implementation returns the second argument (`b.event`) since
-    // `'node-x' > 'node-x'` is false.  We pin that as observed
-    // behaviour — both branches return the SAME event value (since
-    // the replica/timestamp identify a single write) which is what
-    // determinism actually requires.
-    const resolver = new LastWriterWinsResolver<string>();
-    const ev = 'same-write';
-    const candidateA = candidate(ev, { timestamp: 100, replica: 'node-x' });
-    const candidateB = candidate(ev, { timestamp: 100, replica: 'node-x' });
-    expect(resolver.resolve(candidateA, candidateB)).toBe(ev);
-    expect(resolver.resolve(candidateB, candidateA)).toBe(ev);
+  test('tie on timestamp AND replica ⇒ the event decides, whichever argument it is', () => {
+    // One replica stamping two different events in one millisecond.  The
+    // resolver used to fall through to `b.event`, so `resolve(a, b)` and
+    // `resolve(b, a)` each kept their second argument and two replicas
+    // receiving the pair in opposite orders kept different events — the
+    // order-dependence #950 removed from `LWWRegister`.
+    const resolver = new LastWriterWinsResolver<{ readonly amount: number }>();
+    const candidateA = candidate({ amount: 1 }, { timestamp: 100, replica: 'node-x' });
+    const candidateB = candidate({ amount: 2 }, { timestamp: 100, replica: 'node-x' });
+    expect(resolver.resolve(candidateA, candidateB)).toEqual({ amount: 2 });
+    expect(resolver.resolve(candidateB, candidateA)).toEqual({ amount: 2 });
+  });
+
+  test('commutative over generated candidates, full ties included', () => {
+    // Timestamps from {1, 2} and replicas from {a, b} so a full tie is common,
+    // and payloads independent of both so a tied pair usually differs.
+    const resolver = new LastWriterWinsResolver<unknown>();
+    const candidateArbitrary = fc.record({
+      event: fc.oneof(fc.integer({ min: 0, max: 3 }), fc.constantFrom('x', 'y'), fc.record({ amount: fc.integer({ min: 0, max: 3 }) })),
+      timestamp: fc.integer({ min: 1, max: 2 }),
+      replica: fc.constantFrom('a', 'b'),
+    }).map((c) => candidate<unknown>(c.event, { timestamp: c.timestamp, replica: c.replica }));
+    let fullTies = 0;
+    fc.assert(fc.property(candidateArbitrary, candidateArbitrary, (left, right) => {
+      if (left.timestamp === right.timestamp && left.replica === right.replica) fullTies += 1;
+      expect(resolver.resolve(left, right)).toEqual(resolver.resolve(right, left));
+      // And the winner is always one of the two inputs.
+      expect([left.event, right.event]).toContainEqual(resolver.resolve(left, right));
+    }));
+    expect(fullTies).toBeGreaterThan(0);
+  });
+
+  test('a full tie between 1n and "1n", or undefined and a function, goes to one event in both orders (#1841)', () => {
+    // The JSON tie-break key rendered `1n` as the string `"1n"`, and both
+    // `undefined` and a function as the empty key, so each pair tied and the
+    // resolver answered its first argument.
+    const resolver = new LastWriterWinsResolver<unknown>();
+    const pairs: Array<readonly [unknown, unknown]> = [[1n, '1n'], [undefined, () => 1]];
+    for (const [first, second] of pairs) {
+      const candidateA = candidate<unknown>(first, { timestamp: 100, replica: 'node-x' });
+      const candidateB = candidate<unknown>(second, { timestamp: 100, replica: 'node-x' });
+      expect(typeof resolver.resolve(candidateA, candidateB)).toBe(typeof resolver.resolve(candidateB, candidateA));
+    }
+  });
+
+  test('commutative over events a tie-break key could confuse (#1841)', () => {
+    // Bigints against their string spellings, `undefined` against a function,
+    // `-0` against `0`, a field holding `undefined` against a missing one, and
+    // a cycle against a plain object.  Compared by identity: every event below
+    // is a distinct value, so the two orders agree only if they keep the same one.
+    const cyclic: { self?: unknown } = {};
+    cyclic.self = cyclic;
+    const eventFunction = (): number => 1;
+    const resolver = new LastWriterWinsResolver<unknown>();
+    const candidateArbitrary = fc.record({
+      event: fc.constantFrom<unknown>(
+        1n, '1n', 1, '1', 0, -0, undefined, null, 'null', eventFunction, '',
+        { amount: 1 }, { amount: 2 }, { amount: 1n }, { amount: '1n' }, { amount: undefined }, {}, cyclic,
+      ),
+      timestamp: fc.integer({ min: 1, max: 2 }),
+      replica: fc.constantFrom('a', 'b'),
+    }).map((c) => candidate<unknown>(c.event, { timestamp: c.timestamp, replica: c.replica }));
+    fc.assert(fc.property(candidateArbitrary, candidateArbitrary, (left, right) => {
+      expect(Object.is(resolver.resolve(left, right), resolver.resolve(right, left))).toBe(true);
+    }));
   });
 
   test('commutativity across a small input grid', () => {

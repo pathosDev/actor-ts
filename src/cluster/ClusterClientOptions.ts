@@ -5,6 +5,7 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import type { WireDecodeOptions } from '../serialization/WireDecodeOptions.js';
 
 /**
  * Synthetic system name a client puts in its `hello` when none is set.
@@ -30,6 +31,15 @@ export const DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME = 'cluster-client';
  * `HANDSHAKE_TIMEOUT_MS` keeps it findable from the other end.
  */
 export const DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS = 5_000;
+
+/**
+ * How many frames a `ClusterClient` holds for a contact point that has pushed
+ * back, before it refuses the next `send` or `ask` (#1827).  The same 1000 as
+ * the transport's `outbound-queue-size` (`MAX_PENDING_FRAMES`), which bounds
+ * the same quantity on a node's own connections; written out rather than
+ * imported, because an options file imports no functional module's constants.
+ */
+export const DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE = 1_000;
 
 /** Plain options-object shape accepted by a {@link ClusterClient}. */
 export type ClusterClientOptionsType = {
@@ -64,10 +74,30 @@ export type ClusterClientOptionsType = {
    * the acceptor's deadline.
    */
   readonly connectTimeoutMs?: number;
+  /**
+   * How many frames are held for a contact point whose socket has pushed back
+   * — answered `false` to a write and not yet drained — before the next `send`
+   * or `ask` is refused with an error (#1827).  Default:
+   * {@link DEFAULT_CLUSTER_CLIENT_OUTBOUND_QUEUE_SIZE}.
+   *
+   * Refused rather than dropped: the transport drops the oldest frame because
+   * the newest gossip supersedes it, but a client's envelope is a command its
+   * caller is waiting on, and only the caller can decide what losing it means.
+   * Frames are held whole and written in order once the socket drains.
+   */
+  readonly outboundQueueSize?: number;
   /** Optional TLS config — must match the cluster's. */
   readonly tls?: TlsTransportOptionsType;
   /** Custom logger; default: ConsoleLogger at WARN. */
   readonly logger?: Logger;
+  /**
+   * Which `JsonTree` tags a contact point's frame may use (#1303).  A frame
+   * using any other tag is refused and logged; the connection stays.  Layered
+   * over `actor-ts.serialization.wire.*` — the block a node reads — so a
+   * cluster that widens its list widens it for its clients by the same key.
+   * Default: the data tags (`DEFAULT_WIRE_ADMITTED_TAGS`).
+   */
+  readonly wireDecode?: WireDecodeOptions;
 };
 
 /**
@@ -110,6 +140,11 @@ export class ClusterClientOptionsBuilder extends OptionsBuilder<ClusterClientOpt
     return this.set('connectTimeoutMs', ms);
   }
 
+  /** Frames held for a contact point that pushes back before a send is refused.  Default 1000. */
+  withOutboundQueueSize(size: number): this {
+    return this.set('outboundQueueSize', size);
+  }
+
   /** TLS config — must match the cluster's. */
   withTls(tls: TlsTransportOptionsType): this {
     return this.set('tls', tls);
@@ -118,6 +153,11 @@ export class ClusterClientOptionsBuilder extends OptionsBuilder<ClusterClientOpt
   /** Custom logger; default ConsoleLogger at WARN. */
   withLogger(logger: Logger): this {
     return this.set('logger', logger);
+  }
+
+  /** The tags a contact point's frame may use.  Layered over `actor-ts.serialization.wire`. */
+  withWireDecode(wireDecode: WireDecodeOptions): this {
+    return this.set('wireDecode', wireDecode);
   }
 }
 
@@ -137,6 +177,40 @@ export class ClusterClientOptionsValidator extends OptionsValidator<ClusterClien
     }
     this.positiveNumber('askTimeoutMs');
     this.positiveNumber('connectTimeoutMs');
+    this.positiveInt('outboundQueueSize');
+    if (s.tls !== undefined) this.clientCredentialIsWhole(s.tls);
+  }
+
+  /**
+   * Refuse half a client credential (#1085): `cert` without `key`, or `key`
+   * without `cert`.
+   *
+   * Every runtime adapter dropped the half on the dial — Node and Bun handed
+   * `tls.connect` an undefined `key`, Deno discards both unless both are set —
+   * so the client spoke one-way TLS while its configuration read as mTLS.
+   * Against a listener without `ca` that connected, and the identity binding
+   * that rests on the client's certificate had nothing to bind; against an mTLS
+   * listener it failed with a TLS alert that named no field.  The listener rule
+   * (`assertListenerTlsIsCoherent`) cannot be reused here: `{ ca }` alone is the
+   * correct one-way configuration for a dialer.  Half a credential is the one
+   * shape that is valid nowhere.
+   *
+   * Empty counts as absent, as it does on the listener: an empty string or
+   * buffer is what an unset secret looks like by the time it arrives.  The
+   * value is left out of the message on purpose — it holds a private key.
+   */
+  private clientCredentialIsWhole(tls: TlsTransportOptionsType): void {
+    const hasCertificate = tls.cert !== undefined && tls.cert.length > 0;
+    const hasKey = tls.key !== undefined && tls.key.length > 0;
+    if (hasCertificate === hasKey) return;
+    const present = hasCertificate ? 'cert' : 'key';
+    const absent = hasCertificate ? 'key' : 'cert';
+    this.fail(
+      'tls',
+      `sets \`${present}\` without \`${absent}\`: half a client certificate is no credential, and the `
+      + 'dial would silently fall back to one-way TLS. Supply both, or neither for one-way TLS '
+      + '(`ca` alone authenticates the server)',
+    );
   }
 }
 
@@ -154,7 +228,7 @@ export class ClusterClientOptionsValidator extends OptionsValidator<ClusterClien
  */
 export type ClusterClientConfigDefaults = Partial<Pick<
   ClusterClientOptionsType,
-  'contactPoints' | 'systemName' | 'askTimeoutMs' | 'connectTimeoutMs'
+  'contactPoints' | 'systemName' | 'askTimeoutMs' | 'connectTimeoutMs' | 'outboundQueueSize'
 >>;
 
 /**
@@ -194,6 +268,9 @@ export function readClusterClientOptionsFromConfig(
   }
   if (config.hasPath(keys.connectTimeout)) {
     out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
+  }
+  if (config.hasPath(keys.outboundQueueSize)) {
+    out.outboundQueueSize = config.getInt(keys.outboundQueueSize);
   }
   return out;
 }

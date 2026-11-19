@@ -6,23 +6,54 @@ description: Die Strategie, die zwei nebenläufige Events zu einem zusammenführ
 Wenn zwei Replicas derselben Entity Events gleichzeitig schreiben
 (erkannt via
 [Vector Clocks](/de/persistence/replicated-event-sourcing/vector-clocks/)),
-muss das Framework wissen, **welches Event gewinnt oder wie das
-Paar gemergt wird**.  Das ist der **Conflict Resolver** — eine
-Strategie, die du durch Überschreiben von `resolver()` am Actor
-bereitstellst.
+muss das Framework wissen, **was die nebenläufigen Events
+zusammen bedeuten**.  Standardmäßig wendet es alle an; ein
+**Conflict Resolver** — eine Strategie, die du durch Überschreiben
+von `resolver()` am Actor bereitstellst — wählt stattdessen eines
+aus oder führt sie zusammen.
 
 ```ts
 import { ReplicatedEventSourcedActor, LastWriterWinsResolver } from 'actor-ts/persistence';
 import type { ConflictResolver } from 'actor-ts/persistence';
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
-  // Der Default ist Last-Writer-Wins; zum Ändern überschreiben:
+  // Der Default ist null — kein Resolver; überschreiben, um nebenläufige Events abzugleichen:
   protected override resolver(): ConflictResolver<Event> {
     return new LastWriterWinsResolver<Event>();
   }
   // ...
 }
 ```
+
+## Der Default: kein Resolver
+
+`resolver()` gibt `null` zurück, solange du es nicht überschreibst,
+und dann wird nichts abgeglichen: Jedes Event, nebenläufig oder
+nicht, läuft in der kanonischen Reihenfolge durch `onEvent` —
+`(timestamp, replica, seqAtReplica)`, auf jeder Replica dieselbe
+Liste.  Für ein Event, das einen Wert *ersetzt*, verhält sich das
+bereits wie Last-Writer-Wins (das später gestempelte nebenläufige
+Event wird zuletzt angewandt); für ein Event, das *addiert*, wirken
+beide Seiten.  Überschreibe `resolver()`, wenn beides nicht ist,
+was deine Domäne meint.
+
+## Welche Events den Resolver erreichen
+
+Die kanonische Reihenfolge entscheidet weiterhin, wo jedes Event
+steht.  Der Resolver entscheidet, was eine Folge nebenläufiger
+Events in dieser Reihenfolge bedeutet.  Beim Durchlaufen der
+Historie in kanonischer Reihenfolge tritt ein Event der aktuellen
+**Konfliktgruppe** bei, wenn es zu jedem Event darin nebenläufig
+ist, und eröffnet sonst eine neue Gruppe.  Eine Gruppe aus einem
+Event wird unverändert gefaltet; eine größere Gruppe wird paarweise
+durch `resolve` reduziert, von links nach rechts in kanonischer
+Reihenfolge, und das eine Event, das herauskommt, wird über
+`onEvent` gefaltet.  Ein Event, das *nach* einem anderen geschieht,
+wird dem Resolver nie zusammen mit diesem übergeben.
+
+Die Gruppen hängen allein von der Menge der Events ab, sodass zwei
+Replicas mit denselben Events denselben State falten — egal, in
+welcher Reihenfolge die Events ankamen.
 
 ## Das Interface
 
@@ -44,10 +75,13 @@ type ConflictCandidate<E> = {
 ```
 
 Beachte den **einzelnen Typparameter** (das Event, *nicht* den
-State).  Sind mehr als zwei Events nebenläufig, faltet das
-Framework sie paarweise durch `resolve`, sodass die ganze Menge
-auf ein Gewinner-Event reduziert wird — das dann über dein
-normales `onEvent` angewandt wird.
+State).  Enthält eine Gruppe mehr als zwei Events, faltet das
+Framework sie paarweise durch `resolve`, sodass die ganze Gruppe
+auf ein Event reduziert wird — das dann über dein normales
+`onEvent` angewandt wird.  Ein zurückgegebener Kandidat trägt
+seine eigenen `timestamp`, `replica` und `vc` in den nächsten
+Schritt; ein synthetisiertes Event trägt `timestamp` und `replica`
+des späteren Kandidaten und die Zusammenführung beider Clocks.
 
 ## Zwei harte Verträge
 
@@ -67,7 +101,7 @@ Ankunftsreihenfolge oder „nimm `a`".
 
 ## Eingebaute Resolver
 
-### `LastWriterWinsResolver` (Default)
+### `LastWriterWinsResolver`
 
 ```ts
 protected override resolver(): ConflictResolver<Event> {
@@ -76,10 +110,18 @@ protected override resolver(): ConflictResolver<Event> {
 ```
 
 Höherer `timestamp` gewinnt; bei Gleichstand gewinnt die höhere
-(lexikografische) `replica`-ID, sodass jede Replica konvergiert.
+(lexikografische) `replica`-ID, und ein Gleichstand in beidem —
+eine Replica stempelt zwei Events in derselben Millisekunde — geht
+an das Event, dessen typisierter, kanonischer Schlüssel
+(`canonicalOrderKey` aus `actor-ts/util`, dieselbe Ordnung wie bei
+`LWWRegister`) höher sortiert.  So hängt der
+Gewinner nie von der Argumentreihenfolge ab, und jede Replica
+konvergiert.
 Einfach und oft „gut genug".  Vorbehalt: setzt grob vergleichbare
 Wall-Clocks über Replicas voraus — derselbe Trade-off wie
-`LWWRegister`.
+`LWWRegister`.  Anders als der Default **verwirft** er das
+unterlegene Event eines nebenläufigen Paars; nutze ihn also für
+State, der ersetzt und nicht aufsummiert wird.
 
 ### `CustomMergeResolver`
 
@@ -138,8 +180,11 @@ class OrderedWins implements ConflictResolver<Event> {
 }
 ```
 
-Genau das macht `LastWriterWinsResolver` — hier als Vorlage für
-dein eigenes Tie-Breaking gezeigt.
+Das ist die Reihenfolge, die `LastWriterWinsResolver` verwendet —
+hier als Vorlage für dein eigenes Tie-Breaking gezeigt.  Kommutativ
+ist sie nur, solange zwei Kandidaten nie `timestamp` und
+`replica` zugleich teilen; der eingebaute Resolver entscheidet
+diesen letzten Gleichstand zusätzlich über die Payload.
 
 ## Wann ein Merge die falsche Abstraktion ist
 

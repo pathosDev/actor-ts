@@ -71,7 +71,24 @@ export type PeerCertificate = {
  * own `WeakMap<TcpSocketLike, State>`.
  */
 export interface TcpSocketLike {
-  write(data: Uint8Array): void;
+  /**
+   * Hand `data` to the socket, whole: every adapter keeps what the runtime
+   * cannot take yet and writes it once the runtime can, so no write is ever
+   * cut short (#931).
+   *
+   * The answer is the back-pressure signal: `true` while the socket can take
+   * more, `false` once it is holding more than its runtime's high-water mark.
+   * A `false` loses nothing — the bytes are queued — but a caller that keeps
+   * writing grows that queue without bound, so it should wait for
+   * {@link TcpSocketHandlers.onDrain} before it writes again.  A socket that
+   * has closed answers `false` and drops the bytes: there is nobody left to
+   * write them to.
+   *
+   * Native Bun sockets used to write what the kernel would take and drop the
+   * rest, which cut a framed stream mid-frame; Node's and Deno's queued
+   * everything and said nothing.  All three now queue and say so.
+   */
+  write(data: Uint8Array): boolean;
   end(): void;
   /**
    * Abort the connection instead of half-closing it.
@@ -148,6 +165,14 @@ export interface TcpSocketHandlers {
   onData(sock: TcpSocketLike, chunk: Uint8Array): void;
   onClose(sock: TcpSocketLike): void;
   onError(sock: TcpSocketLike, err: Error): void;
+  /**
+   * The socket can take more again, after a {@link TcpSocketLike.write} that
+   * answered `false` (#931).  Fired once per such episode, once the adapter
+   * has handed the runtime what it was holding, or brought it back under the
+   * high-water mark.  Optional: a caller that never writes enough to see
+   * back-pressure has nothing to resume.
+   */
+  onDrain?(sock: TcpSocketLike): void;
 }
 
 export interface TcpListener {
@@ -310,6 +335,37 @@ export function assertListenerTlsIsCoherent(
 }
 
 /**
+ * Refuse half a client credential on a dial (#1085): `cert` without `key`, or
+ * `key` without `cert`.  Called by each adapter's `connect` before it dials.
+ *
+ * Every adapter dropped the half — Node and Bun handed the runtime an
+ * undefined `key`, Deno discards both unless both are set — so the dial spoke
+ * one-way TLS under a configuration that read as mTLS.  Against a listener
+ * without `ca` that connected, and the identity binding that rests on the
+ * client's certificate had nothing to bind; against an mTLS listener it failed
+ * with a TLS alert that named no field.  `ClusterClient` refuses the shape at
+ * construction; this is the net under every other dialer — the log sinks, the
+ * cluster transport — and under a caller that builds no options object.
+ *
+ * Not {@link assertListenerTlsIsCoherent}: `{ ca }` alone is the correct
+ * one-way configuration for a dialer.  Half a credential is the one shape that
+ * is valid nowhere.  Empty counts as absent, as on the listener.  The values
+ * stay out of the message: one of them is a private key.
+ */
+export function assertDialCredentialIsWhole(tls: TlsTransportOptionsType): void {
+  const presentsCertificate = carriesMaterial(tls.cert);
+  const presentsKey = carriesMaterial(tls.key);
+  if (presentsCertificate === presentsKey) return;
+  const present = presentsCertificate ? 'cert' : 'key';
+  const absent = presentsCertificate ? 'key' : 'cert';
+  throw new Error(
+    `TLS transport: \`${present}\` is set on this dial but \`${absent}\` is not — half a client credential `
+    + 'is no credential, and the dial would silently fall back to one-way TLS. Supply both, or neither '
+    + 'for one-way TLS (`ca` alone authenticates the server).',
+  );
+}
+
+/**
  * Whether the listener must bind TLS — and the single place that decision is
  * made, for all three runtimes.
  *
@@ -392,14 +448,16 @@ export interface TcpBackend {
    * the first read or write, so the Deno adapter runs it before it attaches the
    * connection.
    *
-   * **What a write does under back-pressure differs, and nothing reports it.**
-   * `TcpSocketLike.write` returns nothing (#931).  A Node socket, Bun's
-   * `node:net` and `node:tls` — every Bun dial that carries a `signal` — and a
-   * Deno connection keep what the peer cannot take yet in memory, without
-   * bound; a native Bun socket, which is every socket `Bun.listen` accepts and
-   * every Bun dial without a `signal`, drops what the kernel will not take.
-   * Whether the bound belongs in the backends or in the transport above them is
-   * #931's question; nothing here applies one.
+   * **A write under back-pressure is queued and reported, on every path.**
+   * `TcpSocketLike.write` answers `false` once the socket holds more than its
+   * runtime's high-water mark, and `onDrain` says when it can take more again
+   * (#931).  A Node socket, Bun's `node:net` and `node:tls` — every Bun dial
+   * that carries a `signal` — and a Deno connection always queued; a native
+   * Bun socket, which is every socket `Bun.listen` accepts and every Bun dial
+   * without a `signal`, used to drop what the kernel would not take, and now
+   * keeps it and writes it on Bun's `drain`.  The adapters bound nothing: the
+   * bound is the caller's, who knows what it is writing — `TcpTransport`
+   * holds at most `outbound-queue-size` frames per peer behind a `false`.
    *
    * **`signal` gives a dial up.**  Aborting it before the promise settles
    * rejects the promise with the signal's reason, no handler fires afterwards,

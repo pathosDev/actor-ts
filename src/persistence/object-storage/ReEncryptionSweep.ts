@@ -425,6 +425,13 @@ export async function reEncryptObjectStorage(
   backend: ObjectStorageBackend,
   options: ReEncryptOptions,
 ): Promise<ReEncryptResult> {
+  // Ahead of the first backend call (#1048).  Left to `deriveSubkey`, a
+  // missing or empty `info` failed only per body — and with `newInfo` set,
+  // the rotation fallback below caught that failure, decoded under `newInfo`
+  // and counted a corpus already there as converged: a green report for a
+  // call that named no source context.
+  assertSweepInfo(options.info, 'info');
+  if (options.newInfo !== undefined) assertSweepInfo(options.newInfo, 'newInfo');
   const rawItems = await backend.list({ prefix: options.keyPrefix });
   // Sort lexicographically so that resume by `lastKey` is deterministic
   // across backends (FS-backend lists in disk order, S3 lists alphabetic
@@ -733,6 +740,20 @@ export async function reEncryptObjectStorage(
 }
 
 /* ----------------------------- internals --------------------------------- */
+
+/**
+ * Refuse an HKDF context that is not a non-empty string, in the words
+ * `deriveSubkey` and the plug-in's `assertEncryptionInfo` use, naming the
+ * option so the operator knows which of the two contexts is wrong.
+ */
+function assertSweepInfo(value: unknown, field: 'info' | 'newInfo'): void {
+  if (typeof value === 'string' && value.length > 0) return;
+  throw new Error(
+    `reEncryptObjectStorage: encryption ${field} must be a non-empty string — it is the HKDF context `
+    + 'that separates one deployment from another.  Pass the context the corpus was written under, '
+    + "e.g. info: 'acme/prod/snapshot/v1'.",
+  );
+}
 
 function startsWithAts1(buffer: Uint8Array): boolean {
   return buffer.length >= 5

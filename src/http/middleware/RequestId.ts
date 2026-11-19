@@ -5,7 +5,7 @@
  * client bytes back into a header.
  */
 import type { Middleware } from '../Route.js';
-import type { HttpRequest } from '../Types.js';
+import { HttpError, type HttpRequest } from '../Types.js';
 import { randomUuid } from '../../util/RandomString.js';
 import { applyHeaders, applyHeadersToError } from './Headers.js';
 import { DEFAULT_REQUEST_ID_HEADER } from './RequestIdOptions.js';
@@ -37,14 +37,67 @@ export function requestIdOf(
   return value !== undefined && VALID_ID.test(value) ? value : undefined;
 }
 
+/** A request id together with the header it travels in. */
+export type RequestIdCorrelation = {
+  readonly headerName: string;
+  readonly id: string;
+};
+
+/**
+ * The id each non-`HttpError` throw passed through with, keyed by the thrown
+ * value itself (#1064).  A side table rather than a wrapper: an error handler
+ * — `handleErrors`, `withErrorHandler` — must still receive the very value
+ * the handler threw, so the id cannot travel *on* it.  Weak, so an error
+ * nobody holds any more takes its entry with it.
+ */
+const REQUEST_IDS_OF_ERRORS = new WeakMap<object, RequestIdCorrelation>();
+
+/**
+ * Record the id `error` passed through with — unless one is recorded
+ * already: the first to record it is the innermost, which named the id the
+ * failing handler actually saw.  A primitive throw has no identity to key
+ * on and is skipped.
+ */
+export function rememberRequestIdOfError(error: unknown, correlation: RequestIdCorrelation): void {
+  if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
+    if (!REQUEST_IDS_OF_ERRORS.has(error)) REQUEST_IDS_OF_ERRORS.set(error, correlation);
+  }
+}
+
+/**
+ * The request id a thrown value passed through on its way out — the one the
+ * innermost {@link requestId} middleware assigned, or the one the server
+ * generated for the generic 500 — or `undefined` when nothing recorded one.
+ * For a `withErrorHandler` that builds its own 500 and wants the same id on
+ * it that the error log line names.
+ */
+export function requestIdOfError(error: unknown): RequestIdCorrelation | undefined {
+  if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
+    return REQUEST_IDS_OF_ERRORS.get(error);
+  }
+  return undefined;
+}
+
+/**
+ * The header a generic 500 for `error` carries — the id recorded against it
+ * — or an empty map when nothing recorded one.  Each backend's default
+ * mapping writes it, so the 500 names the id the error log line names.
+ */
+export function requestIdHeadersOfError(error: unknown): Record<string, string> {
+  const correlation = requestIdOfError(error);
+  return correlation === undefined ? {} : { [correlation.headerName]: correlation.id };
+}
+
 /**
  * Build a middleware that assigns/propagates a request id.
  *
  * The id is echoed on the response the inner stack returns *and* on the one
  * a thrown `HttpError` short-circuit produces — a rejection is exactly the
  * response whose id the operator later needs to find the log line (#606).
- * A non-`HttpError` throw maps to the generic 500, which carries nothing
- * from the thrown value, so that one still arrives without an id.
+ * A non-`HttpError` throw is rethrown untouched, so an error handler still
+ * sees the value the handler threw; the id is recorded against it instead
+ * ({@link requestIdOfError}), and the server writes it onto the generic 500
+ * and onto the error log line (#1064).
  */
 export function requestId(options: RequestIdOptions = {}): Middleware {
   const resolvedOptions = options as Partial<RequestIdOptionsType>;
@@ -60,6 +113,7 @@ export function requestId(options: RequestIdOptions = {}): Middleware {
       const response = await next({ ...request, headers: { ...request.headers, [headerName]: id } });
       return applyHeaders(response, echoed);
     } catch (error) {
+      if (!(error instanceof HttpError)) rememberRequestIdOfError(error, { headerName, id });
       throw applyHeadersToError(error, echoed);
     }
   };
