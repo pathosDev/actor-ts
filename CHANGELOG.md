@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-11-19
+
 ### Added
 
 - **Fault-injecting persistence stores in the testkit** (#1024).
@@ -743,15 +745,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **Sharding refusal log lines escape peer-supplied text** (#1220): frame
   kind, region path, shard count, shard id and entity id.
 - **The shard coordinator bounds the `GetShardHome` requests waiting on a
-  shard it cannot place** (#1219). A repeated request is not queued again.
+  shard it cannot place** (#1219, [GHSA-m68x-3r5g-x6q7](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-m68x-3r5g-x6q7)). A repeated request is not queued again.
   Past 1 024 distinct requesters, the newest goes to dead letters with one
   warning.
 - **`sharding.Reply` and `sharding.ClusterShardingStats` settle a waiting
-  caller only when they come from the node that was asked** (#1268).
+  caller only when they come from the node that was asked** (#1268, [GHSA-m68x-3r5g-x6q7](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-m68x-3r5g-x6q7)).
   Correlation ids are random instead of a counter from 1, so a member can no
   longer answer another node's ask with made-up data.
 - **`sharding.EntityStarted` / `EntityStopped` are accepted only from their
-  source** (#1267). A region takes them only from its own shards, and the
+  source** (#1267, [GHSA-m68x-3r5g-x6q7](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-m68x-3r5g-x6q7)). A region takes them only from its own shards, and the
   coordinator only from the node hosting the shard. Remembered entity ids are
   capped at 1 024 characters and each shard at 100 000 remembered entities;
   past the cap a new entity is not remembered, with one warning per shard. The
@@ -759,7 +761,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   private classes matched by `instanceof`, so a plain object that reaches
   either mailbox is refused instead of obeyed.
 - **A same-node actor-ref marker in a message body goes through the same
-  `EnvelopeTrust` check as an envelope's target** (#1572). A marker the check
+  `EnvelopeTrust` check as an envelope's target** (#1572, [GHSA-mq8p-gw8m-h9jq](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-mq8p-gw8m-h9jq)). A marker the check
   refuses decodes to `Nobody`, and the bare `/user` guardian is refused as an
   envelope or watch target as well. Each refusal is counted on
   `cluster_envelope_refusals_total`.
@@ -767,7 +769,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is refused at construction** (#1085). Before, the half was dropped on the dial and the
   client fell back to one-way TLS while its configuration read as mutual TLS.
   *Migration:* supply both halves, or `ca` alone for one-way TLS.
-- **BREAKING — `entity()` decodes request bodies as plain data** (#967).
+- **BREAKING — `entity()` decodes request bodies as plain data** (#967, [GHSA-v4w5-hccj-xqc6](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-v4w5-hccj-xqc6)).
   A client no longer chooses a value's runtime class (RegExp, bigint,
   undefined, Map, Date, …). A JSON body is plain JSON, and a CBOR body
   accepts only the JSON data model; any richer CBOR type is a 400 that names
@@ -777,7 +779,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `entity(request, EntityOptions.create().withTags([...]))`. The same names
   apply to JSON and CBOR.
 - **BREAKING — the cluster wire builds only admitted tags, and moves to wire
-  version 3** (#1303).
+  version 3** (#1303, [GHSA-3rxr-5r68-8cqc](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-3rxr-5r68-8cqc)).
   - Only the tags in `actor-ts.serialization.wire.admitted-tags` are built.
     The default is date, bytes, typed-array, map, set, bigint,
     bidirectional-map, bidirectional-multi-map and number.
