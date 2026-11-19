@@ -318,6 +318,7 @@
       "tests/unit/delivery/ConsumerControllerUnhandled.test.ts",
       "tests/unit/delivery/ConsumerIncarnationChangeover.test.ts",
       "tests/unit/delivery/ConsumerReplyToAcrossNodes.test.ts",
+      "tests/unit/delivery/ConsumerWindowResetStall.test.ts",
       "tests/unit/delivery/DeliveryOrderingProperties.test.ts",
       "tests/unit/delivery/MultipleConsumers.test.ts",
       "tests/unit/delivery/ReliableDelivery.test.ts"
@@ -326,6 +327,13 @@
       "tests/unit/config/ReliableDeliveryConfigDefaults.test.ts",
       "tests/unit/delivery/ConsumerIncarnationChangeover.test.ts",
       "tests/unit/options/NonBrokerOptionsValidators.test.ts"
+    ],
+    "src/delivery/ProducerController.ts": [
+      "tests/unit/delivery/ConsumerWindowResetStall.test.ts",
+      "tests/unit/delivery/ProducerConfirmIsolation.test.ts",
+      "tests/unit/delivery/ProducerControllerUnhandled.test.ts",
+      "tests/unit/delivery/ProducerRetransmitRefusal.test.ts",
+      "tests/unit/delivery/ReliableDelivery.test.ts"
     ],
     "src/devtools/DevToolsExtension.ts": [
       "tests/unit/devtools/DevTools.test.ts",

@@ -326,6 +326,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
       return;
     }
     const { entry, state } = admitted;
+    this.raiseFloor(state, (message.floor as number | undefined) ?? 1);
     if (message.seq <= state.contiguous || state.above.has(message.seq)) {
       // Duplicate — re-ack so the producer can release its slot, but don't
       // re-run the user handler.  Ahead of the out-of-order cap below on
@@ -394,12 +395,27 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     if (!this.isIdentifier(message.producerId)) return false;
     if (!this.isIdentifier(message.incarnation)) return false;
     if (!Number.isSafeInteger(message.seq) || message.seq <= 0) return false;
+    if (!this.isFloorAdmissible(message)) return false;
     // The declared type says this is always an ActorRef; the wire disagrees.
     // Shape is all this can ask of it, and deliberately so: binding `replyTo`
     // to an authenticated identity is refused in writing on
     // {@link sendAcknowledgment}, because a delivery carries none.
     const replyTo = message.replyTo as ActorRef<Acknowledgment> | undefined;
     return typeof replyTo?.tell === 'function';
+  }
+
+  /**
+   * A floor is absent (a producer that predates #1862, read as 1) or a
+   * positive safe integer no greater than the envelope's own seq.  An honest
+   * producer stamps the lowest seq it still has in flight, and the seq being
+   * sent is in flight, so a floor above it is malformed by construction —
+   * and admitting one would let a single envelope declare its own seq a
+   * duplicate, acknowledged without the handler ever running.
+   */
+  private isFloorAdmissible(message: Delivery<T>): boolean {
+    const floor = message.floor as number | undefined;
+    if (floor === undefined) return true;
+    return Number.isSafeInteger(floor) && floor > 0 && floor <= message.seq;
   }
 
   private isIdentifier(value: string): boolean {
@@ -704,6 +720,34 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
       + 'than this consumer retaining sequences without bound',
     );
     this.refusedSinceReport = 0;
+  }
+
+  /**
+   * Raise a window to the producer's low-water mark (#1862): every seq below
+   * `floor` has been acknowledged, so the handler has run for it and it will
+   * not be sent again.
+   *
+   * This is what lets a window the consumer dropped — swept, evicted, demoted
+   * by a promotion, or lost with a restart — pick its producer up at N+1.
+   * Without it the fresh window waited at 0 for seqs 1..N, parked everything
+   * from N+1 in `above`, and refused the producer for good at
+   * `maxOutOfOrder`.
+   *
+   * It moves only `state`, the window of the incarnation the envelope names,
+   * so a floor under an incarnation the consumer has not seen lands in that
+   * incarnation's held window and never in the live one — the boundary #1237
+   * drew.  It never lowers `contiguous`, so a reordered envelope carrying an
+   * older floor changes nothing.  Retained seqs at or below the new mark are
+   * released before sliding on, or they would count against `maxOutOfOrder`
+   * for good.
+   */
+  private raiseFloor(state: DeduplicationState, floor: number): void {
+    if (floor - 1 <= state.contiguous) return;
+    state.contiguous = floor - 1;
+    for (const seq of state.above) {
+      if (seq <= state.contiguous) state.above.delete(seq);
+    }
+    while (state.above.delete(state.contiguous + 1)) state.contiguous++;
   }
 
   private markDelivered(state: DeduplicationState, seq: number): void {

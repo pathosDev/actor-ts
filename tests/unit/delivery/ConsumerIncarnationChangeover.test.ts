@@ -88,6 +88,7 @@ function deliver(h: Harness, incarnation: string, seq: number, body: string): vo
     producerId: PRODUCER,
     incarnation,
     seq,
+    floor: seq,
     body,
     replyTo: h.acknowledgments as never,
   });

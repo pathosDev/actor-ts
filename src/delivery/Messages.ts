@@ -21,6 +21,23 @@ export type Delivery<T> = {
    */
   readonly incarnation: string;
   readonly seq: number;
+  /**
+   * The producer's low-water mark: the lowest seq this incarnation still
+   * holds unacknowledged when the envelope is sent, so never above `seq`.
+   * Everything below it has been acknowledged, which means a consumer has
+   * already run its handler for it and the producer will not send it again.
+   *
+   * The consumer raises its window to `floor - 1` on admission.  Without that,
+   * a consumer that has dropped a producer's window (the idle sweep, an LRU
+   * eviction, a promotion over its incarnation, or its own restart) started the
+   * next one at 0.  The producer carried on at N+1, so every delivery went out
+   * of order, waiting for seqs 1..N that would never come again, and after
+   * `maxOutOfOrder` of them the producer stalled for good (#1862).
+   *
+   * An envelope without one, from a producer that predates the field, counts
+   * as floor 1: the old behaviour, stall included.
+   */
+  readonly floor: number;
   readonly body: T;
   /** Reply address — the consumer Acks back here. */
   readonly replyTo: ActorRef<Acknowledgment>;

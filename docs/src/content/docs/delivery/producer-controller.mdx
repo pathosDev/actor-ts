@@ -242,12 +242,14 @@ sequence numbers, so each consumer sees a gap-free sequence.  Built through
 you construct and spawn yourself does not.
 
 **One producer's stream cannot be split across consumers** — not by a router
-in front of them, not by anything else.  A consumer keys its window on the
-stream and advances only over a gap-free run of sequence numbers, so one that
-receives every other sequence never sees its gaps close: it handles
-`maxOutOfOrder` sequences above the first gap, then refuses the rest without
-acknowledging them, and the producer stalls on retransmits that are refused
-in turn.  Choose the stream before the producer, as above, never after it.
+in front of them, not by anything else.  A consumer keys its deduplication
+window on the stream and holds it alone, so a retransmit that a router hands
+to a different consumer from the original runs your handler a second time,
+where one consumer would have absorbed it as a duplicate.  And while a
+sequence is still unacknowledged, a consumer that receives every other
+sequence cannot close its gaps: it handles `maxOutOfOrder` sequences above the
+first one, then refuses the rest until the producer's floor moves past it.
+Choose the stream before the producer, as above, never after it.
 
 Handing each message to whichever consumer has capacity — work-pulling —
 needs a demand signal from the consumers that this protocol does not have;
