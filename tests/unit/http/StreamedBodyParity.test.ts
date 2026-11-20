@@ -217,9 +217,23 @@ class RawClient {
     return this.response()!;
   }
 
+  /** Whether an interim `100 Continue` arrived. */
+  sawContinue(): boolean {
+    return this.received.toString('latin1').includes(' 100 Continue');
+  }
+
   destroy(): void {
     this.socket.destroy();
   }
+}
+
+/**
+ * Whether the backend holds `100 Continue` back until the body is read.  The
+ * `node:http` backends do (#1868); `Bun.serve` sends it before any handler
+ * runs, and offers no hook to do otherwise.
+ */
+function defersContinue(backend: string): boolean {
+  return backend !== 'hono';
 }
 
 describe.each(BACKENDS)('streamedBody() on the %s backend — HTTP/1.1', (backend) => {
@@ -389,6 +403,44 @@ describe.each(BACKENDS)('streamedBody() on the %s backend — HTTP/1.1', (backen
     await expectRefusedWithoutReading(backend, client, 401, 'the unauthenticated upload is refused by the middleware');
     expect(handled).toBe(false);
   }, 15_000);
+
+  test('Expect: 100-continue — a handler that refuses without reading never sends the 100', async () => {
+    const port = await start(backend, path('upload', put(streamedBody(() => complete(Status.Unauthorized)))));
+    const client = await RawClient.open(port);
+    client.sendHead('PUT', '/upload', { 'content-length': String(50 * MiB), expect: '100-continue' });
+    const response = await client.awaitResponse('the refusal arrives without the body being sent');
+    client.destroy();
+
+    expect(response.status).toBe(401);
+    if (defersContinue(backend)) expect(client.sawContinue()).toBe(false);
+  });
+
+  test('Expect: 100-continue — the 100 arrives once the handler reads, and the body goes through', async () => {
+    const port = await start(backend, path('upload', put(streamedBody(async (request) => completeJson(Status.OK, await readAll(request.body))))));
+    const client = await RawClient.open(port);
+    const payload = randomBytes(200_000);
+    client.sendHead('PUT', '/upload', { 'content-length': String(payload.length), expect: '100-continue' });
+    await awaitCondition(() => client.sawContinue(), { timeoutMs: 4000, label: 'the interim 100 Continue arrives' });
+    await client.send(payload);
+    const response = await client.awaitResponse('the continued upload is answered');
+    client.destroy();
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ length: payload.length, sha256: createHash('sha256').update(payload).digest('hex') });
+  });
+
+  test('Expect: 100-continue still works on a buffered route', async () => {
+    const port = await start(backend, path('upload', put((request) => completeJson(Status.OK, { length: request.body?.byteLength ?? 0 }))));
+    const client = await RawClient.open(port);
+    client.sendHead('PUT', '/upload', { 'content-length': '1000', expect: '100-continue' });
+    await awaitCondition(() => client.sawContinue(), { timeoutMs: 4000, label: 'the interim 100 Continue arrives' });
+    await client.send(Buffer.alloc(1000, 2));
+    const response = await client.awaitResponse('the buffered upload is answered');
+    client.destroy();
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ length: 1000 });
+  });
 
   test('a consumer that cancels the stream releases the connection', async () => {
     const port = await start(backend, path('upload', put(streamedBody(async (request) => {

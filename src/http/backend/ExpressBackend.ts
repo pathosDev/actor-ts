@@ -20,6 +20,9 @@ import {
   nodeRequestBodySource,
   remainderForcesClose,
   type RequestBodyProgress,
+  type ContinueServer,
+  deferContinueUntilBodyRead,
+  sendDeferredContinue,
 } from './RequestBodyStream.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
@@ -446,6 +449,7 @@ export class ExpressBackend implements HttpServerBackend {
     const headerCap = serverOptions?.maxHeaderBytes;
     const server = serverFor(this.app, serverOptions?.tls, headerCap);
     this.server = server;
+    deferContinueUntilBodyRead(server as unknown as ContinueServer);
     // The forced half of `unbind()` destroys these itself: on bun 1.4.2
     // `closeAllConnections()` left a connection with a request in flight
     // open, so `unbind(0)` let it finish — the very wait `0` rules out (#997).
@@ -736,7 +740,11 @@ export class ExpressBackend implements HttpServerBackend {
       await this.writeResponse(res, PAYLOAD_TOO_LARGE_RESPONSE);
       return;
     }
-    const { body, progress } = limitedRequestBody(nodeRequestBodySource(raw), { maxBytes, declaredLength });
+    const { body, progress } = limitedRequestBody(nodeRequestBodySource(raw), {
+      maxBytes,
+      declaredLength,
+      onFirstPull: () => sendDeferredContinue(req),
+    });
     const contentLength = headers['content-length'] === undefined ? undefined : declaredLength;
     const finalRequest = withWildcard(withStreamedBody(this.adaptRequest(req), {
       body,
@@ -775,6 +783,8 @@ export class ExpressBackend implements HttpServerBackend {
         this.writeResponse(res, PAYLOAD_TOO_LARGE_RESPONSE);
         return;
       }
+      // The body is about to be read: a deferred 100 Continue goes out now.
+      sendDeferredContinue(req);
       try {
         const chunks: Buffer[] = [];
         let total = 0;

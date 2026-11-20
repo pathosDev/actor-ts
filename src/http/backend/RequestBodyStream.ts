@@ -363,3 +363,55 @@ function lingeringClose(socket: LingeringSocket): void {
 
 /** `NGHTTP2_NO_ERROR` — spelled out so this module needs no `node:http2` import on runtimes without one. */
 const HTTP2_NO_ERROR = 0;
+
+/* ----------------------------- Expect: 100-continue ----------------------------- */
+
+const DEFERRED_CONTINUE: unique symbol = Symbol('actor-ts.deferred-continue');
+
+/** A request whose `100 Continue` is held back until its body is first read. */
+type ContinueAwaitingRequest = { [DEFERRED_CONTINUE]?: { writeContinue(): void } };
+
+/** The slice of a `node:http` / `node:http2` server {@link deferContinueUntilBodyRead} drives. */
+export type ContinueServer = {
+  on(event: 'checkContinue', listener: (request: object, response: { writeContinue(): void }) => void): unknown;
+  emit(event: 'request', request: object, response: object): boolean;
+  listenerCount(event: string): number;
+};
+
+/**
+ * Hold back `100 Continue` until something reads the request body (#1868).
+ *
+ * Without a `'checkContinue'` listener, Node and Bun answer
+ * `Expect: 100-continue` before any handler runs, so a client that asked
+ * whether to send its body is always told yes — even by a route about to
+ * refuse it for a bad token.  With this listener the request goes on to the
+ * handler with the interim response pending: the first read of a streamed
+ * body sends it ({@link limitedRequestBody}'s `onFirstPull`), so does every
+ * buffered read ({@link sendDeferredContinue} in front of it), and a handler
+ * that answers without reading never sends it at all — the client then never
+ * sends the body.  Deno's `node:http` never sends one on its own, so there
+ * this is also what makes a waiting client send its body promptly.
+ *
+ * Left alone when the server already has a listener: that one is the
+ * application's, and it decides.
+ */
+export function deferContinueUntilBodyRead(server: ContinueServer | undefined): void {
+  if (server === undefined || typeof server.on !== 'function' || server.listenerCount('checkContinue') > 0) return;
+  server.on('checkContinue', (request, response) => {
+    (request as ContinueAwaitingRequest)[DEFERRED_CONTINUE] = response;
+    server.emit('request', request, response);
+  });
+}
+
+/** Send the `100 Continue` {@link deferContinueUntilBodyRead} held back for `request`, if any — once. */
+export function sendDeferredContinue(request: object): void {
+  const awaiting = request as ContinueAwaitingRequest;
+  const response = awaiting[DEFERRED_CONTINUE];
+  if (response === undefined) return;
+  delete awaiting[DEFERRED_CONTINUE];
+  try {
+    response.writeContinue();
+  } catch {
+    /* the response is already under way or gone — nothing left to tell the client */
+  }
+}

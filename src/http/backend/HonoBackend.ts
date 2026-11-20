@@ -36,6 +36,9 @@ import {
   type RequestBodyProgress,
   type RequestBodySource,
   webRequestBodySource,
+  type ContinueServer,
+  deferContinueUntilBodyRead,
+  sendDeferredContinue,
 } from './RequestBodyStream.js';
 import { withStreamedBody } from '../StreamedRequestBody.js';
 import { detectRuntime } from '../../runtime/Detect.js';
@@ -512,6 +515,9 @@ export class HonoBackend implements HttpServerBackend {
       requestDeadlineMs: serverOptions?.requestDeadlineMs,
     });
     this.server = server;
+    // Only the Node runner hands back a node:http server; Bun.serve and
+    // Deno.serve answer Expect: 100-continue their own way (#1868).
+    deferContinueUntilBodyRead(server.raw as ContinueServer | undefined);
     // Hono owns no server of its own — the per-runtime runner does — so the
     // policy reaches whatever that runner is willing to hand back.  Only
     // `@hono/node-server` hands back a `node:http` server (as `raw`); on Bun
@@ -669,7 +675,11 @@ export class HonoBackend implements HttpServerBackend {
     const source = node !== undefined
       ? nodeRequestBodySource(node.incoming)
       : runtimeBody !== null ? webRequestBodySource(runtimeBody) : endedSource();
-    const { body, progress } = limitedRequestBody(source, { maxBytes, declaredLength });
+    const { body, progress } = limitedRequestBody(source, {
+      maxBytes,
+      declaredLength,
+      ...(node !== undefined ? { onFirstPull: () => sendDeferredContinue(node.incoming) } : {}),
+    });
     const contentLength = headers['content-length'] === undefined ? undefined : declaredLength;
     const adapted = withStreamedBody(this.buildRequest(c, null), {
       body,
@@ -839,6 +849,9 @@ export class HonoBackend implements HttpServerBackend {
 
     const method = context.req.method.toUpperCase();
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return { kind: 'within-cap', body: null };
+    // The body is about to be read: a deferred 100 Continue goes out now (#1868).
+    const node = nodeExchangeOf(context);
+    if (node !== undefined) sendDeferredContinue(node.incoming);
 
     const stream = requestBodyStream(context.req.raw);
     if (!stream) {

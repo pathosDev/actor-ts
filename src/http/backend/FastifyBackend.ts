@@ -11,7 +11,17 @@ import {
   nodeRequestBodySource,
   remainderForcesClose,
   type RequestBodyProgress,
+  type ContinueServer,
+  deferContinueUntilBodyRead,
+  sendDeferredContinue,
 } from './RequestBodyStream.js';
+
+/**
+ * The route-config flag a streamed route carries, so the root's
+ * `preParsing` hook — which every scope inherits — leaves its deferred
+ * `100 Continue` to the first read of the stream.
+ */
+const STREAMED_ROUTE_CONFIG_FLAG = 'actorTsStreamedBody';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
@@ -253,6 +263,14 @@ export class FastifyBackend implements HttpServerBackend {
     this.app.addContentTypeParser('application/json', { parseAs: 'buffer' }, rawParser);
     this.app.addContentTypeParser('application/cbor', { parseAs: 'buffer' }, rawParser);
     this.installErrorHandler();
+    // A buffered route's body is parsed right after this hook, so a deferred
+    // 100 Continue goes out here (#1868); a streamed route sends its own on
+    // the first read.
+    this.app.addHook('preParsing', async (req: FastifyRequest, _reply: FastifyReply, payload: unknown) => {
+      const config = req.routeOptions.config as unknown as Record<string, unknown> | undefined;
+      if (config?.[STREAMED_ROUTE_CONFIG_FLAG] !== true) sendDeferredContinue(req.raw);
+      return payload as never;
+    });
   }
 
   /** Escape hatch: register a native Fastify plugin (e.g. @fastify/cors). */
@@ -324,6 +342,7 @@ export class FastifyBackend implements HttpServerBackend {
       scope.route({
         method: route.method,
         url: route.pattern,
+        config: { [STREAMED_ROUTE_CONFIG_FLAG]: true },
         handler: async (req: FastifyRequest, reply: FastifyReply) => {
           await this.serveStreamed(req, reply, route, maxBytes);
           return reply;
@@ -349,7 +368,11 @@ export class FastifyBackend implements HttpServerBackend {
       this.writeResponse(reply, PAYLOAD_TOO_LARGE_RESPONSE);
       return;
     }
-    const { body, progress } = limitedRequestBody(nodeRequestBodySource(raw), { maxBytes, declaredLength });
+    const { body, progress } = limitedRequestBody(nodeRequestBodySource(raw), {
+      maxBytes,
+      declaredLength,
+      onFirstPull: () => sendDeferredContinue(req.raw),
+    });
     const contentLength = headers['content-length'] === undefined ? undefined : declaredLength;
     const adapted = withStreamedBody(this.adaptRequest(req), {
       body,
@@ -500,6 +523,7 @@ export class FastifyBackend implements HttpServerBackend {
     // writer, so it carries the default headers — Fastify's would carry none
     // and echo the request path into its body (#1059).
     if (!this.notFoundSet) this.setNotFound(() => NOT_FOUND_RESPONSE);
+    deferContinueUntilBodyRead(this.app.server as unknown as ContinueServer);
     const address = await this.app.listen({ host, port });
     // Fastify overrides two of the four on its own — `keepAliveTimeout` to
     // 72 s and `requestTimeout` to 0 (no bound) — so this is the write that
