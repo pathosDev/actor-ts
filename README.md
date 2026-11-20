@@ -101,7 +101,11 @@ A short tour of what's in the box:
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).
 - **HTTP** — directive-style routing DSL with Fastify default, Express + Hono
-  backends, response caching, rate-limiting, idempotency-key dedup.  Typed
+  backends, response caching, rate-limiting, idempotency-key dedup.
+  **Streamed request bodies**: `put(streamedBody(handler))` runs the handler
+  before any body byte is read and hands it the body as a pull-driven stream
+  with a per-route byte limit, so an upload route can authenticate first and
+  pipe gigabytes on in constant memory.  Typed
   **WebSocket** routes: `websocket(path, actorRef)` binds a
   `WebsocketServerActor` (typed messages, `reply` / `broadcast`,
   connect/disconnect hooks, a server heartbeat that reaps half-open
