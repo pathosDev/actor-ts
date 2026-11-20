@@ -36,7 +36,7 @@ import { RequestBodyAbortedError, RequestBodyTooLargeError, Status, type Streame
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
-const BACKENDS = ['fastify', 'hono'] as const;
+const BACKENDS = ['fastify', 'express', 'hono'] as const;
 
 /**
  * Whether a response written over an unread body reaches a client that keeps
