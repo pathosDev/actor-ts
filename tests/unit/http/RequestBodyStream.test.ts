@@ -1,15 +1,21 @@
 import { describe, expect, test } from 'bun:test';
+import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import {
+  closeNodeConnectionAfterResponse,
+  type ContinueServer,
   declaredBodyLength,
+  deferContinueUntilBodyRead,
+  sendDeferredContinue,
   limitedRequestBody,
   nodeRequestBodySource,
   remainderForcesClose,
   type RequestBodySource,
   webRequestBodySource,
 } from '../../../src/http/backend/RequestBodyStream.js';
-import { STREAMED_BODY_DRAIN_LIMIT_BYTES } from '../../../src/http/Constants.js';
+import { STREAMED_BODY_DRAIN_LIMIT_BYTES, STREAMED_BODY_LINGER_BYTES } from '../../../src/http/Constants.js';
 import { HttpError, RequestBodyAbortedError, RequestBodyTooLargeError, Status } from '../../../src/http/Types.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 /** A source over fixed chunks that records how many reads it served. */
 function scriptedSource(chunks: ReadonlyArray<Uint8Array | Error>): RequestBodySource & { reads: number; stopped: boolean } {
@@ -229,5 +235,119 @@ describe('webRequestBodySource', () => {
     await Bun.sleep(1);
     expect(cancelled).toBe(true);
     expect(await source.read()).toBeNull();
+  });
+});
+
+describe('closeNodeConnectionAfterResponse', () => {
+  /** A socket double recording what the lingering close does to it. */
+  function fakeSocket(): EventEmitter & { ended: number; destroyed: boolean; bytesRead: number; destroySoon?: () => void; end(): void; destroy(): void } {
+    const socket = Object.assign(new EventEmitter(), {
+      ended: 0,
+      destroyed: false,
+      bytesRead: 100,
+      end(): void { socket.ended += 1; },
+      destroy(): void { socket.destroyed = true; },
+    });
+    return socket;
+  }
+
+  function fakeResponse(headersSent = false): EventEmitter & { headersSent: boolean; headers: Record<string, string>; setHeader(name: string, value: string): void } {
+    const response = Object.assign(new EventEmitter(), {
+      headersSent,
+      headers: {} as Record<string, string>,
+      setHeader(name: string, value: string): void { response.headers[name] = value; },
+    });
+    return response;
+  }
+
+  test('HTTP/1.1: says close, and takes over destroySoon with a lingering close', async () => {
+    const socket = fakeSocket();
+    const request = Object.assign(new PassThrough(), { httpVersionMajor: 1, socket });
+    request.on('readable', () => { /* the paused-mode reader a streamed route leaves behind */ });
+    const response = fakeResponse();
+    closeNodeConnectionAfterResponse(request, response);
+    expect(response.headers).toEqual({ connection: 'close' });
+    expect(typeof socket.destroySoon).toBe('function');
+
+    socket.destroySoon!();
+    // Half-closed, not destroyed: the peer still gets to read the answer.
+    expect(socket.ended).toBe(1);
+    expect(socket.destroyed).toBe(false);
+    expect(request.listenerCount('readable')).toBe(0);
+    // The resume runs on a later turn — see lingeringClose — and the request
+    // then flows, so node:http's own discard can read the rest off the socket.
+    // Why later is Node's IncomingMessage, which this double is not; smoke
+    // case 64 on Node holds that half.
+    await awaitCondition(() => request.readableFlowing === true, { label: 'the request is switched to discarding' });
+
+    socket.emit('end');
+    expect(socket.destroyed).toBe(true);
+  });
+
+  test('HTTP/1.1: the byte bound destroys a socket whose peer keeps sending', async () => {
+    const socket = fakeSocket();
+    const request = Object.assign(new PassThrough(), { httpVersionMajor: 1, socket });
+    closeNodeConnectionAfterResponse(request, fakeResponse());
+    socket.destroySoon!();
+    socket.bytesRead += STREAMED_BODY_LINGER_BYTES + 1;
+    await awaitCondition(() => socket.destroyed, { label: 'the linger byte bound fires' });
+  });
+
+  test('HTTP/1.1 with the headers already out: destroys the socket once the response finished', () => {
+    const socket = fakeSocket();
+    const request = Object.assign(new PassThrough(), { httpVersionMajor: 1, socket });
+    const response = fakeResponse(true);
+    closeNodeConnectionAfterResponse(request, response);
+    expect(response.headers).toEqual({});
+    expect(socket.destroyed).toBe(false);
+    response.emit('finish');
+    expect(socket.destroyed).toBe(true);
+  });
+
+  test('HTTP/2: never sends the forbidden header, closes the stream with NO_ERROR after the response', () => {
+    const closes: Array<number | undefined> = [];
+    const request = Object.assign(new PassThrough(), {
+      httpVersionMajor: 2,
+      stream: { close: (code?: number) => { closes.push(code); }, closed: false, destroyed: false },
+    });
+    const response = fakeResponse();
+    closeNodeConnectionAfterResponse(request, response);
+    expect(response.headers).toEqual({});
+    expect(closes).toEqual([]);
+    response.emit('finish');
+    expect(closes).toEqual([0]);
+  });
+});
+
+describe('deferContinueUntilBodyRead', () => {
+  function fakeServer(): EventEmitter {
+    return new EventEmitter();
+  }
+
+  test('holds the 100 back and hands the request on; the first read sends it, once', () => {
+    const server = fakeServer();
+    const handled: object[] = [];
+    server.on('request', (request: object) => { handled.push(request); });
+    deferContinueUntilBodyRead(server as unknown as ContinueServer);
+    let continues = 0;
+    const request = {};
+    server.emit('checkContinue', request, { writeContinue: () => { continues += 1; } });
+    expect(handled).toEqual([request]);
+    expect(continues).toBe(0);
+    sendDeferredContinue(request);
+    sendDeferredContinue(request);
+    expect(continues).toBe(1);
+  });
+
+  test('leaves an application\'s own checkContinue listener alone', () => {
+    const server = fakeServer();
+    const own = (): void => { /* the application decides */ };
+    server.on('checkContinue', own);
+    deferContinueUntilBodyRead(server as unknown as ContinueServer);
+    expect(server.listeners('checkContinue')).toEqual([own]);
+  });
+
+  test('a request that never asked for a 100 sends none', () => {
+    expect(() => sendDeferredContinue({})).not.toThrow();
   });
 });

@@ -264,6 +264,8 @@ function asBytes(chunk: unknown): Uint8Array {
 
 /** The slice of a `node:http` / `node:http2` request {@link closeNodeConnectionAfterResponse} touches. */
 export type NodeExchangeRequest = NodeRequestReadable & {
+  removeAllListeners?(event: string): unknown;
+  resume?(): unknown;
   readonly httpVersionMajor?: number;
   readonly socket?: LingeringSocket | null;
   readonly stream?: { close(code?: number): void; readonly closed?: boolean; readonly destroyed?: boolean };
@@ -324,7 +326,7 @@ export function closeNodeConnectionAfterResponse(request: NodeExchangeRequest, r
   if (!response.headersSent) {
     response.setHeader('connection', 'close');
     const socket = request.socket;
-    if (socket !== undefined && socket !== null) socket.destroySoon = () => lingeringClose(socket);
+    if (socket !== undefined && socket !== null) socket.destroySoon = () => lingeringClose(socket, request);
     return;
   }
   response.once('finish', () => request.socket?.destroy());
@@ -333,8 +335,24 @@ export function closeNodeConnectionAfterResponse(request: NodeExchangeRequest, r
 /**
  * Half-close `socket` once its writes are flushed, then destroy it when the
  * peer closes its side or the linger bound runs out — whichever is first.
+ *
+ * The request is switched to discarding first.  The response has finished, so
+ * nothing reads the body any more — but the paused-mode reader a streamed
+ * route attached is still there, and while a `'readable'` listener exists a
+ * `resume()` does not flow: `node:http`'s own discard of the remainder stalls,
+ * its parser stops reading the socket, and neither the peer's FIN nor the
+ * byte bound is ever seen.  Measured on Node: the socket stayed open until the
+ * deadline, and a server `close()` waited on it — on a runtime whose loop had
+ * nothing else to do, forever, since the linger timers are unreferenced.
  */
-function lingeringClose(socket: LingeringSocket): void {
+function lingeringClose(socket: LingeringSocket, request: NodeExchangeRequest): void {
+  request.removeAllListeners?.('readable');
+  // On a later turn, after node:http has settled the request it just dumped:
+  // a synchronous resume() here left an IncomingMessage paused on Node 26 —
+  // a server close() over such a connection took 1.2 s, the linger deadline,
+  // against 3 ms with this.  A plain PassThrough flows either way, so smoke
+  // case 64, which hung on Node before, is what holds this.
+  setTimeout(() => request.resume?.(), 0);
   const startBytes = socket.bytesRead ?? 0;
   // Timers rather than a clock reading: both bounds are elapsed time, and a
   // deadline timer needs no wall clock to compare against.
