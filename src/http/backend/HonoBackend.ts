@@ -513,6 +513,7 @@ export class HonoBackend implements HttpServerBackend {
       maxHeaderBytes: serverOptions?.maxHeaderBytes,
       idleTimeoutMs: serverOptions?.idleTimeoutMs,
       requestDeadlineMs: serverOptions?.requestDeadlineMs,
+      maxRequestBodyBytes: Math.max(this.bodyCapBytes, ...this.registered.map((r) => r.streamedBody?.maxBytes ?? 0)),
     });
     this.server = server;
     // Only the Node runner hands back a node:http server; Bun.serve and

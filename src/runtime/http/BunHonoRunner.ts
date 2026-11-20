@@ -69,6 +69,9 @@ export class BunHonoRunner implements HonoServerRunner {
       port: options.port,
       fetch: options.fetch,
       ...(idle.seconds !== undefined ? { idleTimeout: idle.seconds } : {}),
+      ...(options.maxRequestBodyBytes !== undefined && options.maxRequestBodyBytes > BUN_DEFAULT_MAX_REQUEST_BODY_BYTES
+        ? { maxRequestBodySize: options.maxRequestBodyBytes }
+        : {}),
       ...(options.tls ? { tls: bunTlsOptions(options.tls) } : {}),
       ...(options.tls && options.http2 ? { http2: true } : {}),
     });
@@ -134,6 +137,15 @@ function deliverBunPong(ws: unknown): void {
 
 /** The release that added `http2` to `Bun.serve`. */
 export const BUN_HTTP2_SINCE = '1.4.1';
+
+/**
+ * `Bun.serve`'s own request-body cap when `maxRequestBodySize` is unset —
+ * 128 MiB, past which Bun answers 413 before the fetch handler runs.  Measured
+ * on Bun 1.4.2 with a 256 MiB `streamedBody()` upload (#1868).  The runner
+ * raises it for a route that admits more, and leaves it alone otherwise, so a
+ * buffered body over the framework's own cap still gets the framework's 413.
+ */
+export const BUN_DEFAULT_MAX_REQUEST_BODY_BYTES = 128 * 1024 * 1024;
 
 /**
  * The longest `idleTimeout` `Bun.serve` accepts, in seconds.  Past it Bun

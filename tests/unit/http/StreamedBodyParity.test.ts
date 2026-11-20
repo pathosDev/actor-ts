@@ -279,6 +279,31 @@ describe.each(BACKENDS)('streamedBody() on the %s backend — HTTP/1.1', (backen
     expect(await response.json()).toEqual({ length: payload.length, sha256: createHash('sha256').update(payload).digest('hex') });
   });
 
+  test("a route admitting more than Bun.serve's own 128 MiB cap takes a 130 MiB body", async () => {
+    // Bun.serve refuses bodies over 128 MiB itself, before any handler runs,
+    // unless the runner raises its maxRequestBodySize (#1868).
+    const port = await start(backend, path('upload', put(streamedBody({ maxBytes: 256 * MiB }, async (request) => completeJson(Status.OK, await readAll(request.body))))));
+    const total = 130 * MiB;
+    const chunk = new Uint8Array(256 * 1024).fill(0x42);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= total) { controller.close(); return; }
+        sent += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    }, { highWaterMark: 0 });
+    const response = await fetch(`http://127.0.0.1:${port}/upload`, {
+      method: 'PUT',
+      body,
+      headers: { 'content-length': String(total) },
+      duplex: 'half',
+    } as RequestInit);
+
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { length: number }).length).toBe(total);
+  }, 30_000);
+
   test('a declared Content-Length over the limit is answered 413 before the handler, and the connection closes', async () => {
     let called = false;
     const port = await start(backend, path('upload', put(streamedBody({ maxBytes: 1024 }, () => { called = true; return complete(Status.OK); }))));
