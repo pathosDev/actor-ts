@@ -10,6 +10,20 @@ import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner
 import { closeIdleConnectionsWhileDraining, nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { requestIdHeadersOfError } from '../middleware/RequestId.js';
+import { withStreamedBody } from '../StreamedRequestBody.js';
+import {
+  closeNodeConnectionAfterResponse,
+  declaredBodyLength,
+  limitedRequestBody,
+  type NodeExchangeRequest,
+  type NodeExchangeResponse,
+  nodeRequestBodySource,
+  remainderForcesClose,
+  type RequestBodyProgress,
+  type ContinueServer,
+  deferContinueUntilBodyRead,
+  sendDeferredContinue,
+} from './RequestBodyStream.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
@@ -235,14 +249,14 @@ function refuseUnenforcedClientCertificate(tls: HttpTlsOptionsType): void {
  */
 export interface ExpressAppLike {
   (request: IncomingMessage, response: ServerResponse, next?: ExpressNext): void;
-  get(path: string | RegExp, handler: ExpressHandler): void;
-  post(path: string | RegExp, handler: ExpressHandler): void;
-  put(path: string | RegExp, handler: ExpressHandler): void;
-  delete(path: string | RegExp, handler: ExpressHandler): void;
-  patch(path: string | RegExp, handler: ExpressHandler): void;
-  head(path: string | RegExp, handler: ExpressHandler): void;
-  options(path: string | RegExp, handler: ExpressHandler): void;
-  use(mw: ExpressHandler | ExpressErrorHandler): void;
+  get(path: string | RegExp, ...handlers: ExpressHandler[]): void;
+  post(path: string | RegExp, ...handlers: ExpressHandler[]): void;
+  put(path: string | RegExp, ...handlers: ExpressHandler[]): void;
+  delete(path: string | RegExp, ...handlers: ExpressHandler[]): void;
+  patch(path: string | RegExp, ...handlers: ExpressHandler[]): void;
+  head(path: string | RegExp, ...handlers: ExpressHandler[]): void;
+  options(path: string | RegExp, ...handlers: ExpressHandler[]): void;
+  use(...middleware: Array<ExpressHandler | ExpressErrorHandler>): void;
 }
 
 /**
@@ -312,6 +326,8 @@ type PendingUpgrade = {
  */
 export class ExpressBackend implements HttpServerBackend {
   readonly name = 'express';
+  /** Honours `RouteRegistration.streamedBody` — see {@link serveStreamed} (#1868). */
+  readonly streamsRequestBodies = true;
 
   private app: ExpressAppLike | null;
   private server: Server | null = null;
@@ -400,8 +416,10 @@ export class ExpressBackend implements HttpServerBackend {
     if (serverOptions?.tls !== undefined) refuseUnenforcedClientCertificate(serverOptions.tls);
     this.bodyCapBytes = bodyCapOf('ExpressBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
     if (!this.app) this.app = await this.createExpressApp();
-    // Register our raw-body middleware first so routes see req.rawBody.
-    this.app.use(this.rawBodyMiddleware());
+    // The body is read per route rather than by one app-wide middleware, so a
+    // streamedBody() route can skip it and get the body unread (#1868): every
+    // buffered route, and the not-found handler, carries rawBodyMiddleware in
+    // front of its handler instead.
     // WebSocket routes go in ahead of the HTTP ones.  A wildcard GET route
     // registered first would match the upgrade request and answer it as an
     // ordinary GET, and the handshake would never reach its own route.
@@ -419,7 +437,7 @@ export class ExpressBackend implements HttpServerBackend {
         await this.writeResponse(res, out, adapted);
       } catch (err) { next(err); }
     };
-    this.app.use(notFound);
+    this.app.use(this.rawBodyMiddleware(), notFound);
     this.app.use(this.makeErrorMiddleware());
 
     // The server is built here rather than by `app.listen()`, which is
@@ -431,6 +449,7 @@ export class ExpressBackend implements HttpServerBackend {
     const headerCap = serverOptions?.maxHeaderBytes;
     const server = serverFor(this.app, serverOptions?.tls, headerCap);
     this.server = server;
+    deferContinueUntilBodyRead(server as unknown as ContinueServer);
     // The forced half of `unbind()` destroys these itself: on bun 1.4.2
     // `closeAllConnections()` left a connection with a request in flight
     // open, so `unbind(0)` let it finish — the very wait `0` rules out (#997).
@@ -669,26 +688,79 @@ export class ExpressBackend implements HttpServerBackend {
     const registerPath: string | RegExp = wildcard
       ? new RegExp('^' + escapeRegExp(route.pattern.slice(0, -2)) + '/(.*)$')
       : route.pattern;
-    const handler: ExpressHandler = async (req, res, next) => {
+    const withWildcard = (adapted: HttpRequest): HttpRequest => wildcard
+      ? { ...adapted, params: { ...adapted.params, '*': adapted.params['0'] ?? '' } }
+      : adapted;
+    const buffered: ExpressHandler = async (req, res, next) => {
       try {
-        const adapted = this.adaptRequest(req);
-        const finalRequest = wildcard
-          ? { ...adapted, params: { ...adapted.params, '*': (req.params as Record<string, string>)['0'] ?? '' } }
-          : adapted;
+        const finalRequest = withWildcard(this.adaptRequest(req));
         const out = await route.handler(finalRequest);
         await this.writeResponse(res, out, finalRequest);
       } catch (err) { next(err); }
     };
+    const streamedBody = route.streamedBody;
+    const handlers: ExpressHandler[] = streamedBody === undefined
+      ? [this.rawBodyMiddleware(), buffered]
+      : [(req, res, next) => this.serveStreamed(req, res, next, route, streamedBody.maxBytes, withWildcard)];
     const app = this.app!;
     match(method)
-      .with('get',     () => app.get(registerPath, handler))
-      .with('post',    () => app.post(registerPath, handler))
-      .with('put',     () => app.put(registerPath, handler))
-      .with('delete',  () => app.delete(registerPath, handler))
-      .with('patch',   () => app.patch(registerPath, handler))
-      .with('head',    () => app.head(registerPath, handler))
-      .with('options', () => app.options(registerPath, handler))
+      .with('get',     () => app.get(registerPath, ...handlers))
+      .with('post',    () => app.post(registerPath, ...handlers))
+      .with('put',     () => app.put(registerPath, ...handlers))
+      .with('delete',  () => app.delete(registerPath, ...handlers))
+      .with('patch',   () => app.patch(registerPath, ...handlers))
+      .with('head',    () => app.head(registerPath, ...handlers))
+      .with('options', () => app.options(registerPath, ...handlers))
       .exhaustive();
+  }
+
+  /**
+   * The handler of a `streamedBody()` route (#1868): no body middleware in
+   * front of it, so the request reaches the route with its body still on the
+   * socket.  A declared length over `maxBytes` is answered 413 before the
+   * route runs; otherwise the route reads `req` in paused mode through the
+   * limited stream, and after it answered — or threw — the connection is
+   * closed lingeringly where `remainderForcesClose` says so.
+   */
+  private async serveStreamed(
+    req: ExpressRequestLike,
+    res: ExpressResponseLike,
+    next: (err?: unknown) => void,
+    route: RouteRegistration,
+    maxBytes: number,
+    withWildcard: (request: HttpRequest) => HttpRequest,
+  ): Promise<void> {
+    const raw = req as unknown as NodeExchangeRequest;
+    const rawResponse = res as unknown as NodeExchangeResponse;
+    const headers = req.headers as Record<string, string | undefined>;
+    const declaredLength = declaredBodyLength(headers, false);
+    if (declaredLength !== undefined && declaredLength > maxBytes) {
+      const unread: RequestBodyProgress = { state: 'unread', bytesRead: 0 };
+      if (remainderForcesClose(unread, declaredLength)) closeNodeConnectionAfterResponse(raw, rawResponse);
+      await this.writeResponse(res, PAYLOAD_TOO_LARGE_RESPONSE);
+      return;
+    }
+    const { body, progress } = limitedRequestBody(nodeRequestBodySource(raw), {
+      maxBytes,
+      declaredLength,
+      onFirstPull: () => sendDeferredContinue(req),
+    });
+    const contentLength = headers['content-length'] === undefined ? undefined : declaredLength;
+    const finalRequest = withWildcard(withStreamedBody(this.adaptRequest(req), {
+      body,
+      ...(contentLength !== undefined ? { contentLength } : {}),
+    }));
+    const settle = (): void => {
+      if (remainderForcesClose(progress, declaredLength)) closeNodeConnectionAfterResponse(raw, rawResponse);
+    };
+    try {
+      const out = await route.handler(finalRequest);
+      settle();
+      await this.writeResponse(res, out, finalRequest);
+    } catch (err) {
+      settle();
+      next(err);
+    }
   }
 
   /**
@@ -711,6 +783,8 @@ export class ExpressBackend implements HttpServerBackend {
         this.writeResponse(res, PAYLOAD_TOO_LARGE_RESPONSE);
         return;
       }
+      // The body is about to be read: a deferred 100 Continue goes out now.
+      sendDeferredContinue(req);
       try {
         const chunks: Buffer[] = [];
         let total = 0;

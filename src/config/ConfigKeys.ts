@@ -787,6 +787,15 @@ export const ConfigKeys = {
       deadline: 'actor-ts.http.request-timeout.deadline',
     },
     /**
+     * Defaults for `streamedBody()` routes (#1868) — the limit a streamed
+     * request body is held to when the route names none.  Separate from
+     * `server.maxContentLength`, which caps the buffered routes only.
+     */
+    streamedBody: {
+      root: 'actor-ts.http.streamed-body',
+      maxBytes: 'actor-ts.http.streamed-body.max-bytes',
+    },
+    /**
      * Server-side WebSocket defaults for `websocket()` routes.
      *
      * Full dotted leaves under a `root`, not a bare block root, so each read

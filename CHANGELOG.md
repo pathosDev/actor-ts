@@ -9,6 +9,65 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **Streamed request bodies** (#1868).  `put` / `post` / `patch` / `del`
+  take `streamedBody(options?, handler)` in place of a handler.
+  - **The handler runs before any body byte is read.**  Method, path, params,
+    query and headers are there, so an upload route can check its token or its
+    `Content-Length` and refuse without the server reading the upload.
+  - **The body is a `ReadableStream<Uint8Array>` with a high-water mark of
+    zero**, so nothing is read ahead of the handler.  A 256 MiB upload grew the
+    server's RSS by about 20 MiB on every backend
+    (`benchmarks/http/streamed-upload-rss.ts`).
+  - **New types.**  The handler gets a `StreamedHttpRequest` (`body` is the
+    stream, plus the declared `contentLength`).  It is not assignable to
+    `HttpRequest`, so `entity()`, `idempotent()` and `cached()` around a
+    streamed handler are compile errors.
+  - **Each streamed route has its own byte limit**, independent of
+    `http.server.max-content-length`.  It resolves from
+    `StreamedBodyOptions.maxBytes`, then `actor-ts.http.streamed-body.max-bytes`,
+    then the built-in 64 MiB.
+    - A declared length over the limit is answered 413 before the handler runs.
+    - A body that grows past it while streaming errors the stream with
+      `RequestBodyTooLargeError`, an `HttpError` with status 413.
+    - A client that aborts mid-body errors it with `RequestBodyAbortedError`.
+  - **A handler that answers without reading does not cost the server the rest
+    of the body.**  Node and Bun would otherwise read all of it, so only a
+    declared remainder up to 64 KiB is drained, and anything else closes the
+    connection.
+    - On `node:http` the close lingers, bounded to 1 MiB and 2 s, so a client
+      still writing its body reads the answer rather than a reset.
+    - On HTTP/2 the request stream is closed with `NO_ERROR`.
+  - **Middleware keeps working.**  It sees the request with `body: null`, and
+    the stream rides through `next({ ...request })`.
+  - **Coverage.**  Fastify, Express and Hono on Bun, Node and Deno, HTTP/1.1,
+    and HTTP/2 on Fastify and Hono.  `StreamedBodyParity.test.ts` and smoke
+    case 64 hold them to one contract.
+  - **Docs.**  The new page `http/streamed-bodies` (EN + DE) lists what each
+    runtime does.
+
+### Changed
+
+- **`Expect: 100-continue` is answered when the body is read, not before the
+  handler runs**, on every `node:http` listener the backends own: Fastify,
+  Express, and Hono under Node (#1868).  A buffered route reads its body
+  before its handler, so for it nothing moves.  A route that refuses without
+  reading never sends the `100`, so the client never sends the body:
+  - a streamed handler answering 401;
+  - Express's and Hono's declared-length 413.
+
+  An application's own `'checkContinue'` listener is left alone.
+  `Bun.serve` still sends the `100` itself, and `Deno.serve` sends none.
+- **The Express backend reads request bodies per route** rather than in one
+  app-wide middleware, so a streamed route can skip it.  Buffered routes and
+  the not-found handler read exactly as before.  `ExpressAppLike`'s route
+  methods and `use` take a handler chain, as Express's own do.
+- **Hono under Bun raises `Bun.serve`'s own 128 MiB body cap** to the largest
+  limit any route on the server admits (#1868).  Before, `Bun.serve` answered
+  a bare 413 to any larger body before a handler ran, whatever the route
+  allowed.
+
 ## [0.19.0] — 2026-11-19
 
 ### Added

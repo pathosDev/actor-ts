@@ -1,6 +1,27 @@
-import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { requestIdHeadersOfError } from '../middleware/RequestId.js';
+import { withStreamedBody } from '../StreamedRequestBody.js';
+import {
+  closeNodeConnectionAfterResponse,
+  declaredBodyLength,
+  limitedRequestBody,
+  type NodeExchangeRequest,
+  type NodeExchangeResponse,
+  nodeRequestBodySource,
+  remainderForcesClose,
+  type RequestBodyProgress,
+  type ContinueServer,
+  deferContinueUntilBodyRead,
+  sendDeferredContinue,
+} from './RequestBodyStream.js';
+
+/**
+ * The route-config flag a streamed route carries, so the root's
+ * `preParsing` hook — which every scope inherits — leaves its deferred
+ * `100 Continue` to the first read of the stream.
+ */
+const STREAMED_ROUTE_CONFIG_FLAG = 'actorTsStreamedBody';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
@@ -176,6 +197,8 @@ function refuseUnenforcedClientCertificate(tls: HttpTlsOptionsType): void {
 
 export class FastifyBackend implements HttpServerBackend {
   readonly name = 'fastify';
+  /** Honours `RouteRegistration.streamedBody` — see {@link registerStreamedRoute} (#1868). */
+  readonly streamsRequestBodies = true;
   private readonly app: FastifyLike;
   /**
    * Whether `Fastify({ https })` was passed at construction — the only
@@ -240,6 +263,14 @@ export class FastifyBackend implements HttpServerBackend {
     this.app.addContentTypeParser('application/json', { parseAs: 'buffer' }, rawParser);
     this.app.addContentTypeParser('application/cbor', { parseAs: 'buffer' }, rawParser);
     this.installErrorHandler();
+    // A buffered route's body is parsed right after this hook, so a deferred
+    // 100 Continue goes out here (#1868); a streamed route sends its own on
+    // the first read.
+    this.app.addHook('preParsing', async (req: FastifyRequest, _reply: FastifyReply, payload: unknown) => {
+      const config = req.routeOptions.config as unknown as Record<string, unknown> | undefined;
+      if (config?.[STREAMED_ROUTE_CONFIG_FLAG] !== true) sendDeferredContinue(req.raw);
+      return payload as never;
+    });
   }
 
   /** Escape hatch: register a native Fastify plugin (e.g. @fastify/cors). */
@@ -273,6 +304,10 @@ export class FastifyBackend implements HttpServerBackend {
       throw new Error(`FastifyBackend: duplicate ${route.method} route for pattern "${route.pattern}".`);
     }
     this.registered.push(route);
+    if (route.streamedBody !== undefined) {
+      this.registerStreamedRoute(route, route.streamedBody.maxBytes);
+      return;
+    }
     this.app.route({
       method: route.method,
       url: route.pattern,
@@ -287,6 +322,73 @@ export class FastifyBackend implements HttpServerBackend {
         return reply;
       },
     });
+  }
+
+  /**
+   * A `streamedBody()` route (#1868), registered in an encapsulated plugin
+   * scope whose only content-type parser consumes nothing: Fastify calls the
+   * handler with the request body still on the socket, and the handler reads
+   * `req.raw` in paused mode.  The root's buffering parsers — and with them
+   * `bodyLimit`, which only a buffering parser enforces — never see this
+   * route, and no route outside the scope sees this parser.
+   *
+   * The scope is registered now and loaded by Fastify's boot at `listen()`,
+   * like every plugin.
+   */
+  private registerStreamedRoute(route: RouteRegistration, maxBytes: number): void {
+    void this.app.register(async (scope: FastifyInstance) => {
+      scope.removeAllContentTypeParsers();
+      scope.addContentTypeParser('*', (_request: unknown, _payload: unknown, done: (err: Error | null, body?: unknown) => void) => done(null));
+      scope.route({
+        method: route.method,
+        url: route.pattern,
+        config: { [STREAMED_ROUTE_CONFIG_FLAG]: true },
+        handler: async (req: FastifyRequest, reply: FastifyReply) => {
+          await this.serveStreamed(req, reply, route, maxBytes);
+          return reply;
+        },
+      });
+    });
+  }
+
+  /**
+   * The handler of a streamed route: a declared length over `maxBytes` is
+   * answered 413 before the route runs; otherwise the route gets the body
+   * unread, and after it answered — or threw — the connection is closed
+   * rather than the remainder read where `remainderForcesClose` says so.
+   */
+  private async serveStreamed(req: FastifyRequest, reply: FastifyReply, route: RouteRegistration, maxBytes: number): Promise<void> {
+    const raw = req.raw as unknown as NodeExchangeRequest;
+    const rawReply = reply.raw as unknown as NodeExchangeResponse;
+    const headers = req.headers as Record<string, string | undefined>;
+    const declaredLength = declaredBodyLength(headers, raw.httpVersionMajor === 2);
+    if (declaredLength !== undefined && declaredLength > maxBytes) {
+      const unread: RequestBodyProgress = { state: 'unread', bytesRead: 0 };
+      if (remainderForcesClose(unread, declaredLength)) closeNodeConnectionAfterResponse(raw, rawReply);
+      this.writeResponse(reply, PAYLOAD_TOO_LARGE_RESPONSE);
+      return;
+    }
+    const { body, progress } = limitedRequestBody(nodeRequestBodySource(raw), {
+      maxBytes,
+      declaredLength,
+      onFirstPull: () => sendDeferredContinue(req.raw),
+    });
+    const contentLength = headers['content-length'] === undefined ? undefined : declaredLength;
+    const adapted = withStreamedBody(this.adaptRequest(req), {
+      body,
+      ...(contentLength !== undefined ? { contentLength } : {}),
+    });
+    const settle = (): void => {
+      if (remainderForcesClose(progress, declaredLength)) closeNodeConnectionAfterResponse(raw, rawReply);
+    };
+    try {
+      const out = await route.handler(adapted);
+      settle();
+      this.writeResponse(reply, out, adapted);
+    } catch (err) {
+      settle();
+      await this.emitError(reply, adapted, err);
+    }
   }
 
   registerWebSocket(reg: WebsocketRouteRegistration): void {
@@ -421,6 +523,7 @@ export class FastifyBackend implements HttpServerBackend {
     // writer, so it carries the default headers — Fastify's would carry none
     // and echo the request path into its body (#1059).
     if (!this.notFoundSet) this.setNotFound(() => NOT_FOUND_RESPONSE);
+    deferContinueUntilBodyRead(this.app.server as unknown as ContinueServer);
     const address = await this.app.listen({ host, port });
     // Fastify overrides two of the four on its own — `keepAliveTimeout` to
     // 72 s and `requestTimeout` to 0 (no bound) — so this is the write that

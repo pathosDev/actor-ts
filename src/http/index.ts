@@ -203,9 +203,22 @@ export * from './websocket/index.js';
 
 export {
   HttpError,
+  RequestBodyAbortedError,
+  RequestBodyTooLargeError,
   Status,
 } from './Types.js';
-export type { HttpMethod, HttpRequest, HttpResponse } from './Types.js';
+export type { HttpMethod, HttpRequest, HttpResponse, StreamedHttpRequest } from './Types.js';
+
+// Streamed request bodies (#1868) — a route whose handler gets the body unread.
+export { streamedBody } from './StreamedBody.js';
+export type { StreamedBodyHandler, StreamedBodyRoute } from './StreamedBody.js';
+export {
+  DEFAULT_STREAMED_BODY_MAX_BYTES,
+  StreamedBodyOptions,
+  StreamedBodyOptionsBuilder,
+  StreamedBodyOptionsValidator,
+} from './StreamedBodyOptions.js';
+export type { StreamedBodyOptionsType } from './StreamedBodyOptions.js';
 
 // Request attributes — the slot a middleware hands a handler what it
 // established about a request (verified claims, a session).

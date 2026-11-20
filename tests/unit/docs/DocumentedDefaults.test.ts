@@ -175,6 +175,7 @@ import {
   DEFAULT_HSTS_PRELOAD,
 } from '../../../src/http/middleware/HstsOptions.js';
 import { DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS } from '../../../src/http/middleware/TimeoutOptions.js';
+import { DEFAULT_STREAMED_BODY_MAX_BYTES } from '../../../src/http/StreamedBodyOptions.js';
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
@@ -872,6 +873,9 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // The handler deadline requestTimeout() holds (#1463) — a different number
   // from http.server.request-timeout above, which bounds receiving only.
   { key: 'actor-ts.http.request-timeout.deadline', kind: 'duration', constant: DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS },
+  // A streamedBody() route's limit (#1868) — apart from http.server's
+  // max-content-length, which caps the buffered routes only.
+  { key: 'actor-ts.http.streamed-body.max-bytes', kind: 'bytes', constant: DEFAULT_STREAMED_BODY_MAX_BYTES },
 
   /* --- cache --- */
   { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },

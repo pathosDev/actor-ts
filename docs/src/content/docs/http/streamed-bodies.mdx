@@ -1,0 +1,175 @@
+---
+title: Streamed request bodies
+description: "streamedBody() — a route whose handler runs before any body byte is read and gets the body as a pull-driven ReadableStream: a per-route byte limit independent of the server-wide cap, early answers that close instead of draining, and Expect: 100-continue honoured on node:http."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every route reads its request body whole before the handler sees it —
+`request.body` is a `Uint8Array`, held to the server-wide
+`http.server.max-content-length` (1 MiB unless you raise it).  That is the
+right default for JSON, and the wrong one for an upload: memory grows with
+concurrent uploads times their size, the handler can check its token only
+once the body is already in memory, and raising the cap for one upload route
+raises it for every route.
+
+`streamedBody()` opts one route out.  Its handler runs **before a body byte
+is read** — method, path, params, query and headers are there — and gets the
+body as a pull-driven stream held to a limit of its own.
+
+```ts
+import {
+  complete,
+  path,
+  put,
+  Status,
+  streamedBody,
+  StreamedBodyOptions,
+  type StreamedHttpRequest,
+} from 'actor-ts/http';
+
+declare function validToken(token: unknown): boolean;
+declare function storeObject(key: string, body: ReadableStream<Uint8Array>, length?: number): Promise<void>;
+
+const uploadLimit = StreamedBodyOptions.create().withMaxBytes(25 * 1024 * 1024);
+
+export const uploads = path('files', path(':id', put(streamedBody(uploadLimit, async (request: StreamedHttpRequest) => {
+  if (!validToken(request.query.token)) return complete(Status.Unauthorized);   // no body byte read
+  await storeObject(request.params.id!, request.body, request.contentLength);    // piped, one chunk at a time
+  return complete(Status.Created);
+}))));
+```
+
+`put`, `post`, `patch` and `del` take a `streamedBody(...)` wherever they take
+a handler; `get`, `head` and `options` do not.  Every backend supports it —
+Fastify, Express and Hono, on Bun, Node and Deno, over HTTP/1.1 and over
+HTTP/2 where the backend serves it.
+
+## The request
+
+The handler gets a `StreamedHttpRequest`: everything an `HttpRequest`
+carries, except
+
+| Field | |
+|---|---|
+| `body` | `ReadableStream<Uint8Array>` — pull-driven with a high-water mark of zero, so nothing is read off the connection ahead of your reads, and the client is held back by TCP or HTTP/2 flow control in between. |
+| `contentLength` | The declared `Content-Length`, when the client sent one; absent for a chunked body. |
+
+The two request types are not assignable to each other, on purpose: a
+buffered handler is never handed a stream, `entity(request)` on a streamed
+request is a compile error, and `idempotent()` / `cached()` — which
+fingerprint or store the body — cannot be put around a streamed handler.
+
+Measured with a 256 MiB upload into a handler that computes md5 and
+sha-256 over every chunk, the server's RSS grew by about 20 MiB on every
+backend (`benchmarks/http/streamed-upload-rss.ts`), against about +100 MB for
+a 48 MiB body through a buffering parser.
+
+## The limit
+
+Each streamed route has its own byte limit, independent of
+`max-content-length` — so the buffered routes can stay at 1 MiB while one
+upload route takes 25 MiB.  It resolves like every other option: the route's
+`StreamedBodyOptions` > HOCON > the built-in 64 MiB.
+
+```hocon
+actor-ts.http.streamed-body {
+  max-bytes = 64MiB
+}
+```
+
+A body over it is refused the same way on every backend:
+
+- a **declared** `Content-Length` over the limit is answered `413` before the
+  handler runs;
+- a body that **grows** past the limit while streaming — a chunked one, which
+  declares nothing — errors the stream with `RequestBodyTooLargeError`.  It is
+  an `HttpError` with status 413, so a handler that lets it propagate answers
+  `413 Payload Too Large`; one that catches it can answer something else.
+
+A client that aborts or resets the connection mid-body errors the stream with
+`RequestBodyAbortedError` — the signal to abandon whatever upstream work the
+body was feeding.  Cancelling the stream yourself says you want no more of it;
+the connection is then closed after your response instead of being read to
+its end.
+
+## Answering without reading
+
+A handler that refuses an upload without reading it must not cost the server
+the rest of the body.  Left alone, they do: Node and Bun — under `node:http`
+and under `Bun.serve` alike — read the whole unread remainder off the
+connection after the response, so a refused 50 MiB upload is received in full
+anyway.  So after the response:
+
+- a remainder **declared and at most 64 KiB** is left to the runtime to read
+  and drop, and the connection is kept;
+- anything larger, a chunked body, a body that errored and a cancelled one
+  **close the connection**.
+
+How the close happens depends on the listener, and so does whether a client
+that is *still writing* its body gets to read the answer:
+
+| Listener | How it closes | A client still writing gets the answer |
+|---|---|---|
+| `node:http` — Fastify, Express, Hono under Node, on Node and Bun | `Connection: close`, then a *lingering* close: FIN, the rest read and dropped until the client stops, 1 MiB more arrived or 2 s passed | yes — measured: the 401 arrives, 0.4 MiB of a 50 MiB upload is taken in |
+| HTTP/2 — Fastify, Hono | the request's stream is closed with `NO_ERROR` once the response finished; flow control held the client back meanwhile | yes |
+| `Bun.serve` — Hono under Bun | `Connection: close` | not reliably: the close turns into a reset, which can discard the answer |
+| Deno | Deno closes such a connection on its own | not reliably, for the same reason |
+
+A client that waits — one that sends `Expect: 100-continue`, below — never
+gets into that position.
+
+## `Expect: 100-continue`
+
+A client that sends `Expect: 100-continue` waits for an interim `100 Continue`
+before sending its body.  On every `node:http` listener the backends own, that
+`100` is held back until something reads the body: the first read of a
+streamed body sends it, and so does every buffered route before it reads.  A
+handler that refuses without reading never sends it, and the client never
+sends the body.
+
+| Listener | `100 Continue` |
+|---|---|
+| `node:http` — Fastify, Express, Hono under Node | held back until the body is first read |
+| `Bun.serve` — Hono under Bun | sent by Bun before any handler runs |
+| `Deno.serve` — Hono under Deno | never sent; a waiting client sends its body after its own expect timeout |
+
+A `'checkContinue'` listener your application installed on the server itself
+is left alone.
+
+## Middleware
+
+`withMiddleware`, `handleErrors`, `requestTimeout`, `cors` and the auth
+middleware wrap a streamed route like any other.  They run before a body byte
+is read — an auth middleware that answers 401 costs the server nothing — and
+see an ordinary `HttpRequest` whose `body` is `null`, because nothing has been
+buffered.  The stream rides along to the handler through any
+`next({ ...request, … })`; a middleware that builds a replacement request
+from scratch instead of spreading the one it was given drops it, and the
+handler then throws, naming the cause.
+
+## Timeouts
+
+A large upload takes longer than a JSON request, and two bounds apply to it:
+
+- `actor-ts.http.server.request-timeout` (300 s) bounds how long a client may
+  take to **send** the whole request, on the `node:http` listeners;
+- a `requestTimeout()` around the route bounds how long the **handler** may
+  take to answer — and a handler that pipes the body upstream is answering
+  for as long as the upload runs.  Give an upload route a deadline sized for
+  it.
+
+<Aside type="note" title="Hono under Bun and very large bodies">
+  `Bun.serve` refuses a body over 128 MiB on its own, before any handler
+  runs.  The Hono backend raises that cap to the largest limit any route on
+  the server admits, so a streamed route's `maxBytes` is the number that
+  holds — never Bun's.
+</Aside>
+
+## Where to next
+
+- **[Route DSL](/http/route-dsl/)** — the method combinators a
+  `streamedBody()` goes into.
+- **[Marshalling](/http/marshalling/)** — the buffered side: `entity<T>()`.
+- **[Reference config](/reference/reference-conf/)** — `actor-ts.http.streamed-body`
+  and the `http.server` block.

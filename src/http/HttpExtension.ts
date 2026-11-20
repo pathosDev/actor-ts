@@ -248,6 +248,13 @@ export class HttpExtension implements Extension {
         const wsRoutes = compiled.filter((r) => r.kind === 'websocket');
         const fallbacks = compiled.filter((r) => r.kind === 'fallback');
 
+        const streamedRoutes = httpRoutes.filter((r) => r.streamedBody !== undefined);
+        if (streamedRoutes.length > 0 && active.streamsRequestBodies !== true) {
+          throw new Error(
+            `HTTP backend "${active.name}" does not support streamedBody() routes (${streamedRoutes.map((r) => `${r.method} ${r.pattern}`).join(', ')}).`,
+          );
+        }
+
         if (wsRoutes.length > 0 && typeof active.registerWebSocket !== 'function') {
           throw new Error(
             `HTTP backend "${active.name}" does not support websocket() routes.`,
@@ -299,6 +306,7 @@ export class HttpExtension implements Extension {
           active.registerRoute({
             method: route.method,
             pattern: route.pattern,
+            ...(route.streamedBody === undefined ? {} : { streamedBody: route.streamedBody }),
             handler: async (request: HttpRequest): Promise<HttpResponse> => {
               const start = Date.now();
               system.log.debug(`[http] ${request.method} ${request.path}`);
