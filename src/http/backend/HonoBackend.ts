@@ -25,6 +25,20 @@ import {
   transportFrameCapOf,
 } from './HttpServerBackend.js';
 import { readFirstChunk, reportingSourceFailure } from './StreamBodyFailure.js';
+import {
+  closeNodeConnectionAfterResponse,
+  declaredBodyLength,
+  limitedRequestBody,
+  type NodeExchangeRequest,
+  type NodeExchangeResponse,
+  nodeRequestBodySource,
+  remainderForcesClose,
+  type RequestBodyProgress,
+  type RequestBodySource,
+  webRequestBodySource,
+} from './RequestBodyStream.js';
+import { withStreamedBody } from '../StreamedRequestBody.js';
+import { detectRuntime } from '../../runtime/Detect.js';
 import type {
   HttpServerBackend,
   NodeHttpServerLike,
@@ -202,6 +216,27 @@ function requestAbortSignal(context: HonoContextLike): AbortSignal | undefined {
   return typeof AbortSignal !== 'undefined' && signal instanceof AbortSignal ? signal : undefined;
 }
 
+/**
+ * The `node:http` exchange behind a context, when `@hono/node-server` serves
+ * it — it passes `{ incoming, outgoing }` as the app's env.  Probed
+ * structurally for the reason {@link requestBodyStream} is.
+ */
+type NodeExchange = { readonly incoming: NodeExchangeRequest; readonly outgoing: NodeExchangeResponse };
+
+function nodeExchangeOf(context: HonoContextLike): NodeExchange | undefined {
+  const env = context.env as { incoming?: unknown; outgoing?: unknown } | undefined;
+  const incoming = env?.incoming as { read?: unknown; on?: unknown } | undefined;
+  const outgoing = env?.outgoing as { setHeader?: unknown } | undefined;
+  if (typeof incoming?.read !== 'function' || typeof incoming.on !== 'function') return undefined;
+  if (typeof outgoing?.setHeader !== 'function') return undefined;
+  return { incoming: incoming as unknown as NodeExchangeRequest, outgoing: outgoing as unknown as NodeExchangeResponse };
+}
+
+/** A body that is already over: what a streamed request without a readable body stream reads. */
+function endedSource(): RequestBodySource {
+  return { read: async () => null, stop: () => undefined };
+}
+
 type HonoHandler = (context: HonoContextLike) => Promise<Response> | Response;
 type HonoErrorHandler = (err: unknown, context: HonoContextLike) => Promise<Response> | Response;
 type HonoNotFoundHandler = (context: HonoContextLike) => Promise<Response> | Response;
@@ -324,6 +359,8 @@ function refuseIdleTimeoutOff(runner: HonoServerRunner, idleTimeoutMs: number | 
  */
 export class HonoBackend implements HttpServerBackend {
   readonly name = 'hono';
+  /** Honours `RouteRegistration.streamedBody` on Bun, Node and Deno (#1868). */
+  readonly streamsRequestBodies = true;
 
   private app: HonoAppLike | null;
   private readonly ownsApp: boolean;
@@ -351,6 +388,12 @@ export class HonoBackend implements HttpServerBackend {
    * moment its response is written.
    */
   private readonly readBodies = new WeakMap<object, Uint8Array | null>();
+  /**
+   * Contexts of streamed requests whose unread remainder must not be read
+   * after the response — consulted by the error path too, which builds its
+   * response without the route handler's help.
+   */
+  private readonly closingContexts = new WeakSet<object>();
 
   // Runtime-neutral server handle; the per-runtime adapter supplies a
   // concrete implementation (Bun.serve / @hono/node-server / Deno.serve).
@@ -427,29 +470,8 @@ export class HonoBackend implements HttpServerBackend {
       return this.writeResponse(response, { request, context });
     });
 
-    app.onError(async (err, context) => {
-      const request = await this.adaptRequest(context);
-      if (this.errorHandler) {
-        try {
-          const response = await this.errorHandler(err, request);
-          // Awaited inside the `try`: a stream body the error handler returns
-          // can fail before its first byte too, and then the default mapping
-          // below answers instead.
-          return await this.writeResponse(response, { request, context });
-        } catch (inner) { err = inner; }
-      }
-      if (err instanceof HttpError) {
-        return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
-          status: responseStatusOrServerError(err.status),
-          headers: this.errorHeaders(err.headers),
-        });
-      }
-      // No `message` field — see the note on FastifyBackend.writeError.
-      return new Response(
-        JSON.stringify({ error: 'Internal Server Error' }),
-        { status: 500, headers: this.errorHeaders(requestIdHeadersOfError(err)) },
-      );
-    });
+    // A streamed request that errored closes like one that answered (#1868).
+    app.onError(async (err, context) => this.closingIfNeeded(context, await this.answerError(err, context)));
 
     // WebSocket routes: obtain the per-runtime bridge, register each route
     // as a GET carrying the authorize guard + Hono's upgrade middleware,
@@ -552,7 +574,9 @@ export class HonoBackend implements HttpServerBackend {
     const app = this.app!;
     const wildcard = route.pattern.endsWith('/*');
     const prefix = wildcard ? route.pattern.slice(0, -2) : '';
+    const streamedBody = route.streamedBody;
     const handler: HonoHandler = async (c) => {
+      if (streamedBody !== undefined) return this.serveStreamed(c, route, streamedBody.maxBytes, wildcard ? prefix : undefined);
       // Reject an oversized Content-Length BEFORE reading the body; a chunked
       // body declares none, so `readBodyWithinCap` counts that one as it
       // arrives and abandons the read at the cap (security audit HTTP-1,
@@ -591,6 +615,105 @@ export class HonoBackend implements HttpServerBackend {
       .with('head',    () => app.on('HEAD', route.pattern, handler))
       .with('options', () => app.options(route.pattern, handler))
       .exhaustive();
+  }
+
+  /** Hono's `onError`: the user's error handler, else the default mapping. */
+  private async answerError(err: unknown, context: HonoContextLike): Promise<Response> {
+    const request = await this.adaptRequest(context);
+    if (this.errorHandler) {
+      try {
+        const response = await this.errorHandler(err, request);
+        // Awaited inside the `try`: a stream body the error handler returns
+        // can fail before its first byte too, and then the default mapping
+        // below answers instead.
+        return await this.writeResponse(response, { request, context });
+      } catch (inner) { err = inner; }
+    }
+    if (err instanceof HttpError) {
+      return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
+        status: responseStatusOrServerError(err.status),
+        headers: this.errorHeaders(err.headers),
+      });
+    }
+    // No `message` field — see the note on FastifyBackend.writeError.
+    return new Response(
+      JSON.stringify({ error: 'Internal Server Error' }),
+      { status: 500, headers: this.errorHeaders(requestIdHeadersOfError(err)) },
+    );
+  }
+
+  /**
+   * Serve a `streamedBody()` route (#1868): the handler runs before a byte of
+   * the body is read and gets it as a pull-driven stream held to `maxBytes`.
+   *
+   * Under `@hono/node-server` the body is read off the `node:http` request
+   * itself, in paused mode — the same source Fastify and Express read — and
+   * never through the `Request` the adapter would build around it, whose
+   * `Readable.toWeb` keeps a queue of its own.  Under Bun and Deno the
+   * runtime's own body stream is the source.
+   *
+   * The error path must not read the body either: `readBodies` records it as
+   * absent, so `onError` adapts the request without touching the stream.
+   */
+  private async serveStreamed(c: HonoContextLike, route: RouteRegistration, maxBytes: number, wildcardPrefix: string | undefined): Promise<Response> {
+    const node = nodeExchangeOf(c);
+    const headers = (c.req.header() as Record<string, string>) ?? {};
+    const declaredLength = declaredBodyLength(headers, node?.incoming.httpVersionMajor === 2);
+    this.readBodies.set(c, null);
+    if (declaredLength !== undefined && declaredLength > maxBytes) {
+      const unread: RequestBodyProgress = { state: 'unread', bytesRead: 0 };
+      if (remainderForcesClose(unread, declaredLength)) this.closingContexts.add(c);
+      return this.closingIfNeeded(c, await this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE));
+    }
+    const runtimeBody = requestBodyStream(c.req.raw);
+    const source = node !== undefined
+      ? nodeRequestBodySource(node.incoming)
+      : runtimeBody !== null ? webRequestBodySource(runtimeBody) : endedSource();
+    const { body, progress } = limitedRequestBody(source, { maxBytes, declaredLength });
+    const contentLength = headers['content-length'] === undefined ? undefined : declaredLength;
+    const adapted = withStreamedBody(this.buildRequest(c, null), {
+      body,
+      ...(contentLength !== undefined ? { contentLength } : {}),
+    });
+    const request = wildcardPrefix === undefined
+      ? adapted
+      : { ...adapted, params: { ...adapted.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, wildcardPrefix) } };
+    let out: HttpResponse;
+    try {
+      out = await route.handler(request);
+    } catch (err) {
+      // The error path answers this one; it closes too if the body says so.
+      if (remainderForcesClose(progress, declaredLength)) this.closingContexts.add(c);
+      throw err;
+    }
+    if (remainderForcesClose(progress, declaredLength)) this.closingContexts.add(c);
+    return this.closingIfNeeded(c, await this.writeResponse(out, { request, context: c }));
+  }
+
+  /**
+   * Keep the runtime from reading a streamed request's unread remainder once
+   * `response` is out — see `remainderForcesClose` for when.  Under
+   * `@hono/node-server` through the `node:http` response, like Fastify and
+   * Express; under Bun with `Connection: close` on the `Response`, which
+   * `Bun.serve` honours by closing instead of draining (measured).  Deno
+   * closes such a connection on its own, and adding the header there cut the
+   * response short in the same measurement, so it is left alone.
+   */
+  private closingIfNeeded(c: HonoContextLike, response: Response): Response {
+    if (!this.closingContexts.has(c)) return response;
+    const node = nodeExchangeOf(c);
+    if (node !== undefined) {
+      closeNodeConnectionAfterResponse(node.incoming, node.outgoing);
+      return response;
+    }
+    if (detectRuntime() === 'bun') {
+      try {
+        response.headers.set('connection', 'close');
+      } catch {
+        /* immutable headers — leave the runtime's default */
+      }
+    }
+    return response;
   }
 
   private attachWebsocketRoute(app: HonoAppLike, bridge: HonoWebsocketBridge, reg: WebsocketRouteRegistration): void {

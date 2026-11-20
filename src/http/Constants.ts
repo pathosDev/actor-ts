@@ -246,3 +246,24 @@ export const DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS = 72_000;
  * window and a handful of TCP segments.
  */
 export const STREAMED_BODY_DRAIN_LIMIT_BYTES = 64 * 1024;
+
+/**
+ * How much more of a streamed request's unread body a lingering close reads
+ * and drops after the response, before it destroys the socket (#1868) — and
+ * {@link STREAMED_BODY_LINGER_MS}, how long it waits at most.
+ *
+ * A lingering close exists because closing at once loses the response: a
+ * client still writing its body gets a TCP reset, which discards the answer
+ * from its receive buffer (measured on Node — the 401 never arrived).  Reading
+ * on for a moment lets the client see the response and stop.  Both bounds keep
+ * that moment from becoming the drain the close is there to avoid: 1 MiB and
+ * 2 s, against the 0.4 MiB a 50 MiB upload actually delivered before the client
+ * stopped.
+ */
+export const STREAMED_BODY_LINGER_BYTES = 1024 * 1024;
+
+/** The time bound of a lingering close — see {@link STREAMED_BODY_LINGER_BYTES}. */
+export const STREAMED_BODY_LINGER_MS = 2_000;
+
+/** How often a lingering close checks its bounds — fine enough that neither is overshot by much. */
+export const STREAMED_BODY_LINGER_POLL_MS = 25;

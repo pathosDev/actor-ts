@@ -17,7 +17,12 @@
  * parity suite holds them to.
  */
 import { match } from 'ts-pattern';
-import { STREAMED_BODY_DRAIN_LIMIT_BYTES } from '../Constants.js';
+import {
+  STREAMED_BODY_DRAIN_LIMIT_BYTES,
+  STREAMED_BODY_LINGER_BYTES,
+  STREAMED_BODY_LINGER_MS,
+  STREAMED_BODY_LINGER_POLL_MS,
+} from '../Constants.js';
 import { RequestBodyAbortedError, RequestBodyTooLargeError } from '../Types.js';
 
 /** One chunk at a time off a request; `null` once the body ended. */
@@ -256,3 +261,105 @@ function asBytes(chunk: unknown): Uint8Array {
   if (chunk instanceof Uint8Array) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
   return new TextEncoder().encode(String(chunk));
 }
+
+/** The slice of a `node:http` / `node:http2` request {@link closeNodeConnectionAfterResponse} touches. */
+export type NodeExchangeRequest = NodeRequestReadable & {
+  readonly httpVersionMajor?: number;
+  readonly socket?: LingeringSocket | null;
+  readonly stream?: { close(code?: number): void; readonly closed?: boolean; readonly destroyed?: boolean };
+};
+
+/** The slice of a `node:http` / `node:http2` response {@link closeNodeConnectionAfterResponse} touches. */
+export type NodeExchangeResponse = {
+  readonly headersSent: boolean;
+  setHeader(name: string, value: string): unknown;
+  once(event: 'finish', listener: () => void): unknown;
+};
+
+/** The slice of a `net.Socket` the lingering close drives. */
+export type LingeringSocket = {
+  destroySoon?: () => void;
+  end(): unknown;
+  destroy(): void;
+  readonly destroyed?: boolean;
+  readonly bytesRead?: number;
+  once(event: 'end' | 'close', listener: () => void): unknown;
+};
+
+/**
+ * Make sure the unread remainder of a request is never read in full: on
+ * HTTP/1.1 by answering with `Connection: close` and closing *lingeringly*;
+ * on HTTP/2, where that header is forbidden, by closing the request's stream
+ * with `NO_ERROR` once the response finished — RFC 9113 §8.1 allows exactly
+ * that for a response sent before the request ended.
+ *
+ * **Why lingering (#1868).**  Measured with a client that keeps writing its
+ * body: Node answers `Connection: close` by destroying the socket as soon as
+ * the response is flushed, the bytes still arriving turn that into a TCP
+ * reset, and the reset discards the response in the client's receive buffer —
+ * the client sees `ECONNRESET`, never the 401.  So the socket's
+ * `destroySoon` is taken over: the response is flushed and a FIN sent, the
+ * rest is read and dropped (by `node:http`'s own parser) until the client
+ * closes its side, {@link STREAMED_BODY_LINGER_BYTES} more arrived or
+ * {@link STREAMED_BODY_LINGER_MS} passed, and only then is the socket
+ * destroyed.  The same measurement after the change: the 401 arrives and
+ * 0.4 MiB of a 50 MiB upload is taken in, on Node and on Bun.
+ *
+ * A response whose headers are already out can no longer say `close`, so the
+ * socket is destroyed after it finished instead.
+ */
+export function closeNodeConnectionAfterResponse(request: NodeExchangeRequest, response: NodeExchangeResponse): void {
+  if (request.httpVersionMajor === 2) {
+    response.once('finish', () => {
+      const stream = request.stream;
+      if (stream === undefined || stream.closed === true || stream.destroyed === true) return;
+      try {
+        stream.close(HTTP2_NO_ERROR);
+      } catch {
+        /* already closing */
+      }
+    });
+    return;
+  }
+  if (!response.headersSent) {
+    response.setHeader('connection', 'close');
+    const socket = request.socket;
+    if (socket !== undefined && socket !== null) socket.destroySoon = () => lingeringClose(socket);
+    return;
+  }
+  response.once('finish', () => request.socket?.destroy());
+}
+
+/**
+ * Half-close `socket` once its writes are flushed, then destroy it when the
+ * peer closes its side or the linger bound runs out — whichever is first.
+ */
+function lingeringClose(socket: LingeringSocket): void {
+  const startBytes = socket.bytesRead ?? 0;
+  // Timers rather than a clock reading: both bounds are elapsed time, and a
+  // deadline timer needs no wall clock to compare against.
+  let poll: ReturnType<typeof setInterval> | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const stopTimers = (): void => {
+    if (poll !== undefined) clearInterval(poll);
+    if (deadline !== undefined) clearTimeout(deadline);
+    poll = undefined;
+    deadline = undefined;
+  };
+  const finish = (): void => {
+    stopTimers();
+    if (socket.destroyed !== true) socket.destroy();
+  };
+  socket.once('end', finish);
+  socket.once('close', stopTimers);
+  socket.end();
+  deadline = setTimeout(finish, STREAMED_BODY_LINGER_MS);
+  poll = setInterval(() => {
+    if (socket.destroyed === true || (socket.bytesRead ?? 0) - startBytes > STREAMED_BODY_LINGER_BYTES) finish();
+  }, STREAMED_BODY_LINGER_POLL_MS);
+  (deadline as { unref?: () => void }).unref?.();
+  (poll as { unref?: () => void }).unref?.();
+}
+
+/** `NGHTTP2_NO_ERROR` — spelled out so this module needs no `node:http2` import on runtimes without one. */
+const HTTP2_NO_ERROR = 0;
