@@ -19,6 +19,8 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { connect as http2Connect } from 'node:http2';
 import { connect, type Socket } from 'node:net';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -26,6 +28,7 @@ import { Config } from '../../../src/config/Config.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { STREAMED_BODY_DRAIN_LIMIT_BYTES } from '../../../src/http/Constants.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
+import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { BearerTokenAuth } from '../../../src/http/middleware/BearerToken.js';
 import { complete, completeJson, path, put, withMiddleware, type Route } from '../../../src/http/Route.js';
 import { streamedBody } from '../../../src/http/StreamedBody.js';
@@ -33,7 +36,7 @@ import { RequestBodyAbortedError, RequestBodyTooLargeError, Status, type Streame
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
-const BACKENDS = ['hono'] as const;
+const BACKENDS = ['fastify', 'hono'] as const;
 
 /**
  * Whether a response written over an unread body reaches a client that keeps
@@ -399,5 +402,123 @@ describe.each(BACKENDS)('streamedBody() on the %s backend — HTTP/1.1', (backen
     await client.pump(20 * MiB, 1500);
 
     await expectRefusedWithoutReading(backend, client, 202, 'the cancelled upload is answered');
+  }, 15_000);
+});
+
+/* --------------------------------- HTTP/2 --------------------------------- */
+
+const TLS_FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
+const CERT = readFileSync(new URL('localhost-cert.pem', TLS_FIXTURES), 'utf8');
+const KEY = readFileSync(new URL('localhost-key.pem', TLS_FIXTURES), 'utf8');
+const CA = readFileSync(new URL('test-ca.pem', TLS_FIXTURES), 'utf8');
+
+/** The backends that serve HTTP/2; Express refuses it at bind(). */
+const HTTP2_BACKENDS = ['fastify', 'hono'] as const;
+
+async function startHttp2(backend: string, routes: Route): Promise<number> {
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(`actor-ts.http.backend = ${backend}`));
+  const system = ActorSystem.create('streamed-body-parity-h2', systemOptions);
+  const serverOptions = HttpServerOptions.create()
+    .withTls({ cert: CERT, key: KEY })
+    .withHttp2();
+  try {
+    const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0)
+      .withServerOptions(serverOptions)
+      .bind(routes);
+    live.push({ binding, system });
+    return binding.port;
+  } catch (e) {
+    await system.terminate();
+    throw e;
+  }
+}
+
+type Http2Outcome = {
+  readonly status: number | undefined;
+  readonly body: string;
+  /** Body bytes the stream acknowledged writing. */
+  readonly acked: number;
+  /** Whether the stream ended or was reset before the whole body was written. */
+  readonly cutShort: boolean;
+};
+
+/**
+ * One HTTP/2 upload of `total` bytes, written for as long as the server takes
+ * them and at most `windowMs`, then left to finish: the response, or the
+ * stream's close, settles it.
+ */
+async function http2Upload(port: number, target: string, total: number, windowMs: number, payload?: Uint8Array): Promise<Http2Outcome> {
+  const session = http2Connect(`https://127.0.0.1:${port}`, { ca: CA, servername: 'localhost' });
+  session.on('error', () => { /* a reset is an outcome, read off the stream */ });
+  try {
+    const stream = session.request({ ':method': 'PUT', ':path': target, 'content-length': String(total) });
+    let status: number | undefined;
+    let body = '';
+    let acked = 0;
+    let closed = false;
+    stream.on('response', (headers) => { status = Number(headers[':status']); });
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk: string) => { body += chunk; });
+    stream.on('error', () => { /* a reset settles through 'close' */ });
+    const done = new Promise<void>((resolve) => stream.on('close', () => { closed = true; resolve(); }));
+    const chunk = Buffer.alloc(64 * 1024, 9);
+    const deadline = Date.now() + windowMs;
+    let written = 0;
+    while (!closed && written < total && Date.now() < deadline) {
+      const piece = payload !== undefined
+        ? payload.subarray(written, Math.min(total, written + chunk.length))
+        : written + chunk.length > total ? chunk.subarray(0, total - written) : chunk;
+      const accepted = stream.write(piece, (err) => { if (!err) acked += piece.byteLength; });
+      written += piece.byteLength;
+      if (!accepted) {
+        await Promise.race([
+          new Promise<void>((resolve) => stream.once('drain', () => resolve())),
+          // Bounded wait for a drain that may never come — flow control is the point.
+          sleep(Math.max(1, Math.min(200, deadline - Date.now()))),
+        ]);
+      }
+    }
+    const cutShort = written < total;
+    if (!cutShort && !closed) stream.end();
+    // Cut short: drop the stream locally — a polite close would wait behind
+    // the writes flow control is holding back.
+    else if (!closed) stream.destroy();
+    await awaitCondition(() => closed, { timeoutMs: 6000, label: `the HTTP/2 upload to ${target} settles` });
+    await done;
+    return { status, body, acked, cutShort };
+  } finally {
+    session.destroy();
+  }
+}
+
+describe.each(HTTP2_BACKENDS)('streamedBody() on the %s backend — HTTP/2', (backend) => {
+  test('the stream yields exactly the bytes sent', async () => {
+    const port = await startHttp2(backend, path('upload', put(streamedBody(async (request) => completeJson(Status.OK, await readAll(request.body))))));
+    const payload = randomBytes(3 * MiB);
+    const outcome = await http2Upload(port, '/upload', payload.length, 20_000, payload);
+
+    expect(outcome.status).toBe(200);
+    expect(JSON.parse(outcome.body)).toEqual({ length: payload.length, sha256: createHash('sha256').update(payload).digest('hex') });
+  }, 30_000);
+
+  test('a declared Content-Length over the limit is answered 413 before the handler', async () => {
+    let called = false;
+    const port = await startHttp2(backend, path('upload', put(streamedBody({ maxBytes: 1024 }, () => { called = true; return complete(Status.OK); }))));
+    const outcome = await http2Upload(port, '/upload', 50 * MiB, 1500);
+
+    expect(outcome.status).toBe(413);
+    expect(called).toBe(false);
+    expect(outcome.acked).toBeLessThan(16 * MiB);
+  }, 15_000);
+
+  test('a handler that answers without reading takes in a bounded amount — flow control holds the rest', async () => {
+    const port = await startHttp2(backend, path('upload', put(streamedBody(() => complete(Status.Unauthorized)))));
+    const outcome = await http2Upload(port, '/upload', 50 * MiB, 2000);
+
+    expect(outcome.status).toBe(401);
+    expect(outcome.acked).toBeLessThan(16 * MiB);
   }, 15_000);
 });

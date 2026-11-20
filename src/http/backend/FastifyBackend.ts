@@ -1,6 +1,17 @@
-import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { requestIdHeadersOfError } from '../middleware/RequestId.js';
+import { withStreamedBody } from '../StreamedRequestBody.js';
+import {
+  closeNodeConnectionAfterResponse,
+  declaredBodyLength,
+  limitedRequestBody,
+  type NodeExchangeRequest,
+  type NodeExchangeResponse,
+  nodeRequestBodySource,
+  remainderForcesClose,
+  type RequestBodyProgress,
+} from './RequestBodyStream.js';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
@@ -176,6 +187,8 @@ function refuseUnenforcedClientCertificate(tls: HttpTlsOptionsType): void {
 
 export class FastifyBackend implements HttpServerBackend {
   readonly name = 'fastify';
+  /** Honours `RouteRegistration.streamedBody` — see {@link registerStreamedRoute} (#1868). */
+  readonly streamsRequestBodies = true;
   private readonly app: FastifyLike;
   /**
    * Whether `Fastify({ https })` was passed at construction — the only
@@ -273,6 +286,10 @@ export class FastifyBackend implements HttpServerBackend {
       throw new Error(`FastifyBackend: duplicate ${route.method} route for pattern "${route.pattern}".`);
     }
     this.registered.push(route);
+    if (route.streamedBody !== undefined) {
+      this.registerStreamedRoute(route, route.streamedBody.maxBytes);
+      return;
+    }
     this.app.route({
       method: route.method,
       url: route.pattern,
@@ -287,6 +304,68 @@ export class FastifyBackend implements HttpServerBackend {
         return reply;
       },
     });
+  }
+
+  /**
+   * A `streamedBody()` route (#1868), registered in an encapsulated plugin
+   * scope whose only content-type parser consumes nothing: Fastify calls the
+   * handler with the request body still on the socket, and the handler reads
+   * `req.raw` in paused mode.  The root's buffering parsers — and with them
+   * `bodyLimit`, which only a buffering parser enforces — never see this
+   * route, and no route outside the scope sees this parser.
+   *
+   * The scope is registered now and loaded by Fastify's boot at `listen()`,
+   * like every plugin.
+   */
+  private registerStreamedRoute(route: RouteRegistration, maxBytes: number): void {
+    void this.app.register(async (scope: FastifyInstance) => {
+      scope.removeAllContentTypeParsers();
+      scope.addContentTypeParser('*', (_request: unknown, _payload: unknown, done: (err: Error | null, body?: unknown) => void) => done(null));
+      scope.route({
+        method: route.method,
+        url: route.pattern,
+        handler: async (req: FastifyRequest, reply: FastifyReply) => {
+          await this.serveStreamed(req, reply, route, maxBytes);
+          return reply;
+        },
+      });
+    });
+  }
+
+  /**
+   * The handler of a streamed route: a declared length over `maxBytes` is
+   * answered 413 before the route runs; otherwise the route gets the body
+   * unread, and after it answered — or threw — the connection is closed
+   * rather than the remainder read where `remainderForcesClose` says so.
+   */
+  private async serveStreamed(req: FastifyRequest, reply: FastifyReply, route: RouteRegistration, maxBytes: number): Promise<void> {
+    const raw = req.raw as unknown as NodeExchangeRequest;
+    const rawReply = reply.raw as unknown as NodeExchangeResponse;
+    const headers = req.headers as Record<string, string | undefined>;
+    const declaredLength = declaredBodyLength(headers, raw.httpVersionMajor === 2);
+    if (declaredLength !== undefined && declaredLength > maxBytes) {
+      const unread: RequestBodyProgress = { state: 'unread', bytesRead: 0 };
+      if (remainderForcesClose(unread, declaredLength)) closeNodeConnectionAfterResponse(raw, rawReply);
+      this.writeResponse(reply, PAYLOAD_TOO_LARGE_RESPONSE);
+      return;
+    }
+    const { body, progress } = limitedRequestBody(nodeRequestBodySource(raw), { maxBytes, declaredLength });
+    const contentLength = headers['content-length'] === undefined ? undefined : declaredLength;
+    const adapted = withStreamedBody(this.adaptRequest(req), {
+      body,
+      ...(contentLength !== undefined ? { contentLength } : {}),
+    });
+    const settle = (): void => {
+      if (remainderForcesClose(progress, declaredLength)) closeNodeConnectionAfterResponse(raw, rawReply);
+    };
+    try {
+      const out = await route.handler(adapted);
+      settle();
+      this.writeResponse(reply, out, adapted);
+    } catch (err) {
+      settle();
+      await this.emitError(reply, adapted, err);
+    }
   }
 
   registerWebSocket(reg: WebsocketRouteRegistration): void {
