@@ -12,6 +12,18 @@ export type RouteRegistration = {
   /** Path pattern in the Fastify/Express style: `/users/:id` */
   readonly pattern: string;
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+  /**
+   * Present on a `streamedBody()` route (#1868), resolved at `bind()` like
+   * {@link WebsocketRouteRegistration.maxFrameBytes}: the backend must NOT
+   * buffer this route's body under the server-wide cap.  It calls the handler
+   * before reading a byte, with the body attached unread
+   * (`withStreamedBody`) and held to `maxBytes` — a declared
+   * `Content-Length` over it answered 413 before the handler runs — and after
+   * the response it closes the connection rather than read an unread
+   * remainder it cannot bound (`remainderForcesClose`).  Only a backend that
+   * declares {@link HttpServerBackend.streamsRequestBodies} is handed one.
+   */
+  readonly streamedBody?: { readonly maxBytes: number };
 };
 
 /**
@@ -1618,6 +1630,15 @@ export function enforceMaxConnections(
  */
 export interface HttpServerBackend {
   readonly name: string;
+
+  /**
+   * Optional capability: `true` when the backend honours
+   * {@link RouteRegistration.streamedBody}.  `HttpExtension.bind` refuses a
+   * tree with a `streamedBody()` route on a backend without it — buffering
+   * such a body under the server-wide cap instead would answer 413 to the
+   * uploads the route exists for, or hold them in memory whole (#1868).
+   */
+  readonly streamsRequestBodies?: boolean;
 
   /**
    * Register all routes before `listen` is called.

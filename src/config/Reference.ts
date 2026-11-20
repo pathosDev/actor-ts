@@ -1799,6 +1799,19 @@ actor-ts {
       deadline = 30s
     }
 
+    # Defaults for streamedBody() routes, whose handler runs before any body
+    # byte is read and gets the body as a stream (#1868).  max-bytes is the
+    # most a streamed body may carry: a declared Content-Length over it is
+    # answered 413 before the handler runs, and a body that grows past it
+    # errors the stream (RequestBodyTooLargeError, 413 unless the handler
+    # answered first).  Independent of http.server.max-content-length, which
+    # caps the buffered routes only.  A route's own StreamedBodyOptions win;
+    # the merged value is validated when the route tree is compiled -- inside
+    # bind(), OptionsError on a bad value.
+    streamed-body {
+      max-bytes = 64MiB
+    }
+
     # Outbound HttpClient defaults — the system's shared client and any
     # newClient(...) that leaves a field unset.  Leaf names are the kebab-case
     # of the HttpClientOptions fields with any unit suffix dropped (the value
