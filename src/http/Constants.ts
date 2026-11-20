@@ -229,3 +229,20 @@ export const DEFAULT_HTTP_SHUTDOWN_GRACE_PERIOD_MS = 4_000;
  * own value: a default for the `idle-timeout` leaf itself would move that too.
  */
 export const DEFAULT_HTTP2_SESSION_IDLE_TIMEOUT_MS = 72_000;
+
+/**
+ * The largest unread remainder of a streamed request body the server still
+ * lets the runtime read and discard after the handler answered, so the
+ * keep-alive connection survives (#1868).  Anything larger — or a chunked
+ * body, whose remainder is unknown — gets `Connection: close` instead.
+ *
+ * Measured, not assumed: on Node and on Bun, both under `node:http` and under
+ * `Bun.serve`, a response written over an unread body leaves the connection
+ * open and the runtime reads the *whole* remainder off it — a 50 MiB upload
+ * the handler refused after its headers was received in full.  Only Deno
+ * closes on its own.  So a remainder of unbounded size is never drained; a
+ * small one is, because a short PUT refused for a stale token should not cost
+ * the client a new TCP and TLS handshake.  64 KiB is one initial HTTP/2 stream
+ * window and a handful of TCP segments.
+ */
+export const STREAMED_BODY_DRAIN_LIMIT_BYTES = 64 * 1024;

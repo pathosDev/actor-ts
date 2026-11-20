@@ -95,6 +95,8 @@ export const Status = {
   NotFound: 404,
   MethodNotAllowed: 405,
   Conflict: 409,
+  /** A request body over the cap — the server-wide one, or a streamed route's own (#1868). */
+  PayloadTooLarge: 413,
   UnsupportedMediaType: 415,
   /** Used by the idempotency-key middleware when the same key is reused with a different body. */
   UnprocessableEntity: 422,
@@ -121,5 +123,62 @@ export class HttpError extends Error {
   ) {
     super(message);
     this.name = 'HttpError';
+  }
+}
+
+/**
+ * The request a `streamedBody()` route's handler receives (#1868): everything
+ * an {@link HttpRequest} carries, except that the body has not been read.
+ *
+ * `body` is pull-driven with a high-water mark of zero, so the server reads
+ * nothing off the connection ahead of the handler's own reads, and the
+ * client is held back by the transport's flow control in between.  It errors
+ * with {@link RequestBodyTooLargeError} once more bytes arrive than the
+ * route's `maxBytes`, and with {@link RequestBodyAbortedError} when the client
+ * goes away mid-body.  Cancelling it is how a handler says it wants no more
+ * of the body; the server then closes the connection after the response
+ * rather than reading the remainder.
+ *
+ * Not assignable to {@link HttpRequest} and the other way round, on purpose:
+ * a buffered handler is never handed a stream, and `entity(request)` on a
+ * streamed request is a compile error rather than a `400 Missing request
+ * body` at run time.
+ */
+export type StreamedHttpRequest = Omit<HttpRequest, 'body'> & {
+  readonly body: ReadableStream<Uint8Array>;
+  /** The declared `Content-Length`, when the client sent one; absent for a chunked body. */
+  readonly contentLength?: number;
+};
+
+/**
+ * What a streamed request body errors with once more bytes arrived than the
+ * route admits — counted, not declared: a declared `Content-Length` over the
+ * limit is answered 413 before the handler runs.
+ *
+ * An {@link HttpError} with status 413, so a handler that lets it propagate
+ * answers `413 Payload Too Large` through the ordinary error mapping, and one
+ * that catches it can still answer something else.
+ */
+export class RequestBodyTooLargeError extends HttpError {
+  constructor(public readonly maxBytes: number) {
+    super(Status.PayloadTooLarge, `request body exceeds ${maxBytes} bytes`, { maxBytes });
+    this.name = 'RequestBodyTooLargeError';
+  }
+}
+
+/**
+ * What a streamed request body errors with when the client aborts or resets
+ * the request before the body ended — the signal for a handler to abandon
+ * the upstream work the body was feeding.
+ *
+ * An {@link HttpError} (400) rather than a plain `Error`, so a handler that
+ * lets it propagate is not logged as a server fault: nothing the server did
+ * caused it, and the client is usually no longer there to read the answer.
+ */
+export class RequestBodyAbortedError extends HttpError {
+  constructor(cause?: unknown) {
+    super(Status.BadRequest, 'request body aborted by the client');
+    this.name = 'RequestBodyAbortedError';
+    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
   }
 }
