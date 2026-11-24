@@ -1,6 +1,6 @@
 {
   "name": "actor-ts",
-  "version": "0.19.0",
+  "version": "0.19.1",
   "description": "An actor-model framework for TypeScript — runs on Bun, Node.js and Deno",
   "author": "pathosDev",
   "repository": {

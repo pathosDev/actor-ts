@@ -4,7 +4,15 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- **v0.19.0 is out** — the *correctness and test-methodology* release:
+- **v0.19.1 is out** — a one-feature follow-up to v0.19.0: *streamed
+  request bodies* (#1868).  A `put` / `post` / `patch` / `del` route can take
+  `streamedBody(...)` and see its body as a `ReadableStream` with its own byte
+  limit, its handler running before any body byte is read, on every HTTP
+  backend and runtime.  It changes when `Expect: 100-continue` is answered on
+  `node:http` listeners.  The cluster wire is unchanged, so v0.19.0 and
+  v0.19.1 nodes run side by side.
+
+  v0.19.0 was the *correctness and test-methodology* release:
   about 400 commits against v0.18.0, 144 changelog entries, 30 of them
   breaking.  Three things landed together.
 
@@ -51,11 +59,15 @@ This document tracks the planned direction.  Nothing here is committed work — 
   shipped that no test binds — found by reverting one line at a time, not
   by reading — and they are the honest measure of what a green suite did
   not prove.
-- ~24 200 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- ~24 300 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
+- **v0.19.1 — *streamed request bodies*:** `streamedBody(...)` routes with
+  a per-route byte limit, a handler that runs before the body is read, and a
+  bounded drain when it answers without reading — Fastify, Express and Hono
+  on Bun, Node and Deno, HTTP/1.1 and HTTP/2 (#1868).
 - **v0.19.0 — the *correctness and test-methodology* release:** the
   #1821 wave (the open #913 defects, the security residuals and the
   test-methodology instruments of #1387), an independent mutation pass over
