@@ -67,6 +67,36 @@ export class RecoveryTimeoutError extends Error {
 }
 
 /**
+ * `deleteHistory(toSeq)` was refused because no snapshot covers `toSeq` (#1180).
+ *
+ * Deleting those events anyway would leave a history recovery cannot rebuild:
+ * the next start fails with a {@link JournalIntegrityError} that names the same
+ * rule — but by then the events are gone for good, and the call that removed
+ * them may be days out of the logs.  Refusing here turns permanent loss into an
+ * error at the call site, with nothing deleted.
+ *
+ * `coveringSeq` is the newest snapshot's sequence number, or `undefined` when
+ * the store holds none for this actor.
+ */
+export class UncoveredCompactionError extends Error {
+  constructor(
+    readonly persistenceId: string,
+    readonly toSeq: number,
+    readonly coveringSeq: number | undefined,
+  ) {
+    super(
+      `[persistence] '${persistenceId}' deleteHistory(${toSeq}) refused: `
+      + (coveringSeq === undefined
+        ? 'the snapshot store holds no snapshot for it'
+        : `the newest snapshot is at sequenceNr=${coveringSeq}`)
+      + `, and no snapshot at or above sequenceNr=${toSeq} covers the events it would delete, so the `
+      + 'state could not be reconstructed (compact only past a snapshot — saveSnapshot() first)',
+    );
+    this.name = 'UncoveredCompactionError';
+  }
+}
+
+/**
  * Settle as `work` does, or reject once `timeoutMs` has passed with a
  * {@link RecoveryTimeoutError} naming `persistenceId` — the
  * `actor-ts.persistence.recovery-timeout` ceiling.
@@ -867,6 +897,26 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    * `toSeq <= 0` prunes nothing, which is what "compact past the beginning"
    * should mean.
    *
+   * ### A snapshot must cover `toSeq` (#1180)
+   *
+   * Before deleting anything it loads the newest snapshot and refuses, with an
+   * {@link UncoveredCompactionError}, when there is none at or above `toSeq`.
+   * Without one the deleted events take the state with them: recovery refuses
+   * the history afterwards (#122, #1052), but only once it is unrecoverable.
+   * The store is asked rather than the last `saveSnapshot` remembered, because
+   * the cases that bite are the ones this actor cannot see — a save that
+   * failed, a snapshot a TTL or a retention policy removed, a `toSeq` confused
+   * with the last *processed* sequence number.  One extra snapshot read per
+   * compaction, through the snapshot breaker like recovery's own load.  A
+   * snapshot that fails its integrity or decryption check fails that load, and
+   * so the compaction: the events are the only intact copy left.
+   *
+   * One exception: under `actor-ts.persistence.allow-fully-compacted-recovery`
+   * a *complete* compaction (`toSeq >= lastSequenceNr`) is allowed without a
+   * snapshot.  That flag is the explicit opt-in for systems that compact
+   * without one on purpose, and recovery accepts exactly that shape under it.
+   * A partial compaction stays refused, because recovery refuses it too.
+   *
    * Each delete goes through its own store's breaker, like every other store
    * call this actor makes (#1496).  It was the one that did not, so a backend
    * that accepted a delete and never answered parked the compaction — and the
@@ -879,6 +929,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    */
   protected async deleteHistory(toSeq: number): Promise<void> {
     if (toSeq <= 0) return;
+    await this.assertCompactionCovered(toSeq);
     await this._persistence.callThroughSnapshotBreaker(
       'delete',
       () => this._snapshotStore.delete(this.persistenceId, toSeq - 1),
@@ -887,6 +938,18 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       'delete',
       () => this._journal.delete(this.persistenceId, toSeq),
     );
+  }
+
+  /** Throw an {@link UncoveredCompactionError} unless deleting up to `toSeq` leaves a recoverable history. */
+  private async assertCompactionCovered(toSeq: number): Promise<void> {
+    const latest = await this._persistence.callThroughSnapshotBreaker(
+      'load',
+      () => this._snapshotStore.loadLatest<unknown>(this.persistenceId, this.persistenceOptions()),
+    );
+    const coveringSeq = latest.isSome() ? latest.toNullable().sequenceNr : undefined;
+    if (coveringSeq !== undefined && coveringSeq >= toSeq) return;
+    if (this._persistence.behavior.allowFullyCompactedRecovery && toSeq >= this._seq) return;
+    throw new UncoveredCompactionError(this.persistenceId, toSeq, coveringSeq);
   }
 
   /** Read back the persisted events — handy for tests. */

@@ -219,15 +219,17 @@ describe('Persistence seam metrics (#1496)', () => {
 
       expect(observations.steps).toEqual(['done', 'done', 'done']);
       // Recovery is one `load` and one `replay`; the three commands are one
-      // `append`, one `save`, and one `delete` per store.
+      // `append`, one `save`, and one `delete` per store — plus the second
+      // `load` the compaction makes to check a snapshot covers it (#1180).
       expect(operationsOf(registry, JOURNAL_LATENCY)).toEqual(['append', 'delete', 'replay']);
       expect(operationsOf(registry, SNAPSHOT_LATENCY)).toEqual(['delete', 'load', 'save']);
       for (const operation of ['append', 'delete', 'replay']) {
         expect(observationsOf(registry, JOURNAL_LATENCY, { operation })).toBe(1);
       }
-      for (const operation of ['delete', 'load', 'save']) {
+      for (const operation of ['delete', 'save']) {
         expect(observationsOf(registry, SNAPSHOT_LATENCY, { operation })).toBe(1);
       }
+      expect(observationsOf(registry, SNAPSHOT_LATENCY, { operation: 'load' })).toBe(2);
       expect(samplesOf(registry, JOURNAL_FAILURES)).toEqual([]);
       expect(samplesOf(registry, SNAPSHOT_FAILURES)).toEqual([]);
     } finally {

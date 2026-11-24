@@ -184,9 +184,10 @@ describe('recovery over a journal that breaks its read contract (#122)', () => {
   });
 
   test('a compacted prefix with no covering snapshot fails recovery', async () => {
-    // Reachable through the public API — `deleteHistory` on an actor
-    // that never snapshotted.  It used to recover the surviving tail
-    // onto `initialState()` and call that the current balance.
+    // Once reachable through the public API — `deleteHistory` on an actor
+    // that never snapshotted, which it now refuses (#1180) — and still
+    // reachable by any other writer of the journal.  It used to recover the
+    // surviving tail onto `initialState()` and call that the current balance.
     const fixture = makeSystem('replay-integrity-compacted', identity);
     await seed(fixture.underlying, 'ledger-compacted', [1, 2, 3]);
     await fixture.underlying.delete('ledger-compacted', 1);

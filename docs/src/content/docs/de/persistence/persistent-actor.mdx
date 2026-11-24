@@ -317,6 +317,24 @@ werden —, setzt
 Hochwassermarke des Journals fort, sodass sein nächstes `persist`
 weiterhin zu dem passt, woran sich das Journal erinnert.
 
+`deleteHistory` setzt die Regel, nur über einen Snapshot hinaus zu
+kompaktieren, selbst durch, bevor es irgendetwas
+löscht.  Es lädt den neuesten Snapshot und wirft, wenn keiner bei oder
+über `seq` liegt, einen `UncoveredCompactionError` und lässt das
+Journal unangetastet — der Fehler zeigt sich so beim Aufruf und nicht
+erst bei der nächsten Recovery, wenn die Events schon weg wären.  Vorher
+also einen Snapshot ziehen:
+
+```ts
+await this.saveSnapshot();
+await this.deleteHistory(this.lastSequenceNr);
+```
+
+Unter `allow-fully-compacted-recovery` akzeptiert es außerdem eine
+*vollständige* Kompaktierung ohne Snapshot — `seq` bei oder hinter
+`lastSequenceNr` —, weil die Recovery genau diese Form dann
+akzeptiert.  Eine teilweise bleibt abgelehnt.
+
 Das [Time-Travel-Panel](/de/observability/devtools/time-travel/) der
 DevTools teilt sich diesen Replay-Code, klinkt sich beim letzten
 Punkt aber aus.  Es fragt, wie der State *in der Vergangenheit*
@@ -355,7 +373,8 @@ actor-ts.circuit-breaker.persistence-journal {
 **Der Journal-Breaker umschließt `persist`, die Recovery und
 `deleteHistory`; der Snapshot-Breaker umschließt das Speichern von
 Snapshots, das Laden des Snapshots, mit dem eine Recovery beginnt, und
-die Snapshot-Hälfte von `deleteHistory`.**  Sind `max-failures`
+die Snapshot-Hälfte von `deleteHistory` samt seiner Prüfung auf einen
+abdeckenden Snapshot.**  Sind `max-failures`
 Appends oder Recoveries in Folge fehlgeschlagen, öffnet der
 Journal-Breaker, und jedes
 `persist` wirft für `reset-timeout` einen `CircuitBreakerOpenError` aus

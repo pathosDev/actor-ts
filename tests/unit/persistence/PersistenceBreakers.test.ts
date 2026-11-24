@@ -382,6 +382,21 @@ type DepositCommand = { readonly kind: 'deposit'; readonly amount: number };
 type DepositedEvent = { readonly kind: 'deposited'; readonly amount: number };
 type LedgerState = { readonly balance: number };
 
+/**
+ * Give `persistenceId` one event and a snapshot covering it, so a
+ * `deleteHistory(1)` passes its covering-snapshot check (#1180) and reaches the
+ * deletes these suites are about.  The snapshot is written through
+ * `InMemorySnapshotStore`'s own `save`, past any override that refuses writes.
+ */
+async function seedCoveredHistory(
+  journal: InMemoryJournal,
+  snapshotStore: InMemorySnapshotStore,
+  persistenceId: string,
+): Promise<void> {
+  await journal.append<DepositedEvent>(persistenceId, [{ event: { kind: 'deposited', amount: 3 } }], 0);
+  await InMemorySnapshotStore.prototype.save.call(snapshotStore, persistenceId, 1, { balance: 3 });
+}
+
 /** Everything the recovery tests read, recorded outside the actors. */
 type Observations = {
   readonly recovered: string[];
@@ -724,7 +739,9 @@ describe('PersistentActor.deleteHistory — each delete through its own store\'s
       'actor-ts': { 'circuit-breaker': { 'persistence-journal': { 'call-timeout': '50ms' } } },
     });
     const journal = new DeleteStallingJournal();
-    extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
+    const snapshotStore = new InMemorySnapshotStore();
+    await seedCoveredHistory(journal, snapshotStore, 'ledger-compacted');
+    extension.configure({ journal, snapshotStore });
     const outcomes: CompactionOutcome[] = [];
     try {
       const compactor = system.spawn(() => new Compactor('ledger-compacted', outcomes), 'ledger-compacted');
@@ -746,7 +763,9 @@ describe('PersistentActor.deleteHistory — each delete through its own store\'s
       'actor-ts': { 'circuit-breaker': { 'persistence-snapshot': { 'call-timeout': '50ms' } } },
     });
     const snapshotStore = new DeleteStallingSnapshotStore();
-    extension.configure({ journal: new InMemoryJournal(), snapshotStore });
+    const journal = new InMemoryJournal();
+    await seedCoveredHistory(journal, snapshotStore, 'ledger-compacted');
+    extension.configure({ journal, snapshotStore });
     const outcomes: CompactionOutcome[] = [];
     try {
       const compactor = system.spawn(() => new Compactor('ledger-compacted', outcomes), 'ledger-compacted');
@@ -1080,7 +1099,9 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
   ): Promise<LateRecovery> {
     const { system, extension, registry } = persistenceOn(seamPath, config);
     const snapshotStore = new WriteRefusingSnapshotStore();
-    extension.configure({ journal: await journalWithLateHistory(new InMemoryJournal()), snapshotStore });
+    const journal = await journalWithLateHistory(new InMemoryJournal());
+    await seedCoveredHistory(journal, snapshotStore, 'ledger-writer');
+    extension.configure({ journal, snapshotStore });
     const observations = newUpkeepObservations();
     try {
       const writer = system.spawn(() => new UpkeepLedger('ledger-writer', observations), 'ledger-writer');
@@ -1110,7 +1131,9 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
   test.each(SEAM_PATHS)('ten refused journal deletes leave a later recovery and a persist elsewhere working, $path', async (seamPath) => {
     const { system, extension, registry } = persistenceOn(seamPath);
     const journal = await journalWithLateHistory(new DeleteRefusingJournal());
-    extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
+    const snapshotStore = new InMemorySnapshotStore();
+    await seedCoveredHistory(journal, snapshotStore, 'ledger-compactor');
+    extension.configure({ journal, snapshotStore });
     const observations = newUpkeepObservations();
     try {
       const compactor = system.spawn(() => new UpkeepLedger('ledger-compactor', observations), 'ledger-compactor');
