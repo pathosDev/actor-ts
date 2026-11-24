@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-11-24
+
 ### Added
 
 - **Streamed request bodies** (#1868).  `put` / `post` / `patch` / `del`
