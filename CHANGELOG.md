@@ -9,6 +9,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **`KafkaActor`, `AmqpActor` and `MqttActor` name a target that never
+  acknowledges** (#1877). Under `acknowledgment: 'on-reply'`, a target that
+  has not acknowledged a single delivery is logged once at `warn` the first
+  time one of its deliveries times out. The warning names the target and
+  says what to do: reply `acknowledgeDelivery(delivery)`, or set
+  `acknowledgment = "on-delivery"`. This mostly catches targets written
+  before `'on-reply'` became the default in 0.19.0, which loop through
+  redelivery without ever succeeding. On MQTT the warning is not repeated on
+  the reconnects such a target causes. A target that has acknowledged before
+  counts as slow, not silent, and a negative reply is not silence. The
+  per-delivery lines stay unchanged.
+
 ## [0.19.1] — 2026-11-24
 
 ### Added

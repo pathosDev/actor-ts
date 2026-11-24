@@ -8,6 +8,7 @@ import { lazyImportModule } from '../../util/LazyImport.js';
 import { AMQP_DRAIN_TIMEOUT_MS } from '../Constants.js';
 import {
   BrokerAcknowledgmentTracker,
+  BrokerSilentTargetWatch,
   type BrokerDeliveryReply,
 } from './BrokerAcknowledgment.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -117,6 +118,8 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
    * tag is only valid on the channel it arrived on.
    */
   private acknowledgments: BrokerAcknowledgmentTracker | null = null;
+  /** Names a target that never acknowledges, once — across reconnects (#1877). */
+  private readonly silentTargets = new BrokerSilentTargetWatch('AmqpActor', (line) => this.log.warn(line));
 
   constructor(options: AmqpOptions = {}) { super(options); }
 
@@ -150,6 +153,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
     this.acknowledgments = new BrokerAcknowledgmentTracker(
       this.options.acknowledgment ?? DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
       this.options.acknowledgmentTimeoutMs ?? DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS,
+      this.silentTargets,
     );
     await channel.prefetch(this.options.prefetch ?? 1);
     this.connection.on('error', (e: Error) => this.handleConnectionLost(e));

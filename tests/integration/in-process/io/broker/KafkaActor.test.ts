@@ -365,6 +365,27 @@ describe('KafkaActor — auto-commit acknowledges on the target\'s reply (#975)'
     }
   });
 
+  test('a target that never acknowledges is named once, however many records time out (#1877)', async () => {
+    const log = new RecordingLogger();
+    const sysOptions = ActorSystemOptions.create().withLogger(log).withLogLevel(LogLevel.Info);
+    const sys = ActorSystem.create('kafka-on-reply-silent', sysOptions);
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders'])
+        .withAcknowledgmentTimeoutMs(50);
+      const { mock } = await bootActor(sys, kafkaOptions, 'hold');
+      await mock.consumer_.push('orders', 0, '8').promise;
+      await mock.consumer_.push('orders', 0, '9').promise;
+      const silent = log.records.filter((r) => r.level === 'warn' && r.message.includes('has not acknowledged a single delivery'));
+      expect(silent).toHaveLength(1);
+      expect(silent[0]!.message).toContain('KafkaActor: target ');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('a reply that is not part of the contract does not acknowledge', async () => {
     const sys = quietSystem('kafka-on-reply-unexpected');
     try {

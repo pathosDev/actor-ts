@@ -20,6 +20,8 @@ import {
 import { AmqpOptions, type AmqpOptionsBuilder } from '../../../../../src/io/broker/AmqpOptions.js';
 import { acknowledgeDelivery, negativelyAcknowledgeDelivery } from '../../../../../src/io/broker/BrokerAcknowledgment.js';
 import { BrokerAcknowledgmentFailed } from '../../../../../src/io/broker/BrokerEvents.js';
+import { LogLevel } from '../../../../../src/Logger.js';
+import { RecordingLogger } from '../../../../util/RecordingLogger.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
@@ -249,6 +251,23 @@ describe('AmqpActor — acknowledges on the target\'s reply (#976)', () => {
       await awaitCondition(() => channel.nacked.length === 1, { timeoutMs: 4_000, label: 'the timeout nacked' });
       expect(channel.nacked[0]).toEqual({ message, allUpTo: false, requeue: true });
       expect(channel.acked).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a target that never acknowledges is named once, however many deliveries time out (#1877)', async () => {
+    const log = new RecordingLogger();
+    const system = createTestActorSystem({ name: 'amqp-on-reply-silent', logger: log, logLevel: LogLevel.Debug });
+    try {
+      const { channel } = await bootConsuming(system, 'hold', (o) => o.withAcknowledgmentTimeoutMs(50));
+      channel.deliver('order-1');
+      channel.deliver('order-2');
+      await awaitCondition(() => channel.nacked.length === 2, { timeoutMs: 4_000, label: 'both timeouts nacked' });
+      const silent = log.records.filter((r) => r.level === 'warn' && r.message.includes('has not acknowledged a single delivery'));
+      expect(silent).toHaveLength(1);
+      expect(silent[0]!.message).toContain('AmqpActor: target ');
+      expect(silent[0]!.message).toContain('/orders-target ');
     } finally {
       await system.terminate();
     }

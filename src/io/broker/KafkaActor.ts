@@ -5,7 +5,11 @@ import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
-import { BrokerAcknowledgmentTracker, type BrokerDeliveryReply } from './BrokerAcknowledgment.js';
+import {
+  BrokerAcknowledgmentTracker,
+  BrokerSilentTargetWatch,
+  type BrokerDeliveryReply,
+} from './BrokerAcknowledgment.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import {
   DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
@@ -203,6 +207,8 @@ export class KafkaActor
    * replies that can no longer commit anything.
    */
   private acknowledgments: BrokerAcknowledgmentTracker | null = null;
+  /** Names a target that never acknowledges, once — across reconnects (#1877). */
+  private readonly silentTargets = new BrokerSilentTargetWatch('KafkaActor', (line) => this.log.warn(line));
 
   constructor(options: KafkaOptions = {}) { super(options); }
 
@@ -289,7 +295,9 @@ export class KafkaActor
       const commitTimeoutMs = this.options.consumer.commitTimeoutMs ?? 30_000;
       const acknowledgment = this.options.acknowledgment ?? DEFAULT_BROKER_ACKNOWLEDGMENT_MODE;
       const acknowledgmentTimeoutMs = this.options.acknowledgmentTimeoutMs ?? DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS;
-      const acknowledgments = new BrokerAcknowledgmentTracker(acknowledgment, acknowledgmentTimeoutMs);
+      const acknowledgments = new BrokerAcknowledgmentTracker(
+        acknowledgment, acknowledgmentTimeoutMs, this.silentTargets,
+      );
       this.acknowledgments = acknowledgments;
       // Once per consumer start, so what the actor actually guarantees is in
       // the log rather than only in the options that produced it (#975).

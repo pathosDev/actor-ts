@@ -208,6 +208,14 @@ it, and when that is depends on `acknowledgment`:
   the helpers do nothing).  **At-most-once**: a record lost from the mailbox
   — a crash, an overflow — is never read again.
 
+A target that has never acknowledged a record — typically one written
+before `'on-reply'` became the default — is named once, at `warn`, the
+first time one of its records times out:
+`KafkaActor: target <path> has not acknowledged a single delivery under
+acknowledgment 'on-reply' …`.  The per-record line stays; this one says why
+the records keep coming back.  A target that has acknowledged before is
+slow, not silent, and is not named.
+
 Kafka processes one record per partition at a time, so under `'on-reply'` a
 slow target slows its partitions down instead of piling records up in its
 mailbox.  The consumer start is logged at `info` with the effective commit

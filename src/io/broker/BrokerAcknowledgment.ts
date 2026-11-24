@@ -83,6 +83,64 @@ export class BrokerDeliveryNotAcknowledgedError extends Error {
   }
 }
 
+/** What {@link BrokerSilentTargetWatch} needs of a target: its path, which every `ActorRef` has. */
+type SilentTargetIdentity = Pick<ActorRef<never>, 'path'>;
+
+/**
+ * Notices a target that has never acknowledged a delivery and says so, once
+ * (#1877).
+ *
+ * Since `'on-reply'` became the default (#975–#977), a target written before
+ * it — one that never calls {@link acknowledgeDelivery} — cannot work: every
+ * delivery waits out `acknowledgmentTimeoutMs` and is redelivered, and an
+ * MQTT connection drops and reopens each time.  The per-delivery line each
+ * broker actor already logs reads like a slow target, so this names the cause
+ * and the fix the first time such a target times out.
+ *
+ * Only a *timeout* counts.  A negative or unexpected reply proves the target
+ * does reply, and the refusal already says what was wrong with it.  A target
+ * that has acknowledged once is not silent: a later timeout is slowness.
+ *
+ * Owned by the broker actor rather than the tracker: `MqttActor` builds a new
+ * tracker on every connect and reconnects after every failed delivery, so
+ * tracker-local state would warn on every cycle.  Keyed by path, like the
+ * actors' own target bookkeeping.
+ */
+export class BrokerSilentTargetWatch {
+  private readonly acknowledged = new Set<string>();
+  private readonly warned = new Set<string>();
+
+  constructor(
+    private readonly actorName: string,
+    private readonly warn: (line: string) => void,
+  ) {}
+
+  /** The target replied `acknowledgment` — it is not silent, whatever it does later. */
+  recordAcknowledged(target: SilentTargetIdentity): void {
+    this.acknowledged.add(target.path.toString());
+  }
+
+  /** The target let a delivery time out — warn if it has never acknowledged one and was not warned about yet. */
+  recordTimeout(target: SilentTargetIdentity, timeoutMs: number): void {
+    const path = target.path.toString();
+    if (this.acknowledged.has(path) || this.warned.has(path)) return;
+    this.warned.add(path);
+    this.warn(
+      `${this.actorName}: target ${path} has not acknowledged a single delivery under acknowledgment `
+      + `'on-reply' (no reply within ${timeoutMs} ms) — every delivery to it is redelivered.  A target must `
+      + 'reply acknowledgeDelivery(delivery) once it has processed it; set acknowledgment = "on-delivery" '
+      + 'to keep the old behaviour',
+    );
+  }
+
+  /** The target is no longer delivered to — drop what is known about it, so the sets stay bounded. */
+  forget(target: SilentTargetIdentity): void {
+    const path = target.path.toString();
+    this.acknowledged.delete(path);
+    this.warned.delete(path);
+  }
+}
+
 /**
  * Hands deliveries to targets under one {@link BrokerAcknowledgmentMode} and
  * keeps track of the replies still outstanding, so a teardown can give up on
@@ -101,6 +159,8 @@ export class BrokerAcknowledgmentTracker {
   constructor(
     private readonly mode: BrokerAcknowledgmentMode,
     private readonly timeoutMs: number,
+    /** Told about acknowledgments and timeouts, so a target that never replies is named once (#1877). */
+    private readonly silentTargets?: BrokerSilentTargetWatch,
   ) {}
 
   /** Replies still outstanding — exposed for tests. */
@@ -136,12 +196,19 @@ export class BrokerAcknowledgmentTracker {
           if (refusal !== null) { fail(refusal); return; }
           settled = true;
           this.outstanding.delete(fail);
+          this.silentTargets?.recordAcknowledged(target);
           resolve();
         },
-        (error: unknown) => fail(new BrokerDeliveryNotAcknowledgedError(
-          `no reply from ${target.path.toString()} within ${this.timeoutMs} ms`
-          + (error instanceof Error && error.name !== 'AskTimeoutError' ? ` (${error.message})` : ''),
-        )),
+        (error: unknown) => {
+          const timedOut = error instanceof Error && error.name === 'AskTimeoutError';
+          // Only a delivery still waiting: one `cancelAll` already gave up on
+          // was not left unanswered by the target.
+          if (timedOut && !settled) this.silentTargets?.recordTimeout(target, this.timeoutMs);
+          fail(new BrokerDeliveryNotAcknowledgedError(
+            `no reply from ${target.path.toString()} within ${this.timeoutMs} ms`
+            + (error instanceof Error && !timedOut ? ` (${error.message})` : ''),
+          ));
+        },
       );
     });
   }

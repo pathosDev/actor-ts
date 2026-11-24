@@ -144,6 +144,11 @@ class OrderHandler extends Actor<AmqpDelivery> {
 | does not reply within `acknowledgmentTimeoutMs` (30 s) | nacks it with requeue |
 
 A handler that throws simply never replies, so it lands in the last row.
+A target that has never acknowledged a delivery — typically one written
+before `'on-reply'` became the default — is named once, at `warn`, the
+first time one of its deliveries times out (`AmqpActor: target <path> has
+not acknowledged a single delivery …`), so an endless requeue loop says
+what causes it.
 Handlers must be idempotent: a delivery can come back after it was
 processed, if the reply or the ack is lost.  An ack the broker refuses is
 never swallowed — it is logged at `warn` with the queue and published as a

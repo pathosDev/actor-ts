@@ -217,6 +217,14 @@ Actor es erlaubt, und wann das ist, hängt von `acknowledgment` ab:
   der aus der Mailbox verloren geht — ein Crash, ein Überlauf —, wird nie
   wieder gelesen.
 
+Ein Target, das noch nie einen Record bestätigt hat — typischerweise eines,
+das vor `'on-reply'` als Default geschrieben wurde —, wird einmal auf
+`warn` benannt, sobald zum ersten Mal einer seiner Records ausläuft:
+`KafkaActor: target <path> has not acknowledged a single delivery under
+acknowledgment 'on-reply' …`.  Die Zeile pro Record bleibt; diese sagt,
+warum die Records immer wiederkommen.  Ein Target, das schon einmal
+bestätigt hat, ist langsam, nicht stumm, und wird nicht benannt.
+
 Kafka verarbeitet pro Partition einen Record nach dem anderen, unter
 `'on-reply'` bremst ein langsames Target also seine Partitionen, statt
 Records in seiner Mailbox aufzustauen.  Der Start des Consumers wird auf
