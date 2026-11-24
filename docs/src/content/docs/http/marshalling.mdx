@@ -420,10 +420,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   const file = entity<{ data: string }>(req);   // 100 MB upload, all decoded into memory
   ```
-  The route DSL reads the whole body before invoking the handler.
-  For large uploads, drop to the backend's native streaming API or
-  use a separate endpoint pattern (presigned URL, direct-to-S3
-  upload).
+  A route reads the whole body before invoking the handler.  For a
+  large upload, make the route a
+  [`streamedBody()`](/http/streamed-bodies/) one: its handler runs
+  before any byte is read and gets the body as a stream, held to a
+  limit of its own.  Or keep the bytes off the server altogether
+  (presigned URL, direct-to-S3 upload).
 </Aside>
 
 ## Where to next

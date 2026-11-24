@@ -11,6 +11,9 @@ import type { CorsOptionsType } from './middleware/CorsOptions.js';
 // harmless one: neither module touches the other's bindings while it loads.
 import { requestDeadlineOf } from './middleware/Timeout.js';
 import { stripSurrounding } from '../util/StripCharacters.js';
+import { isStreamedBodyRoute, resolveStreamedBody, type ResolvedStreamedBody, type StreamedBodyRoute } from './StreamedBody.js';
+import type { StreamedBodyOptionsType } from './StreamedBodyOptions.js';
+import { toStreamedRequest } from './StreamedRequestBody.js';
 
 /**
  * A compiled HTTP route — the Route-DSL reduces to a list of these
@@ -24,6 +27,13 @@ export type CompiledRoute = {
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
   /** The longest `requestTimeout()` deadline wrapping the handler — see {@link EndpointDeadline}. */
   readonly requestDeadlineMs?: number;
+  /**
+   * Present on a `streamedBody()` route (#1868): the backend hands the handler
+   * the body unread, held to this limit, instead of buffering it under the
+   * server-wide cap.  Middleware wrapping keeps it — every fold spreads the
+   * endpoint.
+   */
+  readonly streamedBody?: ResolvedStreamedBody;
 };
 
 /**
@@ -134,7 +144,13 @@ export type Middleware = (
  * representation is a tree that knows how to flatten into CompiledRoutes.
  */
 export type Route =
-  | { readonly kind: 'terminal'; readonly method: HttpMethod; readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse }
+  | {
+    readonly kind: 'terminal';
+    readonly method: HttpMethod;
+    readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+    /** A `streamedBody()` route's own options, resolved against HOCON when the tree compiles. */
+    readonly streamedBody?: Partial<StreamedBodyOptionsType>;
+  }
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
@@ -420,17 +436,42 @@ function normalizeSegment(s: string): string {
 
 /* -------------------------- Method combinators ---------------------------- */
 
-function methodRoute(method: HttpMethod, handler: Route['kind'] extends 'terminal' ? never : (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route {
+/** A handler that receives the request with its body already read — every route's, unless it opts out. */
+type BufferedHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+
+function methodRoute(method: HttpMethod, handler: BufferedHandler): Route {
   return { kind: 'terminal', method, handler };
 }
 
-export const get     = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('GET', h);
-export const post    = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('POST', h);
-export const put     = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('PUT', h);
-export const del     = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('DELETE', h);
-export const patch   = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('PATCH', h);
-export const head    = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('HEAD', h);
-export const options = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('OPTIONS', h);
+/**
+ * A method route whose handler is either a plain one or a `streamedBody()`
+ * route (#1868).  The streamed one compiles to a terminal like any other: its
+ * handler is wrapped to build the `StreamedHttpRequest` out of the request the
+ * innermost middleware passed on, and its options ride along to be resolved
+ * once the tree compiles.
+ */
+function bodyMethodRoute(method: HttpMethod, handler: BufferedHandler | StreamedBodyRoute): Route {
+  if (!isStreamedBodyRoute(handler)) return methodRoute(method, handler);
+  const streamed = handler.handler;
+  return {
+    kind: 'terminal',
+    method,
+    handler: (request) => streamed(toStreamedRequest(request)),
+    streamedBody: handler.options,
+  };
+}
+
+export const get     = (h: BufferedHandler): Route => methodRoute('GET', h);
+/** A POST route — a plain handler, or `streamedBody(…)` for a body read as a stream. */
+export const post    = (h: BufferedHandler | StreamedBodyRoute): Route => bodyMethodRoute('POST', h);
+/** A PUT route — a plain handler, or `streamedBody(…)` for a body read as a stream. */
+export const put     = (h: BufferedHandler | StreamedBodyRoute): Route => bodyMethodRoute('PUT', h);
+/** A DELETE route — a plain handler, or `streamedBody(…)` for a body read as a stream. */
+export const del     = (h: BufferedHandler | StreamedBodyRoute): Route => bodyMethodRoute('DELETE', h);
+/** A PATCH route — a plain handler, or `streamedBody(…)` for a body read as a stream. */
+export const patch   = (h: BufferedHandler | StreamedBodyRoute): Route => bodyMethodRoute('PATCH', h);
+export const head    = (h: BufferedHandler): Route => methodRoute('HEAD', h);
+export const options = (h: BufferedHandler): Route => methodRoute('OPTIONS', h);
 
 /* ------------------------- Convenience responses -------------------------- */
 
@@ -712,6 +753,7 @@ function compileNode(route: Route, prefix: string[], config: Config | undefined,
       method: r.method,
       pattern: buildPattern(prefix),
       handler: r.handler,
+      ...(r.streamedBody === undefined ? {} : { streamedBody: resolveStreamedBody(r.streamedBody, config) }),
     }])
     .with({ kind: 'websocket' }, (r): CompiledEndpoint[] => {
       // Innermost gate: a route-level upgrade check (the CSWSH Origin

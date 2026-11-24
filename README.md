@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-24164%20of%2024164-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-24278%20of%2024278-22c55e?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~97%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~24164 tests, ~97 % line) but the
+> production**.  Test coverage is good (~24278 tests, ~97 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -101,7 +101,11 @@ A short tour of what's in the box:
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).
 - **HTTP** — directive-style routing DSL with Fastify default, Express + Hono
-  backends, response caching, rate-limiting, idempotency-key dedup.  Typed
+  backends, response caching, rate-limiting, idempotency-key dedup.
+  **Streamed request bodies**: `put(streamedBody(handler))` runs the handler
+  before any body byte is read and hands it the body as a pull-driven stream
+  with a per-route byte limit, so an upload route can authenticate first and
+  pipe gigabytes on in constant memory.  Typed
   **WebSocket** routes: `websocket(path, actorRef)` binds a
   `WebsocketServerActor` (typed messages, `reply` / `broadcast`,
   connect/disconnect hooks, a server heartbeat that reaps half-open

@@ -117,6 +117,16 @@ export type HonoServeOptions = {
    * the handler, rather than the client getting no answer at all.
    */
   readonly requestDeadlineMs?: number;
+  /**
+   * The largest request body any route on this server admits, in bytes — the
+   * buffered cap or a `streamedBody()` route's limit, whichever is larger.
+   * The backend enforces both itself; this only has to keep a runtime that
+   * caps bodies of its own from refusing first.  `Bun.serve` does — 128 MiB by
+   * default, answered with a bare 413 before any handler runs — so the Bun
+   * runner raises its `maxRequestBodySize` to this where it is larger, and
+   * never lowers it (#1868).  `node:http` and `Deno.serve` have no such cap.
+   */
+  readonly maxRequestBodyBytes?: number;
 };
 
 /**

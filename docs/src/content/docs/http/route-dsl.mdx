@@ -104,6 +104,11 @@ options(handler);   // OPTIONS
 Each takes a handler `(req) => Promise<HttpResponse> | HttpResponse`.
 The handler can be async — the framework awaits the return.
 
+`post`, `put`, `patch` and `del` also take a `streamedBody(options?, handler)`
+in place of the handler: a route whose handler runs before any body byte is
+read and gets the body as a stream, held to a limit of its own — see
+[Streamed request bodies](/http/streamed-bodies/).
+
 ## Response helpers
 
 ### `completeJson(status, body, headers?)`
@@ -312,7 +317,8 @@ post(async (req) => {
 ```
 
 See [Marshalling](/http/marshalling/) for the full body
-story.
+story, and [Streamed request bodies](/http/streamed-bodies/) for a body
+too large to hold in memory.
 
 ## A larger example
 

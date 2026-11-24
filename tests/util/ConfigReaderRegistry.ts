@@ -51,6 +51,7 @@ import {
 import { readCorsOptionsFromConfig } from '../../src/http/middleware/Cors.js';
 import { readHstsOptionsFromConfig } from '../../src/http/middleware/Hsts.js';
 import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/Timeout.js';
+import { readStreamedBodyOptionsFromConfig } from '../../src/http/StreamedBody.js';
 import { readWebsocketClientOptionsFromConfig } from '../../src/http/websocket/WebsocketClientActor.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
 import { readDeploymentFromConfig } from '../../src/internal/Deployment.js';
@@ -627,6 +628,7 @@ const httpReaders: readonly ReaderEntry[] = [
   { name: 'readCorsOptionsFromConfig', read: readCorsOptionsFromConfig, suite: HTTP_SUITE },
   { name: 'readHstsOptionsFromConfig', read: readHstsOptionsFromConfig, suite: HTTP_SUITE },
   { name: 'readRequestTimeoutOptionsFromConfig', read: readRequestTimeoutOptionsFromConfig, suite: HTTP_SUITE },
+  { name: 'readStreamedBodyOptionsFromConfig', read: readStreamedBodyOptionsFromConfig, suite: 'tests/unit/http/StreamedBody.test.ts' },
   {
     name: 'readWebsocketPolicyOptionsFromConfig',
     read: readWebsocketPolicyOptionsFromConfig,
