@@ -14,6 +14,7 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import {
   BrokerAcknowledgmentTracker,
   BrokerDeliveryNotAcknowledgedError,
+  BrokerSilentTargetWatch,
 } from '../../../../src/io/broker/BrokerAcknowledgment.js';
 import { AskTimeoutError } from '../../../../src/SystemMessages.js';
 
@@ -168,5 +169,119 @@ describe('BrokerAcknowledgmentTracker — on-delivery', () => {
     expect(delivered).toEqual([{ id: 1 }]);
     expect(delivery.current()).toEqual({ kind: 'resolved' });
     expect(tracker.outstandingCount).toBe(0);
+  });
+});
+
+/**
+ * `BrokerSilentTargetWatch` (#1877): a target that has never acknowledged a
+ * delivery is named once, the first time one of its deliveries times out.
+ * Only a timeout counts — a negative or unexpected reply proves the target
+ * replies — and the watch outlives the tracker, as it does in `MqttActor`,
+ * which builds a new tracker on every reconnect.
+ */
+describe('BrokerSilentTargetWatch', () => {
+  function watched(): { readonly watch: BrokerSilentTargetWatch; readonly warnings: string[] } {
+    const warnings: string[] = [];
+    return { watch: new BrokerSilentTargetWatch('TestActor', (line) => warnings.push(line)), warnings };
+  }
+
+  /** Deliver once to a fresh stand-in on `tracker` and settle it with `settle`. */
+  async function deliverAndSettle(
+    tracker: BrokerAcknowledgmentTracker,
+    settle: (target: ReturnType<typeof standInTarget>) => void,
+  ): Promise<void> {
+    const standIn = standInTarget();
+    const delivery = observe(tracker.deliver(standIn.target, { id: 1 }));
+    settle(standIn);
+    await drainMicrotasks();
+    expect(delivery.current().kind).not.toBe('pending');
+  }
+
+  const timeOut = (standIn: ReturnType<typeof standInTarget>): void => standIn.refuse(new AskTimeoutError('ask timed out'));
+
+  test('a target that never acknowledges is named once, however often it times out', async () => {
+    const { watch, warnings } = watched();
+    const tracker = new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch);
+    await deliverAndSettle(tracker, timeOut);
+    await deliverAndSettle(tracker, timeOut);
+
+    expect(warnings).toEqual([
+      `TestActor: target ${TARGET_PATH} has not acknowledged a single delivery under acknowledgment 'on-reply' `
+      + `(no reply within ${TIMEOUT_MS} ms) — every delivery to it is redelivered.  A target must reply `
+      + 'acknowledgeDelivery(delivery) once it has processed it; set acknowledgment = "on-delivery" to keep the '
+      + 'old behaviour',
+    ]);
+  });
+
+  test('a reconnect — a second tracker on the same watch — does not warn again', async () => {
+    const { watch, warnings } = watched();
+    await deliverAndSettle(new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch), timeOut);
+    await deliverAndSettle(new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch), timeOut);
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a target that acknowledged once is slow, not silent, when it later times out', async () => {
+    const { watch, warnings } = watched();
+    const tracker = new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch);
+    await deliverAndSettle(tracker, (standIn) => standIn.answer({ kind: 'acknowledgment' }));
+    await deliverAndSettle(tracker, timeOut);
+    expect(warnings).toEqual([]);
+  });
+
+  test.each([
+    ['a negative reply', (standIn: ReturnType<typeof standInTarget>) => standIn.answer({ kind: 'negativeAcknowledgment' })],
+    ['an unexpected reply', (standIn: ReturnType<typeof standInTarget>) => standIn.answer({ kind: 'done' })],
+    ['an ask failure that is not a timeout', (standIn: ReturnType<typeof standInTarget>) => standIn.refuse(new Error('target terminated'))],
+  ])('%s is not silence', async (_name, settle) => {
+    const { watch, warnings } = watched();
+    await deliverAndSettle(new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch), settle);
+    expect(warnings).toEqual([]);
+  });
+
+  test('a delivery cancelAll gave up on is not blamed on the target when its ask times out later', async () => {
+    const { watch, warnings } = watched();
+    const tracker = new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch);
+    const standIn = standInTarget();
+    const delivery = observe(tracker.deliver(standIn.target, { id: 1 }));
+    tracker.cancelAll('connection gone');
+    standIn.refuse(new AskTimeoutError('ask timed out'));
+    await drainMicrotasks();
+    expect(rejectionOf(delivery.current()).message).toBe('connection gone');
+    expect(warnings).toEqual([]);
+  });
+
+  test('on-delivery never consults the watch', async () => {
+    const { watch, warnings } = watched();
+    const tracker = new BrokerAcknowledgmentTracker('on-delivery', TIMEOUT_MS, watch);
+    const { target } = standInTarget();
+    await tracker.deliver(target, { id: 1 });
+    expect(warnings).toEqual([]);
+  });
+
+  test('a forgotten target is named again if it comes back silent', async () => {
+    const { watch, warnings } = watched();
+    const tracker = new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch);
+    await deliverAndSettle(tracker, timeOut);
+    watch.forget(standInTarget().target);
+    await deliverAndSettle(tracker, timeOut);
+    expect(warnings).toHaveLength(2);
+  });
+
+  test('forgetting also clears an acknowledgment, so a returning target is judged afresh', async () => {
+    const { watch, warnings } = watched();
+    const tracker = new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch);
+    await deliverAndSettle(tracker, (standIn) => standIn.answer({ kind: 'acknowledgment' }));
+    watch.forget(standInTarget().target);
+    await deliverAndSettle(tracker, timeOut);
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('targets are told apart by path', async () => {
+    const { watch, warnings } = watched();
+    const other = { path: { toString: () => 'actor-ts://tracker/user/other' } } as unknown as ActorRef<object>;
+    watch.recordAcknowledged(other);
+    const tracker = new BrokerAcknowledgmentTracker('on-reply', TIMEOUT_MS, watch);
+    await deliverAndSettle(tracker, timeOut);
+    expect(warnings).toHaveLength(1);
   });
 });

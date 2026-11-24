@@ -10,7 +10,7 @@ import { classNameOf } from '../../util/ClassName.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS } from '../Constants.js';
-import { BrokerAcknowledgmentTracker } from './BrokerAcknowledgment.js';
+import { BrokerAcknowledgmentTracker, BrokerSilentTargetWatch } from './BrokerAcknowledgment.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import {
   DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
@@ -142,6 +142,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * on every {@link inboundAcknowledgments} entry with them.
    */
   private acknowledgments: BrokerAcknowledgmentTracker | null = null;
+  /** Names a target that never acknowledges, once — across reconnects (#1877). */
+  private readonly silentTargets = new BrokerSilentTargetWatch('MqttActor', (line) => this.log.warn(line));
   /** Inbound acknowledgments of the current connection not yet settled. */
   private readonly inboundAcknowledgments = new Set<PendingInboundAcknowledgment>();
   /** Subscriptions requested in the constructor, flushed in `preStart`. */
@@ -586,6 +588,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     // The cell already dropped the watch on Terminated delivery — just
     // clean our own bookkeeping (no context.unwatch).
     this.watched.delete(key);
+    this.silentTargets.forget(ref);
     for (const pattern of watchEntry.patterns) {
       const entry = this.registry.get(pattern);
       if (!entry) continue;
@@ -618,6 +621,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     if (watchEntry.patterns.size === 0) {
       this.watched.delete(key);
       this.context.unwatch(ref);
+      this.silentTargets.forget(ref);
     }
   }
 
@@ -735,7 +739,9 @@ export abstract class MqttActor<T = unknown, TSelf = never>
         this.client = client;
         const acknowledgment = this.options.acknowledgment ?? DEFAULT_BROKER_ACKNOWLEDGMENT_MODE;
         const acknowledgmentTimeoutMs = this.options.acknowledgmentTimeoutMs ?? DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS;
-        this.acknowledgments = new BrokerAcknowledgmentTracker(acknowledgment, acknowledgmentTimeoutMs);
+        this.acknowledgments = new BrokerAcknowledgmentTracker(
+          acknowledgment, acknowledgmentTimeoutMs, this.silentTargets,
+        );
         const awaitsProcessing = acknowledgment === 'on-reply';
         // mqtt.js emits `message` and then hands the same packet object to
         // `handleMessage` in the same synchronous turn, so the packet is the

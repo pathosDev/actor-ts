@@ -1500,6 +1500,37 @@ describe('MqttActor acknowledges a message only once it was processed (#977)', (
     }
   });
 
+  test('a target that never acknowledges is named once, across the reconnect its timeout causes (#1877)', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const inbox = new ReplyingInbox<unknown>('hold');
+      const inboxRef = sys.spawn(() => inbox, 'silent-inbox');
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withAcknowledgmentTimeoutMs(50)
+        .withReconnect({ initialDelayMs: 10 });
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1, target: inboxRef }] });
+      await boot(sys, actor);
+
+      const first = actor.module.last();
+      first.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => first.endedForcefully, { timeoutMs: 4_000, label: 'the first timeout dropped the connection' });
+      await awaitCondition(() => actor.module.clients.length === 2 && actor.connectedCount === 2, {
+        timeoutMs: 4_000, label: 'the actor reconnected',
+      });
+      const second = actor.module.last();
+      second.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => second.endedForcefully, { timeoutMs: 4_000, label: 'the second timeout dropped the connection' });
+
+      const silent = log.records.filter((r) => r.level === 'warn' && r.message.includes('has not acknowledged a single delivery'));
+      expect(silent).toHaveLength(1);
+      expect(silent[0]!.message).toContain(`MqttActor: target ${inboxRef.path.toString()} `);
+      expect(silent[0]!.message).toContain('acknowledgeDelivery(delivery)');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('a QoS 0 message that fails is released — there is nothing to redeliver', async () => {
     const sys = makeSystem();
     try {

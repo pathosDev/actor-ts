@@ -359,6 +359,14 @@ and the broker redelivers the message on the next one.  An undecodable
 payload that `onInvalidMessage` declines is acknowledged — redelivering it
 would fail the same way forever.
 
+A fan-out target that has never acknowledged a message — typically one
+written before `'on-reply'` became the default — makes every message time
+out and the connection drop and reopen in a loop.  The actor names it once,
+at `warn`, the first time it times out (`MqttActor: target <path> has not
+acknowledged a single delivery …`), and not again on the reconnects that
+follow.  A target that is unsubscribed or stops is forgotten, so it is
+named again if it comes back silent.
+
 Three consequences worth knowing:
 
 - **Redelivery needs a persistent session.**  With `cleanSession: true` —

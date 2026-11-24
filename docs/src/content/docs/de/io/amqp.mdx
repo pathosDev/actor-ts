@@ -148,7 +148,12 @@ class OrderHandler extends Actor<AmqpDelivery> {
 | antwortet nicht innerhalb von `acknowledgmentTimeoutMs` (30 s) | nackt sie mit Requeue |
 
 Ein Handler, der wirft, antwortet einfach nie und landet damit in der
-letzten Zeile.  Handler müssen idempotent sein: Eine Delivery kann nach
+letzten Zeile.  Ein Target, das noch nie eine Delivery bestätigt hat —
+typischerweise eines, das vor `'on-reply'` als Default geschrieben wurde
+—, wird einmal auf `warn` benannt, sobald zum ersten Mal eine seiner
+Deliveries ausläuft (`AmqpActor: target <path> has not acknowledged a
+single delivery …`); eine endlose Requeue-Schleife sagt so, woher sie
+kommt.  Handler müssen idempotent sein: Eine Delivery kann nach
 ihrer Verarbeitung wiederkommen, wenn die Antwort oder der ACK verloren
 geht.  Ein ACK, den der Broker ablehnt, wird nie verschluckt — er wird mit
 der Queue auf `warn` geloggt und als `BrokerAcknowledgmentFailed`-Event

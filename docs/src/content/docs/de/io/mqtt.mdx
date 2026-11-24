@@ -379,6 +379,15 @@ nächsten erneut aus.  Eine nicht dekodierbare Payload, die
 `onInvalidMessage` verwirft, wird bestätigt — eine erneute Auslieferung
 würde auf ewig genauso scheitern.
 
+Ein Fan-out-Target, das noch nie eine Nachricht bestätigt hat —
+typischerweise eines, das vor `'on-reply'` als Default geschrieben wurde
+—, lässt jede Nachricht auslaufen und die Verbindung in einer Schleife ab-
+und wieder aufbauen.  Der Actor benennt es einmal auf `warn`, sobald es
+zum ersten Mal ausläuft (`MqttActor: target <path> has not acknowledged a
+single delivery …`), und nicht erneut bei den folgenden Reconnects.  Ein
+Target, das abbestellt wird oder stoppt, wird vergessen und also erneut
+benannt, falls es stumm zurückkommt.
+
 Drei Folgen, die man kennen sollte:
 
 - **Erneute Auslieferung braucht eine persistente Session.**  Mit
