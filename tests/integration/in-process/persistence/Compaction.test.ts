@@ -85,7 +85,15 @@ class Ledger extends PersistentActor<Command, AppendedEvent, State> {
       return;
     }
     if (command.kind === 'snapshot') { await this.saveSnapshot(); this.replyTo({ total: state.total }); return; }
-    if (command.kind === 'compact') { await this.deleteHistory(command.toSeq); this.replyTo({ total: state.total }); return; }
+    if (command.kind === 'compact') {
+      try {
+        await this.deleteHistory(command.toSeq);
+        this.replyTo({ total: state.total });
+      } catch (e) {
+        this.replyTo({ error: e instanceof Error ? `${e.name}: ${e.message}` : String(e) });
+      }
+      return;
+    }
     this.replyTo({ total: state.total });
   }
 }
@@ -269,6 +277,96 @@ describe('deleteHistory', () => {
 
     expect((await journal.read('ledger-5', 1)).length).toBe(1);
     expect((await snapshots.loadLatest('ledger-5')).isSome()).toBe(true);
+
+    await system.terminate();
+  });
+
+  test('refuses a compaction no snapshot covers, and deletes nothing (#1180)', async () => {
+    // The data-loss case: events 1..3, no snapshot.  Compacting past 2 used
+    // to delete events 1..2 and leave a history the next recovery refuses.
+    const { system, journal } = makeSystem('delete-history-uncovered');
+    const reports: Report[] = [];
+    const collect = (r: Report): void => { reports.push(r); };
+
+    const first = system.spawn(() => new Ledger('ledger-6', collect), 'first');
+    for (const value of [1, 2, 3]) first.tell({ kind: 'append', value });
+    await awaitReports(reports, 3, 'three appends completed');
+
+    first.tell({ kind: 'compact', toSeq: 2 });
+    await awaitReports(reports, 4, 'deleteHistory(2) answered');
+    expect(reports[3]).toEqual({
+      error: expect.stringMatching(/^UncoveredCompactionError: .*holds no snapshot.*sequenceNr=2/),
+    });
+    expect((await journal.read('ledger-6', 1)).map((e) => e.sequenceNr)).toEqual([1, 2, 3]);
+
+    // And the history is still recoverable — the point of refusing.
+    expect(await gracefulStop(first, 4_000)).toBe(true);
+    reports.length = 0;
+    const second = system.spawn(() => new Ledger('ledger-6', collect), 'second');
+    second.tell({ kind: 'report' });
+    await awaitReports(reports, 1, 'the restarted ledger reported its recovered state');
+    expect(reports).toEqual([{ total: 6 }]);
+
+    await system.terminate();
+  });
+
+  test('refuses a compaction past the newest snapshot (#1180)', async () => {
+    const { system, journal, snapshots } = makeSystem('delete-history-past-snapshot');
+    const reports: Report[] = [];
+
+    const ref = system.spawn(() => new Ledger('ledger-7', (r) => reports.push(r)), 'a');
+    for (const value of [1, 2]) ref.tell({ kind: 'append', value });
+    ref.tell({ kind: 'snapshot' });          // snapshot @2
+    ref.tell({ kind: 'append', value: 3 });
+    await awaitReports(reports, 4, 'the appends and the snapshot completed');
+
+    ref.tell({ kind: 'compact', toSeq: 3 });
+    await awaitReports(reports, 5, 'deleteHistory(3) answered');
+    expect(reports[4]).toEqual({
+      error: expect.stringMatching(/^UncoveredCompactionError: .*newest snapshot is at sequenceNr=2/),
+    });
+    expect((await journal.read('ledger-7', 1)).length).toBe(3);
+    expect((await snapshots.loadLatest<State>('ledger-7')).toNullable()!.sequenceNr).toBe(2);
+
+    await system.terminate();
+  });
+
+  test('compacts short of the newest snapshot, keeping it (#1180)', async () => {
+    const { system, journal, snapshots } = makeSystem('delete-history-below-snapshot');
+    const reports: Report[] = [];
+
+    const ref = system.spawn(() => new Ledger('ledger-8', (r) => reports.push(r)), 'a');
+    for (const value of [1, 2, 3]) ref.tell({ kind: 'append', value });
+    ref.tell({ kind: 'snapshot' });          // snapshot @3
+    await awaitReports(reports, 4, 'the appends and the snapshot completed');
+
+    ref.tell({ kind: 'compact', toSeq: 2 });
+    await awaitReports(reports, 5, 'deleteHistory(2) completed');
+    expect(reports[4]).toEqual({ total: 6 });
+    expect((await journal.read('ledger-8', 1)).map((e) => e.sequenceNr)).toEqual([3]);
+    expect((await snapshots.loadLatest<State>('ledger-8')).toNullable()!.sequenceNr).toBe(3);
+
+    await system.terminate();
+  });
+
+  test('with allow-fully-compacted-recovery, a complete compaction needs no snapshot — a partial one still does (#1180)', async () => {
+    const persistenceBehavior = PersistenceBehaviorOptions.create().withAllowFullyCompactedRecovery(true);
+    const { system, journal } = makeSystem('delete-history-opt-out', persistenceBehavior);
+    const reports: Report[] = [];
+
+    const ref = system.spawn(() => new Ledger('ledger-9', (r) => reports.push(r)), 'a');
+    for (const value of [1, 2, 3]) ref.tell({ kind: 'append', value });
+    await awaitReports(reports, 3, 'three appends completed');
+
+    ref.tell({ kind: 'compact', toSeq: 2 });
+    await awaitReports(reports, 4, 'the partial deleteHistory(2) answered');
+    expect(reports[3]).toEqual({ error: expect.stringMatching(/^UncoveredCompactionError: /) });
+    expect((await journal.read('ledger-9', 1)).length).toBe(3);
+
+    ref.tell({ kind: 'compact', toSeq: 3 });
+    await awaitReports(reports, 5, 'the complete deleteHistory(3) answered');
+    expect(reports[4]).toEqual({ total: 6 });
+    expect((await journal.read('ledger-9', 1)).length).toBe(0);
 
     await system.terminate();
   });

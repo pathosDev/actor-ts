@@ -8,7 +8,7 @@ export type { JournalOperation, SnapshotOperation } from './PersistenceExtension
 // What `ActorSystemOptions.withPersistence({ plugins })` takes (#1473) — exported
 // so an application can name a plug-in it builds apart from the options.
 export type { PersistencePlugin } from './PersistenceExtension.js';
-export { PersistentActor, everyNEvents, RecoveryTimeoutError } from './PersistentActor.js';
+export { PersistentActor, everyNEvents, RecoveryTimeoutError, UncoveredCompactionError } from './PersistentActor.js';
 export type { SnapshotPolicy } from './PersistentActor.js';
 
 // System-wide persistence behaviour (#874) — the recovery cap and deadline,

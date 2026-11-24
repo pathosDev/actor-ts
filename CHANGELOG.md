@@ -9,6 +9,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **`UncoveredCompactionError`** (`actor-ts/persistence`), thrown by
+  `deleteHistory` when no snapshot covers the compaction (#1180).
+
+### Changed
+
+- **BREAKING — `deleteHistory(toSeq)` refuses a compaction no snapshot
+  covers** (#1180). It used to delete the events up to `toSeq` without
+  checking, and an actor that had no snapshot at or above `toSeq` lost its
+  state for good. The loss surfaced only at the next recovery, as a
+  `JournalIntegrityError`. Now it loads the newest snapshot first, through the
+  snapshot breaker, and throws `UncoveredCompactionError` without deleting
+  anything when that snapshot is missing or older than `toSeq`. Under
+  `actor-ts.persistence.allow-fully-compacted-recovery` a complete compaction
+  (`toSeq >= lastSequenceNr`) is still allowed without a snapshot, because
+  recovery accepts that case. A compaction now makes one extra snapshot-store
+  `load`, which the persistence metrics count.
+  *Migration:* `await this.saveSnapshot()` before
+  `await this.deleteHistory(seq)`.
+
 ## [0.19.1] — 2026-11-24
 
 ### Added

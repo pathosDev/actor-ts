@@ -307,6 +307,23 @@ actor then starts empty and resumes its sequence at the journal's
 high-water mark, so its next `persist` still lines up with what the
 journal remembers.
 
+`deleteHistory` enforces the compact-only-past-a-snapshot rule itself,
+before it deletes anything.
+It loads the newest snapshot and, when none sits at or above `seq`,
+throws `UncoveredCompactionError` and leaves the journal untouched —
+so the mistake surfaces at the call, not at the next recovery, when
+the events would already be gone.  Take one first:
+
+```ts
+await this.saveSnapshot();
+await this.deleteHistory(this.lastSequenceNr);
+```
+
+Under `allow-fully-compacted-recovery` it also accepts a *complete*
+compaction without a snapshot — `seq` at or past `lastSequenceNr` —
+because that is the shape recovery then accepts.  A partial one stays
+refused.
+
 The DevTools [time-travel
 panel](/observability/devtools/time-travel/) shares this replay
 code but opts out of that last part.  It asks what state looked
@@ -345,7 +362,7 @@ actor-ts.circuit-breaker.persistence-journal {
 **The journal breaker wraps `persist`, recovery and
 `deleteHistory`; the snapshot breaker wraps snapshot saves, the
 snapshot load a recovery starts with, and the snapshot half of
-`deleteHistory`.**  Once `max-failures` appends or recoveries have
+`deleteHistory`, its covering-snapshot check included.**  Once `max-failures` appends or recoveries have
 failed in a row the journal breaker opens, and every `persist` for
 `reset-timeout` throws `CircuitBreakerOpenError` out of your own
 handler — where supervision sees it like any other failure from
