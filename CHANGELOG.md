@@ -40,6 +40,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `load`, which the persistence metrics count.
   *Migration:* `await this.saveSnapshot()` before
   `await this.deleteHistory(seq)`.
+- **BREAKING — the `typescript` peerDependency is now `^6.0.0 || ^7.0.0`**
+  (#1879). The 5.6 floor was a promise nothing in the repository checked:
+  the library builds with TypeScript 7, and devtools-ui and every example
+  frontend are on 6.0. The published declarations of all 20 entry points
+  compile cleanly with TypeScript 6.0.3 under `skipLibCheck: false`. The
+  peer stays optional (#781); README badge and FAQ say 6+.
+  *Migration:* upgrade a consuming project to TypeScript 6 or later.
 
 ### Fixed
 
