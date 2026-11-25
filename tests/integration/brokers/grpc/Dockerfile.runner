@@ -11,7 +11,7 @@
 # Digest-pinned so the tree says which image a run used.  Dependabot moves the
 # digest as 1.4.x is rebuilt; the minor moves with `.bun-version`, by hand —
 # the policy is in tests/integration/Dockerfile.node.  #1597
-FROM oven/bun:1.4-debian@sha256:93d5032fe06d163427822dc1598f420363759bb18155c9cc90eb1be05a64a19e
+FROM oven/bun:1.4-debian@sha256:3dddea58e1f8f2240eca906b023fedb944f9a8352515a35309fd0c879fe00aaa
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
