@@ -41,6 +41,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   *Migration:* `await this.saveSnapshot()` before
   `await this.deleteHistory(seq)`.
 
+### Fixed
+
+- **Streamed request bodies on the Hono backend under Node and Deno 2.9**
+  (#1878). Both are regressions from 0.19.1 (#1868), and the `multi-runtime`
+  smoke run caught them.
+  - **Node (`@hono/node-server`).** A route that refused a body without
+    reading it could leave `server.close()` waiting, for 2 s at best and
+    forever on an otherwise idle process. The backend asked the adapter's
+    `Request` for its body, which made the adapter wrap the request in a
+    `Readable.toWeb` that paused it again after the lingering close resumed
+    it. The backend now reads only the `node:http` request.
+  - **Deno 2.9 and later.** The new HTTP/1.1 serving path in Deno 2.9 ignores
+    `Connection: close` and reads an unread body to its end. A refused 50 MiB
+    upload was either taken in whole, or its connection was held open with no
+    end, depending on whether a reader had been taken. Now the backend takes
+    the reader of a body it has to close, holds it until Deno has written the
+    response, and only then cancels it, so Deno drops the connection. On
+    2.9.8 the 401 arrives and 2.5 MiB is taken in. A small unread remainder
+    is read off by the backend itself, bounded by 64 KiB and 2 s, so the
+    connection still serves its next request. The reader is taken on the
+    first read only.
+  - Smoke case 64 now checks that `unbind()` settles within 1 s after the
+    refusals, and that a small unread body keeps the connection. A held
+    connection used to hang the harness; it now fails the case with a
+    message.
+
 ## [0.19.1] — 2026-11-24
 
 ### Added

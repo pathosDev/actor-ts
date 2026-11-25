@@ -107,7 +107,9 @@ Antwort den ganzen ungelesenen Rest von der Verbindung, ein abgewiesener
 Antwort:
 
 - ein Rest, der **deklariert und höchstens 64 KiB** groß ist, wird der
-  Runtime zum Lesen und Verwerfen überlassen, und die Verbindung bleibt;
+  Runtime zum Lesen und Verwerfen überlassen, und die Verbindung bleibt —
+  auf Deno ab 2.9 liest das Backend ihn selbst ab, binnen 2 s, weil dieses
+  Deno eine Verbindung schließt, deren Request-Body ungelesen blieb;
 - alles Größere, ein chunked Body, ein fehlgeschlagener und ein abgebrochener
   Body **schließen die Verbindung**.
 
@@ -119,7 +121,8 @@ der *noch schreibt*, die Antwort zu lesen bekommt:
 | `node:http` — Fastify, Express, Hono unter Node, auf Node und Bun | `Connection: close`, dann ein *verzögertes* Schließen: FIN, der Rest wird gelesen und verworfen, bis der Client aufhört, 1 MiB mehr ankam oder 2 s vergangen sind | ja — gemessen: die 401 kommt an, von einem 50-MiB-Upload werden 0,4 MiB aufgenommen |
 | HTTP/2 — Fastify, Hono | der Stream des Requests wird nach der Antwort mit `NO_ERROR` geschlossen; bis dahin hat die Flusskontrolle den Client zurückgehalten | ja |
 | `Bun.serve` — Hono unter Bun | `Connection: close` | nicht zuverlässig: Das Schließen wird zu einem Reset, der die Antwort verwerfen kann |
-| Deno | Deno schließt eine solche Verbindung selbst | nicht zuverlässig, aus demselben Grund |
+| Deno vor 2.9 | Deno schließt eine solche Verbindung selbst | nicht zuverlässig, aus demselben Grund |
+| Deno ab 2.9 | das Backend hält den Reader des Bodys, bis Deno die Antwort geschrieben hat, und bricht ihn dann ab — sonst liest dieses Deno einen ungelesenen Rest bis zum Ende, mit `Connection: close` oder ohne | ja — gemessen auf 2.9.8: die 401 kommt an, von einem 50-MiB-Upload werden 2,5 MiB aufgenommen |
 
 Ein Client, der wartet — einer, der `Expect: 100-continue` schickt, siehe
 unten —, kommt nie in diese Lage.
@@ -137,7 +140,8 @@ und der Client schickt den Body nie.
 |---|---|
 | `node:http` — Fastify, Express, Hono unter Node | zurückgehalten, bis der Body zum ersten Mal gelesen wird |
 | `Bun.serve` — Hono unter Bun | von Bun geschickt, bevor ein Handler läuft |
-| `Deno.serve` — Hono unter Deno | nie geschickt; ein wartender Client schickt seinen Body nach seinem eigenen Expect-Timeout |
+| `Deno.serve` vor 2.9 — Hono unter Deno | nie geschickt; ein wartender Client schickt seinen Body nach seinem eigenen Expect-Timeout |
+| `Deno.serve` ab 2.9 — Hono unter Deno | von Deno geschickt, bevor ein Handler läuft |
 
 Ein `'checkContinue'`-Listener, den deine Anwendung selbst am Server
 installiert hat, bleibt unangetastet.

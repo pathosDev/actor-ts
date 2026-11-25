@@ -234,15 +234,82 @@ export function nodeRequestBodySource(request: NodeRequestReadable): RequestBody
   };
 }
 
-/** A {@link RequestBodySource} over a web `ReadableStream` body — Hono under Bun and Deno. */
-export function webRequestBodySource(stream: ReadableStream<Uint8Array>): RequestBodySource {
-  const reader = stream.getReader();
+/**
+ * A {@link webRequestBodySource} whose release the backend times itself — see
+ * `deferRelease`.
+ */
+export type WebRequestBodySource = RequestBodySource & {
+  /** Whether a reader was taken — by a read, or by {@link WebRequestBodySource.hold}. */
+  readonly taken: boolean;
+  /** Take the reader now, if nothing has, without reading: the runtime sees the body as taken. */
+  hold(): void;
+  /** Cancel the reader, if one was taken.  What `stop()` does at once without `deferRelease`. */
+  release(): void;
+  /**
+   * Read the rest of the body and drop it — at most `maxBytes`, within
+   * `withinMs`.  `true` once it ended inside both bounds; `false` when it did
+   * not, or failed, or the reader was already released.
+   */
+  drain(maxBytes: number, withinMs: number): Promise<boolean>;
+};
+
+export type WebRequestBodySourceOptions = {
+  /**
+   * Leave the reader held when the body is stopped, for the backend to
+   * {@link WebRequestBodySource.release} once its response is out.  Deno 2.9
+   * needs it — `HonoBackend.releasingDenoBody` says why.
+   */
+  readonly deferRelease?: boolean;
+};
+
+/**
+ * A {@link RequestBodySource} over a web `ReadableStream` body — Hono under Bun
+ * and Deno.
+ *
+ * Neither the stream nor its reader is touched before the first read — pass a
+ * getter to keep even the stream unasked for until then.  A taken reader is a
+ * claim on the connection: Deno 2.9 hands the connection to it once the
+ * response is out, and a reader taken up front for a handler that never read
+ * held it without answering the next request (measured on 2.9.8, #1878).  The
+ * backend now settles every Deno body after the response, but a body nobody
+ * asked for still has to be told apart from one a read took — a request that
+ * expects `100 Continue` from a Deno that never sends one has no body coming,
+ * and draining it would only wait.  A getter that answers `null` is a body
+ * that has ended.
+ */
+export function webRequestBodySource(
+  stream: ReadableStream<Uint8Array> | (() => ReadableStream<Uint8Array> | null),
+  options: WebRequestBodySourceOptions = {},
+): WebRequestBodySource {
+  let resolved: ReadableStream<Uint8Array> | null | undefined = typeof stream === 'function' ? undefined : stream;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let stopped = false;
+  let released = false;
+  const streamOf = (): ReadableStream<Uint8Array> | null => {
+    if (resolved === undefined) resolved = (stream as () => ReadableStream<Uint8Array> | null)();
+    return resolved;
+  };
+  const take = (): ReadableStreamDefaultReader<Uint8Array> | null => {
+    if (reader === undefined) {
+      const body = streamOf();
+      if (body === null) return null;
+      reader = body.getReader();
+    }
+    return reader;
+  };
+  const release = (): void => {
+    if (released || reader === undefined) return;
+    released = true;
+    reader.cancel().catch(() => undefined);
+  };
   return {
+    get taken() { return reader !== undefined; },
     read: async () => {
       if (stopped) return null;
+      const current = take();
+      if (current === null) return null;
       try {
-        const { done, value } = await reader.read();
+        const { done, value } = await current.read();
         return done ? null : value ?? new Uint8Array(0);
       } catch (err) {
         throw new RequestBodyAbortedError(err);
@@ -251,7 +318,40 @@ export function webRequestBodySource(stream: ReadableStream<Uint8Array>): Reques
     stop: () => {
       if (stopped) return;
       stopped = true;
-      reader.cancel().catch(() => undefined);
+      if (options.deferRelease === true) return;
+      if (reader !== undefined) {
+        release();
+        return;
+      }
+      // Nothing read: cancel the stream itself if it was ever asked for — one
+      // that never was has nothing in flight to stop.
+      released = true;
+      if (resolved) resolved.cancel().catch(() => undefined);
+    },
+    hold: () => {
+      if (!released) take();
+    },
+    release,
+    drain: async (maxBytes, withinMs) => {
+      if (released) return false;
+      const current = take();
+      if (current === null) return true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<'expired'>((resolve) => { timer = setTimeout(() => resolve('expired'), withinMs); });
+      let drained = 0;
+      try {
+        for (;;) {
+          const next = await Promise.race([current.read(), expired]);
+          if (next === 'expired') return false;
+          if (next.done) return true;
+          drained += next.value?.byteLength ?? 0;
+          if (drained > maxBytes) return false;
+        }
+      } catch {
+        return false;
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }

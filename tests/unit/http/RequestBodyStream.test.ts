@@ -236,6 +236,105 @@ describe('webRequestBodySource', () => {
     expect(cancelled).toBe(true);
     expect(await source.read()).toBeNull();
   });
+
+  /*
+   * #1878: on Deno 2.9 a taken reader is a claim on the connection, so the
+   * source touches neither the stream nor its reader before it has to, and the
+   * backend decides when a held reader is let go.
+   */
+
+  /** A stream that serves `chunks` on demand, recording cancels. */
+  function servedStream(chunks: ReadonlyArray<Uint8Array>, ends = true): { stream: ReadableStream<Uint8Array>; cancels: number } {
+    const queue = [...chunks];
+    const record = { stream: undefined as unknown as ReadableStream<Uint8Array>, cancels: 0 };
+    record.stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const next = queue.shift();
+        if (next !== undefined) controller.enqueue(next);
+        else if (ends) controller.close();
+        // otherwise: never ends, like a client that stopped sending
+      },
+      cancel() { record.cancels += 1; },
+    }, { highWaterMark: 0 });
+    return record;
+  }
+
+  test('a getter is asked for the stream on the first read, not before, and only once', async () => {
+    let asked = 0;
+    const { stream } = servedStream([bytes(2), bytes(3)]);
+    const source = webRequestBodySource(() => { asked += 1; return stream; });
+    expect(asked).toBe(0);
+    expect(source.taken).toBe(false);
+    expect((await source.read())?.byteLength).toBe(2);
+    expect((await source.read())?.byteLength).toBe(3);
+    expect(await source.read()).toBeNull();
+    expect(asked).toBe(1);
+    expect(source.taken).toBe(true);
+  });
+
+  test('a getter that answers null is a body already over, and nothing is taken', async () => {
+    const source = webRequestBodySource(() => null);
+    expect(await source.read()).toBeNull();
+    source.hold();
+    expect(source.taken).toBe(false);
+    expect(await source.drain(1024, 1_000)).toBe(true);
+  });
+
+  test('hold takes the reader without reading, and release cancels it', async () => {
+    const served = servedStream([bytes(4)]);
+    const source = webRequestBodySource(served.stream);
+    source.hold();
+    expect(source.taken).toBe(true);
+    expect(served.stream.locked).toBe(true);
+    source.release();
+    await awaitCondition(() => served.cancels === 1, { timeoutMs: 2_000, label: 'the held reader was cancelled' });
+  });
+
+  test('stop without a read cancels the stream it was given', async () => {
+    const served = servedStream([bytes(4)]);
+    webRequestBodySource(served.stream).stop();
+    await awaitCondition(() => served.cancels === 1, { timeoutMs: 2_000, label: 'the unread stream was cancelled' });
+  });
+
+  test('stop never asks a getter for a stream nobody read', () => {
+    let asked = 0;
+    webRequestBodySource(() => { asked += 1; return servedStream([]).stream; }).stop();
+    expect(asked).toBe(0);
+  });
+
+  test('with deferRelease, stop ends the reads and leaves the reader held until release', async () => {
+    const served = servedStream([bytes(1), bytes(1)]);
+    const source = webRequestBodySource(served.stream, { deferRelease: true });
+    expect((await source.read())?.byteLength).toBe(1);
+    source.stop();
+    expect(await source.read()).toBeNull();
+    expect(served.stream.locked).toBe(true);
+    expect(served.cancels).toBe(0);
+    source.release();
+    await awaitCondition(() => served.cancels === 1, { timeoutMs: 2_000, label: 'release cancelled the deferred reader' });
+  });
+
+  test('drain reads a body that ends inside both bounds and answers true', async () => {
+    const source = webRequestBodySource(servedStream([bytes(100), bytes(100)]).stream);
+    expect(await source.drain(1024, 2_000)).toBe(true);
+  });
+
+  test('drain answers false once the body runs past maxBytes', async () => {
+    const source = webRequestBodySource(servedStream([bytes(600), bytes(600)]).stream);
+    expect(await source.drain(1024, 2_000)).toBe(false);
+  });
+
+  test('drain answers false when the body does not end within withinMs', async () => {
+    const source = webRequestBodySource(servedStream([bytes(10)], false).stream);
+    expect(await source.drain(1024, 50)).toBe(false);
+  });
+
+  test('drain answers false for a reader already released', async () => {
+    const source = webRequestBodySource(servedStream([bytes(10)]).stream);
+    source.hold();
+    source.release();
+    expect(await source.drain(1024, 2_000)).toBe(false);
+  });
 });
 
 describe('closeNodeConnectionAfterResponse', () => {
