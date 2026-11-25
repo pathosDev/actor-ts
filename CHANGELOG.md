@@ -45,7 +45,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the library builds with TypeScript 7, and devtools-ui and every example
   frontend are on 6.0. The published declarations of all 20 entry points
   compile cleanly with TypeScript 6.0.3 under `skipLibCheck: false`. The
-  peer stays optional (#781); README badge and FAQ say 6+.
+  peer stays optional (#781); README badge and FAQ say `>=6.0`.
   *Migration:* upgrade a consuming project to TypeScript 6 or later.
 
 ### Fixed
