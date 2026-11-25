@@ -2458,6 +2458,17 @@ export class Cluster {
    * together against twelve nodes were rejected six times in eight, every one
    * of them already `up` everywhere else.  One frame per promoted member, sent
    * once at the promotion, makes the wait a single hop.
+   *
+   * And every other member is told too when the promotion moves the leader
+   * (#1880): a member promoted at an address lower than this node's, such as
+   * a restarted seed coming back.  A leader change starts hand-overs, and they
+   * bound their waits by a few gossip rounds, the shard coordinator's
+   * registration barrier (#1272) among them.  Left to the lottery, a member
+   * could miss the change for nine rounds running.  It went on registering
+   * with the old leader, whose coordinator drops a `Register` it no longer
+   * leads for, and the new leader placed that member's shards elsewhere while
+   * it still ran them.  A promotion that leaves the leader where it was
+   * changes nothing anybody waits on, so it still tells the promoted alone.
    */
   private promoteJoiningMembers(): void {
     if (!this.isLeader()) return;
@@ -2470,23 +2481,31 @@ export class Cluster {
         if (!member.address.equals(this.selfAddress)) promoted.push(member.address);
       }
     }
-    if (promoted.length > 0) this.tellPromoted(promoted);
+    if (promoted.length === 0) return;
+    if (this.isLeader()) {
+      this.tellOfPromotion(promoted);
+      return;
+    }
+    const everyone = this.reachableMembers()
+      .map((member) => member.address)
+      .filter((address) => !address.equals(this.selfAddress));
+    this.tellOfPromotion(everyone);
   }
 
   /**
-   * Push this node's view to members it has just promoted — see
+   * Push this node's view to the members a promotion concerns — see
    * {@link promoteJoiningMembers}.  One frame for all of them, as the seed
    * round sends one: each receiver keeps its own high-water mark for this
    * node, so a shared sequence is delivered once per peer.
    */
-  private tellPromoted(promoted: readonly NodeAddress[]): void {
+  private tellOfPromotion(recipients: readonly NodeAddress[]): void {
     const gossip: GossipMessage = {
       kind: 'gossip',
       from: this.selfAddress.toJSON(),
       sequence: this.nextGossipSequence(),
       members: Array.from(this.members.values()).map((member) => this.memberDataForGossip(member)),
     };
-    for (const address of promoted) this.transport.send(address, gossip);
+    for (const address of recipients) this.transport.send(address, gossip);
   }
 
   /**

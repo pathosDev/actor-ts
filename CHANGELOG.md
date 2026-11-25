@@ -79,6 +79,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     refusals, and that a small unread body keeps the connection. A held
     connection used to hang the harness; it now fails the case with a
     message.
+- **Sharded entities live on two nodes after the lowest-address node
+  restarted** (#1880). When a leader promotes a member at a lower address
+  than its own, such as a restarted seed coming back, the promoted member
+  becomes leader. The promoting node told only that member. Every other
+  member learned of the new leader from gossip, which pushes to one random
+  peer per round. A member that missed it for nine rounds kept registering
+  with the old leader, which drops a registration it no longer leads for.
+  The new leader's shard coordinator waits about eight rounds for the
+  regions' claims (#1272). It then placed that member's shards on other
+  nodes while the member still ran them. A promotion that moves the leader
+  now pushes the promoting node's view to every reachable member at once.
+  `RepeatedFaultEpisodes.test.ts` caught this once on Windows CI. It
+  reproduced in about 1 run in 1000 and failed every time with gossip's
+  `Math.random` pinned to seeds 507 and 530.
 
 ## [0.19.1] — 2026-11-24
 
