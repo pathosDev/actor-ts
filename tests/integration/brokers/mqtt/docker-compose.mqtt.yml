@@ -20,7 +20,7 @@ services:
     # Production users pin their own version.
     # `-alpine` because that is what the official image's `latest` is — no
     # plain `2.1.2` tag exists; `openssl` is the other variant.
-    image: eclipse-mosquitto:2.1.2-alpine
+    image: eclipse-mosquitto:2.1.4-alpine
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     # Quick health probe — `mosquitto_sub` ships with the image and
