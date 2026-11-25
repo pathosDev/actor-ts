@@ -12,7 +12,13 @@ direkt an jedes Mitglied, das er gerade befördert hat. Ein Joiner erfährt
 also einen Hop nach der Beförderung, dass er `up` ist, statt erst dann,
 wenn eine zufällige Gossip-Runde ihn trifft — deshalb hängt die
 Bereitschafts-Wartezeit von `Cluster.bootstrap` nicht von der Größe des
-Clusters ab (#1747).
+Clusters ab (#1747).  Verschiebt die Beförderung den Leader, weil das
+beförderte Mitglied eine niedrigere Adresse hat als der Leader (etwa ein
+neu gestarteter Seed), geht die Sicht stattdessen an jedes erreichbare
+Mitglied.  Ein Leaderwechsel stößt Übergaben an, die nur wenige
+Gossip-Runden auf die anderen Mitglieder warten, etwa die
+Registrierungsschranke des Sharding-Koordinators. Deshalb darf kein
+Mitglied zufällig spät vom neuen Leader erfahren (#1880).
 
 ```mermaid
 sequenceDiagram

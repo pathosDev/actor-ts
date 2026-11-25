@@ -10,7 +10,13 @@ gossips back its current membership view; the joiner is added as
 straight to every member it has just promoted, so a joiner learns it is
 `up` one hop after the promotion rather than whenever a random gossip
 round happens to pick it — which is what keeps `Cluster.bootstrap`'s
-readiness wait independent of the cluster's size (#1747).
+readiness wait independent of the cluster's size (#1747).  When the
+promotion moves the leader, because the promoted member has a lower
+address than the leader (a restarted seed coming back, for instance),
+the view goes to every reachable member instead.  A leader change
+starts hand-overs that wait only a few gossip rounds for the other
+members, such as the sharding coordinator's registration barrier, so no
+member may learn of the new leader late by chance (#1880).
 
 ```mermaid
 sequenceDiagram
