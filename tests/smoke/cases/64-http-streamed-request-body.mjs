@@ -16,7 +16,11 @@
  *     take in a bounded amount — the connection closes rather than the body
  *     being read;
  *   - `Expect: 100-continue` against a refusing handler draws no `100` — except
- *     from `Bun.serve`, which sends it before any handler runs.
+ *     from `Bun.serve` and from Deno 2.9 onwards, which send it before any
+ *     handler runs;
+ *   - a handler that answers without reading a *small* body leaves the
+ *     connection serving its next request (#1878);
+ *   - once every client socket is gone, `unbind()` settles at once (#1878).
  *
  * Every refusal is read as "the handler did what it should" and "the exchange
  * ended", the status only where one arrived: a server that closes a
@@ -36,6 +40,51 @@ export const description = 'a streamedBody() route reads exactly the bytes sent,
 
 const MiB = 1024 * 1024;
 const SETTLE_TIMEOUT_MS = 8_000;
+/**
+ * How long `unbind()` may take once every client socket is gone.  Measured at
+ * 0–1 ms per backend on Node 24; the regression it catches waited out the
+ * 2 s lingering-close deadline at best, and forever on an otherwise idle loop.
+ */
+const UNBIND_BOUND_MS = 1_000;
+
+/** Deno's own version as [major, minor], or undefined off Deno. */
+function denoVersion() {
+  const version = globalThis.Deno?.version?.deno;
+  if (typeof version !== 'string') return undefined;
+  const [major, minor] = version.split('.').map(Number);
+  return [major, minor];
+}
+
+/**
+ * Two requests on one connection: a small body the handler does not read,
+ * then an empty one.  Answers how many responses came back, and whether the
+ * connection closed before the second could be answered.
+ */
+async function keepAliveExchange({ port, target, smallBytes }) {
+  const socket = connect(port, '127.0.0.1');
+  let received = '';
+  let closed = false;
+  const answers = () => (received.match(/HTTP\/1\.1 [2-5]\d\d /g) ?? []).length;
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    });
+    socket.on('data', (chunk) => { received += chunk.toString('latin1'); });
+    socket.on('close', () => { closed = true; });
+    socket.on('error', () => { /* read off `closed` */ });
+    socket.write(`PUT ${target} HTTP/1.1\r\nhost: localhost\r\ncontent-length: ${smallBytes}\r\n\r\n`);
+    socket.write(Buffer.alloc(smallBytes, 7));
+    const firstBy = Date.now() + SETTLE_TIMEOUT_MS;
+    while (!closed && answers() < 1 && Date.now() < firstBy) await sleep(10);
+    if (!closed) socket.write(`PUT ${target} HTTP/1.1\r\nhost: localhost\r\ncontent-length: 0\r\n\r\n`);
+    const secondBy = Date.now() + SETTLE_TIMEOUT_MS;
+    while (!closed && answers() < 2 && Date.now() < secondBy) await sleep(10);
+    return { answers: answers(), closed };
+  } finally {
+    socket.destroy();
+  }
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -184,13 +233,48 @@ export async function run({ actorTs, runtime, loadEntry }) {
       /* --- 4. Expect: 100-continue against a refusing handler --------------- */
       const expecting = await rawExchange({ port, target: '/refusing', headers: { 'content-length': String(50 * MiB), expect: '100-continue' }, total: 0, windowMs: 0 });
       if (expecting.response?.status !== 401) throw new Error(`${where}: Expect: 100-continue against a refusing handler was answered ${expecting.response?.status}`);
-      const sendsItsOwnContinue = runtime === 'bun' && backend === 'hono';
+      // Deno 2.9 answers `Expect: 100-continue` as it dispatches the request,
+      // before any handler runs and whether the body is touched or not
+      // (measured on 2.9.8; 2.6.8 and 2.8.0 never do).
+      const deno = denoVersion();
+      const denoSendsItsOwn = deno !== undefined && (deno[0] > 2 || (deno[0] === 2 && deno[1] >= 9));
+      const sendsItsOwnContinue = (runtime === 'bun' && backend === 'hono') || denoSendsItsOwn;
       if (!sendsItsOwnContinue && expecting.sawContinue) {
         throw new Error(`${where}: a handler that refused without reading still drew a 100 Continue`);
       }
+
+      /* --- 5. a small unread body keeps the connection ---------------------- */
+      // Under the drain limit the rest is read off for the next request rather
+      // than the connection closed — on Deno 2.9 only if nothing took the body
+      // the handler never read: a taken reader is handed the connection.
+      const before = reached.refusing;
+      const small = await keepAliveExchange({ port, target: '/refusing', smallBytes: 1024 });
+      if (small.answers !== 2) {
+        throw new Error(`${where}: after a refused, unread 1 KiB body the connection answered ${small.answers} of 2 requests${small.closed ? ' and closed' : ''}`);
+      }
+      if (reached.refusing !== before + 2) throw new Error(`${where}: the refusing handler ran ${reached.refusing - before} time(s) for two requests`);
+
+      /* --- 6. the refusals leave nothing for the server's close to wait on -- */
+      // Every client socket above is destroyed, so a close has nothing left to
+      // drain.  Raced against a referenced timer: a refused connection the
+      // server still holds — its request paused, so it reads no FIN — keeps no
+      // event loop open, and a bare `await` here hung the whole harness once
+      // nothing else did (Hono on Node 24, after case 63).
+      const unbinding = binding.unbind();
+      binding = undefined;
+      const unbound = await Promise.race([
+        unbinding.then(() => true, (e) => e),
+        sleep(UNBIND_BOUND_MS).then(() => false),
+      ]);
+      if (unbound instanceof Error) throw new Error(`${where}: unbind() failed: ${unbound.message}`, { cause: unbound });
+      if (!unbound) {
+        throw new Error(`${where}: unbind() had not settled ${UNBIND_BOUND_MS} ms after the refusals — a refused connection is still holding the server's close`);
+      }
     } finally {
-      if (binding) await binding.unbind().catch(() => {});
-      await system.terminate();
+      // Bounded for the same reason: on a failure above the close may still
+      // be waiting, and the harness has to reach the next case.
+      if (binding) await Promise.race([binding.unbind().catch(() => {}), sleep(UNBIND_BOUND_MS)]);
+      await Promise.race([system.terminate(), sleep(2 * UNBIND_BOUND_MS)]);
     }
   }
 }

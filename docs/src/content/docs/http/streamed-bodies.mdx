@@ -102,7 +102,9 @@ connection after the response, so a refused 50 MiB upload is received in full
 anyway.  So after the response:
 
 - a remainder **declared and at most 64 KiB** is left to the runtime to read
-  and drop, and the connection is kept;
+  and drop, and the connection is kept — on Deno 2.9 and later the backend
+  reads it off itself, within 2 s, because that Deno closes a connection
+  whose request body was left unread;
 - anything larger, a chunked body, a body that errored and a cancelled one
   **close the connection**.
 
@@ -114,7 +116,8 @@ that is *still writing* its body gets to read the answer:
 | `node:http` — Fastify, Express, Hono under Node, on Node and Bun | `Connection: close`, then a *lingering* close: FIN, the rest read and dropped until the client stops, 1 MiB more arrived or 2 s passed | yes — measured: the 401 arrives, 0.4 MiB of a 50 MiB upload is taken in |
 | HTTP/2 — Fastify, Hono | the request's stream is closed with `NO_ERROR` once the response finished; flow control held the client back meanwhile | yes |
 | `Bun.serve` — Hono under Bun | `Connection: close` | not reliably: the close turns into a reset, which can discard the answer |
-| Deno | Deno closes such a connection on its own | not reliably, for the same reason |
+| Deno before 2.9 | Deno closes such a connection on its own | not reliably, for the same reason |
+| Deno 2.9 and later | the backend holds the body's reader until Deno has written the response, then cancels it — that Deno reads an unread remainder to its end otherwise, `Connection: close` or not | yes — measured on 2.9.8: the 401 arrives, 2.5 MiB of a 50 MiB upload is taken in |
 
 A client that waits — one that sends `Expect: 100-continue`, below — never
 gets into that position.
@@ -132,7 +135,8 @@ sends the body.
 |---|---|
 | `node:http` — Fastify, Express, Hono under Node | held back until the body is first read |
 | `Bun.serve` — Hono under Bun | sent by Bun before any handler runs |
-| `Deno.serve` — Hono under Deno | never sent; a waiting client sends its body after its own expect timeout |
+| `Deno.serve` before 2.9 — Hono under Deno | never sent; a waiting client sends its body after its own expect timeout |
+| `Deno.serve` 2.9 and later — Hono under Deno | sent by Deno before any handler runs |
 
 A `'checkContinue'` listener your application installed on the server itself
 is left alone.

@@ -12,7 +12,7 @@ import {
 import { OptionsError } from '../../util/OptionsValidator.js';
 import { requestIdHeadersOfError } from '../middleware/RequestId.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES, STREAMED_BODY_DRAIN_LIMIT_BYTES, STREAMED_BODY_LINGER_MS } from '../Constants.js';
 import {
   applyServerOptions,
   bodyCapOf,
@@ -36,6 +36,7 @@ import {
   type RequestBodyProgress,
   type RequestBodySource,
   webRequestBodySource,
+  type WebRequestBodySource,
   type ContinueServer,
   deferContinueUntilBodyRead,
   sendDeferredContinue,
@@ -118,6 +119,54 @@ function requestBodyStream(raw: unknown): ReadableStream<Uint8Array> | null {
   if (typeof (body as { getReader?: unknown }).getReader !== 'function') return null;
   if ((body as { locked?: unknown }).locked === true) return null;
   return body as ReadableStream<Uint8Array>;
+}
+
+/**
+ * Whether this Deno answers `Expect: 100-continue` by itself as it dispatches
+ * a request — 2.9 onwards, before any handler runs (measured on 2.9.8; 2.6.8
+ * and 2.8.0 never do).
+ */
+function denoSendsItsOwnContinue(): boolean {
+  const version = (globalThis as { Deno?: { version?: { deno?: unknown } } }).Deno?.version?.deno;
+  if (typeof version !== 'string') return false;
+  const [major = 0, minor = 0] = version.split('.').map(Number);
+  return major > 2 || (major === 2 && minor >= 9);
+}
+
+/**
+ * `response` with `release` run one macrotask after the runtime has pulled its
+ * body to the end — or after it was handed over, for a response without one.
+ * The body is re-streamed chunk for chunk; status and headers are kept.
+ */
+function releasedAfterBody(response: Response, release: () => void): Response {
+  const later = (): void => { setTimeout(release, 0); };
+  const original = response.body;
+  if (original === null) {
+    later();
+    return response;
+  }
+  const reader = original.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          later();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        controller.error(err);
+        later();
+      }
+    },
+    cancel(reason) {
+      reader.cancel(reason).catch(() => undefined);
+      later();
+    },
+  }, { highWaterMark: 0 });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
 /** Join the chunks a capped stream read collected into one contiguous body. */
@@ -233,11 +282,6 @@ function nodeExchangeOf(context: HonoContextLike): NodeExchange | undefined {
   if (typeof incoming?.read !== 'function' || typeof incoming.on !== 'function') return undefined;
   if (typeof outgoing?.setHeader !== 'function') return undefined;
   return { incoming: incoming as unknown as NodeExchangeRequest, outgoing: outgoing as unknown as NodeExchangeResponse };
-}
-
-/** A body that is already over: what a streamed request without a readable body stream reads. */
-function endedSource(): RequestBodySource {
-  return { read: async () => null, stop: () => undefined };
 }
 
 type HonoHandler = (context: HonoContextLike) => Promise<Response> | Response;
@@ -397,6 +441,11 @@ export class HonoBackend implements HttpServerBackend {
    * response without the route handler's help.
    */
   private readonly closingContexts = new WeakSet<object>();
+  /**
+   * Under Deno, the web body source of each streamed request, for
+   * {@link closingIfNeeded} to release once the response is out — see there.
+   */
+  private readonly denoBodies = new WeakMap<object, WebRequestBodySource>();
 
   // Runtime-neutral server handle; the per-runtime adapter supplies a
   // concrete implementation (Bun.serve / @hono/node-server / Deno.serve).
@@ -667,15 +716,32 @@ export class HonoBackend implements HttpServerBackend {
     const headers = (c.req.header() as Record<string, string>) ?? {};
     const declaredLength = declaredBodyLength(headers, node?.incoming.httpVersionMajor === 2);
     this.readBodies.set(c, null);
+    const onDeno = node === undefined && detectRuntime() === 'deno';
     if (declaredLength !== undefined && declaredLength > maxBytes) {
       const unread: RequestBodyProgress = { state: 'unread', bytesRead: 0 };
       if (remainderForcesClose(unread, declaredLength)) this.closingContexts.add(c);
+      if (onDeno) this.denoBodies.set(c, webRequestBodySource(() => requestBodyStream(c.req.raw), { deferRelease: true }));
       return this.closingIfNeeded(c, await this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE));
     }
-    const runtimeBody = requestBodyStream(c.req.raw);
-    const source = node !== undefined
-      ? nodeRequestBodySource(node.incoming)
-      : runtimeBody !== null ? webRequestBodySource(runtimeBody) : endedSource();
+    // Under `@hono/node-server` the runtime `Request` is not so much as
+    // probed: asking it for `body` (or `bodyUsed`) is what makes the adapter
+    // build it, wrapping the `IncomingMessage` in a `Readable.toWeb` that
+    // pauses the request once its queue fills.  After a refusal that pause
+    // outlived the lingering close's `resume()`, so the socket was read no
+    // further and the peer's FIN never seen; a paused socket holds no event
+    // loop open, and a server `close()` waiting on it hung a process with
+    // nothing else to do — smoke case 64 after case 63, on Node 24 (#1878).
+    let source: RequestBodySource;
+    if (node !== undefined) {
+      source = nodeRequestBodySource(node.incoming);
+    } else {
+      // Under Bun and Deno the runtime's body is taken on the first read only —
+      // see `webRequestBodySource`.  A request without a readable body stream
+      // reads as one already over.
+      const webSource = webRequestBodySource(() => requestBodyStream(c.req.raw), { deferRelease: onDeno });
+      if (onDeno) this.denoBodies.set(c, webSource);
+      source = webSource;
+    }
     const { body, progress } = limitedRequestBody(source, {
       maxBytes,
       declaredLength,
@@ -706,11 +772,15 @@ export class HonoBackend implements HttpServerBackend {
    * `response` is out — see `remainderForcesClose` for when.  Under
    * `@hono/node-server` through the `node:http` response, like Fastify and
    * Express; under Bun with `Connection: close` on the `Response`, which
-   * `Bun.serve` honours by closing instead of draining (measured).  Deno
-   * closes such a connection on its own, and adding the header there cut the
-   * response short in the same measurement, so it is left alone.
+   * `Bun.serve` honours by closing instead of draining (measured).  Under
+   * Deno through the held body reader — see {@link settlingDenoBody}.
    */
-  private closingIfNeeded(c: HonoContextLike, response: Response): Response {
+  private async closingIfNeeded(c: HonoContextLike, response: Response): Promise<Response> {
+    const denoBody = this.denoBodies.get(c);
+    if (denoBody !== undefined) {
+      this.denoBodies.delete(c);
+      return this.settlingDenoBody(c, denoBody, response);
+    }
     if (!this.closingContexts.has(c)) return response;
     const node = nodeExchangeOf(c);
     if (node !== undefined) {
@@ -725,6 +795,55 @@ export class HonoBackend implements HttpServerBackend {
       }
     }
     return response;
+  }
+
+  /**
+   * Settle a streamed request's body under Deno once `response` is out (#1878).
+   *
+   * Deno 2.9 serves HTTP/1.1 on a path of its own, and there neither
+   * `Connection: close` nor an erroring response body closes a connection:
+   * an unread remainder is read to its end first — all 50 MiB of a refused
+   * upload, measured against 2.5 MiB on 2.6.8 and 2.8.0.  The one way it
+   * closes instead is through the body's reader.  A reader still holding the
+   * body when the response has been written is handed the connection, which
+   * then lives exactly as long as the reader, so cancelling the reader *after*
+   * that closes the connection with nothing more read.  Cancelled before, the
+   * reader counts as done, and Deno drains the rest to reuse the connection.
+   *
+   * So a refusal that must close takes the reader, if no read has, and cancels
+   * it once Deno has pulled the response body to its end — one macrotask
+   * later, which 20 of 20 measured runs on 2.9.8 closed by, with the status
+   * delivered and 2.5 MiB taken in.  Taking the reader draws no
+   * `100 Continue` on any Deno measured (2.6.8, 2.8.0, 2.9.8); 2.9 sends one
+   * by itself as it dispatches the request, before any handler runs, and its
+   * client then sends the body the hold is there to keep out.  On Deno 2.6 and
+   * 2.8, which close such a connection on their own, the held reader changes
+   * nothing measurable.
+   *
+   * A remainder small enough to keep the connection for
+   * ({@link remainderForcesClose}) is read off here, before the response —
+   * bounded by `STREAMED_BODY_DRAIN_LIMIT_BYTES` and `STREAMED_BODY_LINGER_MS`,
+   * and closed as above when it overruns either.  Node and Bun drain such a
+   * remainder themselves; Deno 2.9 does not: a body left untouched closes the
+   * connection after a response, and one whose reader is still held keeps it
+   * open without ever answering the next request (measured on 2.9.8; 2.6.8 and
+   * 2.8.0 reuse it either way).  The one body not drained is a request that
+   * expects `100 Continue` on a Deno that does not send one by itself: its
+   * client sends no body, and that Deno reuses the connection unaided.
+   */
+  private async settlingDenoBody(c: HonoContextLike, body: WebRequestBodySource, response: Response): Promise<Response> {
+    if (!this.closingContexts.has(c)) {
+      const headers = (c.req.header() as Record<string, string>) ?? {};
+      const awaitingContinue = headers.expect?.toLowerCase() === '100-continue' && !denoSendsItsOwnContinue();
+      if (awaitingContinue && !body.taken) return response;
+      if (await body.drain(STREAMED_BODY_DRAIN_LIMIT_BYTES, STREAMED_BODY_LINGER_MS)) {
+        body.release();
+        return response;
+      }
+    }
+    body.hold();
+    if (!body.taken) return response;
+    return releasedAfterBody(response, () => body.release());
   }
 
   private attachWebsocketRoute(app: HonoAppLike, bridge: HonoWebsocketBridge, reg: WebsocketRouteRegistration): void {
