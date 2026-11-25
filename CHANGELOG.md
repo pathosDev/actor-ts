@@ -50,6 +50,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The chat and voice example backends always say why they did not start**
+  (#1881). They printed only `err.stack`, and once in CI Bun's stack header
+  held the bare name `Error` without the message, so a missing
+  `CHAT_TOKEN_SECRET` was reported with no reason at all. The two backends
+  and the voice smoke test now print the message on its own line, followed
+  by the stack.
 - **Streamed request bodies on the Hono backend under Node and Deno 2.9**
   (#1878). Both are regressions from 0.19.1 (#1868), and the `multi-runtime`
   smoke run caught them.

@@ -336,6 +336,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`chat backend failed to start: ${(err as Error).stack ?? err}\n`);
+  // The message goes out on its own line, ahead of the stack: it is the
+  // reason, and whether `stack` repeats it is up to the engine — once in CI
+  // it did not, and the operator got a bare "Error" (#1881).
+  const reason = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error && err.stack !== undefined ? `${err.stack}\n` : '';
+  process.stderr.write(`chat backend failed to start: ${reason}\n${stack}`);
   process.exit(1);
 });
